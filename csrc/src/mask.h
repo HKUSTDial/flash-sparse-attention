@@ -125,13 +125,12 @@ __forceinline__ __device__ void apply_dynamic_mask_1rowblock(
     const Element* zero_hold_states,        // Pre-calculated zero_hold states [key_len]
     const Element* causal_mask_ptr,         // Causal mask values [key_len]
     const int key_len,                      // Sequence length for keys
-    const int keep_window_size              // Maximum window size to keep
+    const int keep_window_size,             // Maximum window size to keep
+    float* row_vals,                        // Shared memory buffer for mask values [key_len]
+    float* sort_keys,                       // Shared memory buffer for sorting keys [key_len]
+    int* sort_indices                       // Shared memory buffer for sorting indices [key_len]
 ) {
     static_assert(Layout::rank == 1, "Tensor must be 1D");
-    extern __shared__ float shared_mem[];
-    float* row_vals    = shared_mem;           // [key_len]
-    float* sort_keys   = row_vals + key_len;   // [key_len]
-    int* sort_indices  = reinterpret_cast<int*>(sort_keys + key_len); // [key_len]
     int tid = threadIdx.x;
 
     // Load zero_hold and initialize row values
@@ -169,10 +168,14 @@ struct DynamicMask {
         Tensor<Engine, Layout> &tensor,
         const Element* zero_hold_states,
         const Element* causal_mask_ptr,
-        const int key_len
+        const int key_len,
+        float* row_vals,
+        float* sort_keys,
+        int* sort_indices
     ) {
         apply_dynamic_mask_1rowblock<Engine, Layout, Element, Is_causal>(
-            tensor, zero_hold_states, causal_mask_ptr, key_len, keep_window_size
+            tensor, zero_hold_states, causal_mask_ptr, key_len, keep_window_size,
+            row_vals, sort_keys, sort_indices
         );
     }
 };
