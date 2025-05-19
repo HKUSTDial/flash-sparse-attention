@@ -291,12 +291,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
     Tensor tZeroHoldgZeroHold = gmem_thr_copy_ZeroHold.partition_S(gZeroHold);
     Tensor tZeroHoldsZeroHold = gmem_thr_copy_ZeroHold.partition_D(sZeroHold);
-    auto tCausalMaskgCausalMask = has_causal_mask ?
-        gmem_thr_copy_CausalMask.partition_S(gCausalMask) : 
-        make_tensor(static_cast<Element*>(nullptr), make_shape(Int<1>{}, Int<1>{}), make_stride(0,0));
-    auto tCausalMasksCausalMask = has_causal_mask ?
-        gmem_thr_copy_CausalMask.partition_D(sCausalMask) : 
-        make_tensor(static_cast<Element*>(nullptr), make_shape(Int<1>{}, Int<1>{}), make_stride(0,0));
+    decltype(gmem_thr_copy_CausalMask.partition_S(gCausalMask)) tCausalMaskgCausalMask;
+    decltype(gmem_thr_copy_CausalMask.partition_D(sCausalMask)) tCausalMasksCausalMask;
+    if (has_causal_mask) {
+        tCausalMaskgCausalMask = gmem_thr_copy_CausalMask.partition_S(gCausalMask);
+        tCausalMasksCausalMask = gmem_thr_copy_CausalMask.partition_D(sCausalMask);
+    }
 
     // Matrix Multiply Accumulate
     typename Kernel_traits::TiledMma tiled_mma;
