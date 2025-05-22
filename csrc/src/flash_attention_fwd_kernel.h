@@ -454,7 +454,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                         auto mask_values_row = sDynamicMaskValues(m_idx, _);
                         auto predicate_k_row = sPredicate(m_idx, _);
                         if (predicate_k_row(k_idx)) {
-                            acc_s(mma, mi, ki) += static_cast<ElementAccum>(mask_values_row(k_idx));
+                            // Scale the attention score before adding mask value, matching Python's behavior
+                            acc_s(mma, mi, ki) = acc_s(mma, mi, ki) * params.scale_softmax + static_cast<ElementAccum>(mask_values_row(k_idx));
+                        } else {
+                            // For positions where mask is 0, set attention score to -INFINITY so they don't contribute to softmax
+                            acc_s(mma, mi, ki) = -INFINITY;
                         }
                     }
                 }
@@ -472,8 +476,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
-            ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(acc_s, acc_o, params.scale_softmax_log2)
-            : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(acc_s, acc_o, params.scale_softmax_log2);
+            ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(acc_s, acc_o, 1.0f)
+            : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(acc_s, acc_o, 1.0f);
         
         // Convert acc_s from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
@@ -567,7 +571,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                         auto mask_values_row = sDynamicMaskValues(m_idx, _);
                         auto predicate_k_row = sPredicate(m_idx, _);
                         if (predicate_k_row(k_idx)) {
-                            acc_s(mma, mi, ki) += static_cast<ElementAccum>(mask_values_row(k_idx));
+                            // Scale the attention score before adding mask value, matching Python's behavior
+                            acc_s(mma, mi, ki) = acc_s(mma, mi, ki) * params.scale_softmax + static_cast<ElementAccum>(mask_values_row(k_idx));
+                        } else {
+                            // For positions where mask is 0, set attention score to -INFINITY so they don't contribute to softmax
+                            acc_s(mma, mi, ki) = -INFINITY;
                         }
                     }
                 }
@@ -583,7 +591,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             cute::cp_async_fence();
         }
 
-        softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/false>(acc_s, acc_o, params.scale_softmax_log2);
+        softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/false>(acc_s, acc_o, 1.0f);
 
         // Convert acc_s from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
