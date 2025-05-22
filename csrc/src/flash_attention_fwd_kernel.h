@@ -572,7 +572,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                     }
                 }
             }
-        };
+        }
 
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
