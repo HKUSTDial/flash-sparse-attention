@@ -15,11 +15,11 @@ namespace FLASH_NAMESPACE {
 constexpr int TOTAL_DIM = 0;
 constexpr int H_DIM = 1;
 constexpr int D_DIM = 2;
+typedef int64_t index_t;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct QKV_params {
-    using index_t = int64_t;
     // The QKV matrices.
     void *__restrict__ q_ptr;   // Query tensor [batch_size, num_heads, query_len, head_dim]
     void *__restrict__ k_ptr;   // Key tensor [batch_size, num_kv_heads, key_len, head_dim]
@@ -46,20 +46,12 @@ struct QKV_params {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct ZeroHold_params {
-    using index_t = int64_t;
-
-    void *__restrict__ zero_hold_ptr;    // Zero-hold states tensor [batch_size, num_kv_heads, query_len, key_len]
+    void *__restrict__ zero_hold_ptr;   // Zero-hold states tensor [batch_size, num_kv_heads, query_len, key_len]
 
     // The stride of the zero-hold states tensor.
-    index_t zero_hold_batch_stride;      // Stride between batches of zero-hold states
-    index_t zero_hold_head_stride;       // Stride between heads of zero-hold states
-    index_t zero_hold_query_stride;      // Stride for the third dimension (query_len) of zero-hold states
-    // Assuming last dim (key_len) has stride 1 for the zero_hold_states_ptr
-
-    index_t causal_mask_batch_stride;       // Stride between batches of causal_mask
-    index_t causal_mask_head_stride;        // Stride for the second dimension (size 1) of causal_mask
-    index_t causal_mask_query_len_stride;   // Stride for the third dimension (query_len) of causal_mask
-    // Assuming last dim (key_len) has stride 1 for the causal_mask_ptr
+    index_t zero_hold_batch_stride;     // Stride between batches of zero-hold states
+    index_t zero_hold_head_stride;      // Stride between heads of zero-hold states
+    index_t zero_hold_row_stride;       // Stride for the third dimension (key_len) of zero-hold states
 
     // The keep window size.
     int keep_window_size;  // Number of tokens to keep in top-k (0 means don't apply top-k)
@@ -73,7 +65,6 @@ struct Flash_fwd_params : public QKV_params, public ZeroHold_params {
     void *k_ptr = nullptr;
     void *v_ptr = nullptr;
     void *zero_hold_ptr = nullptr;
-    void *causal_mask_ptr = nullptr;
 
     // Input tensor for the bias
     void *b_ptr = nullptr;
@@ -207,7 +198,7 @@ struct Flash_bwd_params : public Flash_fwd_params {
     index_t dv_head_stride;
     index_t dzero_hold_batch_stride;
     index_t dzero_hold_head_stride;
-    index_t dzero_hold_query_stride;
+    index_t dzero_hold_row_stride;
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;

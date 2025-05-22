@@ -26,16 +26,16 @@ using namespace cute;
 // Apply causal masking for dynamic mask with 1 row block
 template <typename Element, bool Is_causal>
 __forceinline__ __device__ void apply_causal_mask_1rowblock(
-    float* zero_hold_states,             // Zero-hold states for one query row [key_len]
-    const Element* causal_mask_ptr,      // Causal mask values for one query row [key_len]
-    int key_len                          // Key length
+    float* zero_hold_states,            // Zero-hold states for one query row [key_len]
+    int query_idx,                      // Current query position (row index)
+    int key_len                         // Key length (sequence length for keys)
 ) {
     if constexpr (Is_causal) {
-        if (causal_mask_ptr != nullptr) {
-            #pragma unroll
-            for (int k_idx = 0; k_idx < key_len; ++k_idx) {
-                const bool is_masked = causal_mask_ptr[k_idx] != 0;
-                zero_hold_states[k_idx] = is_masked ? 0.0f : zero_hold_states[k_idx];
+        #pragma unroll
+        for (int k_idx = 0; k_idx < key_len; ++k_idx) {
+            const bool is_masked = k_idx > query_idx;
+            if (is_masked) {
+                zero_hold_states[k_idx] = 0.0f;
             }
         }
     }
@@ -119,18 +119,24 @@ __forceinline__ __device__ void apply_topk_window_selection_1rowblock(
 }
 
 // Apply dynamic mask with 1 row block
-template <typename Engine, typename Layout, typename Element, bool Is_causal>
+template <
+    typename EngineDst, typename LayoutDst,                     // float
+    typename EngineSrc, typename LayoutSrc,                     // half/bfloat16
+    typename EngineSortKey, typename LayoutSortKey,             // float
+    typename EngineSortIdx, typename LayoutSortIdx,             // int
+    typename Element, bool Is_causal
+>
 __forceinline__ __device__ void apply_dynamic_mask_1rowblock(
-    Tensor<Engine, Layout> &tensor,         // Output 1D tensor [key_len]
-    const Element* zero_hold_states,        // Pre-calculated zero_hold states [key_len]
-    const Element* causal_mask_ptr,         // Causal mask values [key_len]
-    const int key_len,                      // Sequence length for keys
-    const int keep_window_size,             // Maximum window size to keep
-    float* row_vals,                        // Shared memory buffer for mask values [key_len]
-    float* sort_keys,                       // Shared memory buffer for sorting keys [key_len]
-    int* sort_indices                       // Shared memory buffer for sorting indices [key_len]
+    Tensor<EngineDst, LayoutDst> &tensor,                       // Output 1D tensor [key_len]
+    Tensor<EngineSrc, LayoutSrc> const &zero_hold_states,       // Pre-calculated zero_hold states [key_len]
+    int query_idx,                                              // Current query position (row index)
+    const int key_len,                                          // Sequence length for keys
+    const int keep_window_size,                                 // Maximum window size to keep
+    Tensor<EngineDst, LayoutDst> &row_vals,                     // Shared memory buffer for mask values [key_len]
+    Tensor<EngineSortKey, LayoutSortKey> &sort_keys,           // Shared memory buffer for sorting keys [key_len]
+    Tensor<EngineSortIdx, LayoutSortIdx> &sort_indices         // Shared memory buffer for sorting indices [key_len]
 ) {
-    static_assert(Layout::rank == 1, "Tensor must be 1D");
+    static_assert(LayoutDst::rank == 1, "Tensor must be 1D");
     int tid = threadIdx.x;
 
     // Load zero_hold and initialize row values
@@ -141,11 +147,19 @@ __forceinline__ __device__ void apply_dynamic_mask_1rowblock(
     __syncthreads();
 
     // Apply causal mask across the row
-    apply_causal_mask_1rowblock<Element, Is_causal>(row_vals, causal_mask_ptr, key_len);
+    apply_causal_mask_1rowblock<Element, Is_causal>(
+        row_vals.data().get(),
+        query_idx, key_len
+    );
     __syncthreads();
 
     // Top-k window selection
-    apply_topk_window_selection_1rowblock<Element>(row_vals, sort_keys, sort_indices, key_len, keep_window_size);
+    apply_topk_window_selection_1rowblock<Element>(
+        row_vals.data().get(),
+        sort_keys.data().get(),
+        sort_indices.data().get(),
+        key_len, keep_window_size
+    );
     __syncthreads();
 
     // Write back to tensor
@@ -156,25 +170,36 @@ __forceinline__ __device__ void apply_dynamic_mask_1rowblock(
 }
 
 // Struct wrapper for dynamic mask application
-template <bool Is_causal>
 struct DynamicMask {
     const int keep_window_size;
 
     __forceinline__ __device__ DynamicMask(const int keep_window_size = 2048)
         : keep_window_size(keep_window_size) {}
 
-    template <typename Engine, typename Layout, typename Element>
+    template <
+        typename EngineDst, typename LayoutDst,
+        typename EngineSrc, typename LayoutSrc,
+        typename EngineSortKey, typename LayoutSortKey,
+        typename EngineSortIdx, typename LayoutSortIdx,
+        typename Element, bool Is_causal
+    >
     __forceinline__ __device__ void apply_mask_1rowblock(
-        Tensor<Engine, Layout> &tensor,
-        const Element* zero_hold_states,
-        const Element* causal_mask_ptr,
+        Tensor<EngineDst, LayoutDst> &tensor,                   // float
+        Tensor<EngineSrc, LayoutSrc> const &zero_hold_states,   // half/bfloat16
+        int query_idx,
         const int key_len,
-        float* row_vals,
-        float* sort_keys,
-        int* sort_indices
+        Tensor<EngineDst, LayoutDst> &row_vals,
+        Tensor<EngineSortKey, LayoutSortKey> &sort_keys,
+        Tensor<EngineSortIdx, LayoutSortIdx> &sort_indices
     ) {
-        apply_dynamic_mask_1rowblock<Engine, Layout, Element, Is_causal>(
-            tensor, zero_hold_states, causal_mask_ptr, key_len, keep_window_size,
+        apply_dynamic_mask_1rowblock<
+            EngineDst, LayoutDst,
+            EngineSrc, LayoutSrc,
+            EngineSortKey, LayoutSortKey,
+            EngineSortIdx, LayoutSortIdx,
+            Element, Is_causal
+        >(
+            tensor, zero_hold_states, query_idx, key_len, keep_window_size,
             row_vals, sort_keys, sort_indices
         );
     }

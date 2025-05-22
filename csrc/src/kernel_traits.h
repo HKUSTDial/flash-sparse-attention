@@ -106,6 +106,7 @@ struct Flash_fwd_kernel_traits : public Base {
         Shape<Int<kBlockN>, Int<kHeadDim>>{}));
 
     // Transposed layouts for V matrix
+    // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
     using SmemLayoutVtransposed = decltype(
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
@@ -124,73 +125,56 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemCopyAtomOaccum = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>;
 
     // Dynamic mask related definitions
-    using SmemLayoutAtomZeroHold = decltype(
+    using SmemLayoutAtomMask = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<_8, Int<kBlockKSmem>>,
                            Stride<Int<kBlockKSmem>, _1>>{}));
                            
-    // Zero-hold states layout [kBlockM, kBlockN]
-    using SmemLayoutZeroHold = decltype(tile_to_shape(
-        SmemLayoutAtomZeroHold{},
+    // layout [kBlockM, kBlockN]
+    using SmemLayoutZeroHold = decltype(tile_to_shape( // Used for sZeroHold (Element type)
+        SmemLayoutAtomMask{},
         Shape<Int<kBlockM>, Int<kBlockN>>{}));
-        
-    static constexpr int kSmemZeroHoldSize = size(SmemLayoutZeroHold{}) * sizeof(Element);
     
-    // Dynamic mask memory allocation constants
-    static constexpr int kMaxKeysPerBlock = kBlockN;
-    static constexpr int kMaskValuesSize = kMaxKeysPerBlock * sizeof(float);
-    static constexpr int kNonZeroIndicesSize = kMaxKeysPerBlock * sizeof(int);
-    static constexpr int kSortKeysSize = kMaxKeysPerBlock * sizeof(float);
-    static constexpr int kSortIndicesSize = kMaxKeysPerBlock * sizeof(int);
-    static constexpr int kDynamicMaskBufferPerQuery = kMaskValuesSize + kNonZeroIndicesSize + kSortKeysSize + kSortIndicesSize;
-    static constexpr int kTotalDynamicMaskBuffer = kBlockM * kDynamicMaskBufferPerQuery;
+    using SmemLayoutDynamicMaskValues = decltype(tile_to_shape( // Used for sDynamicMaskValues (float type)
+        SmemLayoutAtomMask{}, // Layout is fine, type is float
+        Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    
+    using SmemLayoutDynamicMaskSortKeys = decltype(tile_to_shape( // Used for sDynamicMaskSortKeys (float type)
+        SmemLayoutAtomMask{}, // Layout is fine, type is float
+        Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    
+    using SmemLayoutDynamicMaskSortIndices = decltype(tile_to_shape( // Used for sDynamicMaskSortIndices (int type)
+        SmemLayoutAtomMask{}, // Layout is fine, type is int
+        Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    
+    using SmemLayoutNonZeroIndices = decltype(tile_to_shape( // Used for sNonZeroIndices (int type)
+        SmemLayoutAtomMask{}, // Layout is fine, type is int
+        Shape<Int<kBlockM>, Int<kBlockN>>{}));
 
-    // Dynamic mask shared memory layouts
-    using SmemLayoutDynamicMaskValues = decltype(
-        tile_to_shape(
-            composition(Swizzle<kSwizzle, 3, 3>{},
-                        Layout<Shape<_8, Int<kBlockKSmem>>,
-                               Stride<Int<kBlockKSmem>, _1>>{}),
-            Shape<Int<kBlockM>, Int<kBlockN>>{}
-        )
-    );
-
-    using SmemLayoutDynamicMaskSortKeys = decltype(
-        tile_to_shape(
-            composition(Swizzle<kSwizzle, 3, 3>{},
-                        Layout<Shape<_8, Int<kBlockKSmem>>,
-                               Stride<Int<kBlockKSmem>, _1>>{}),
-            Shape<Int<kBlockM>, Int<kBlockN>>{}
-        )
-    );
-
-    using SmemLayoutDynamicMaskSortIndices = decltype(
-        tile_to_shape(
-            composition(Swizzle<kSwizzle, 3, 3>{},
-                        Layout<Shape<_8, Int<kBlockKSmem>>,
-                               Stride<Int<kBlockKSmem>, _1>>{}),
-            Shape<Int<kBlockM>, Int<kBlockN>>{}
-        )
-    );
-
-    using SmemLayoutNonZeroIndices = decltype(
-        tile_to_shape(
-            composition(Swizzle<kSwizzle, 3, 3>{},
-                        Layout<Shape<_8, Int<kBlockKSmem>>,
-                               Stride<Int<kBlockKSmem>, _1>>{}),
-            Shape<Int<kBlockM>, Int<kMaxKeysPerBlock>>{}
-        )
-    );
+    using SmemLayoutPredicate = decltype(tile_to_shape(
+        SmemLayoutAtomMask{},
+        Shape<Int<kBlockM>, Int<kBlockN>>{})); // Used for sPredicate (bool type)
 
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
+    static constexpr int kSmemZeroHoldSize = size(SmemLayoutZeroHold{}) * sizeof(Element);
+    static constexpr int kSmemMaskValuesSize = size(SmemLayoutDynamicMaskValues{}) * sizeof(float);
+    static constexpr int kSmemSortKeysSize = size(SmemLayoutDynamicMaskSortKeys{}) * sizeof(float);
+    static constexpr int kSmemSortIndicesSize = size(SmemLayoutDynamicMaskSortIndices{}) * sizeof(int);
+    static constexpr int kSmemNonZeroIndicesSize = size(SmemLayoutNonZeroIndices{}) * sizeof(int);
+    static constexpr int kSmemPredicateSize = size(SmemLayoutPredicate{}) * sizeof(bool);
     
-    // Base shared memory size without dynamic mask buffer
-    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize;
-    
-    // Total shared memory size including dynamic mask buffer and nonzero indices
-    static constexpr int kSmemSizeWithMask = kSmemSize + kTotalDynamicMaskBuffer;
+    // Base shared memory size with Q and K/V matrices
+    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize)
+            : kSmemQSize                // For Q
+            + kSmemKVSize               // For K and V
+            + kSmemZeroHoldSize         // For sZeroHold
+            + kSmemMaskValuesSize       // For sDynamicMaskValues
+            + kSmemSortKeysSize         // For sDynamicMaskSortKeys
+            + kSmemSortIndicesSize      // For sDynamicMaskSortIndices
+            + kSmemNonZeroIndicesSize   // For sNonZeroIndices
+            + kSmemPredicateSize;       // For sPredicate
 
     // Global memory access configuration
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
@@ -252,9 +236,9 @@ struct Flash_fwd_kernel_traits : public Base {
                         Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per load
 
     // Zero hold global memory operations
-    using GmemLayoutAtomZeroHold = GmemLayoutAtom;
+    using GmemLayoutAtomZeroHold = GmemLayoutAtom; // Re-using GmemLayoutAtom for ZeroHold GMEM copies
     using GmemTiledCopyZeroHold = decltype(
-        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{}, // Assuming Element type for ZeroHold in GMEM
                         GmemLayoutAtomZeroHold{},
                         Layout<Shape<_1, _8>>{})); // Val layout, 8 vals per read
 };
@@ -466,8 +450,8 @@ struct Flash_bwd_kernel_traits : public Base {
     static constexpr int kSmemZeroHoldSize = size(SmemLayoutZeroHold{}) * sizeof(Element);
     
     // Zero hold global memory operations
-    using GmemLayoutAtomZeroHold = GmemLayoutAtom;
-    using GmemTiledCopyZeroHold = decltype(
+    using GmemLayoutAtomZeroHold = GmemLayoutAtom; // Reusing fwd definition
+    using GmemTiledCopyZeroHold = decltype( // Reusing fwd definition
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtomZeroHold{},
                         Layout<Shape<_1, _8>>{})); // Val layout, 8 vals per read

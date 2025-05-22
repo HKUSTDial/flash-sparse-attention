@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright (c) 2024, Tri Dao.
+ * Copyright (c) 2025, Jingze Shi and Tri Dao.
  ******************************************************************************/
 
 #pragma once
@@ -203,7 +203,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     );
 
     // Dynamic mask related shared memory. Use a running char* pointer for robust allocation.
-    char* dynamic_smem_current_ptr = reinterpret_cast<char*>(sV.data().get() + size(sV) * sizeof(Element));
+    char* dynamic_smem_current_ptr = reinterpret_cast<char*>(sV.data().get()) + size(sV) * sizeof(Element);
     Tensor sZeroHold = make_tensor(
         make_smem_ptr(reinterpret_cast<Element*>(dynamic_smem_current_ptr)),    // Element type
         typename Kernel_traits::SmemLayoutZeroHold{}
@@ -235,7 +235,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     dynamic_smem_current_ptr += Kernel_traits::kSmemNonZeroIndicesSize;
     Tensor sPredicate = make_tensor(
-        make_smem_ptr(reinterpret_cast<Element*>(dynamic_smem_current_ptr)),    // Element type
+        make_smem_ptr(reinterpret_cast<bool*>(dynamic_smem_current_ptr)),    // bool type
         typename Kernel_traits::SmemLayoutPredicate{}
     );
 
@@ -266,7 +266,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // Copy Atom retiling
     auto smem_tiled_copy_Q = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(tidx);
+    // if (cute::thread0()) {smem_thr_copy_Q.print_all();}
     Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);
+    // if (cute::thread0()) {print(tSsQ.layout()); printf("\n");}
 
     auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
@@ -280,12 +282,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // auto smem_tiled_copy_ZeroHold = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     // auto smem_thr_copy_ZeroHold = smem_tiled_copy_ZeroHold.get_thread_slice(tidx);
     // Tensor tSsZeroHold = smem_thr_copy_ZeroHold.partition_S(sZeroHold);
-
-    // For sCausalMask -> registers (if needed)
-    // using CausalMaskSmemCopyAtom = typename Kernel_traits::SmemCopyAtom; // Assuming Element type
-    // auto smem_tiled_copy_CausalMask_smem = make_tiled_copy_B(CausalMaskSmemCopyAtom{}, tiled_mma);
-    // auto smem_thr_copy_CausalMask_smem = smem_tiled_copy_CausalMask_smem.get_thread_slice(tidx);
-    // Tensor tSsCausalMask = has_causal_mask ? smem_thr_copy_CausalMask_smem.partition_S(sCausalMask) : empty_smem_tensor_for_copy_D;
 
     // PREDICATES
     Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));   // (BLK_M,BLK_K) -> (blk_m,blk_k)
@@ -319,7 +315,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     // Prologue
     // Init dynamic mask processor
-    DynamicMask<Is_causal> dynamic_mask(params.keep_window_size);
+    DynamicMask dynamic_mask(params.keep_window_size);
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
         gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
@@ -368,442 +364,299 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     FLASH_NAMESPACE::Softmax<2 * size<1>(acc_o)> softmax;
     
-    // 处理需要掩码的块（通常是最后几个块）
+    // For performance reason, we separate out two kinds of iterations:
+    // those that need masking on S, and those that don't.
+    // We need masking on S for the very last block when K and V has length not multiple of kBlockN.
+    // We also need masking on S if it's causal, for the last ceil_div(kBlockM, kBlockN) blocks.
+    // We will have at least 1 "masking" iteration.
+
+    // If not even_N, then seqlen_k might end in the middle of a block. In that case we need to
+    // mask 2 blocks (e.g. when kBlockM == kBlockN), not just 1.
     constexpr int n_masking_steps = (!Is_causal)
         ? 1
         : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
     
     #pragma unroll
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
-        // 等待K数据
+        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
+        clear(acc_s);
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
         
-        // 加载V块到共享内存
-        FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-            gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV,
-            binfo.actual_seqlen_k - n_block * kBlockN
-        );
-        cute::cp_async_fence();
-        
-        // 计算块中实际键的数量
-        const int block_key_len = min(kBlockN, binfo.actual_seqlen_k - n_block * kBlockN);
-        
-        // 为当前块内的每个查询行处理动态掩码
-        const int queries_in_block = min(kBlockM, binfo.actual_seqlen_q - m_block * kBlockM);
-        for (int m_idx = 0; m_idx < queries_in_block; ++m_idx) {
-            // 获取当前查询的全局索引
-            const int query_idx = m_block * kBlockM + m_idx;
-
-            // 获取当前查询行的动态掩码内存
-            Tensor mask_values = sDynamicMaskValues(m_idx, _);
-            Tensor sort_keys = sDynamicMaskSortKeys(m_idx, _);
-            Tensor sort_indices = sDynamicMaskSortIndices(m_idx, _);
-            Tensor nonzero_indices = sNonZeroIndices(m_idx, _);
-            Tensor predicate_k = sPredicate(m_idx, _);
-
-            // 获取当前查询行的zero_hold和causal_mask
-            const Element* zero_hold_row = &sZeroHold[m_idx][0];
-            const Element* causal_mask_row = params.causal_mask_ptr != nullptr ? 
-                &sCausalMask[m_idx][0] : nullptr;
-            
-            // 使用DynamicMask结构体来应用掩码
-            dynamic_mask.apply_mask_1rowblock(
-                mask_values,
-                zero_hold_row,
-                causal_mask_row,
-                block_key_len,
-                mask_values.data().get(),
-                sort_keys.data().get(),
-                reinterpret_cast<int*>(sort_indices.data().get()),
+        // Advance gV
+        if (masking_step > 0) {
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
+        } else {
+            // Clear the smem tiles to account for predicated off loads
+            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
+                gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
             );
-            __syncthreads();
-            
-            // 初始化键的活性状态谓词
-            if (tidx == 0) {
-                // 只需一个线程来初始化整个谓词数组
-                #pragma unroll
-                for (int k_idx = 0; k_idx < kBlockN; ++k_idx) {
-                    predicate_k(k_idx) = false;
-                }
-            }
-            __syncthreads();
+        }
+        cute::cp_async_fence();
 
-            // 找出非零位置
-            int nonzero_count = 0;
-            // 每个线程负责处理部分键位置
-            for (int k_idx = tidx; k_idx < block_key_len; k_idx += blockDim.x) {
-                if (mask_values(k_idx) != 0.0f) {
-                    // 使用原子操作安全地增加计数并获取索引位置
-                    int idx = atomicAdd(&nonzero_count, 1);
-                    if (idx < Kernel_traits::kMaxKeysPerBlock) {
-                        nonzero_indices(idx) = k_idx;
-                        // 标记该键为活跃状态
-                        predicate_k(k_idx) = true;
-                    }
-                }
-            }
-            __syncthreads();
+        // Calculating the actual number of keys in the block
+        const int block_key_len = min(kBlockN, binfo.actual_seqlen_k - n_block * kBlockN);
 
-            // 如果没有非零键，跳过当前查询行
-            if (nonzero_count == 0) {
+        // Process dynamic mask for each query row in the current block
+        for (int m_idx = 0; m_idx < kBlockM; ++m_idx) {
+            // Get the global index of the current query
+            const int query_idx = m_block * kBlockM + m_idx;
+            if (query_idx >= binfo.actual_seqlen_q) {
                 continue;
             }
 
-            // 处理多查询头情况 (MQA/GQA)
-            const int num_queries_per_kv = params.h_h_k_ratio;
-            
-            // 对于每个查询组内的查询头
-            for (int q_group_idx = 0; q_group_idx < num_queries_per_kv; q_group_idx++) {
-                // 创建累加器用于注意力分数
-                Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
-                clear(acc_s);
-                
-                // 执行稀疏矩阵乘法
-                FLASH_NAMESPACE::sparse_gemm_rs(
-                    acc_s(_, m_idx, _),    // 当前查询行的累加器
-                    tSrQ(_, m_idx, _),     // 当前查询
-                    tSrK,                  // 键值
-                    tSsK,                  // 共享内存中的键值
-                    tiled_mma,
-                    smem_tiled_copy_K,
-                    smem_thr_copy_K,
-                    predicate_k            // 活跃键的谓词
-                );
-                
-                // 应用掩码添加（zero_hold状态既是掩码也是要添加到注意力分数的值）
-                for (int s_idx = 0; s_idx < size(acc_s); ++s_idx) {
-                    const int k_idx = get<2>(thr_mma.get_slice_idx(s_idx, acc_s));
-                    if (k_idx < block_key_len && predicate_k(k_idx)) {
-                        acc_s(s_idx) += static_cast<ElementAccum>(mask_values[k_idx]);
-                    }
-                }
-                
-                // 执行softmax并更新输出累加器
-                if (q_group_idx == 0 && n_block == n_block_max - 1) {
-                    softmax.template softmax_rescale_o<true, true>(
-                        acc_s, acc_o, params.scale_softmax_log2);
-                } else {
-                    softmax.template softmax_rescale_o<false, true>(
-                        acc_s, acc_o, params.scale_softmax_log2);
-                }
-                
-                // 将浮点分数转换为Element类型进行输出计算
-                Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
-                Tensor tOrP = make_tensor(
-                    rP.data(), 
-                    FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout())
-                );
-                
-                // 计算该查询头的输出
-                FLASH_NAMESPACE::sparse_gemm_rs(
-                    acc_o,              // 输出累加器
-                    tOrP,               // 注意力权重
-                    tOrVt,              // 值向量
-                    tOsVt,              // 共享内存中的值向量
-                    tiled_mma,
-                    smem_tiled_copy_V,
-                    smem_thr_copy_V,
-                    predicate_k         // 应用相同的谓词来进行稀疏V矩阵乘法
-                );
+            // Apply the dynamic mask to the current query row
+            auto mask_values_row = sDynamicMaskValues(m_idx, _);        // float
+            auto zero_hold_row = sZeroHold(m_idx, _);                   // half/bfloat16
+            auto sort_keys_row = sDynamicMaskSortKeys(m_idx, _);        // float
+            auto sort_indices_row = sDynamicMaskSortIndices(m_idx, _);  // int
+            dynamic_mask.template apply_mask_1rowblock<
+                typename decltype(mask_values_row)::engine_type, typename decltype(mask_values_row)::layout_type,
+                typename decltype(zero_hold_row)::engine_type, typename decltype(zero_hold_row)::layout_type,
+                typename decltype(sort_keys_row)::engine_type, typename decltype(sort_keys_row)::layout_type,
+                typename decltype(sort_indices_row)::engine_type, typename decltype(sort_indices_row)::layout_type,
+                Element, Is_causal
+            >(
+                mask_values_row,
+                zero_hold_row,
+                query_idx,
+                block_key_len,
+                mask_values_row,
+                sort_keys_row,
+                sort_indices_row
+            );
+            __syncthreads();
+            // Find the non-zero positions
+            auto predicate_k_row = sPredicate(m_idx, _);  // bool
+            for (int k_idx = tidx; k_idx < block_key_len; k_idx += blockDim.x) {
+                predicate_k_row(k_idx) = (mask_values_row(k_idx) != 0.0f);
             }
             __syncthreads();
         }
-        
-        // 等待V数据
-        FLASH_NAMESPACE::cp_async_wait<0>();
-        __syncthreads();
-        
-        // 准备加载下一个K块（如果有）
-        if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-                gmem_tiled_copy_QKV, tKgK(_, _, _, n_block-1), tKsK, tKVcKV, tKVpKV,
-                binfo.actual_seqlen_k - (n_block-1) * kBlockN
-            );
-            cute::cp_async_fence();
-            
-            // 加载下一个ZeroHold块到共享内存
-            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-                gmem_tiled_copy_ZeroHold, tZeroHoldgZeroHold(_, _, _, n_block-1), tZeroHoldsZeroHold, tZeroHoldcZeroHold, tZeroHoldpZeroHold,
-                binfo.actual_seqlen_k - (n_block-1) * kBlockN
-            );
-            cute::cp_async_fence();
-            
-            // 加载下一个CausalMask块到共享内存(如果有)
-            if (params.causal_mask_ptr != nullptr) {
-                FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-                    gmem_tiled_copy_CausalMask, tCausalMaskgCausalMask(_, _, _, n_block-1), tCausalMasksCausalMask, tCausalMaskcCausalMask, tCausalMaskpCausalMask,
-                    binfo.actual_seqlen_k - (n_block-1) * kBlockN
-                );
-                cute::cp_async_fence();
+
+        // 执行稀疏矩阵乘法
+        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+            acc_s,
+            tSrQ,
+            tSrK, tSsQ, tSsK,
+            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            smem_thr_copy_Q, smem_thr_copy_K,
+            sPredicate            // 活跃键的谓词
+        );
+                
+        // 应用掩码添加（zero_hold状态既是掩码也是要添加到注意力分数的值）
+        for (int mma = 0; mma < size<0>(acc_s); ++mma) {
+            for (int mi = 0; mi < size<1>(acc_s); ++mi) {
+                for (int ki = 0; ki < size<2>(acc_s); ++ki) {
+                    int m_idx = mi; // 或者根据你的tile映射
+                    int k_idx = ki;
+                    if (m_idx < kBlockM && k_idx < block_key_len) {
+                        auto mask_values_row = sDynamicMaskValues(m_idx, _);
+                        auto predicate_k_row = sPredicate(m_idx, _);
+                        if (predicate_k_row(k_idx)) {
+                            acc_s(mma, mi, ki) += static_cast<ElementAccum>(mask_values_row(k_idx));
+                        }
+                    }
+                }
             }
         }
+
+        FLASH_NAMESPACE::cp_async_wait<0>();
+        __syncthreads();
+        if (n_block > n_block_min) {
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
+            // This cp_async_fence needs to be in the if block, otherwise the synchronization
+            // isn't right and we get race conditions.
+            cute::cp_async_fence();
+        }
+
+        // TODO: when we have key_padding_mask we'll need to Check_inf
+        masking_step == 0
+            ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(acc_s, acc_o, params.scale_softmax_log2)
+            : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(acc_s, acc_o, params.scale_softmax_log2);
         
-        // 提前退出检查
+        // Convert acc_s from fp32 to fp16/bf16
+        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+        if (Return_softmax) {
+            tSgS.data() = tSgS.data() + (-kBlockN);
+        }
+
+        // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
+        // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
+        Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
+        // if (cute::thread0()) { print(tOrP); }
+        FLASH_NAMESPACE::sparse_gemm_rs(
+            acc_o,
+            tOrP, tOrVt, tOsVt,
+            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V,
+            sPredicate         // 应用相同的谓词来进行稀疏V矩阵乘法
+        );
+        // if (cute::thread0()) { print(scores); }
+
+        // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {
             break;
         }
     }
 
-    // 处理不需要掩码的块
+    // These are the iterations where we don't need masking on S
     for (; n_block >= n_block_min; --n_block) {
-        // 等待K数据
+        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
+        clear(acc_s);
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
-        
-        // 加载V块到共享内存
-        FLASH_NAMESPACE::copy<true, Is_even_K>(
-            gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV
-        );
+        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
         cute::cp_async_fence();
-        
-        // 计算块中实际键的数量
+
+        // calculate the actual number of keys in the block
         const int block_key_len = min(kBlockN, binfo.actual_seqlen_k - n_block * kBlockN);
-        const int queries_in_block = min(kBlockM, binfo.actual_seqlen_q - m_block * kBlockM);
-        
-        // 为当前块内的每个查询行处理动态掩码
-        for (int m_idx = 0; m_idx < queries_in_block; ++m_idx) {
-            // 获取当前查询的零状态行
-            Tensor mask_values = sDynamicMaskValues(m_idx, _);
-            Tensor sort_keys = sDynamicMaskSortKeys(m_idx, _);
-            Tensor sort_indices = sDynamicMaskSortIndices(m_idx, _);
-            Tensor nonzero_indices = sNonZeroIndices(m_idx, _);
-            Tensor predicate_k = sPredicate(m_idx, _);
-            
-            // 获取当前查询行的zero_hold
-            const Element* zero_hold_row = &sZeroHold[m_idx][0];
-            
-            // 使用DynamicMask结构体来应用掩码，没有因果掩码
-            dynamic_mask.apply_mask_1rowblock(
-                mask_values,
-                zero_hold_row,
-                nullptr,  // 无因果掩码
-                block_key_len,
-                mask_values.data().get(),
-                sort_keys.data().get(),
-                reinterpret_cast<int*>(sort_indices.data().get())
-            );
-            __syncthreads();
-            
-            // 初始化键的活性状态谓词
-            if (tidx == 0) {
-                // 只需一个线程来初始化整个谓词数组
-                #pragma unroll
-                for (int k_idx = 0; k_idx < kBlockN; ++k_idx) {
-                    predicate_k(k_idx) = false;
-                }
-            }
-            __syncthreads();
 
-            // 找出非零位置
-            int nonzero_count = 0;
-            // 每个线程负责处理部分键位置
-            for (int k_idx = tidx; k_idx < block_key_len; k_idx += blockDim.x) {
-                if (mask_values(k_idx) != 0.0f) {
-                    // 使用原子操作安全地增加计数并获取索引位置
-                    int idx = atomicAdd(&nonzero_count, 1);
-                    if (idx < Kernel_traits::kMaxKeysPerBlock) {
-                        nonzero_indices(idx) = k_idx;
-                        // 标记该键为活跃状态
-                        predicate_k(k_idx) = true;
-                    }
-                }
-            }
-            __syncthreads();
-
-            // 如果没有非零键，跳过当前查询行
-            if (nonzero_count == 0) {
+        // Process dynamic mask for each query row in the current block
+        for (int m_idx = 0; m_idx < kBlockM; ++m_idx) {
+            // Get the global index of the current query
+            const int query_idx = m_block * kBlockM + m_idx;
+            if (query_idx >= binfo.actual_seqlen_q) {
                 continue;
             }
-            
-            // 处理多查询头情况 (MQA/GQA)
-            const int num_queries_per_kv = params.h_h_k_ratio;
-            
-            // 对于每个查询组内的查询头
-            for (int q_group_idx = 0; q_group_idx < num_queries_per_kv; q_group_idx++) {
-                // 创建累加器用于注意力分数
-                Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
-                clear(acc_s);
-                
-                // 执行稀疏矩阵乘法
-                FLASH_NAMESPACE::sparse_gemm_rs(
-                    acc_s(_, m_idx, _),    // 当前查询行的累加器
-                    tSrQ(_, m_idx, _),     // 当前查询
-                    tSrK,                  // 键值
-                    tSsK,                  // 共享内存中的键值
-                    tiled_mma,
-                    smem_tiled_copy_K,
-                    smem_thr_copy_K,
-                    predicate_k            // 活跃键的谓词
-                );
-                
-                // 应用掩码添加
-                for (int s_idx = 0; s_idx < size(acc_s); ++s_idx) {
-                    const int k_idx = get<2>(thr_mma.get_slice_idx(s_idx, acc_s));
-                    if (k_idx < block_key_len && predicate_k(k_idx)) {
-                        acc_s(s_idx) += static_cast<ElementAccum>(mask_values[k_idx]);
-                    }
-                }
-                
-                // 执行softmax并更新输出累加器
-                softmax.template softmax_rescale_o<false, false>(
-                    acc_s, acc_o, params.scale_softmax_log2);
-                
-                // 将浮点分数转换为Element类型进行输出计算
-                Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
-                Tensor tOrP = make_tensor(
-                    rP.data(), 
-                    FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout())
-                );
-                
-                // 计算该查询头的输出
-                FLASH_NAMESPACE::sparse_gemm_rs(
-                    acc_o,              // 输出累加器
-                    tOrP,               // 注意力权重
-                    tOrVt,              // 值向量
-                    tOsVt,              // 共享内存中的值向量
-                    tiled_mma,
-                    smem_tiled_copy_V,
-                    smem_thr_copy_V,
-                    predicate_k         // 应用相同的谓词来进行稀疏V矩阵乘法
-                );
+
+            // Apply the dynamic mask to the current query row
+            auto mask_values_row = sDynamicMaskValues(m_idx, _);        // float
+            auto zero_hold_row = sZeroHold(m_idx, _);                   // half/bfloat16
+            auto sort_keys_row = sDynamicMaskSortKeys(m_idx, _);        // float
+            auto sort_indices_row = sDynamicMaskSortIndices(m_idx, _);  // int
+            dynamic_mask.template apply_mask_1rowblock<
+                typename decltype(mask_values_row)::engine_type, typename decltype(mask_values_row)::layout_type,
+                typename decltype(zero_hold_row)::engine_type, typename decltype(zero_hold_row)::layout_type,
+                typename decltype(sort_keys_row)::engine_type, typename decltype(sort_keys_row)::layout_type,
+                typename decltype(sort_indices_row)::engine_type, typename decltype(sort_indices_row)::layout_type,
+                Element, /*Is_causal=*/false
+            >(
+                mask_values_row,
+                zero_hold_row,
+                query_idx,
+                block_key_len,
+                mask_values_row,
+                sort_keys_row,
+                sort_indices_row
+            );
+            __syncthreads();
+            // Find the non-zero positions
+            auto predicate_k_row = sPredicate(m_idx, _);  // bool
+            for (int k_idx = tidx; k_idx < block_key_len; k_idx += blockDim.x) {
+                predicate_k_row(k_idx) = (mask_values_row(k_idx) != 0.0f);
             }
             __syncthreads();
         }
-        
-        // 等待V数据
+
+        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+            acc_s,
+            tSrQ,
+            tSrK, tSsQ, tSsK,
+            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            smem_thr_copy_Q, smem_thr_copy_K,
+            sPredicate            // 活跃键的谓词
+        );
+
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
-        
         if (n_block > n_block_min) {
-            // 准备加载下一个K块（如果有）
-            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-                gmem_tiled_copy_QKV, tKgK(_, _, _, n_block-1), tKsK, tKVcKV, tKVpKV,
-                binfo.actual_seqlen_k - (n_block-1) * kBlockN
-            );
+            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
+            // This cp_async_fence needs to be in the if block, otherwise the synchronization
+            // isn't right and we get race conditions.
             cute::cp_async_fence();
-            
-            // 加载下一个ZeroHold块到共享内存
-            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-                gmem_tiled_copy_ZeroHold, tZeroHoldgZeroHold(_, _, _, n_block-1), tZeroHoldsZeroHold, tZeroHoldcZeroHold, tZeroHoldpZeroHold,
-                binfo.actual_seqlen_k - (n_block-1) * kBlockN
-            );
-            cute::cp_async_fence();
-            
-            // 加载下一个CausalMask块到共享内存(如果有)
-            if (params.causal_mask_ptr != nullptr) {
-                FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
-                    gmem_tiled_copy_CausalMask, tCausalMaskgCausalMask(_, _, _, n_block-1), tCausalMasksCausalMask, tCausalMaskcCausalMask, tCausalMaskpCausalMask,
-                    binfo.actual_seqlen_k - (n_block-1) * kBlockN
-                );
-                cute::cp_async_fence();
-            }
         }
+
+        softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/false>(acc_s, acc_o, params.scale_softmax_log2);
+
+        // Convert acc_s from fp32 to fp16/bf16
+        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+        if (Return_softmax) {
+            tSgS.data() = tSgS.data() + (-kBlockN);
+        }
+
+        // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
+        // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
+        Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
+
+        FLASH_NAMESPACE::sparse_gemm_rs(
+            acc_o,
+            tOrP, tOrVt, tOsVt,
+            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V,
+            sPredicate         // 应用相同的谓词来进行稀疏V矩阵乘法
+        );
+
     }
+
+    // Epilogue
     
     // 后处理和输出归一化
-    Tensor lse = softmax.template normalize_softmax_lse<false>(
+    Tensor lse = softmax.template normalize_softmax_lse</*Is_dropout=*/false>(
         acc_o, params.scale_softmax, 1.0f
     );
-    
-    // 转换acc_o到Element类型
+
+    // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = FLASH_NAMESPACE::convert_type<Element>(acc_o);
-    
-    // 准备共享内存用于输出
-    Tensor sO = make_tensor(
-        sQ.data(), 
-        typename Kernel_traits::SmemLayoutO{}
-    );
-    
-    // 设置从累加器到共享内存的拷贝
-    auto smem_tiled_copy_O = make_tiled_copy_C(
-        typename Kernel_traits::SmemCopyAtomO{}, 
-        tiled_mma
-    );
+    Tensor sO = make_tensor(sQ.data(), typename Kernel_traits::SmemLayoutO{});    // (SMEM_M,SMEM_N)
+    // Partition sO to match the accumulator partitioning
+    auto smem_tiled_copy_O = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
     auto smem_thr_copy_O = smem_tiled_copy_O.get_thread_slice(tidx);
-    
-    Tensor taccOrO = smem_thr_copy_O.retile_S(rO);
-    Tensor taccOsO = smem_thr_copy_O.partition_D(sO);
-    
-    // 确保共享内存区域可以安全使用
-    if (Kernel_traits::Share_Q_K_smem) {
-        __syncthreads();
-    }
-    
-    // 拷贝输出到共享内存
+    Tensor taccOrO = smem_thr_copy_O.retile_S(rO);        // ((Atom,AtomNum), MMA_M, MMA_N)
+    Tensor taccOsO = smem_thr_copy_O.partition_D(sO);     // ((Atom,AtomNum),PIPE_M,PIPE_N)
+
+    // sO has the same size as sQ, so we don't need to sync here.
+    if (Kernel_traits::Share_Q_K_smem) { __syncthreads(); }
+
     cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
-    
-    // 设置全局内存输出张量
+
     Tensor mO = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.o_ptr)
-            + binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)),
+        make_gmem_ptr(reinterpret_cast<Element*>(params.o_ptr) + binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)),
         make_shape(binfo.actual_seqlen_q, params.h, params.d),
         make_stride(params.o_row_stride, params.o_head_stride, _1{})
     );
-    
     Tensor gO = local_tile(
-        mO(_, bidh, _), 
+        mO(_, bidh, _),
         Shape<Int<kBlockM>, Int<kHeadDim>>{},
         make_coord(m_block, 0)
-    );
-    
-    Tensor gLSE = get_lse_tile<ElementAccum, Params, kBlockM, Is_even_MN>(
-        params, bidb, bidh, m_block, binfo
-    );
-    
-    // 设置从共享内存到全局内存的拷贝
+    );  // (kBlockM, kHeadDim)
+    Tensor gLSE = get_lse_tile<ElementAccum, Params, kBlockM, Is_even_MN>(params, bidb, bidh, m_block, binfo);
+
     typename Kernel_traits::GmemTiledCopyO gmem_tiled_copy_O;
     auto gmem_thr_copy_O = gmem_tiled_copy_O.get_thread_slice(tidx);
-    
-    Tensor tOsO = gmem_thr_copy_O.partition_S(sO);
+    Tensor tOsO = gmem_thr_copy_O.partition_S(sO);        // ((Atom,AtomNum),ATOM_M,ATOM_N)
     Tensor tOgO = gmem_thr_copy_O.partition_D(gO);
-    
+
     __syncthreads();
-    
-    // 从共享内存拷贝到寄存器，准备写入全局内存
+
     Tensor tOrO = make_tensor<Element>(shape(tOgO));
     cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
-    
-    // 设置输出的谓词
-    Tensor cO = make_identity_tensor(make_shape(size<0>(sO), size<1>(sO)));
-    Tensor tOcO = gmem_thr_copy_O.partition_D(cO);
-    Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgO)));
-    
-    if (!Is_even_K) {
-        #pragma unroll
-        for (int k = 0; k < size(tOpO); ++k) {
-            tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d;
-        }
-    }
-    
-    // 写入输出到全局内存
-    FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, false, false>(
-        gmem_tiled_copy_O, 
-        tOrO, 
-        tOgO, 
-        tOcO, 
-        tOpO, 
-        binfo.actual_seqlen_q - m_block * kBlockM
-    );
-    
-    // 写入LSE值到全局内存
-    Tensor caccO = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});
-    Tensor taccOcO = thr_mma.partition_C(caccO);
+
+    Tensor caccO = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    Tensor taccOcO = thr_mma.partition_C(caccO);                           // (MMA,MMA_M,MMA_K)
     static_assert(decltype(size<0>(taccOcO))::value == 4);
-    
-    // 将张量转换为(2,2)形式，然后只获取行索引
+    // Convert to ((2, 2), MMA_M, MMA_K) then take only the row indices.
     Tensor taccOcO_row = logical_divide(taccOcO, Shape<_2>{})(make_coord(0, _), _, 0);
-    CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));
-    
-    // 只有第一个线程写入LSE值
+    CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));                     // MMA_M
     if (get<1>(taccOcO_row(0)) == 0) {
         #pragma unroll
         for (int mi = 0; mi < size(lse); ++mi) {
-            if (m_block * kBlockM + get<0>(taccOcO_row(mi)) < binfo.actual_seqlen_q) {
-                gLSE(get<0>(taccOcO_row(mi))) = lse(mi);
-            }
+            const int row = get<0>(taccOcO_row(mi));
+            if (row < binfo.actual_seqlen_q - m_block * kBlockM) { gLSE(row) = lse(mi); }
         }
     }
+
+    // Construct identity layout for sO
+    Tensor cO = make_identity_tensor(make_shape(size<0>(sO), size<1>(sO)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    // Repeat the partitioning with identity layouts
+    Tensor tOcO = gmem_thr_copy_O.partition_D(cO);                           // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgO)));
+    if (!Is_even_K) {
+        #pragma unroll
+        for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
+    }
+    // Clear_OOB_K must be false since we don't want to write zeros to gmem
+    FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
+        gmem_tiled_copy_O, tOrO, tOgO, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
+    );
 }
 
 template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, typename Params>
