@@ -455,9 +455,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                         auto predicate_k_row = sPredicate(m_idx, _);
                         if (predicate_k_row(k_idx)) {
                             // First scale the attention score
-                            ElementAccum scaled_score = acc_s(mma, mi, ki) * params.scale_softmax;
-                            // Then add the mask value, matching Python's behavior
-                            acc_s(mma, mi, ki) = scaled_score + static_cast<ElementAccum>(mask_values_row(k_idx));
+                            acc_s(mma, mi, ki) = acc_s(mma, mi, ki) * params.scale_softmax + static_cast<ElementAccum>(mask_values_row(k_idx));
                         } else {
                             // For positions where mask is 0, set attention score to -INFINITY so they don't contribute to softmax
                             acc_s(mma, mi, ki) = -INFINITY;
@@ -574,9 +572,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                         auto predicate_k_row = sPredicate(m_idx, _);
                         if (predicate_k_row(k_idx)) {
                             // First scale the attention score
-                            ElementAccum scaled_score = acc_s(mma, mi, ki) * params.scale_softmax;
-                            // Then add the mask value, matching Python's behavior
-                            acc_s(mma, mi, ki) = scaled_score + static_cast<ElementAccum>(mask_values_row(k_idx));
+                            acc_s(mma, mi, ki) = acc_s(mma, mi, ki) * params.scale_softmax + static_cast<ElementAccum>(mask_values_row(k_idx));
                         } else {
                             // For positions where mask is 0, set attention score to -INFINITY so they don't contribute to softmax
                             acc_s(mma, mi, ki) = -INFINITY;
