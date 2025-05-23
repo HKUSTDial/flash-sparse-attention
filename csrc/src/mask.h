@@ -26,7 +26,7 @@ using namespace cute;
 // Apply causal masking for dynamic mask with 1 row block
 template <typename Element, bool Is_causal>
 __forceinline__ __device__ void apply_causal_mask_1rowblock(
-    float* zero_hold_states,            // Zero-hold states for one query row [key_len]
+    Element* zero_hold_states,          // Zero-hold states for one query row [key_len]
     int query_idx,                      // Current query position (row index)
     int key_len                         // Key length (sequence length for keys)
 ) {
@@ -36,7 +36,7 @@ __forceinline__ __device__ void apply_causal_mask_1rowblock(
         for (int k_idx = tid; k_idx < key_len; k_idx += blockDim.x) {
             const bool is_masked = k_idx > query_idx;
             if (is_masked) {
-                zero_hold_states[k_idx] = 0.0f;
+                zero_hold_states[k_idx] = Element(0.0f);
             }
         }
     }
@@ -45,7 +45,7 @@ __forceinline__ __device__ void apply_causal_mask_1rowblock(
 // Apply top-k selection for dynamic mask with 1 row block
 template <typename Element>
 __forceinline__ __device__ void apply_topk_window_selection_1rowblock(
-    float* zero_hold_states,                // Zero-hold states for in-place modification [key_len] 
+    Element* zero_hold_states,              // Zero-hold states for in-place modification [key_len]
     int* sort_indices,                      // Shared memory for sorting indices [key_len]
     const int key_len,                      // Key length
     const int keep_window_size              // Maximum window size to keep
@@ -76,8 +76,9 @@ __forceinline__ __device__ void apply_topk_window_selection_1rowblock(
         #pragma unroll
         for (int k_idx = window_idx + tid; k_idx < key_len; k_idx += blockDim.x) {
             int actual_idx = sort_indices[k_idx];
-            if (zero_hold_states[actual_idx] > thread_max) {
-                thread_max = zero_hold_states[actual_idx];
+            float current_val = static_cast<float>(zero_hold_states[actual_idx]);
+            if (current_val > thread_max) {
+                thread_max = current_val;
                 thread_max_idx = k_idx;
             }
         }
@@ -108,34 +109,19 @@ __forceinline__ __device__ void apply_topk_window_selection_1rowblock(
         }
         __syncthreads();
     }
-    
-    // Create temporary buffer to store top-k values
-    __shared__ float s_topk_vals[BLOCK_THREADS * ITEMS_PER_THREAD];
-    float* topk_vals = s_topk_vals;
-    
-    // Store top-k values
-    #pragma unroll
-    for (int window_idx = tid; window_idx < keep_window_size && window_idx < key_len; window_idx += blockDim.x) {
-        int idx = sort_indices[window_idx];
-        if (idx >= 0 && idx < key_len) {
-            topk_vals[window_idx] = zero_hold_states[idx];
-        }
-    }
-    __syncthreads();
-    
-    // Reset tensor to zero
-    #pragma unroll
-    for (int k_idx = tid; k_idx < key_len; k_idx += blockDim.x) {
-        zero_hold_states[k_idx] = 0.0f;
-    }
-    __syncthreads();
-    
+
     // Scatter top-k values back to original positions
     #pragma unroll
-    for (int window_idx = tid; window_idx < keep_window_size && window_idx < key_len; window_idx += blockDim.x) {
-        int idx = sort_indices[window_idx];
-        if (idx >= 0 && idx < key_len) {
-            zero_hold_states[idx] = topk_vals[window_idx];
+    for (int k_idx = tid; k_idx < key_len; k_idx += blockDim.x) {
+        bool is_top_k = false;
+        for (int window_idx = 0; window_idx < keep_window_size && window_idx < key_len; ++window_idx) {
+            if (sort_indices[window_idx] == k_idx) {
+                is_top_k = true;
+                break;
+            }
+        }
+        if (!is_top_k) {
+            zero_hold_states[k_idx] = Element(0.0f);
         }
     }
     __syncthreads();
@@ -143,7 +129,7 @@ __forceinline__ __device__ void apply_topk_window_selection_1rowblock(
 
 // Apply dynamic mask with 1 row block
 template <
-    typename Engine, typename Layout,               // float tensor (in-place)
+    typename Engine, typename Layout,               // tensor (in-place)
     typename Element, bool Is_causal
 >
 __forceinline__ __device__ void apply_dynamic_mask_1rowblock(
@@ -183,7 +169,7 @@ struct DynamicMask {
         typename Element, bool Is_causal
     >
     __forceinline__ __device__ void apply_mask_1rowblock(
-        Tensor<Engine, Layout> &zero_hold_states,   // In-place tensor (float)
+        Tensor<Engine, Layout> &zero_hold_states,   // In-place tensor
         int query_idx,                              // Query index
         int key_len,                                // Key length
         int* sort_indices                           // Sort indices buffer (int only)
