@@ -18,6 +18,7 @@
 #include "utils.h"
 #include "softmax.h"
 #include "mask.h"
+#include "dropout.h"
 
 namespace FLASH_NAMESPACE {
 
@@ -45,7 +46,7 @@ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bid
         return local_tile(mLSE_slice, Shape<Int<kBlockM>>{}, make_coord(m_block));
 }
 
-template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, typename Params>
+template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
 
     using Element = typename Kernel_traits::Element;
@@ -61,6 +62,18 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int kBlockM = Kernel_traits::kBlockM;    // query_block_len
     constexpr int kBlockN = Kernel_traits::kBlockN;    // key_block_len
     constexpr int kHeadDim = Kernel_traits::kHeadDim;  // head_dim
+    constexpr int kNWarps = Kernel_traits::kNWarps;
+
+    auto seed_offset = at::cuda::philox::unpack(params.philox_args);
+    FLASH_NAMESPACE::Dropout dropout(std::get<0>(seed_offset), std::get<1>(seed_offset), params.p_dropout_in_uint8_t,
+                           bidb, bidh, tidx, params.h);
+
+    // Save seed and offset for backward, before any early exiting. Otherwise the 0-th thread block might
+    // exit early and no one saves the rng states.
+    if (Is_dropout && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && tidx == 0) {
+        params.rng_state[0] = std::get<0>(seed_offset);
+        params.rng_state[1] = std::get<1>(seed_offset);
+    }
 
     // Check if there are any queries to process in the block
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
@@ -74,6 +87,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             n_block_max,
             cute::ceil_div((m_block + 1) * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q, kBlockN)
         );
+        // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+        //     printf("m_block = %d, n_block_max = %d\n", m_block, n_block_max);
+        // }
     }
 
     // We exit early and write 0 to gO and gLSE. This also covers the case where actual_seqlen_k == 0.
@@ -126,7 +142,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
-    bool has_causal_mask = params.causal_mask_ptr != nullptr && Is_causal;
 
     // Golobal memory tensor configuration
     Tensor mQ = make_tensor(
@@ -139,7 +154,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Shape<Int<kBlockM>, Int<kHeadDim>>{},
         make_coord(m_block, 0)
     );  // (kBlockM, kHeadDim)
-                           
     Tensor mK = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element*>(params.k_ptr) + binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb)),
         make_shape(binfo.actual_seqlen_k, params.h_k, params.d),
@@ -149,8 +163,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         mK(_, bidh / params.h_h_k_ratio, _),
         Shape<Int<kBlockN>, Int<kHeadDim>>{},
         make_coord(_, 0)
-    );  // (kBlockN, kHeadDim, nblocksN)
-                           
+    );  // (kBlockN, kHeadDim, nblocksN)                 
     Tensor mV = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element*>(params.v_ptr) + binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb)),
         make_shape(binfo.actual_seqlen_k, params.h_k, params.d),
@@ -161,7 +174,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Shape<Int<kBlockN>, Int<kHeadDim>>{},
         make_coord(_, 0)
     );  // (kBlockN, kHeadDim, nblocksN)
-
     Tensor gP = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element *>(params.p_ptr) + row_offset_p),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
@@ -201,7 +213,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         sV.data().get(),
         typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{}
     );
-
     // Dynamic mask related shared memory. Use a running char* pointer for robust allocation.
     char* dynamic_smem_current_ptr = reinterpret_cast<char*>(sV.data().get()) + size(sV) * sizeof(Element);
     Tensor sZeroHold = make_tensor(
@@ -269,11 +280,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // if (cute::thread0()) {smem_thr_copy_Q.print_all();}
     Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);
     // if (cute::thread0()) {print(tSsQ.layout()); printf("\n");}
-
     auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
     Tensor tSsK = smem_thr_copy_K.partition_S(sK);
-
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
@@ -443,7 +452,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             smem_thr_copy_Q, smem_thr_copy_K,
             sPredicate            // Active key predicates
         );
-                
+        // if (cute::thread0()) { print(acc_s); }
+        if constexpr (Is_softcap){
+            FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
+        }
+
         // Apply mask values to attention scores (zero_hold states contain mask values to add to attention scores)
         for (int mma = 0; mma < size<0>(acc_s); ++mma) {
             for (int mi = 0; mi < size<1>(acc_s); ++mi) {
@@ -478,13 +491,24 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
-            ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(acc_s, acc_o, 1.0f)
-            : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(acc_s, acc_o, 1.0f);
+            ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(acc_s, acc_o, params.scale_softmax_log2)
+            : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(acc_s, acc_o, params.scale_softmax_log2);
         
         // Convert acc_s from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+        int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
+        int block_col_idx = n_block * (kBlockN / 32);
         if (Return_softmax) {
+            Tensor rP_drop = make_fragment_like(rP);
+            cute::copy(rP, rP_drop);
+            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
+                rP_drop, block_row_idx, block_col_idx, kNWarps
+            );
+            cute::copy(rP_drop, tSgS);
             tSgS.data() = tSgS.data() + (-kBlockN);
+        }
+        if (Is_dropout) {
+            dropout.apply_dropout(rP, block_row_idx, block_col_idx, kNWarps);
         }
 
         // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
@@ -501,6 +525,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {
+            --n_block;
             break;
         }
     }
@@ -562,6 +587,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             smem_thr_copy_Q, smem_thr_copy_K,
             sPredicate            // Active key predicates
         );
+        if constexpr (Is_softcap){
+            FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
+        }
 
         // Apply mask values to attention scores (zero_hold states contain mask values to add to attention scores)
         for (int mma = 0; mma < size<0>(acc_s); ++mma) {
@@ -595,19 +623,30 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             cute::cp_async_fence();
         }
 
-        softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/false>(acc_s, acc_o, 1.0f);
+        softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/false>(acc_s, acc_o, params.scale_softmax_log2);
 
         // Convert acc_s from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+        int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
+        int block_col_idx = n_block * (kBlockN / 32);
         if (Return_softmax) {
+            Tensor rP_drop = make_fragment_like(rP);
+            cute::copy(rP, rP_drop);
+            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
+                rP_drop, block_row_idx, block_col_idx, kNWarps
+            );
+            cute::copy(rP_drop, tSgS);
             tSgS.data() = tSgS.data() + (-kBlockN);
+        }
+        if (Is_dropout) {
+            dropout.apply_dropout(rP, block_row_idx, block_col_idx, kNWarps);
         }
 
         // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        FLASH_NAMESPACE::sparse_gemm_rs(
+        FLASH_NAMESPACE::gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt,
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V,
@@ -617,11 +656,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     }
 
     // Epilogue
-    
-    // 后处理和输出归一化
-    Tensor lse = softmax.template normalize_softmax_lse</*Is_dropout=*/false>(
-        acc_o, params.scale_softmax, 1.0f
-    );
+
+    Tensor lse = softmax.template normalize_softmax_lse<Is_dropout>(acc_o, params.scale_softmax, params.rp_dropout);
 
     // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = FLASH_NAMESPACE::convert_type<Element>(acc_o);
@@ -688,7 +724,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     );
 }
 
-template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, typename Params>
+template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn(const Params &params) {
     const int m_block = blockIdx.x;
     // The block index for the batch.
@@ -697,7 +733,7 @@ inline __device__ void compute_attn(const Params &params) {
     const int bidh = blockIdx.z;
 
     // 调用主要的计算函数
-    compute_attn_1rowblock<Kernel_traits, Is_causal, Is_even_MN, Is_even_K, Return_softmax>(params, bidb, bidh, m_block);
+    compute_attn_1rowblock<Kernel_traits, Is_dropout, Is_causal, Is_even_MN, Is_even_K, Is_softcap, Return_softmax>(params, bidb, bidh, m_block);
 }
 
 }  // namespace FLASH_NAMESPACE
