@@ -23,156 +23,6 @@ namespace FLASH_NAMESPACE {
 
 using namespace cute;
 
-// Apply causal masking for dynamic mask with 1 row block
-template <typename TensorZeroHold, typename TensorActiveIndices, bool Is_causal>
-__forceinline__ __device__ void apply_causal_mask_1rowblock(
-    TensorZeroHold zero_hold_states,    // Zero-hold states tensor view for one row
-    TensorActiveIndices active_indices,      // Active indices tensor view for one row
-    int query_idx,                              // Current query position (row index)
-    int key_len                                 // Key length (sequence length for keys)
-) {
-    static_assert(TensorZeroHold::rank == 1, "Tensors must be 1D");
-    static_assert(TensorActiveIndices::rank == 1, "Tensors must be 1D");
-    using Element = typename TensorZeroHold::value_type;
-
-    if constexpr (Is_causal) {
-        const int tid = threadIdx.x;
-        const int stride = blockDim.x;
-        #pragma unroll
-        for (int k_idx = tid; k_idx < key_len; k_idx += stride) {
-            const bool is_masked = k_idx > query_idx;
-            if (is_masked) {
-                zero_hold_states(k_idx) = Element(0.0f);
-                active_indices(k_idx) = false;
-            }
-        }
-    }
-}
-
-// Apply top-k selection for dynamic mask with 1 row block
-template <typename TensorZeroHold, typename TensorActiveIndices, int BlockThreads>
-__forceinline__ __device__ void apply_topk_window_selection_1rowblock(
-    TensorZeroHold zero_hold_states,              // Zero-hold states for in-place modification [key_len]
-    TensorActiveIndices active_indices,                   // Active indices to mark selected positions [key_len]
-    const int key_len,                                      // Key length
-    const int keep_window_size                              // Maximum window size to keep
-) {
-    static_assert(TensorZeroHold::rank == 1, "Tensors must be 1D");
-    static_assert(TensorActiveIndices::rank == 1, "Tensors must be 1D");
-    using Element = typename TensorZeroHold::value_type;
-
-    const int tid = threadIdx.x;
-    const int stride = blockDim.x;
-
-    // Skip if no reduction needed
-    if (key_len <= keep_window_size) {
-        #pragma unroll
-        for (int k_idx = tid; k_idx < key_len; k_idx += stride) {
-            active_indices(k_idx) = (static_cast<float>(zero_hold_states(k_idx)) != 0.0f);
-        }
-        return;
-    }
-    
-    // Shared memory for reduction
-    __shared__ float s_max_vals[BlockThreads];
-    __shared__ int s_max_indices[BlockThreads];
-    
-    // Initialize active_indices to false
-    #pragma unroll
-    for (int k_idx = tid; k_idx < key_len; k_idx += stride) {
-        active_indices(k_idx) = false;
-    }
-    __syncthreads();
-    
-    // Iteratively select top-k elements
-    for (int selected_count = 0; selected_count < keep_window_size && selected_count < key_len; ++selected_count) {
-        float thread_max = -FLT_MAX;
-        int thread_max_idx = -1;
-        
-        // Find maximum among non-selected elements
-        #pragma unroll
-        for (int k_idx = tid; k_idx < key_len; k_idx += stride) {
-            if (!active_indices(k_idx)) {  // Not yet selected
-                float current_val = static_cast<float>(zero_hold_states(k_idx));
-                if (current_val > thread_max) {
-                    thread_max = current_val;
-                    thread_max_idx = k_idx;
-                }
-            }
-        }
-
-        // Store thread-local maximum
-        s_max_vals[tid] = thread_max;
-        s_max_indices[tid] = thread_max_idx;
-        __syncthreads();
-        
-        // Parallel reduction to find global maximum
-        #pragma unroll
-        for (int reduction_stride = BlockThreads / 2; reduction_stride > 0; reduction_stride >>= 1) {
-            if (tid < reduction_stride && s_max_vals[tid] < s_max_vals[tid + reduction_stride]) {
-                s_max_vals[tid] = s_max_vals[tid + reduction_stride];
-                s_max_indices[tid] = s_max_indices[tid + reduction_stride];
-            }
-            __syncthreads();
-        }
-        
-        // Mark the selected index as active
-        if (tid == 0 && s_max_indices[0] >= 0) {
-            active_indices[s_max_indices[0]] = true;
-        }
-        __syncthreads();
-    }
-
-    // Clear non-selected values
-    #pragma unroll
-    for (int k_idx = tid; k_idx < key_len; k_idx += stride) {
-        if (!active_indices(k_idx)) {
-            zero_hold_states(k_idx) = Element(0.0f);
-        }
-    }
-}
-
-// Apply dynamic mask with 1 row block
-template <typename TensorZeroHold, typename TensorActiveIndices, bool Is_causal, int BlockThreads>
-__forceinline__ __device__ void apply_dynamic_mask_1rowblock(
-    TensorZeroHold zero_hold_states,            // Zero-hold states tensor view
-    TensorActiveIndices active_indices,         // Active indices tensor view
-    int query_idx,                              // Current query position (row index)
-    const int key_len,                          // Sequence length for keys
-    const int keep_window_size                  // Maximum window size to keep
-) {
-    static_assert(TensorZeroHold::rank == 1, "Tensors must be 1D");
-    static_assert(TensorActiveIndices::rank == 1, "Tensors must be 1D");
-
-    // Initialize all indices as active
-    const int tid = threadIdx.x;
-    const int stride = blockDim.x;
-
-    #pragma unroll
-    for (int k_idx = tid; k_idx < key_len; k_idx += stride) {
-        active_indices(k_idx) = true;
-    }
-    __syncthreads();
-
-    // Apply causal mask across the row
-    apply_causal_mask_1rowblock<TensorZeroHold, TensorActiveIndices, Is_causal>(
-        zero_hold_states,
-        active_indices,
-        query_idx, 
-        key_len
-    );
-    __syncthreads();
-
-    // Top-k window selection
-    apply_topk_window_selection_1rowblock<TensorZeroHold, TensorActiveIndices, BlockThreads>(
-        zero_hold_states,
-        active_indices,
-        key_len, 
-        keep_window_size
-    );
-    __syncthreads();
-}
-
 // Struct wrapper for dynamic mask application
 template <bool Is_causal, int BlockThreads>
 struct DynamicMask {
@@ -263,10 +113,8 @@ struct DynamicMask {
                 // Temporarily mark all active elements as inactive for selection
                 #pragma unroll
                 for (int nj = 0; nj < size<1, 1>(zero_hold); ++nj) {
-                    const int col_idx_base = col_idx_offset + nj * 8;
                     #pragma unroll
                     for (int j = 0; j < size<1, 0>(zero_hold); ++j) {
-                        const int col_idx = col_idx_base + j;
                         auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
                         if (active_indices(coord)) {
                             active_indices(coord) = false;
@@ -339,10 +187,8 @@ struct DynamicMask {
                 // Clear non-selected values using the same loop structure
                 #pragma unroll
                 for (int nj = 0; nj < size<1, 1>(zero_hold); ++nj) {
-                    const int col_idx_base = col_idx_offset + nj * 8;
                     #pragma unroll
                     for (int j = 0; j < size<1, 0>(zero_hold); ++j) {
-                        const int col_idx = col_idx_base + j;
                         auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
                         if (!active_indices(coord)) {
                             zero_hold(coord) = ElementZeroHold(-INFINITY);
@@ -395,17 +241,15 @@ struct DynamicMask {
                     for (int j = 0; j < size<1, 0>(tensor); ++j) {
                         const int col_idx = col_idx_base + j;
                         auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-
-                        // 边界检查
+                        // bounds checking for row_idx and col_idx
                         bool valid = (row_idx < max_seqlen_q) && (col_idx < max_seqlen_k);
                         bool is_active = valid && active_indices(coord);
-                        
                         if (is_active) {
-                            // 应用 scaling 和 zero_hold mask
+                            // Apply scaling and zero-hold
                             auto zero_hold_val = zero_hold(coord);
                             tensor(coord) = tensor(coord) * scale_softmax + zero_hold_val;
                         } else {
-                            // 非活跃位置或超出边界设为 -INFINITY
+                            // Non-active positions or out-of-bounds set to -INFINITY
                             tensor(coord) = -INFINITY;
                         }
                     }
