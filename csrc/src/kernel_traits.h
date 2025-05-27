@@ -12,10 +12,6 @@
 
 using namespace cute;
 
-/**
- * Base traits class for Flash Attention kernels
- * Contains common type definitions and architecture-specific settings
- */
 template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=cutlass::half_t>
 struct Flash_kernel_traits {
 
@@ -49,11 +45,7 @@ struct Flash_kernel_traits {
 #endif
 };
 
-/**
- * Forward pass kernel traits
- * Specializes the base traits for forward propagation with additional settings
- * Supports dynamic mask attention
- */
+// If Share_Q_K_smem is true, that forces Is_Q_in_regs to be true
 template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, bool Is_Q_in_regs_=false, bool Share_Q_K_smem_=false, typename elem_type=cutlass::half_t,
          typename Base=Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type> >
 struct Flash_fwd_kernel_traits : public Base {
@@ -64,30 +56,24 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemCopyAtom = typename Base::SmemCopyAtom;
     using SmemCopyAtomTransposed = typename Base::SmemCopyAtomTransposed;
 
-    // If Share_Q_K_smem is true, that forces Is_Q_in_regs to be true
     static constexpr bool Share_Q_K_smem = Share_Q_K_smem_;
     static constexpr bool Is_Q_in_regs = Is_Q_in_regs_ || Share_Q_K_smem;
 
-    // Thread configuration
+    // The number of threads.
     static constexpr int kNWarps = kNWarps_;
     static constexpr int kNThreads = kNWarps * 32;
 
-    // Block dimensions
     static constexpr int kBlockM = kBlockM_;
     static constexpr int kBlockN = kBlockN_;
     static constexpr int kHeadDim = kHeadDim_;
-    
     static_assert(kHeadDim % 32 == 0);
-    
-    // Memory layout constants
     static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;
 
-    // Define the MMA (matrix-multiply-accumulate) tiled structure
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<kNWarps>,_1,_1>>,  // Thread group layout
+        Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
         Tile<Int<16 * kNWarps>, _16, _16>>;
 
     // Shared memory layout for Q matrix
@@ -100,12 +86,10 @@ struct Flash_fwd_kernel_traits : public Base {
         SmemLayoutAtomQ{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
 
-    // Shared memory layout for K and V matrices
     using SmemLayoutKV = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
         Shape<Int<kBlockN>, Int<kHeadDim>>{}));
 
-    // Transposed layouts for V matrix
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
     using SmemLayoutVtransposed = decltype(
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
@@ -119,90 +103,41 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemLayoutO = decltype(tile_to_shape(
         SmemLayoutAtomO{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
-    
-    // Copy atoms for output
     using SmemCopyAtomO = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
     using SmemCopyAtomOaccum = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>;
-
-    // Dynamic mask related definitions
-    using SmemLayoutAtomMask = decltype(
-        composition(Swizzle<kSwizzle, 3, 3>{},
-                    Layout<Shape<_8, Int<kBlockKSmem>>,
-                           Stride<Int<kBlockKSmem>, _1>>{}));
-                           
-    // layout [kBlockM, kBlockN]
-    using SmemLayoutZeroHold = decltype(tile_to_shape( // Used for sZeroHold (Element type)
-        SmemLayoutAtomMask{},
-        Shape<Int<kBlockM>, Int<kBlockN>>{}));
-    
-    using SmemLayoutDynamicMaskValues = decltype(tile_to_shape( // Used for sDynamicMaskValues (float type)
-        SmemLayoutAtomMask{}, // Layout is fine, type is float
-        Shape<Int<kBlockM>, Int<kBlockN>>{}));
-    
-    using SmemLayoutDynamicMaskSortKeys = decltype(tile_to_shape( // Used for sDynamicMaskSortKeys (float type)
-        SmemLayoutAtomMask{}, // Layout is fine, type is float
-        Shape<Int<kBlockM>, Int<kBlockN>>{}));
-    
-    using SmemLayoutDynamicMaskSortIndices = decltype(tile_to_shape( // Used for sDynamicMaskSortIndices (int type)
-        SmemLayoutAtomMask{}, // Layout is fine, type is int
-        Shape<Int<kBlockM>, Int<kBlockN>>{}));
-    
-    using SmemLayoutNonZeroIndices = decltype(tile_to_shape( // Used for sNonZeroIndices (int type)
-        SmemLayoutAtomMask{}, // Layout is fine, type is int
-        Shape<Int<kBlockM>, Int<kBlockN>>{}));
-
-    using SmemLayoutPredicate = decltype(tile_to_shape(
-        SmemLayoutAtomMask{},
-        Shape<Int<kBlockM>, Int<kBlockN>>{})); // Used for sPredicate (bool type)
 
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemZeroHoldSize = size(SmemLayoutZeroHold{}) * sizeof(Element);
-    static constexpr int kSmemMaskValuesSize = size(SmemLayoutDynamicMaskValues{}) * sizeof(float);
-    static constexpr int kSmemSortKeysSize = size(SmemLayoutDynamicMaskSortKeys{}) * sizeof(float);
-    static constexpr int kSmemSortIndicesSize = size(SmemLayoutDynamicMaskSortIndices{}) * sizeof(int);
-    static constexpr int kSmemNonZeroIndicesSize = size(SmemLayoutNonZeroIndices{}) * sizeof(int);
-    static constexpr int kSmemPredicateSize = size(SmemLayoutPredicate{}) * sizeof(bool);
-    
-    // Base shared memory size with Q and K/V matrices
-    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize)
-            : kSmemQSize                // For Q
-            + kSmemKVSize               // For K and V
-            + kSmemZeroHoldSize         // For sZeroHold
-            + kSmemMaskValuesSize       // For sDynamicMaskValues
-            + kSmemSortKeysSize         // For sDynamicMaskSortKeys
-            + kSmemSortIndicesSize      // For sDynamicMaskSortIndices
-            + kSmemNonZeroIndicesSize   // For sNonZeroIndices
-            + kSmemPredicateSize;       // For sPredicate
 
-    // Global memory access configuration
+    // Shared memory size with QKV matrices
+    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize)
+            : kSmemQSize                        // For Q
+            + kSmemKVSize                       // For K and V
+
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
-    
-    // Using kBlockKSmem here is 6-10% faster than kBlockKGmem for d=128 because of bank conflicts
+    // Using kBlockKSmem here is 6-10% faster than kBlockKGmem for d=128 because of bank conflicts.
+    // For example, for d=128, smem is split into 2 "pages", each page takes care of columns
+    // 0-63 and 64-127. If we have 16 threads per row for gmem read, when we write to smem,
+    // thread 0 - 7 will write to the first page and thread 8 - 15 will write to the second page,
+    // to the same banks.
     static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
     static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
-    
     using GmemLayoutAtom = Layout<Shape <Int<kNThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
                                   Stride<Int<kGmemThreadsPerRow>, _1>>;
 
-    // Global memory copy structures
-    // Using CACHEGLOBAL instead of CACHEALWAYS for both Q and K/V, since we won't be reading
-    // from the same address by the same threadblock
+    // We use CACHEGLOBAL instead of CACHEALWAYS for both Q and K/V, since we won't be reading
+    // from the same address by the same threadblock. This is slightly faster.
     using Gmem_copy_struct = std::conditional_t<
         Has_cp_async,
         SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,
         AutoVectorizingCopyWithAssumedAlignment<128>
     >;
-    
-    // Tiled copy for QKV matrices
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
-    
-    // Tiled copy for output
     using GmemTiledCopyO = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
                         GmemLayoutAtom{},
@@ -216,38 +151,24 @@ struct Flash_fwd_kernel_traits : public Base {
         Layout<Shape <_8, _16>,  // Thread layout, 16 threads per row
                Stride< _16, _1>>
     >;
-    
-    // Tiled copy for output accumulator
+
     using GmemTiledCopyOaccum = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
                         GmemLayoutAtomOaccum{},
                         Layout<Shape < _1, _4>>{}));  // Val layout, 4 vals per store
-    
-    // Rotary embedding related definitions
     using GmemLayoutAtomRotcossin = GmemLayoutAtom;
     using GmemTiledCopyRotcossin = decltype(
         make_tiled_copy(Copy_Atom<UniversalCopy<uint64_t>, Element>{},
                         GmemLayoutAtomRotcossin{},
-                        Layout<Shape < _1, _4>>{}));  // Val layout, 4 vals per load    
-    
+                        Layout<Shape < _1, _4>>{}));  // Val layout, 4 vals per load
     using GmemTiledCopyRotcossinCont = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
                         GmemLayoutAtomRotcossin{},
                         Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per load
-
-    // Zero hold global memory operations
-    using GmemLayoutAtomZeroHold = GmemLayoutAtom; // Re-using GmemLayoutAtom for ZeroHold GMEM copies
-    using GmemTiledCopyZeroHold = decltype(
-        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{}, // Assuming Element type for ZeroHold in GMEM
-                        GmemLayoutAtomZeroHold{},
-                        Layout<Shape<_1, _8>>{})); // Val layout, 8 vals per read
 };
 
-/**
- * Backward pass kernel traits
- * Specializes the base traits for backward propagation
- * Contains additional memory layout definitions for gradients
- */
+// Is_V_in_regs is an option to reduce smem usage, but will increase register pressue.
+// No_double_buffer is another option to reduce smem usage, but will slow things down.
 template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_,
          int AtomLayoutMSdP_=1, int AtomLayoutNdKV=2, int AtomLayoutMdQ=2,
          bool Is_V_in_regs_=false, bool No_double_buffer_=false, typename elem_type=cutlass::half_t,
@@ -260,33 +181,26 @@ struct Flash_bwd_kernel_traits : public Base {
     using SmemCopyAtom = typename Base::SmemCopyAtom;
     using SmemCopyAtomTransposed = typename Base::SmemCopyAtomTransposed;
 
-    // Memory optimization flags
     static constexpr bool Is_V_in_regs = Is_V_in_regs_;
     static constexpr bool No_double_buffer = No_double_buffer_;
 
-    // Thread configuration
+    // The number of threads.
     static constexpr int kNWarps = kNWarps_;
     static constexpr int kNThreads = kNWarps * 32;
 
-    // Block dimensions
     static constexpr int kBlockM = kBlockM_;
     static constexpr int kBlockN = kBlockN_;
     static constexpr int kHeadDim = kHeadDim_;
-    
     static_assert(kHeadDim % 32 == 0);
-    
-    // Memory layout constants
     static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;
 
-    // Atom layout configuration
     static constexpr int AtomLayoutMSdP = AtomLayoutMSdP_;
     static_assert(kNWarps % AtomLayoutMSdP == 0);
     static_assert(kNWarps % AtomLayoutNdKV == 0);
     static_assert(kNWarps % AtomLayoutMdQ == 0);
 
-    // Define the MMA tiled structures for different computations
     using TiledMmaSdP = TiledMMA<
         typename Base::MMA_Atom_Arch,
         Layout<Shape<Int<AtomLayoutMSdP>, Int<kNWarps / AtomLayoutMSdP>, _1>>,
@@ -299,10 +213,9 @@ struct Flash_bwd_kernel_traits : public Base {
 
     using TiledMmadQ = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<AtomLayoutMdQ>, Int<kNWarps / AtomLayoutMdQ>, _1>>,  // Thread group layout
+        Layout<Shape<Int<AtomLayoutMdQ>, Int<kNWarps / AtomLayoutMdQ>, _1>>,  // 2x4x1 or 4x2x1 thread group
         Tile<Int<16 * AtomLayoutMdQ>, Int<16 * kNWarps / AtomLayoutMdQ>, _16>>;
 
-    // Shared memory layouts
     using SmemLayoutAtomQdO = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<_8, Int<kBlockKSmem>>,
@@ -316,6 +229,7 @@ struct Flash_bwd_kernel_traits : public Base {
                     Layout<Shape<Int<kBlockM / kNWarps>, Int<kBlockKSmem>>,
                            Stride<Int<kBlockKSmem>, _1>>{}));
     using SmemLayoutKV = decltype(tile_to_shape(
+        // SmemLayoutAtomQdO{},
         SmemLayoutAtomKV{},
         make_shape(Int<kBlockN>{}, Int<kHeadDim>{})));
 
@@ -323,12 +237,17 @@ struct Flash_bwd_kernel_traits : public Base {
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutKtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutKtransposed{}));
 
-    // PdS layout settings
+    // TODO: generalize to other values of kBlockN
+    // TODO: what should be the Swizzle here? 3 is faster than 1, and 1 is faster than 2
+    // static constexpr int kPBlockN = kBlockN;
+    // Temporarily disabling this for hdim 256 on sm86 and sm89
+    // static_assert(kBlockN >= 64);
     static_assert(kBlockN >= 32);
+    // TD [2023-03-19]: Idk why kPBlockN = 16 and kSwizzlePdS=3 is the fastest.
     static constexpr int kPBlockN = kBlockN >= 64 ? 64 : 32;
     static_assert(kPBlockN == 16 || kPBlockN == 32 || kPBlockN == 64);
+    // static constexpr int kSwizzlePdS = kPBlockN == 16 ? 1 : (kPBlockN == 32 ? 2 : 3);
     static constexpr int kSwizzlePdS = 3;
-    
     using SmemLayoutAtomPdS = decltype(
         composition(Swizzle<kSwizzlePdS, 3, 3>{},
                     Layout<Shape<Int<kBlockM>, Int<kPBlockN>>,
@@ -364,13 +283,12 @@ struct Flash_bwd_kernel_traits : public Base {
         make_shape(Int<kBlockM>{}, Int<kHeadDim>{})));
     using SmemCopyAtomdQ = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
 
-    // Shared memory size calculations
+    // Double buffer for sQ
     static constexpr int kSmemQdOSize = size(SmemLayoutQdO{}) * (No_double_buffer ? 2 : 3) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
     static constexpr int kSmemdSSize = size(SmemLayoutPdS{}) * sizeof(Element);
     static constexpr int kSmemPSize = size(SmemLayoutPdS{}) * sizeof(Element);
     static constexpr int kSmemdQSize = size(SmemLayoutdQ{}) * sizeof(Element);
-    
     static constexpr int kSmemSize = kSmemQdOSize
         + (!Is_V_in_regs
            ? kSmemKVSize + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize)
@@ -380,43 +298,38 @@ struct Flash_bwd_kernel_traits : public Base {
            ? kSmemKVSize + kSmemdSSize + kSmemPSize
            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemdSSize + kSmemPSize));
 
-    // Global memory access configuration
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
-    
+    // Using kBlockKSmem instead of kHeadDim here to avoid bank conflicts, but doesn't seem
+    // to affect speed in practice.
     static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
     static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
-    
     using GmemLayoutAtom = Layout<Shape <Int<kNThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
                                   Stride<Int<kGmemThreadsPerRow>, _1>>;
 
-    // Global memory copy structures
+    // We use CACHEGLOBAL instead of CACHEALWAYS for both Q and K/V, since we won't be reading
+    // from the same address by the same threadblock. This is slightly faster.
     using Gmem_copy_struct = std::conditional_t<
         Has_cp_async,
         SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,
         AutoVectorizingCopyWithAssumedAlignment<128>
     >;
-    
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, elem_type>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
-                        
     using GmemTiledCopydO = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
                         GmemLayoutAtom{},
                         Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per store
-                        
     using GmemTiledCopydKV = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
                         GmemLayoutAtom{},
                         Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per store
-                        
     using GmemTiledCopydQ = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
                         GmemLayoutAtom{},
                         Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per store
-                        
     using GmemLayoutAtomdQaccum = std::conditional_t<
         kBlockKSmem == 32,
         Layout<Shape <_32, _8>,  // Thread layout, 8 threads per row
@@ -424,7 +337,6 @@ struct Flash_bwd_kernel_traits : public Base {
         Layout<Shape <_16, _16>,  // Thread layout, 16 threads per row
                Stride< _16, _1>>
     >;
-    
     using GmemTiledCopydQaccum = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
                         GmemLayoutAtomdQaccum{},
@@ -435,26 +347,6 @@ struct Flash_bwd_kernel_traits : public Base {
                         Layout<Shape <_8, _32>,  // Thread layout, 8 threads per row
                                Stride<_32, _1>>{},
                         Layout<Shape < _1, _1>>{}));  // Val layout, 1 val per store
-
-    // Dynamic mask related definitions for backward pass
-    // Note: These are primarily handled in forward pass but kept for consistency
-    using SmemLayoutAtomZeroHold = decltype(
-        composition(Swizzle<kSwizzle, 3, 3>{},
-                    Layout<Shape<_8, Int<kBlockKSmem>>,
-                           Stride<Int<kBlockKSmem>, _1>>{}));
-                           
-    using SmemLayoutZeroHold = decltype(tile_to_shape(
-        SmemLayoutAtomZeroHold{},
-        Shape<Int<kBlockM>, Int<kBlockN>>{}));
-        
-    static constexpr int kSmemZeroHoldSize = size(SmemLayoutZeroHold{}) * sizeof(Element);
-    
-    // Zero hold global memory operations
-    using GmemLayoutAtomZeroHold = GmemLayoutAtom; // Reusing fwd definition
-    using GmemTiledCopyZeroHold = decltype( // Reusing fwd definition
-        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
-                        GmemLayoutAtomZeroHold{},
-                        Layout<Shape<_1, _8>>{})); // Val layout, 8 vals per read
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
