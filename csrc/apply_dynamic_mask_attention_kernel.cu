@@ -15,7 +15,7 @@
 // 项目相关头文件
 #include "src/flash.h" // flash.h 包含了 namespace_config.h
 #include "src/kernel_traits.h"
-#include "src/flash_attention_fwd_kernel.h"
+#include "src/flash_fwd_kernel.h"
 #include "src/utils.h"
 
 // 确保使用正确的命名空间
