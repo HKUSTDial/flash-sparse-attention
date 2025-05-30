@@ -1,0 +1,12 @@
+recursive-include csrc *.cu
+recursive-include csrc *.h
+recursive-include csrc *.cuh
+recursive-include csrc *.cpp
+recursive-include csrc *.hpp
+recursive-include csrc *.py
+
+recursive-include src *.cu
+recursive-include src *.h
+recursive-include src *.cuh
+recursive-include src *.cpp
+recursive-include src *.hpp
