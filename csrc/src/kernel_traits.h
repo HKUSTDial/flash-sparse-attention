@@ -124,9 +124,7 @@ struct Flash_fwd_kernel_traits : public Base {
     // static constexpr int kSmemMaskSize = size(SmemLayoutZeroHold{}) * sizeof(Element) + size(SmemLayoutActiveIndices{}) * sizeof(int);
 
     // Shared memory size with QKV matrices
-    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize)
-            : kSmemQSize                        // For Q
-            + kSmemKVSize                       // For K and V
+    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize;
     // kSmemSize = kSmemSize + kSmemMaskSize;   // For Mask
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
