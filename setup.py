@@ -25,9 +25,10 @@ include_dirs = [
     os.path.join(CUDA_HOME, 'include'),
     os.path.join(current_dir, 'csrc'),                    # 项目源目录
     os.path.join(current_dir, 'csrc/cutlass/include'),    # CUTLASS头文件
+    os.path.join(current_dir, 'csrc/cub/cub'),            # CUB头文件
     os.path.join(current_dir, 'csrc/src'),                # 项目源代码子目录
-    os.path.join(current_dir, 'fcsrc'),                   # Flash attention 源目录
-    os.path.join(current_dir, 'fcsrc/src'),               # Flash attention 源代码子目录
+    # os.path.join(current_dir, 'fcsrc'),                   # Flash attention 源目录
+    # os.path.join(current_dir, 'fcsrc/src'),               # Flash attention 源代码子目录
 ]
 
 # 禁用警告的编译标志
@@ -58,12 +59,12 @@ extra_compile_args = {
 
 # 源文件列表
 sources = [
-    'csrc/apply_dynamic_mask_api.cpp',
-    'csrc/apply_dynamic_mask_kernel.cu',
+    # 'csrc/apply_dynamic_mask_api.cpp',
+    # 'csrc/apply_dynamic_mask_kernel.cu',
     'csrc/apply_dynamic_mask_attention_api.cpp',
     'csrc/apply_dynamic_mask_attention_kernel.cu',
-    'fcsrc/apply_attention_api.cpp',
-    'fcsrc/apply_attention_kernel.cu',
+    # 'fcsrc/apply_attention_api.cpp',
+    # 'fcsrc/apply_attention_kernel.cu',
 ]
 
 # 创建扩展
