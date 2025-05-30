@@ -76,12 +76,17 @@ struct Flash_fwd_kernel_traits : public Base {
         Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
         Tile<Int<16 * kNWarps>, _16, _16>>;
 
-    // Shared memory layout for Q matrix
+    // Shared memory layout for Q matrix and Mask matrix
     using SmemLayoutAtomQ = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
                     Layout<Shape<_8, Int<kBlockKSmem>>,
                            Stride<Int<kBlockKSmem>, _1>>{}));
+    // using SmemLayoutAtomMask = decltype(
+    //     composition(Swizzle<kSwizzle, 3, 3>{},
+    //                 Layout<Shape<_8, Int<kBlockN>>,
+    //                     Stride<Int<kBlockN>, _1>>{}));
+
     using SmemLayoutQ = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
         Shape<Int<kBlockM>, Int<kHeadDim>>{}));
@@ -94,6 +99,13 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemLayoutVtransposed = decltype(
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
+
+    // using SmemLayoutZeroHold = decltype(tile_to_shape(
+    //     SmemLayoutAtomMask{},
+    //     Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    // using SmemLayoutActiveIndices = decltype(tile_to_shape(
+    //     SmemLayoutAtomMask{},
+    //     Shape<Int<kBlockM>, Int<kBlockN>>{}));
 
     // Shared memory layout for output
     using SmemLayoutAtomO = decltype(
@@ -109,11 +121,13 @@ struct Flash_fwd_kernel_traits : public Base {
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
+    // static constexpr int kSmemMaskSize = size(SmemLayoutZeroHold{}) * sizeof(Element) + size(SmemLayoutActiveIndices{}) * sizeof(int);
 
     // Shared memory size with QKV matrices
     static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize)
             : kSmemQSize                        // For Q
             + kSmemKVSize                       // For K and V
+    // kSmemSize = kSmemSize + kSmemMaskSize;   // For Mask
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
