@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright (c) 2023, Tri Dao.
+ * Copyright (c) 2025, Jingze Shi and Tri Dao.
  ******************************************************************************/
 
 #pragma once
@@ -33,6 +33,17 @@ struct BlockInfo {
     template <typename index_t>
     __forceinline__ __device__ index_t k_offset(const index_t batch_stride, const index_t row_stride, const int bidb) const {
         return sum_s_k == -1 ? bidb * batch_stride + leftpad_k * row_stride : uint32_t(sum_s_k + leftpad_k) * row_stride;
+    }
+
+    template <typename index_t>
+    __forceinline__ __device__ index_t zero_hold_offset(const index_t batch_stride, const int bidb
+    ) const {
+        return bidb * batch_stride;
+    }
+
+    template <typename index_t>
+    __forceinline__ __device__ index_t active_indices_offset(const index_t batch_stride, const int bidb) const {
+        return bidb * batch_stride;
     }
 
     const int sum_s_q;
