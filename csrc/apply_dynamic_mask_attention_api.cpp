@@ -2,10 +2,10 @@
 
 // 声明CUDA函数
 std::vector<torch::Tensor> apply_dynamic_mask_attention_cuda(
-    const torch::Tensor& query_states,      // [batch_size, num_heads, query_len, head_dim]
-    const torch::Tensor& key_states,        // [batch_size, num_kv_heads, key_len, head_dim]
-    const torch::Tensor& value_states,      // [batch_size, num_kv_heads, key_len, head_dim]
-    const torch::Tensor& zero_hold_states,  // [batch_size, num_kv_heads, query_len, key_len]
+    const torch::Tensor& query_states,
+    const torch::Tensor& key_states,
+    const torch::Tensor& value_states,
+    const torch::Tensor& zero_hold_states,
     float scale,
     int keep_window_size,
     bool is_causal,
@@ -13,10 +13,10 @@ std::vector<torch::Tensor> apply_dynamic_mask_attention_cuda(
 
 // 主API函数，从Python调用 - 移除了冗余的causal_mask参数
 std::vector<torch::Tensor> apply_dynamic_mask_attention(
-    const torch::Tensor& query_states,      // [batch_size, num_heads, query_len, head_dim]
-    const torch::Tensor& key_states,        // [batch_size, num_kv_heads, key_len, head_dim]
-    const torch::Tensor& value_states,      // [batch_size, num_kv_heads, key_len, head_dim]
-    const torch::Tensor& zero_hold_states,  // [batch_size, num_kv_heads, query_len, key_len]
+    const torch::Tensor& query_states,
+    const torch::Tensor& key_states,
+    const torch::Tensor& value_states,
+    const torch::Tensor& zero_hold_states,
     float scale = 1.0f,
     int keep_window_size = 2048,
     bool is_causal = true,
