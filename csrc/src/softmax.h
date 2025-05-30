@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright (c) 2024, Tri Dao.
+ * Copyright (c) 2025, Jingze Shi and Tri Dao.
  ******************************************************************************/
 
 #pragma once
@@ -132,6 +132,39 @@ struct Softmax {
     TensorT row_max, row_sum;
 
     __forceinline__ __device__ Softmax() {};
+
+    template<bool Is_first, bool Check_inf=false, typename Tensor0, typename Tensor1>
+    __forceinline__ __device__ void softmax(Tensor0 &acc_s, Tensor1 &acc_o) {
+        // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
+        Tensor scores = make_tensor(acc_s.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(acc_s.layout()));
+        static_assert(decltype(size<0>(scores))::value == kNRows);
+        if (Is_first) {
+            FLASH_NAMESPACE::template reduce_max</*zero_init=*/true>(scores, row_max);
+            FLASH_NAMESPACE::scale_apply_exp2(scores, row_max, float(M_LOG2E));
+            FLASH_NAMESPACE::reduce_sum</*zero_init=*/true>(scores, row_sum);
+        } else {
+            Tensor scores_max_prev = make_fragment_like(row_max);
+            cute::copy(row_max, scores_max_prev);
+            FLASH_NAMESPACE::template reduce_max</*zero_init=*/false>(scores, row_max);
+            // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
+            Tensor acc_o_rowcol = make_tensor(acc_o.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(acc_o.layout()));
+            static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
+            #pragma unroll
+            for (int mi = 0; mi < size(row_max); ++mi) {
+                float scores_max_cur = !Check_inf
+                    ? row_max(mi)
+                    : (row_max(mi) == -INFINITY ? 0.0f : row_max(mi));
+                float scores_scale = exp2f((scores_max_prev(mi) - scores_max_cur) * float(M_LOG2E));
+                row_sum(mi) *= scores_scale;
+                #pragma unroll
+                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { acc_o_rowcol(mi, ni) *= scores_scale; }
+            }
+            FLASH_NAMESPACE::scale_apply_exp2(scores, row_max, float(M_LOG2E));
+            // We don't do the reduce across threads here since we don't need to use the row_sum.
+            // We do that reduce at the end when we need to normalize the softmax.
+            FLASH_NAMESPACE::reduce_sum</*zero_init=*/false>(scores, row_sum);
+        }
+    };
 
     template<bool Is_first, bool Check_inf=false, typename Tensor0, typename Tensor1>
     __forceinline__ __device__ void softmax_rescale_o(Tensor0 &acc_s, Tensor1 &acc_o, float softmax_scale_log2) {
