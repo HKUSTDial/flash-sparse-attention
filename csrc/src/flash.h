@@ -46,38 +46,27 @@ struct QKV_params {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct ZeroHold_params {
-    void *__restrict__ zero_hold_ptr;   // Zero-hold states tensor [batch_size, num_kv_heads, query_len, key_len]
+    void *__restrict__ zero_hold_ptr;           // Zero-hold states tensor [batch_size, num_kv_heads, query_len, key_len]
+    void * __restrict__ active_indices_ptr;     // Active indices tensor [batch_size, num_kv_heads, query_len, keep_window_size]
 
-    // The stride of the zero-hold states tensor.
-    index_t zero_hold_batch_stride;     // Stride between batches of zero-hold states
-    index_t zero_hold_head_stride;      // Stride between heads of zero-hold states
-    index_t zero_hold_row_stride;       // Stride for the third dimension (key_len) of zero-hold states
+    // The stride of the zero-hold states and active indices tensors.
+    index_t zero_hold_batch_stride;             // Stride between batches of zero-hold states
+    index_t zero_hold_head_stride;              // Stride between heads of zero-hold states
+    index_t zero_hold_row_stride;               // Stride for the third dimension (query_len) of zero-hold states
+    index_t active_indices_batch_stride;        // Stride between batches of active indices
+    index_t active_indices_head_stride;         // Stride between heads of active indices
+    index_t active_indices_row_stride;          // Stride for the third dimension (query_len) of active indices
 
     // The keep window size.
-    int keep_window_size;  // Number of tokens to keep in top-k (0 means don't apply top-k)
+    int keep_window_size;                       // Number of tokens to keep in top-k (0 means don't apply top-k)
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Flash_fwd_params : public QKV_params, public ZeroHold_params {
-    // Input tensors
-    void *q_ptr = nullptr;
-    void *k_ptr = nullptr;
-    void *v_ptr = nullptr;
-    void *zero_hold_ptr = nullptr;
-
-    // Input tensor for the bias
-    void *b_ptr = nullptr;
-    // Output tensors
-    void *o_ptr = nullptr;
-    // Tensor storing the output of softmax
-    void *p_ptr = nullptr;
-    // Buffer for partial derivatives
-    void *do_ptr = nullptr;
-    // Tensor storing the logsumexp for numerical stability.
-    void *softmax_lse_ptr = nullptr;
 
     // The O matrix (output).
+    void * __restrict__ o_ptr;
     void * __restrict__ oaccum_ptr;
 
     // The stride between rows of O.
@@ -85,7 +74,11 @@ struct Flash_fwd_params : public QKV_params, public ZeroHold_params {
     index_t o_row_stride;
     index_t o_head_stride;
 
+    // The pointer to the P matrix.
+    void * __restrict__ p_ptr;
+
     // The pointer to the softmax sum.
+    void * __restrict__ softmax_lse_ptr;
     void * __restrict__ softmax_lseaccum_ptr;
 
     // The dimensions.
@@ -138,6 +131,7 @@ struct Flash_fwd_params : public QKV_params, public ZeroHold_params {
     // Scale factor of 1 / (1 - p_dropout).
     float rp_dropout;
     float scale_softmax_rp_dropout;
+    float softcap;
 
     // Random state.
     at::PhiloxCudaState philox_args;
