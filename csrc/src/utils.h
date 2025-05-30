@@ -140,13 +140,13 @@ __forceinline__ __device__ void gemm(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB,
                             Tensor4 const& tCsB, TiledMma tiled_mma,
                             TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
                             ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B) {
-    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                     // MMA_M
-    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                     // MMA_N
-    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                     // MMA_K
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
     Tensor tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
-    CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));            // M
+    CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));             // M
     Tensor tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
-    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // N
+    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));             // N
     if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, _0{}), tCrA_copy_view(_, _, _0{})); }
     if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, _0{}), tCrB_copy_view(_, _, _0{})); }
     #pragma unroll
@@ -164,45 +164,30 @@ __forceinline__ __device__ void gemm(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB,
 template<bool A_in_regs=false, bool B_in_regs=false, typename Tensor0, typename Tensor1,
          typename Tensor2, typename Tensor3, typename Tensor4,
          typename TiledMma, typename TiledCopyA, typename TiledCopyB,
-         typename ThrCopyA, typename ThrCopyB, typename PredicateTensor>
+         typename ThrCopyA, typename ThrCopyB, typename ActiveIndices>
 __forceinline__ __device__ void sparse_gemm(
     Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA,
     Tensor4 const& tCsB, TiledMma tiled_mma,
     TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B,
-    PredicateTensor const &predicate_K
+    ActiveIndices const &active_indices
 ) {
-    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                     // MMA_M
-    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                     // MMA_N
-    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                    // MMA_K
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
     auto tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
-    CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));          // M
+    CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));             // M
     auto tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
-    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));          // N
+    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));             // N
     if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, _0{}), tCrA_copy_view(_, _, _0{})); }
     if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, _0{}), tCrB_copy_view(_, _, _0{})); }
-
     #pragma unroll
     for (int i = 0; i < size<2>(tCrA); ++i) {
-        if (!A_in_regs) {
-            cute::copy(smem_tiled_copy_A, tCsA(_, _, i), tCrA_copy_view(_, _, i));
+        if (i < size<2>(tCrA) - 1) {
+                if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, i + 1), tCrA_copy_view(_, _, i + 1)); }
+                if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, i + 1), tCrB_copy_view(_, _, i + 1)); }
         }
-        #pragma unroll
-        for (int n = 0; n < size<1>(tCrB_copy_view); ++n) {
-            if (!B_in_regs) {
-                if (!predicate_K(n)) {
-                    cute::clear(tCrB_copy_view(_, n, i));
-                }
-            }
-            if (!B_in_regs && i < size<2>(tCrA) - 1) {
-                if (predicate_K(n)) {
-                    cute::copy(smem_tiled_copy_B, tCsB(_, n, i + 1), tCrB_copy_view(_, n, i + 1));
-                } else {
-                    cute::clear(tCrB_copy_view(_, n, i + 1));
-                }
-            }
-        }
-        cute::gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc);
+        cute::sparse_gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc, active_indices);
     }
 }
 
@@ -321,6 +306,147 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
     // HACK: this requires tensor to be "contiguous"
     auto frag = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
     return make_tensor(make_rmem_ptr<To_type>(&frag), tensor.layout());
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Convert 2D global zero-hold tensor to 3D MMA layout tensor for apply_mask
+template <typename Tensor, typename LayoutMMA>
+__forceinline__ __device__ auto convert_global_zerohold_to_mma_zerohold(
+    Tensor const &g_zero_hold,                                // Zero Hold tensor (kBlockM, actual_seqlen_k)
+    LayoutMMA const &mma_layout,                              // Target MMA layout (4, MMA_M, MMA_N)
+    const int col_idx_offset_,                                // Column index offset
+    const int row_idx_offset,                                 // Row index offset
+    const int warp_row_stride                                 // Warp row stride
+) {
+    using Element = typename Tensor::value_type;
+    // Create 3D tensor with MMA layout
+    constexpr int mma_size = decltype(size(mma_layout))::value;
+    Element mma_data[mma_size];
+    auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
+
+    // Initialize the MMA fragment to -INFINITY
+    #pragma unroll
+    for (int i = 0; i < mma_size; ++i) {
+        mma_data[i] = static_cast<Element>(-INFINITY);
+    }
+
+    // Early return if invalid dimensions
+    if (size<0>(g_zero_hold) <= 0 || size<1>(g_zero_hold) <= 0) {
+        return mma_fragment;
+    }
+
+    // Convert layout to rowcol format for easier indexing
+    auto fragment_rowcol = make_tensor(mma_fragment.data(), convert_layout_acc_rowcol(mma_layout));
+
+    const int lane_id = threadIdx.x % 32;
+    const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
+    const int block_m_size = size<0>(g_zero_hold);
+    const int actual_seqlen_k = size<1>(g_zero_hold);
+
+    #pragma unroll
+    for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
+        const int row_idx_base = row_idx_offset + mi * warp_row_stride;
+        #pragma unroll
+        for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
+            const int row_idx = row_idx_base + i * 8;
+            // Bounds check for row
+            if (row_idx >= 0 && row_idx < block_m_size) {
+                #pragma unroll
+                for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
+                    const int col_idx_base = col_idx_offset + nj * 8;
+                    #pragma unroll
+                    for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
+                        const int col_idx = col_idx_base + j;
+                        // Bounds check for column
+                        if (col_idx >= 0 && col_idx < actual_seqlen_k) {
+                            auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                            auto val = g_zero_hold(row_idx, col_idx);
+                            // Only assign finite values, keep -INFINITY for invalid
+                            if (isfinite(static_cast<float>(val))) {
+                                fragment_rowcol(coord) = val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return mma_fragment;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Convert active indices to MMA-based indices for sparse matrix multiplication
+template <typename Tensor, typename Layout>
+__forceinline__ __device__ auto convert_window_indices_to_mma_indices(
+    Tensor const &g_active_indices,               // Active indices tensor (kBlockM, keep_window_size)
+    Layout const &mma_layout,                     // Target MMA layout (4, MMA_M, MMA_N)
+    const int col_idx_offset_,                    // Column index offset
+    const int row_idx_offset,                     // Row index offset
+    const int warp_row_stride                     // Warp row stride
+) {
+    using Element = int; // Element is int for indices
+
+    // Create 3D tensor with MMA layout for indices
+    constexpr int mma_size = decltype(size(mma_layout))::value;
+    Element mma_data[mma_size];
+    auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
+
+    // Initialize the MMA fragment to -1 (inactive)
+    #pragma unroll
+    for (int i = 0; i < mma_size; ++i) {
+        mma_data[i] = static_cast<Element>(-1);
+    }
+
+    // Early return if invalid dimensions
+    if (size<0>(g_active_indices) <= 0 || size<1>(g_active_indices) <= 0) {
+        return mma_fragment;
+    }
+
+    // Convert layout to rowcol format for easier indexing
+    auto fragment_rowcol = make_tensor(mma_fragment.data(), convert_layout_acc_rowcol(mma_layout));
+
+    const int lane_id = threadIdx.x % 32;
+    const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
+    const int block_m_size = size<0>(g_active_indices);
+    const int keep_window_size = size<1>(g_active_indices);
+
+    // For each row in the block
+    #pragma unroll
+    for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
+        const int row_idx_base = row_idx_offset + mi * warp_row_stride;
+        #pragma unroll
+        for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
+            const int row_idx = row_idx_base + i * 8;
+            // Bounds check for row
+            if (row_idx >= 0 && row_idx < block_m_size) {
+                #pragma unroll
+                for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
+                    const int col_idx_base = col_idx_offset + nj * 8;
+                    #pragma unroll
+                    for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
+                        const int col_idx = col_idx_base + j;
+                        auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                        
+                        // Search through active indices for this position
+                        // This is different from flash_mask as we need to map sparse indices
+                        for (int k = 0; k < keep_window_size; ++k) {
+                            int active_col_idx = g_active_indices(row_idx, k);
+                            // If we find a matching active column index
+                            if (active_col_idx == col_idx && active_col_idx >= 0) {
+                                fragment_rowcol(coord) = active_col_idx;
+                                break; // Found match, no need to continue searching
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return mma_fragment;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -504,14 +630,14 @@ __forceinline__ __device__ int non_zero_mask_indices(
     int* non_zero_indices,                  // Non-zero indices [key_len]
     int key_len                             // Key length
 ) {
-    int non_zero_count = 0;
+    int nnz = 0;
     #pragma unroll
     for (int idx = 0; idx < key_len; ++idx) {
         if (dynamic_mask_1rowblock[idx] != static_cast<Element>(0)) {
-            non_zero_indices[non_zero_count++] = idx;
+            non_zero_indices[nnz++] = idx;
         }
     }
-    return non_zero_count;
+    return nnz;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
