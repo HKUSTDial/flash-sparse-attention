@@ -39,13 +39,13 @@ template<typename ValueType>
 struct DescendingComparator {
     __device__ __forceinline__ bool operator()(const TopKPair<ValueType>& a, const TopKPair<ValueType>& b) const {
         if (isfinite(a.value) && isfinite(b.value)) {
-            return a.value > b.value;           // Descending order
+            return a.value > b.value;               // Descending order
         } else if (isfinite(a.value)) {
-            return true;                        // a is valid, b is not
+            return true;                            // a is valid, b is not
         } else if (isfinite(b.value)) {
-            return false;                       // b is valid, a is not
+            return false;                           // b is valid, a is not
         } else {
-            return a.col_index < b.col_index;   // Compare indices if both are invalid
+            return a.col_index < b.col_index;       // Compare indices if both are invalid
         }
     }
 };
@@ -142,9 +142,9 @@ struct DynamicMask {
 
     template <bool Causal_mask=false, bool Is_even_MN=true, typename TensorType, typename ZeroHoldType, typename ActiveIndicesType>
     __forceinline__ __device__ void apply_mask(
-        TensorType &tensor_,                        // acc_s (attention scores, 3D)
-        ZeroHoldType &tZeroHold,                    // Zero-hold states (3D)
-        ActiveIndicesType &tActiveIndices,          // Active indices (3D)
+        TensorType &tensor_,                        // acc_s (attention scores, MMA=4, MMA_M, MMA_N)
+        ZeroHoldType &tZeroHold,                    // Zero-hold states (MMA=4, MMA_M, MMA_N)
+        ActiveIndicesType &tActiveIndices,          // Active indices (MMA=4, MMA_M, MMA_N)
         const float scale_softmax,                  // Scale for softmax
         const int col_idx_offset_,                  // Column index offset
         const int row_idx_offset,                   // Row index offset
@@ -154,23 +154,22 @@ struct DynamicMask {
         static_assert(ZeroHoldType::rank == 3, "tZeroHold must be 3D Tensor");
         static_assert(ActiveIndicesType::rank == 3, "tActiveIndices must be 3D Tensor");
         static_assert(decltype(size<0>(tensor_))::value == 4, "First dimension must be 4");
-        static constexpr bool Need_masking = Causal_mask || !Is_even_MN;
-        if constexpr (Need_masking) {
-            // Reshape tensors from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
-            Tensor tensor = make_tensor(tensor_.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tensor_.layout()));
-            Tensor zero_hold = make_tensor(tZeroHold.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tZeroHold.layout()));
-            Tensor active_indices = make_tensor(tActiveIndices.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tActiveIndices.layout()));
+        static constexpr bool Need_masking = Causal_mask || !Is_even_MN || (keep_window_size < max_seqlen_k);
+        // Reshape tensors from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
+        Tensor tensor = make_tensor(tensor_.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tensor_.layout()));
+        Tensor zero_hold = make_tensor(tZeroHold.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tZeroHold.layout()));
+        Tensor active_indices = make_tensor(tActiveIndices.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tActiveIndices.layout()));
 
-            const int lane_id = threadIdx.x % 32;
-            const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-            
+        const int lane_id = threadIdx.x % 32;
+        const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
+        if constexpr (Need_masking) {
             #pragma unroll
             for (int mi = 0; mi < size<0, 1>(tensor); ++mi) {
                 const int row_idx_base = row_idx_offset + mi * warp_row_stride;
                 #pragma unroll
                 for (int i = 0; i < size<0, 0>(tensor); ++i) {
                     const int row_idx = row_idx_base + i * 8;
-                    const int col_idx_limit = Causal_mask ? min(max_seqlen_k, row_idx + 1 + max_seqlen_k - max_seqlen_q) : max_seqlen_k;
+                    const int col_idx_limit = Causal_mask ? std::min(max_seqlen_k, row_idx + 1 + max_seqlen_k - max_seqlen_q) : max_seqlen_k;
                     #pragma unroll
                     for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
                         const int col_idx_base = col_idx_offset + nj * 8;
@@ -178,16 +177,99 @@ struct DynamicMask {
                         for (int j = 0; j < size<1, 0>(tensor); ++j) {
                             const int col_idx = col_idx_base + j;
                             auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                            int active_col_idx = active_indices(coord);
-                            bool is_boundary_valid = Is_even_MN ? true : (col_idx < max_seqlen_k);
-                            bool is_active = (col_idx < col_idx_limit) && (active_col_idx >= 0) && is_boundary_valid;
-                            if (is_active) {
-                                // Apply scaling and zero-hold
-                                tensor(coord) = tensor(coord) * scale_softmax + zero_hold(coord);
-                            } else {
-                                // Non-active positions or out-of-bounds set to -INFINITY
+                            bool inactive = (col_idx >= col_idx_limit) || (active_indices(coord) < 0);
+                            if (inactive) {
                                 tensor(coord) = -INFINITY;
+                            } else {
+                                // Apply scaling and zoh
+                                tensor(coord) = tensor(coord) * scale_softmax + zero_hold(coord);
                             }
+                        }
+                    }
+                }
+            }
+        } else {
+            // If no masking is needed, just scale the tensor and add zoh
+            #pragma unroll
+            for (int mi = 0; mi < size<0, 1>(tensor); ++mi) {
+                const int row_idx_base = row_idx_offset + mi * warp_row_stride;
+                #pragma unroll
+                for (int i = 0; i < size<0, 0>(tensor); ++i) {
+                    const int row_idx = row_idx_base + i * 8;
+                    #pragma unroll
+                    for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+                        const int col_idx_base = col_idx_offset + nj * 8;
+                        #pragma unroll
+                        for (int j = 0; j < size<1, 0>(tensor); ++j) {
+                            const int col_idx = col_idx_base + j;
+                            auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                            tensor(coord) = tensor(coord) * scale_softmax + zero_hold(coord);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Causal_mask: whether this particular iteration needs causal masking
+    template <bool Causal_mask=false, bool Is_even_MN=true, typename Engine, typename Layout>
+    __forceinline__ __device__ void apply_causal_mask(
+        Tensor<Engine, Layout> &tensor_,            // acc_s (attention scores, MMA=4, MMA_M, MMA_N)
+        const float scale_softmax,                  // Scale for softmax
+        const int col_idx_offset_,                  // Column index offset
+        const int row_idx_offset,                   // Row index offset
+        const int warp_row_stride                   // Warp row stride
+    ) {
+        static_assert(Tensor<Engine, Layout>::rank == 3, "tensor_ must be 3D Tensor");
+        static_assert(decltype(size<0>(tensor_))::value == 4, "First dimension must be 4");
+        static constexpr bool Need_masking = Causal_mask || !Is_even_MN;
+        // Reshape tensors from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
+        Tensor tensor = make_tensor(tensor_.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tensor_.layout()));
+
+        const int lane_id = threadIdx.x % 32;
+        const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
+        if constexpr (Need_masking) {
+            #pragma unroll
+            for (int mi = 0; mi < size<0, 1>(tensor); ++mi) {
+                const int row_idx_base = row_idx_offset + mi * warp_row_stride;
+                #pragma unroll
+                for (int i = 0; i < size<0, 0>(tensor); ++i) {
+                    const int row_idx = row_idx_base + i * 8;
+                    const int col_idx_limit = Causal_mask ? std::min(max_seqlen_k, row_idx + 1 + max_seqlen_k - max_seqlen_q) : max_seqlen_k;
+                    #pragma unroll
+                    for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+                        const int col_idx_base = col_idx_offset + nj * 8;
+                        #pragma unroll
+                        for (int j = 0; j < size<1, 0>(tensor); ++j) {
+                            const int col_idx = col_idx_base + j;
+                            auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                            bool inactive = (col_idx >= col_idx_limit);
+                            if (inactive) {
+                                tensor(coord) = -INFINITY;
+                            } else {
+                                // Apply scaling
+                                tensor(coord) = tensor(coord) * scale_softmax;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // If no masking is needed, just scale the tensor
+            #pragma unroll
+            for (int mi = 0; mi < size<0, 1>(tensor); ++mi) {
+                const int row_idx_base = row_idx_offset + mi * warp_row_stride;
+                #pragma unroll
+                for (int i = 0; i < size<0, 0>(tensor); ++i) {
+                    const int row_idx = row_idx_base + i * 8;
+                    #pragma unroll
+                    for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+                        const int col_idx_base = col_idx_offset + nj * 8;
+                        #pragma unroll
+                        for (int j = 0; j < size<1, 0>(tensor); ++j) {
+                            const int col_idx = col_idx_base + j;
+                            auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                            tensor(coord) = tensor(coord) * scale_softmax;
                         }
                     }
                 }
