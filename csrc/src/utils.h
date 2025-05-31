@@ -331,17 +331,11 @@ __forceinline__ __device__ auto convert_global_zerohold_to_mma_zerohold(
         mma_data[i] = static_cast<Element>(-INFINITY);
     }
 
-    // Early return if invalid dimensions
-    if (size<0>(g_zero_hold) <= 0 || size<1>(g_zero_hold) <= 0) {
-        return mma_fragment;
-    }
-
     // Convert layout to rowcol format for easier indexing
     auto fragment_rowcol = make_tensor(mma_fragment.data(), convert_layout_acc_rowcol(mma_layout));
 
     const int lane_id = threadIdx.x % 32;
     const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-    const int block_m_size = size<0>(g_zero_hold);
     const int actual_seqlen_k = size<1>(g_zero_hold);
 
     #pragma unroll
@@ -350,23 +344,15 @@ __forceinline__ __device__ auto convert_global_zerohold_to_mma_zerohold(
         #pragma unroll
         for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
             const int row_idx = row_idx_base + i * 8;
-            // Bounds check for row
-            if (row_idx >= 0 && row_idx < block_m_size) {
+            #pragma unroll
+            for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
+                const int col_idx_base = col_idx_offset + nj * 8;
                 #pragma unroll
-                for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
-                    const int col_idx_base = col_idx_offset + nj * 8;
-                    #pragma unroll
-                    for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
-                        const int col_idx = col_idx_base + j;
-                        // Bounds check for column
-                        if (col_idx >= 0 && col_idx < actual_seqlen_k) {
-                            auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                            auto val = g_zero_hold(row_idx, col_idx);
-                            // Only assign finite values, keep -INFINITY for invalid
-                            if (isfinite(static_cast<float>(val))) {
-                                fragment_rowcol(coord) = val;
-                            }
-                        }
+                for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
+                    const int col_idx = col_idx_base + j;
+                    auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                    if (col_idx < actual_seqlen_k) {
+                        fragment_rowcol(coord) = g_zero_hold(row_idx, col_idx);
                     }
                 }
             }
