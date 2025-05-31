@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright (c) 2025, Jingze Shi and Tri Dao.
+ * Copyright (c) 2025, Jingze Shi and Yiran Peng and Tri Dao.
  ******************************************************************************/
 
 #pragma once
@@ -364,7 +364,7 @@ __forceinline__ __device__ auto convert_global_zerohold_to_mma_zerohold(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Convert active indices to MMA-based indices for sparse matrix multiplication
+// Convert 2D global active indices to 3D MMA layout indices for sparse matrix multiplication
 template <typename Tensor, typename Layout>
 __forceinline__ __device__ auto convert_window_indices_to_mma_indices(
     Tensor const &g_active_indices,               // Active indices tensor (kBlockM, keep_window_size)
@@ -373,22 +373,16 @@ __forceinline__ __device__ auto convert_window_indices_to_mma_indices(
     const int row_idx_offset,                     // Row index offset
     const int warp_row_stride                     // Warp row stride
 ) {
-    using Element = int; // Element is int for indices
-
+    using Element = int;
     // Create 3D tensor with MMA layout for indices
     constexpr int mma_size = decltype(size(mma_layout))::value;
     Element mma_data[mma_size];
     auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
 
-    // Initialize the MMA fragment to -1 (inactive)
+    // Initialize the MMA fragment to -1
     #pragma unroll
     for (int i = 0; i < mma_size; ++i) {
         mma_data[i] = static_cast<Element>(-1);
-    }
-
-    // Early return if invalid dimensions
-    if (size<0>(g_active_indices) <= 0 || size<1>(g_active_indices) <= 0) {
-        return mma_fragment;
     }
 
     // Convert layout to rowcol format for easier indexing
@@ -396,35 +390,28 @@ __forceinline__ __device__ auto convert_window_indices_to_mma_indices(
 
     const int lane_id = threadIdx.x % 32;
     const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-    const int block_m_size = size<0>(g_active_indices);
     const int keep_window_size = size<1>(g_active_indices);
 
-    // For each row in the block
     #pragma unroll
     for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
         const int row_idx_base = row_idx_offset + mi * warp_row_stride;
         #pragma unroll
         for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
             const int row_idx = row_idx_base + i * 8;
-            // Bounds check for row
-            if (row_idx >= 0 && row_idx < block_m_size) {
+            #pragma unroll
+            for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
+                const int col_idx_base = col_idx_offset + nj * 8;
                 #pragma unroll
-                for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
-                    const int col_idx_base = col_idx_offset + nj * 8;
-                    #pragma unroll
-                    for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
-                        const int col_idx = col_idx_base + j;
-                        auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                        
-                        // Search through active indices for this position
-                        // This is different from flash_mask as we need to map sparse indices
-                        for (int k = 0; k < keep_window_size; ++k) {
-                            int active_col_idx = g_active_indices(row_idx, k);
-                            // If we find a matching active column index
-                            if (active_col_idx == col_idx && active_col_idx >= 0) {
-                                fragment_rowcol(coord) = active_col_idx;
-                                break; // Found match, no need to continue searching
-                            }
+                for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
+                    const int col_idx = col_idx_base + j;
+                    auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
+                    // Search through active indices for this position
+                    for (int k = 0; k < keep_window_size; ++k) {
+                        int active_col_idx = g_active_indices(row_idx, k);
+                        // If we find a matching active column index
+                        if (active_col_idx == col_idx && active_col_idx >= 0) {
+                            fragment_rowcol(coord) = k;
+                            break; // Found match, no need to continue searching
                         }
                     }
                 }
