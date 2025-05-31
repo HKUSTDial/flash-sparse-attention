@@ -183,37 +183,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
         make_stride(params.zero_hold_head_stride, params.zero_hold_row_stride, _1{})
     );
-    // 确保只有一个线程打印，避免重复输出
-    if (cute::thread0() && bidh == 0 && bidb == 0) {
-        // 打印张量的布局信息
-        printf("mZeroHold layout:\n");
-        print(mZeroHold.layout());
-        printf("\n");
-        
-        // 打印张量的形状和步长
-        printf("Shape: (%d, %d, %d)\n", 
-            (int)size<0>(mZeroHold), (int)size<1>(mZeroHold), (int)size<2>(mZeroHold));
-        printf("Stride: (%d, %d, %d)\n", 
-            (int)stride<0>(mZeroHold), (int)stride<1>(mZeroHold), (int)stride<2>(mZeroHold));
-        
-        // 打印元素值（仅打印前几个元素避免输出过多）
-        printf("Element values:\n");
-        for (int i = 0; i < min(3, (int)size<0>(mZeroHold)); ++i) {
-            for (int j = 0; j < min(2, (int)size<1>(mZeroHold)); ++j) {
-                for (int k = 0; k < min(5, (int)size<2>(mZeroHold)); ++k) {
-                    // 使用 float 转换处理不同数据类型
-                    float val = float(mZeroHold(i, j, k));
-                    printf("mZeroHold(%d, %d, %d) = %f\n", i, j, k, val);
-                }
-            }
-        }
-        
-        // 或者直接使用 CUTE 的 print 函数打印整个子张量
-        printf("First row of mZeroHold:\n");
-        auto first_row = mZeroHold(0, 0, _);
-        print(first_row);
-        printf("\n");
-    }
     Tensor gZeroHold = local_tile(
         mZeroHold(bidh / params.h_h_k_ratio, _, _),
         make_shape(Int<kBlockM>{}, binfo.actual_seqlen_k),
@@ -384,43 +353,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         binfo.actual_seqlen_k, binfo.actual_seqlen_q,
         params.keep_window_size
     );
-    // 打印kBlockM次gZeroHold和gActiveIndices的内容
-    if (cute::thread0() && bidh == 0 && bidb == 0) {
-        // 打印tensor layout信息
-        printf("gZeroHold layout:\n");
-        print(gZeroHold.layout());
-        printf("\n");
-        printf("gActiveIndices layout:\n");
-        print(gActiveIndices.layout());
-        // 打印gZeroHold和gActiveIndices的形状和步长
-        printf("gZeroHold Shape: (%d, %d)\n", 
-            (int)size<0>(gZeroHold), (int)size<1>(gZeroHold));
-        printf("gZeroHold Stride: (%d, %d)\n",
-            (int)stride<0>(gZeroHold), (int)stride<1>(gZeroHold));
-        printf("gActiveIndices Shape: (%d, %d)\n",
-            (int)size<0>(gActiveIndices), (int)size<1>(gActiveIndices));
-        printf("gActiveIndices Stride: (%d, %d)\n",
-            (int)stride<0>(gActiveIndices), (int)stride<1>(gActiveIndices));
-        // 打印gZeroHold和gActiveIndices的内容
-        printf("gZeroHold:\n");
-        for (int i = 0; i < kBlockM; ++i) {
-            printf("%d: ", m_block * kBlockM + i);
-            for (int j = 0; j < binfo.actual_seqlen_k; ++j) {
-                // 使用 float 转换处理不同数据类型
-                float val = float(gZeroHold(i, j));
-                printf("%f ", val);
-            }
-            printf("\n");
-        }
-        printf("gActiveIndices:\n");
-        for (int i = 0; i < kBlockM; ++i) {
-            printf("%d: ", m_block * kBlockM + i);
-            for (int j = 0; j < params.keep_window_size; ++j) {
-                printf("%d ", gActiveIndices(i, j));
-            }
-            printf("\n");
-        }
-    }
+
     // Get top-k active indices of zero-hold states
     for (int local_row = 0; local_row < kBlockM; ++local_row) {
         int global_row = m_block * kBlockM + local_row;
@@ -436,44 +369,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             );
         }
     }
-    // 打印kBlockM次gZeroHold和gActiveIndices的内容
-    if (cute::thread0() && bidh == 0 && bidb == 0) {
-        // 打印tensor layout信息
-        printf("gZeroHold layout:\n");
-        print(gZeroHold.layout());
-        printf("\n");
-        printf("gActiveIndices layout:\n");
-        print(gActiveIndices.layout());
-        // 打印gZeroHold和gActiveIndices的形状和步长
-        printf("gZeroHold Shape: (%d, %d)\n", 
-            (int)size<0>(gZeroHold), (int)size<1>(gZeroHold));
-        printf("gZeroHold Stride: (%d, %d)\n",
-            (int)stride<0>(gZeroHold), (int)stride<1>(gZeroHold));
-        printf("gActiveIndices Shape: (%d, %d)\n",
-            (int)size<0>(gActiveIndices), (int)size<1>(gActiveIndices));
-        printf("gActiveIndices Stride: (%d, %d)\n",
-            (int)stride<0>(gActiveIndices), (int)stride<1>(gActiveIndices));
-        // 打印gZeroHold和gActiveIndices的内容
-        printf("gZeroHold:\n");
-        for (int i = 0; i < kBlockM; ++i) {
-            printf("%d: ", m_block * kBlockM + i);
-            for (int j = 0; j < binfo.actual_seqlen_k; ++j) {
-                // 使用 float 转换处理不同数据类型
-                float val = float(gZeroHold(i, j));
-                printf("%f ", val);
-            }
-            printf("\n");
-        }
-        printf("gActiveIndices:\n");
-        for (int i = 0; i < kBlockM; ++i) {
-            printf("%d: ", m_block * kBlockM + i);
-            for (int j = 0; j < params.keep_window_size; ++j) {
-                printf("%d ", gActiveIndices(i, j));
-            }
-            printf("\n");
-        }
-    }
-
 
     // For performance reason, we separate out two kinds of iterations:
     // those that need masking on S, and those that don't.
@@ -490,7 +385,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
-        Tensor tZeroHold = FLASH_NAMESPACE::convert_global_zerohold_to_mma_zerohold(
+        auto tZeroHold = FLASH_NAMESPACE::convert_global_zerohold_to_mma_zerohold(
             gZeroHold, acc_s.layout(),
             n_block * kBlockN,
             m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
@@ -504,41 +399,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         );
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
-        // 打印tZeroHold和tActiveIndices的内容
-        if (cute::thread0() && bidh == 0 && bidb == 0) {
-            
-            // 首先打印布局信息
-            printf("tZeroHold layout:\n");
-            print(tZeroHold.layout());
-            printf("\n");
-            
-            printf("tActiveIndices layout:\n");
-            print(tActiveIndices.layout());
-            printf("\n");
-            
-            // 使用协调遍历打印张量内容
-            printf("tZeroHold values:\n");
-            for (int i = 0; i < size<0>(shape(tZeroHold)); ++i) {
-                for (int j = 0; j < size<1>(shape(tZeroHold)); ++j) {
-                    for (int k = 0; k < size<2>(shape(tZeroHold)); ++k) {
-                        auto coord = make_coord(i, j, k);
-                        auto val = tZeroHold(coord);
-                        printf("tZeroHold[%d,%d,%d] = %f\n", i, j, k, float(val));
-                    }
-                }
-            }
-            
-            printf("tActiveIndices values:\n");
-            for (int i = 0; i < size<0>(shape(tActiveIndices)); ++i) {
-                for (int j = 0; j < size<1>(shape(tActiveIndices)); ++j) {
-                    for (int k = 0; k < size<2>(shape(tActiveIndices)); ++k) {
-                        auto coord = make_coord(i, j, k);
-                        auto val = tActiveIndices(coord);
-                        printf("tActiveIndices[%d,%d,%d] = %d\n", i, j, k, int(val));
-                    }
-                }
-            }
-        }
         
         // Advance gV
         if (masking_step > 0) {
@@ -565,7 +425,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
-        // Apply mask values to attention scores (zero_hold states contain mask values to add to attention scores)
+        // Scale attention scores and apply dynamic mask
         dynamic_mask.template apply_mask<Is_causal, Is_even_MN>(
             acc_s, tZeroHold, tActiveIndices, params.scale_softmax,
             n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
@@ -656,13 +516,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         );
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
-        }        
-
-        // Apply mask values to attention scores (zero_hold states contain mask values to add to attention scores)
-        dynamic_mask.template apply_mask<Is_causal, Is_even_MN>(
-            acc_s, tZeroHold, tActiveIndices, params.scale_softmax,
-            n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-        );
+        }
 
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
@@ -672,6 +526,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             // isn't right and we get race conditions.
             cute::cp_async_fence();
         }
+
+        // Scale attention scores and apply dynamic mask
+        dynamic_mask.template apply_mask</*Causal_mask=*/false>(
+            acc_s, tZeroHold, tActiveIndices, params.scale_softmax,
+            n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
+        );
 
         softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
         // softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
