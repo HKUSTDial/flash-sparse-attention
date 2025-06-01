@@ -13,7 +13,7 @@
 #include <cub/block/block_merge_sort.cuh>
 
 #ifndef ITEMS_PER_THREAD
-#define ITEMS_PER_THREAD 16
+#define ITEMS_PER_THREAD 32
 #endif
 
 namespace FLASH_NAMESPACE {
@@ -24,13 +24,15 @@ using namespace cute;
 template<typename ValueType>
 struct TopKPair {
     ValueType value;
-    int col_index;
+    int index;
     
-    __device__ __forceinline__ TopKPair() : value(ValueType(-INFINITY)), col_index(-1) {}
-    __device__ __forceinline__ TopKPair(ValueType v, int idx) : value(v), col_index(idx) {}
-    
+    __device__ __forceinline__ TopKPair()
+        : value(ValueType(-INFINITY)), index(-1) {}
+    __device__ __forceinline__ TopKPair(ValueType v, int idx)
+        : value(v), index(idx) {}
+
     __device__ __forceinline__ bool is_valid() const {
-        return col_index >= 0 && isfinite(value);
+        return index >= 0 && isfinite(value);
     }
 };
 
@@ -45,7 +47,23 @@ struct DescendingComparator {
         } else if (isfinite(b.value)) {
             return false;                           // b is valid, a is not
         } else {
-            return a.col_index < b.col_index;       // Compare indices if both are invalid
+            return a.index < b.index;               // Compare indices if both are invalid
+        }
+    }
+};
+
+// Comparison functor for ascending index sort (lower indices first)
+template<typename ValueType>
+struct AscendingIndexComparator {
+    __device__ __forceinline__ bool operator()(const TopKPair<ValueType>& a, const TopKPair<ValueType>& b) const {
+        if (a.index >= 0 && b.index >= 0) {
+            return a.index < b.index;               // Ascending order by index
+        } else if (a.index >= 0) {
+            return true;                            // a is valid, b is not
+        } else if (b.index >= 0) {
+            return false;                           // b is valid, a is not
+        } else {
+            return false;                           // Both are invalid, keep original order
         }
     }
 };
@@ -65,85 +83,116 @@ struct DynamicMask {
         , keep_window_size(keep_window_size) {
     };
 
-    template <typename TensorZeroHold, typename TensorActiveIndices>
-    __forceinline__ __device__ void get_active_zerohold(
-        TensorZeroHold &gZeroHold,                  // Zero-hold states tensor (actual_seqlen_k)
-        TensorActiveIndices &gActiveIndices,        // Active indices tensor (keep_window_size)
-        const int row_idx                           // Row index offset
+    template <typename TensorZOH, typename TensorActiveIndices>
+    __forceinline__ __device__ void get_active_zoh(
+        TensorZOH &gZOH,                            // ZOH states tensor (kBlockM, actual_seqlen_k)
+        TensorActiveIndices &gActiveIndices,        // Active indices tensor (kBlockM, keep_window_size)
+        const int m_block,                          // Block index for rows
+        const int kBlockM                           // Number of rows per block
     ) {
-        static_assert(TensorZeroHold::rank == 1, "gZeroHold must be 1D Tensor (actual_seqlen_k)");
-        static_assert(TensorActiveIndices::rank == 1, "gActiveIndices must be 1D Tensor (keep_window_size)");
-        // Skip if out of bounds
-        if (row_idx >= max_seqlen_q) return;
-        using ElementZeroHold = typename TensorZeroHold::value_type;
+        static_assert(TensorZOH::rank == 2, "gZOH must be 2D Tensor (kBlockM, actual_seqlen_k)");
+        static_assert(TensorActiveIndices::rank == 2, "gActiveIndices must be 2D Tensor (kBlockM, keep_window_size)");
+
+        using ElementZOH = typename TensorZOH::value_type;
 
         const int tid = threadIdx.x;
         const int num_threads = blockDim.x;
-        const int col_idx_limit = Is_causal ? min(max_seqlen_k, row_idx + 1 + max_seqlen_k - max_seqlen_q) : max_seqlen_k;
-
-        // Initialize all active indices as invalid
-        for (int k_idx = tid; k_idx < keep_window_size; k_idx += num_threads) {
-            gActiveIndices(k_idx) = -1;
-        }
-        __syncthreads();
-
-        // If no valid elements, return early
-        if (keep_window_size <= 0) {
-            return;
-        }
-
-        // if keep_window_size >= col_idx_limit, use all indices
-        if (keep_window_size >= col_idx_limit) {
-            for (int k_idx = tid; k_idx < col_idx_limit && k_idx < keep_window_size; k_idx += num_threads) {
-                gActiveIndices(k_idx) = k_idx;
+        constexpr int max_items_per_thread = ITEMS_PER_THREAD;
+        
+        // Declare shared memory outside the row loop - reused for all rows
+        using BlockMergeSortT = cub::BlockMergeSort<TopKPair<ElementZOH>, kNThreads, max_items_per_thread>;
+        __shared__ union {
+            typename BlockMergeSortT::TempStorage sort_storage;
+        } temp_storage;
+        
+        // Process one row at a time to ensure all threads work on the same row
+        #pragma unroll
+        for (int row_offset = 0; row_offset < kBlockM; row_offset++) {
+            int row_idx = m_block * kBlockM + row_offset;
+            
+            // Skip if beyond query sequence length
+            if (row_idx >= max_seqlen_q) continue;
+            
+            const int col_idx_limit = Is_causal ? 
+                min(max_seqlen_k, row_idx + 1 + max_seqlen_k - max_seqlen_q) : 
+                max_seqlen_k;
+            
+            // Initialize all active indices as invalid
+            for (int k_idx = tid; k_idx < keep_window_size; k_idx += num_threads) {
+                gActiveIndices(row_offset, k_idx) = -1;
             }
             __syncthreads();
-            return;
-        }
-        
-        // Initialize all elements as invalid
-        constexpr int max_items_per_thread = ITEMS_PER_THREAD;
-        TopKPair<ElementZeroHold> thread_data[max_items_per_thread];
-
-        #pragma unroll
-        for (int item = 0; item < max_items_per_thread; ++item) {
-            thread_data[item] = TopKPair<ElementZeroHold>();
-        }
-
-        // Collect valid elements from current row
-        #pragma unroll
-        for (int item = 0; item < max_items_per_thread; ++item) {
-            int global_k_idx = tid + item * num_threads;
-            if (global_k_idx < col_idx_limit) {
-                // Get the value from the zero-hold tensor
-                ElementZeroHold val = gZeroHold(global_k_idx);
-                thread_data[item] = TopKPair<ElementZeroHold>(val, global_k_idx);
+            
+            // If no valid elements, skip to next row
+            if (keep_window_size <= 0) {
+                continue;
             }
-        }
-
-        // Declare shared memory for BlockMergeSort at block scope
-        using BlockMergeSortT = cub::BlockMergeSort<TopKPair<ElementZeroHold>, kNThreads, max_items_per_thread>;
-        __shared__ typename BlockMergeSortT::TempStorage temp_storage;
-        // Block-wide collaborative sorting with explicit comparator
-        DescendingComparator<ElementZeroHold> comp;
-        BlockMergeSortT(temp_storage).Sort(thread_data, comp);
-        __syncthreads();
-
-        // Mark top-k elements as active
-        #pragma unroll
-        for (int item = 0; item < max_items_per_thread; ++item) {
-            int global_pos = tid * max_items_per_thread + item;
-            if (global_pos < keep_window_size && thread_data[item].is_valid()) {
-                gActiveIndices(global_pos) = thread_data[item].col_index;
+            
+            // If keep_window_size >= col_idx_limit, use all indices
+            if (keep_window_size >= col_idx_limit) {
+                for (int k_idx = tid; k_idx < col_idx_limit && k_idx < keep_window_size; k_idx += num_threads) {
+                    gActiveIndices(row_offset, k_idx) = k_idx;
+                }
+                __syncthreads();
+                continue;
             }
+            
+            // Initialize thread data
+            TopKPair<ElementZOH> value_data[max_items_per_thread];
+            #pragma unroll
+            for (int item = 0; item < max_items_per_thread; ++item) {
+                value_data[item] = TopKPair<ElementZOH>();
+            }
+            
+            // Collect valid elements from current row
+            #pragma unroll
+            for (int item = 0; item < max_items_per_thread; ++item) {
+                int global_k_idx = tid + item * num_threads;
+                if (global_k_idx < col_idx_limit) {
+                    // Get the value from the zoh tensor
+                    ElementZOH val = gZOH(row_offset, global_k_idx);
+                    value_data[item] = TopKPair<ElementZOH>(val, global_k_idx);
+                }
+            }
+            
+            // Block-wide collaborative sorting by value (descending)
+            DescendingComparator<ElementZOH> comp;
+            BlockMergeSortT(temp_storage.sort_storage).Sort(value_data, comp);
+            __syncthreads();
+            
+            // Store the top-k elements temporarily
+            TopKPair<ElementZOH> index_data[max_items_per_thread];
+            #pragma unroll
+            for (int item = 0; item < max_items_per_thread; ++item) {
+                int global_pos = tid * max_items_per_thread + item;
+                if (global_pos < keep_window_size && value_data[item].is_valid()) {
+                    index_data[item] = value_data[item];
+                } else {
+                    index_data[item] = TopKPair<ElementZOH>(); // Invalid
+                }
+            }
+
+            // Block-wide collaborative sorting by index (ascending)
+            AscendingIndexComparator<ElementZOH> comp_idx;
+            BlockMergeSortT(temp_storage.sort_storage).Sort(index_data, comp_idx);
+            __syncthreads();
+            
+            // Store sorted indices back to global memory
+            #pragma unroll
+            for (int item = 0; item < max_items_per_thread; ++item) {
+                int global_pos = tid * max_items_per_thread + item;
+                if (global_pos < keep_window_size) {
+                    gActiveIndices(row_offset, global_pos) = index_data[item].index;
+                }
+            }
+            __syncthreads();
         }
-        __syncthreads();
     }
 
-    template <bool Causal_mask=false, bool Is_even_MN=true, typename TensorType, typename ZeroHoldType, typename ActiveIndicesType>
+    template <bool Causal_mask=false, bool Is_even_MN=true, typename TensorType, typename ZOHType, typename ActiveIndicesType>
     __forceinline__ __device__ void apply_mask(
         TensorType &tensor_,                        // acc_s (attention scores, MMA=4, MMA_M, MMA_N)
-        ZeroHoldType &tZeroHold,                    // Zero-hold states (MMA=4, MMA_M, MMA_N)
+        ZOHType &tZOH,                              // ZOH states (MMA=4, MMA_M, MMA_N)
         ActiveIndicesType &tActiveIndices,          // Active indices (MMA=4, MMA_M, MMA_N)
         const float scale_softmax,                  // Scale for softmax
         const int col_idx_offset_,                  // Column index offset
@@ -151,18 +200,18 @@ struct DynamicMask {
         const int warp_row_stride                   // Warp row stride
     ) {
         static_assert(TensorType::rank == 3, "tensor_ must be 3D Tensor");
-        static_assert(ZeroHoldType::rank == 3, "tZeroHold must be 3D Tensor");
+        static_assert(ZOHType::rank == 3, "tZOH must be 3D Tensor");
         static_assert(ActiveIndicesType::rank == 3, "tActiveIndices must be 3D Tensor");
         static_assert(decltype(size<0>(tensor_))::value == 4, "First dimension must be 4");
-        static constexpr bool Need_masking = Causal_mask || !Is_even_MN || (keep_window_size < max_seqlen_k);
+        const bool Need_masking = Causal_mask || !Is_even_MN || (keep_window_size < max_seqlen_k);
         // Reshape tensors from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor tensor = make_tensor(tensor_.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tensor_.layout()));
-        Tensor zero_hold = make_tensor(tZeroHold.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tZeroHold.layout()));
+        Tensor zoh = make_tensor(tZOH.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tZOH.layout()));
         Tensor active_indices = make_tensor(tActiveIndices.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tActiveIndices.layout()));
 
         const int lane_id = threadIdx.x % 32;
         const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-        if constexpr (Need_masking) {
+        if (Need_masking) {
             #pragma unroll
             for (int mi = 0; mi < size<0, 1>(tensor); ++mi) {
                 const int row_idx_base = row_idx_offset + mi * warp_row_stride;
@@ -182,7 +231,7 @@ struct DynamicMask {
                                 tensor(coord) = -INFINITY;
                             } else {
                                 // Apply scaling and zoh
-                                tensor(coord) = tensor(coord) * scale_softmax + zero_hold(coord);
+                                tensor(coord) = tensor(coord) * scale_softmax + zoh(coord);
                             }
                         }
                     }
@@ -203,7 +252,7 @@ struct DynamicMask {
                         for (int j = 0; j < size<1, 0>(tensor); ++j) {
                             const int col_idx = col_idx_base + j;
                             auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                            tensor(coord) = tensor(coord) * scale_softmax + zero_hold(coord);
+                            tensor(coord) = tensor(coord) * scale_softmax + zoh(coord);
                         }
                     }
                 }
