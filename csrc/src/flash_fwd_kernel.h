@@ -178,26 +178,26 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_stride(params.seqlen_k_rounded, _1{})
     );
-    Tensor mZeroHold = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.zero_hold_ptr) + binfo.zero_hold_offset(params.zero_hold_batch_stride, bidb)),
-        make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
-        make_stride(params.zero_hold_head_stride, params.zero_hold_row_stride, _1{})
+    Tensor mZOH = make_tensor(
+        make_gmem_ptr(reinterpret_cast<Element*>(params.zoh_ptr) + binfo.zoh_offset(params.zoh_batch_stride, bidb)),
+        make_shape(params.h_k, binfo.actual_seqlen_k),
+        make_stride(params.zoh_head_stride, _1{})
     );
-    Tensor gZeroHold = local_tile(
-        mZeroHold(bidh / params.h_h_k_ratio, _, _),
-        make_shape(Int<kBlockM>{}, binfo.actual_seqlen_k),
-        make_coord(m_block, 0)
-    );  // (kBlockM, actual_seqlen_k)
-    Tensor mActiveIndices = make_tensor(
-        make_gmem_ptr(reinterpret_cast<int*>(params.active_indices_ptr) + binfo.active_indices_offset(params.active_indices_batch_stride, bidb)),
-        make_shape(params.h_k, binfo.actual_seqlen_q, params.keep_window_size),
-        make_stride(params.active_indices_head_stride, params.active_indices_row_stride, _1{})
+    Tensor gZOH = local_tile(
+        mZOH(bidh / params.h_h_k_ratio, _),
+        make_shape(binfo.actual_seqlen_k),
+        make_coord(0)
+    );  // (actual_seqlen_k)
+    Tensor mActiveMask = make_tensor(
+        make_gmem_ptr(reinterpret_cast<bool*>(params.active_mask_ptr) + binfo.active_mask_offset(params.active_mask_batch_stride, bidb)),
+        make_shape(params.h_k, binfo.actual_seqlen_k),
+        make_stride(params.active_mask_head_stride, _1{})
     );
-    Tensor gActiveIndices = local_tile(
-        mActiveIndices(bidh / params.h_h_k_ratio, _, _),
-        make_shape(Int<kBlockM>{}, params.keep_window_size),
-        make_coord(m_block, 0)
-    );  // (kBlockM, keep_window_size)
+    Tensor gActiveMask = local_tile(
+        mActiveMask(bidh / params.h_h_k_ratio, _),
+        make_shape(binfo.actual_seqlen_k),
+        make_coord(0)
+    );  // (actual_seqlen_k)
 
     // Shared memory layout configuration
     Tensor sQ = make_tensor(
@@ -221,15 +221,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         sV.data().get(),
         typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{}
     );
-    // Element* smem_zerohold_ptr = reinterpret_cast<Element*>(sV.data().get() + size(sV));
-    // Tensor sZeroHold = make_tensor(
-    //     make_smem_ptr(smem_zerohold_ptr),
-    //     typename Kernel_traits::SmemLayoutZeroHold{}
+    // Element* smem_zoh_ptr = reinterpret_cast<Element*>(sV.data().get() + size(sV));
+    // Tensor sZOH = make_tensor(
+    //     make_smem_ptr(smem_zoh_ptr),
+    //     typename Kernel_traits::SmemLayoutZOH{}
     // );  // (kBlockM, kBlockN)
-    // int* smem_active_indices_ptr = reinterpret_cast<int*>(smem_zerohold_ptr + size(sZeroHold));
-    // Tensor sActiveIndices = make_tensor(
-    //     make_smem_ptr(smem_active_indices_ptr),
-    //     typename Kernel_traits::SmemLayoutActiveIndices{}
+    // int* smem_active_mask_ptr = reinterpret_cast<int*>(smem_zoh_ptr + size(sZOH));
+    // Tensor sActiveMask = make_tensor(
+    //     make_smem_ptr(smem_active_mask_ptr),
+    //     typename Kernel_traits::SmemLayoutActiveMask{}
     // );  // (kBlockM, kBlockN)
 
     // Golobal to Shared Memory operation
@@ -354,22 +354,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         params.keep_window_size
     );
 
-    // Get top-k active indices of zero-hold states
-    for (int local_row = 0; local_row < kBlockM; ++local_row) {
-        int global_row = m_block * kBlockM + local_row;
-        if (global_row < binfo.actual_seqlen_q) {
-            // Get the zero-hold states and active indices for the current row
-            // TODO: we can optimize get_active_zerohold to process 2D tensors.
-            auto gZeroHold_row = gZeroHold(local_row, _);
-            auto gActiveIndices_row = gActiveIndices(local_row, _);
-            dynamic_mask.get_active_zerohold(
-                gZeroHold_row,
-                gActiveIndices_row,
-                global_row
-            );
-        }
-    }
-
     // For performance reason, we separate out two kinds of iterations:
     // those that need masking on S, and those that don't.
     // We need masking on S for the very last block when K and V has length not multiple of kBlockN.
@@ -385,14 +369,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
-        auto tZeroHold = FLASH_NAMESPACE::convert_global_zerohold_to_mma_zerohold(
-            gZeroHold, acc_s.layout(),
+        auto tZOH = FLASH_NAMESPACE::convert_global_zoh_to_mma_zoh(
+            gZOH, acc_s.layout(),
             n_block * kBlockN,
             m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
             kNWarps * 16
         );
-        auto tActiveIndices = FLASH_NAMESPACE::convert_window_indices_to_mma_indices(
-            gActiveIndices, acc_s.layout(),
+        auto tActiveMask = FLASH_NAMESPACE::convert_global_mask_to_mma_mask(
+            gActiveMask, acc_s.layout(),
             n_block * kBlockN,
             m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
             kNWarps * 16
@@ -418,7 +402,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             tSrK, tSsQ, tSsK,
             tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
-            // tActiveIndices           // Active key indices for sparse K matrix multiplication
+            // tActiveMask           // Active key indices for sparse K matrix multiplication
         );
         // if (cute::thread0()) { print(acc_s); }
         if constexpr (Is_softcap){
@@ -427,7 +411,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Scale attention scores and apply dynamic mask
         dynamic_mask.template apply_mask<Is_causal, Is_even_MN>(
-            acc_s, tZeroHold, tActiveIndices, params.scale_softmax,
+            acc_s, tZOH, tActiveMask, params.scale_softmax,
             n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
         );
 
@@ -474,7 +458,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             acc_o,
             tOrP, tOrVt, tOsVt,
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
-            // tActiveIndices        // Apply the same mask for sparse V matrix multiplication
+            // tActiveMask        // Apply the same mask for sparse V matrix multiplication
         );
         // if (cute::thread0()) { print(scores); }
 
@@ -489,14 +473,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     for (; n_block >= n_block_min; --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
-        auto tZeroHold = FLASH_NAMESPACE::convert_global_zerohold_to_mma_zerohold(
-            gZeroHold, acc_s.layout(),
+        auto tZOH = FLASH_NAMESPACE::convert_global_zoh_to_mma_zoh(
+            gZOH, acc_s.layout(),
             n_block * kBlockN,
             m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
             kNWarps * 16
         );
-        auto tActiveIndices = FLASH_NAMESPACE::convert_window_indices_to_mma_indices(
-            gActiveIndices, acc_s.layout(),
+        auto tActiveMask = FLASH_NAMESPACE::convert_global_mask_to_mma_mask(
+            gActiveMask, acc_s.layout(),
             n_block * kBlockN,
             m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
             kNWarps * 16
@@ -512,7 +496,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             tSrK, tSsQ, tSsK,
             tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
-            // tActiveIndices           // Active key indices for sparse K matrix multiplication
+            // tActiveMask           // Active key indices for sparse K matrix multiplication
         );
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
@@ -529,7 +513,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Scale attention scores and apply dynamic mask
         dynamic_mask.template apply_mask</*Causal_mask=*/false>(
-            acc_s, tZeroHold, tActiveIndices, params.scale_softmax,
+            acc_s, tZOH, tActiveMask, params.scale_softmax,
             n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
         );
 
@@ -561,7 +545,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             acc_o,
             tOrP, tOrVt, tOsVt,
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
-            // tActiveIndices           // Apply the same mask for sparse V matrix multiplication
+            // tActiveMask           // Apply the same mask for sparse V matrix multiplication
         );
     }
 
