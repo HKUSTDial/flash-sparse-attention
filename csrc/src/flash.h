@@ -45,17 +45,15 @@ struct QKV_params {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct ZeroHold_params {
-    void *__restrict__ zero_hold_ptr;           // Zero-hold states tensor [batch_size, num_kv_heads, query_len, key_len]
-    void * __restrict__ active_indices_ptr;     // Active indices tensor [batch_size, num_kv_heads, query_len, keep_window_size]
+struct ZOH_params {
+    void *__restrict__ zoh_ptr;                 // ZOH states tensor [batch_size, num_kv_heads, key_len]
+    void * __restrict__ active_mask_ptr;        // Active mask tensor [batch_size, num_kv_heads, key_len]
 
-    // The stride of the zero-hold states and active indices tensors.
-    index_t zero_hold_batch_stride;             // Stride between batches of zero-hold states
-    index_t zero_hold_head_stride;              // Stride between heads of zero-hold states
-    index_t zero_hold_row_stride;               // Stride for the third dimension (query_len) of zero-hold states
-    index_t active_indices_batch_stride;        // Stride between batches of active indices
-    index_t active_indices_head_stride;         // Stride between heads of active indices
-    index_t active_indices_row_stride;          // Stride for the third dimension (query_len) of active indices
+    // The stride of the zero-hold states and active mask tensors.
+    index_t zoh_batch_stride;                   // Stride between batches of ZOH states
+    index_t active_mask_batch_stride;           // Stride between batches of active mask
+    index_t zoh_head_stride;                    // Stride between heads of ZOH states
+    index_t active_mask_head_stride;            // Stride between heads of active mask
 
     // The keep window size.
     int keep_window_size;                       // Number of tokens to keep in top-k (0 means don't apply top-k)
@@ -63,7 +61,7 @@ struct ZeroHold_params {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct Flash_fwd_params : public QKV_params, public ZeroHold_params {
+struct Flash_fwd_params : public QKV_params, public ZOH_params {
 
     // The O matrix (output).
     void * __restrict__ o_ptr;
