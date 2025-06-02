@@ -310,10 +310,10 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Convert 2D global ZOH tensor to 3D MMA layout tensor for apply_mask
+// Convert 1D global ZOH tensor to 3D MMA layout tensor for apply_mask
 template <typename Tensor, typename LayoutMMA>
 __forceinline__ __device__ auto convert_global_zoh_to_mma_zoh(
-    Tensor const &gZOH,                                       // ZOH tensor (kBlockM, actual_seqlen_k)
+    Tensor const &gZOH,                                       // ZOH tensor (actual_seqlen_k)
     LayoutMMA const &mma_layout,                              // Target MMA layout (4, MMA_M, MMA_N)
     const int col_idx_offset_,                                // Column index offset
     const int row_idx_offset,                                 // Row index offset
@@ -336,14 +336,12 @@ __forceinline__ __device__ auto convert_global_zoh_to_mma_zoh(
 
     const int lane_id = threadIdx.x % 32;
     const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-    const int actual_seqlen_k = size<1>(gZOH);
+    const int actual_seqlen_k = size<0>(gZOH);
 
     #pragma unroll
     for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
-        const int row_idx_base = row_idx_offset + mi * warp_row_stride;
         #pragma unroll
         for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
-            const int row_idx = row_idx_base + i * 8;
             #pragma unroll
             for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
                 const int col_idx_base = col_idx_offset + nj * 8;
@@ -352,7 +350,7 @@ __forceinline__ __device__ auto convert_global_zoh_to_mma_zoh(
                     const int col_idx = col_idx_base + j;
                     auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
                     if (col_idx < actual_seqlen_k) {
-                        fragment_rowcol(coord) = gZOH(row_idx, col_idx);
+                        fragment_rowcol(coord) = gZOH(col_idx);
                     }
                 }
             }
@@ -364,25 +362,25 @@ __forceinline__ __device__ auto convert_global_zoh_to_mma_zoh(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Convert 2D global active indices to 3D MMA layout indices for sparse matrix multiplication
+// Convert 1D global active mask to 3D MMA layout indices for apply_mask
 template <typename Tensor, typename Layout>
-__forceinline__ __device__ auto convert_global_indices_to_mma_indices(
-    Tensor const &gActiveIndices,               // Active indices tensor (kBlockM, keep_window_size)
+__forceinline__ __device__ auto convert_global_mask_to_mma_mask(
+    Tensor const &gActiveMask,                    // Active mask tensor (actual_seqlen_k)
     Layout const &mma_layout,                     // Target MMA layout (4, MMA_M, MMA_N)
     const int col_idx_offset_,                    // Column index offset
     const int row_idx_offset,                     // Row index offset
     const int warp_row_stride                     // Warp row stride
 ) {
-    using Element = int;
+    using Element = bool;
     // Create 3D tensor with MMA layout for indices
     constexpr int mma_size = decltype(size(mma_layout))::value;
     Element mma_data[mma_size];
     auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
 
-    // Initialize the MMA fragment to -1
+    // Initialize the MMA fragment to false
     #pragma unroll
     for (int i = 0; i < mma_size; ++i) {
-        mma_data[i] = static_cast<Element>(-1);
+        mma_data[i] = static_cast<Element>(false);
     }
 
     // Convert layout to rowcol format for easier indexing
@@ -390,15 +388,12 @@ __forceinline__ __device__ auto convert_global_indices_to_mma_indices(
 
     const int lane_id = threadIdx.x % 32;
     const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-    const int keep_window_size = size<1>(gActiveIndices);
+    const int actual_seqlen_k = size<0>(gActiveMask);
 
     #pragma unroll
     for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
-        const int row_idx_base = row_idx_offset + mi * warp_row_stride;
         #pragma unroll
-        for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
-            const int row_idx = row_idx_base + i * 8;
-            int last_match_col_idx = 0;  // Track position in active indices
+        for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {  
             #pragma unroll
             for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
                 const int col_idx_base = col_idx_offset + nj * 8;
@@ -406,13 +401,8 @@ __forceinline__ __device__ auto convert_global_indices_to_mma_indices(
                 for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
                     const int col_idx = col_idx_base + j;
                     auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                    for (int k = last_match_col_idx; k < keep_window_size; ++k) {
-                        int active_col = gActiveIndices(row_idx, k);
-                        bool is_match = (active_col == col_idx);
-                        bool should_break = (active_col < 0 || active_col > col_idx || is_match);
-                        fragment_rowcol(coord) = is_match ? k : fragment_rowcol(coord);
-                        last_match_col_idx = is_match ? k + 1 : last_match_col_idx;
-                        if (should_break) break;
+                    if (col_idx < actual_seqlen_k) {
+                        fragment_rowcol(coord) = gActiveMask(col_idx);
                     }
                 }
             }
@@ -593,24 +583,6 @@ __forceinline__ __device__ void calculate_dtanh(Tensor<Engine0, Layout0> &src_te
     for (int i = 0; i < size(src_tensor); ++i) {
         dst_tensor(i) = (1.f - (src_tensor(i) * src_tensor(i))) * softcap;
     }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template <typename Element>
-__forceinline__ __device__ int non_zero_mask_indices(
-    const Element* dynamic_mask_1rowblock,  // Dynamic mask one row block [key_len]
-    int* non_zero_indices,                  // Non-zero indices [key_len]
-    int key_len                             // Key length
-) {
-    int nnz = 0;
-    #pragma unroll
-    for (int idx = 0; idx < key_len; ++idx) {
-        if (dynamic_mask_1rowblock[idx] != static_cast<Element>(0)) {
-            non_zero_indices[nnz++] = idx;
-        }
-    }
-    return nnz;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
