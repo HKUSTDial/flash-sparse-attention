@@ -36,13 +36,13 @@ struct BlockInfo {
     }
 
     template <typename index_t>
-    __forceinline__ __device__ index_t zero_hold_offset(const index_t batch_stride, const int bidb
+    __forceinline__ __device__ index_t zoh_offset(const index_t batch_stride, const int bidb
     ) const {
         return bidb * batch_stride;
     }
 
     template <typename index_t>
-    __forceinline__ __device__ index_t active_indices_offset(const index_t batch_stride, const int bidb) const {
+    __forceinline__ __device__ index_t active_mask_offset(const index_t batch_stride, const int bidb) const {
         return bidb * batch_stride;
     }
 
