@@ -362,7 +362,7 @@ __forceinline__ __device__ auto convert_global_zoh_to_mma_zoh(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Convert 1D global active mask to 3D MMA layout indices for apply_mask
+// Convert 1D global active mask to 3D MMA layout mask for apply_mask
 template <typename Tensor, typename Layout>
 __forceinline__ __device__ auto convert_global_mask_to_mma_mask(
     Tensor const &gActiveMask,                    // Active mask tensor (actual_seqlen_k)
@@ -372,7 +372,7 @@ __forceinline__ __device__ auto convert_global_mask_to_mma_mask(
     const int warp_row_stride                     // Warp row stride
 ) {
     using Element = bool;
-    // Create 3D tensor with MMA layout for indices
+    // Create 3D tensor with MMA layout for mask
     constexpr int mma_size = decltype(size(mma_layout))::value;
     Element mma_data[mma_size];
     auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
