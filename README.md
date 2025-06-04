@@ -22,15 +22,6 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 - **NVIDIA GPU**: Compute Capability 6.0 or higher
 - **C++ Compiler**: GCC 7+ or compatible
 
-### Install from Source
-
-```bash
-git clone https://github.com/SmallDoges/flash-dmattn.git
-cd flash-dmattn
-git submodule update --init --recursive
-pip install .
-```
-
 ### CUDA Environment Setup
 
 Ensure your CUDA environment is properly configured:
@@ -43,7 +34,17 @@ nvcc --version
 export CUDA_HOME=/usr/local/cuda
 ```
 
-## Quick Start
+### Install from Source
+
+```bash
+git clone https://github.com/SmallDoges/flash-dmattn.git
+cd flash-dmattn
+git submodule update --init --recursive
+pip install .
+```
+
+
+<!-- ## Quick Start
 
 ### Basic Usage
 
@@ -79,7 +80,7 @@ Flash-DMA achieves significant speedups for long sequences:
 |-----------------|----------------|---------------------|-------------------|
 | 4,096          | 0.25           | 4.0×                | 2.5-3.0×          |
 | 16,384         | 0.125          | 8.0×                | 4.0-5.0×          |
-| 65,536         | 0.0625         | 16.0×               | 6.0-8.0×          |
+| 65,536         | 0.0625         | 16.0×               | 6.0-8.0×          | -->
 
 ## How It Works
 
@@ -108,28 +109,9 @@ For detailed technical documentation, see:
 
 ### API Reference
 
-#### `apply_dynamic_mask_attention`
+> [!IMPORTANT]
+> TODO
 
-```python
-apply_dynamic_mask_attention(
-    query: torch.Tensor,           # [batch, heads, seq_len, head_dim]
-    key: torch.Tensor,             # [batch, heads, seq_len, head_dim] 
-    value: torch.Tensor,           # [batch, heads, seq_len, head_dim]
-    dt_proj: torch.Tensor,         # [heads, heads * head_dim]
-    A: torch.Tensor,               # [heads]
-    causal_mask: torch.Tensor = None,  # [batch, 1, seq_len, seq_len]
-    keep_window_size: int = 2048,
-    is_causal: bool = True
-) -> torch.Tensor
-```
-
-**Parameters:**
-- `query, key, value`: Input attention tensors in BHSD format
-- `dt_proj`: Projection matrix for dynamic mask computation
-- `A`: Scaling coefficients for each attention head
-- `causal_mask`: Optional causal mask (0 = keep, -inf = mask)
-- `keep_window_size`: Maximum number of keys to keep per query
-- `is_causal`: Enable causal attention masking
 
 ## Building from Source
 
@@ -160,39 +142,9 @@ pip install -e .
 ### Run Tests
 
 ```bash
-# Basic functionality test
-python test_dynamic_mask_equivalence.py
-
-# Comprehensive attention test
-python test_dynamic_mask_attention_equivalence.py
-
-# Performance benchmarks
+# Gradient equivalent benchmarks
 python benchmarks/benchmark_grad.py
 ```
-
-### Test Options
-
-```bash
-# Test with different parameters
-python test_dynamic_mask_equivalence.py --seed 42 --perf
-
-# Custom test configuration
-python test_dynamic_mask_attention_equivalence.py --batch-size 2 --seq-len 8192
-```
-
-## Performance
-
-### Memory Efficiency
-
-- **Standard Attention**: O(N²) memory for N sequence length
-- **Flash-DMA**: O(N) memory complexity
-- **Reduced Peak Memory**: Up to 8× reduction for very long sequences
-
-### Computational Efficiency  
-
-- **Dynamic Selection**: Only computes attention for k most relevant keys
-- **Sparse Operations**: Custom CUDA kernels for sparse matrix operations
-- **Block Processing**: Maintains cache-friendly memory access patterns
 
 ### Compatibility
 
@@ -207,13 +159,6 @@ python test_dynamic_mask_attention_equivalence.py --batch-size 2 --seq-len 8192
 
 ### Common Issues
 
-**CUDA Out of Memory**
-```bash
-# Reduce batch size or sequence length
-# Use gradient checkpointing
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-```
-
 **Compilation Errors**
 ```bash
 # Ensure CUDA_HOME is set
@@ -227,18 +172,6 @@ which nvcc
 - Use appropriate data types (float16 recommended)
 - Verify CUDA kernels are being used (not CPU fallback)
 
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Run the test suite
-5. Submit a pull request
-
 ## License
 
 This project is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) for details.
@@ -248,9 +181,9 @@ This project is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) 
 If you use Flash-DMA in your research, please cite:
 
 ```bibtex
-@software{flash_dma_2025,
-  title={Flash Dynamic Mask Attention: Efficient Long Sequence Processing},
-  author={SmallDoges Contributors},
+@misc{flash_dma_2025,
+  title={Trainable Dynamic Mask Sparse Attention},
+  author={Jingze Shi and Yifan Wu and Bingheng Wu and Yiran Peng and Yuyu Luo},
   year={2025},
   url={https://github.com/SmallDoges/flash-dmattn}
 }
