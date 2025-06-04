@@ -396,13 +396,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         cute::cp_async_fence();
 
         // TODO: support sparse general matrix multiplication
-        FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::gemm</*kNWarps*/ /*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
             tSrQ,
             tSrK, tSsQ, tSsK,
+            // tActiveMask,        // Active key indices for sparse K matrix multiplication
             tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
-            // tActiveMask           // Active key indices for sparse K matrix multiplication
         );
         // if (cute::thread0()) { print(acc_s); }
         if constexpr (Is_softcap){
@@ -454,11 +454,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
         // if (cute::thread0()) { print(tOrP); }
         // TODO: support sparse general matrix multiplication with register accumulation
-        FLASH_NAMESPACE::gemm_rs(
+        FLASH_NAMESPACE::gemm_rs</*kNWarps*/>(
             acc_o,
             tOrP, tOrVt, tOsVt,
+            // tActiveMask,        // Apply the same mask for sparse V matrix multiplication
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
-            // tActiveMask        // Apply the same mask for sparse V matrix multiplication
         );
         // if (cute::thread0()) { print(scores); }
 
@@ -490,13 +490,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
         cute::cp_async_fence();
 
-        FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::gemm</*kNWarps*/ /*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
             tSrQ,
             tSrK, tSsQ, tSsK,
+            // tActiveMask,        // Active key indices for sparse K matrix multiplication
             tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
-            // tActiveMask           // Active key indices for sparse K matrix multiplication
         );
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
@@ -541,11 +541,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        FLASH_NAMESPACE::gemm_rs(
+        FLASH_NAMESPACE::gemm_rs</*kNWarps*/>(
             acc_o,
             tOrP, tOrVt, tOsVt,
+            // tActiveMask,        // apply the same mask for sparse V matrix multiplication
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
-            // tActiveMask           // Apply the same mask for sparse V matrix multiplication
         );
     }
 
@@ -617,6 +617,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         gmem_tiled_copy_O, tOrO, tOgO, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
     );
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn(const Params &params) {
