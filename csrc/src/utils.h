@@ -132,14 +132,15 @@ static __device__ __forceinline__ T run(T x, Operator &op) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<bool A_in_regs=false, bool B_in_regs=false, typename Tensor0, typename Tensor1,
-         typename Tensor2, typename Tensor3, typename Tensor4,
-         typename TiledMma, typename TiledCopyA, typename TiledCopyB,
-         typename ThrCopyA, typename ThrCopyB>
-__forceinline__ __device__ void gemm(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA,
-                            Tensor4 const& tCsB, TiledMma tiled_mma,
-                            TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
-                            ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B) {
+template <bool A_in_regs=false, bool B_in_regs=false,
+          typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
+          typename TiledMma, typename TiledCopyA, typename TiledCopyB,
+          typename ThrCopyA, typename ThrCopyB>
+__forceinline__ __device__ void gemm(
+    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB,
+    TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
+    ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
+) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
@@ -161,48 +162,100 @@ __forceinline__ __device__ void gemm(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB,
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// template<bool A_in_regs=false, bool B_in_regs=false, typename Tensor0, typename Tensor1,
-//          typename Tensor2, typename Tensor3, typename Tensor4,
-//          typename TiledMma, typename TiledCopyA, typename TiledCopyB,
-//          typename ThrCopyA, typename ThrCopyB, typename ActiveIndices>
-// __forceinline__ __device__ void sparse_gemm(
-//     Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA,
-//     Tensor4 const& tCsB, TiledMma tiled_mma,
-//     TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
-//     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B,
-//     ActiveIndices const &active_indices
-// ) {
-//     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
-//     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
-//     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
-//     auto tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
-//     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));             // M
-//     auto tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
-//     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));             // N
-//     if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, _0{}), tCrA_copy_view(_, _, _0{})); }
-//     if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, _0{}), tCrB_copy_view(_, _, _0{})); }
-//     #pragma unroll
-//     for (int i = 0; i < size<2>(tCrA); ++i) {
-//         if (i < size<2>(tCrA) - 1) {
-//                 if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, i + 1), tCrA_copy_view(_, _, i + 1)); }
-//                 if (!B_in_regs) { cute::copy(smem_tiled_copy_B, tCsB(_, _, i + 1), tCrB_copy_view(_, _, i + 1)); }
-//         }
-//         cute::sparse_gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc, active_indices);
-//     }
-// }
+template <int kNWarps, bool A_in_regs=false, bool B_in_regs=false,
+          typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4, typename Tensor5,
+          typename TiledMma, typename TiledCopyA, typename TiledCopyB,
+          typename ThrCopyA, typename ThrCopyB>
+__forceinline__ __device__ void sparse_gemm(
+    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &active_mask,
+    TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
+    ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
+) {
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(active_mask));                // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(active_mask));                // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
+    auto tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
+    CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));             // M
+    auto tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
+    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));             // N
+    bool mma_active[kNWarps] = {};  // MMA
+    // Considering the characteristics of MMA and the chain of thoughts,
+    // when there is any activated element in the query row or key column, 
+    // we will mark the MMA block as activated.
+    #pragma unroll
+    for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+        mma_active[mma] = false;
+        #pragma unroll
+        for (int m = 0; m < size<1>(active_mask); ++m) {
+            #pragma unroll
+            for (int n = 0; n < size<2>(active_mask); ++n) {
+                if (active_mask(mma, m, n)) {
+                    mma_active[mma] = true;
+                    goto mma_active_found;
+                }
+            }
+        }
+        mma_active_found:;
+    }
+    if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, _0{}), tCrA_copy_view(_, _, _0{})); }
+    if (!B_in_regs) {
+        #pragma unroll
+        for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+            if (mma_active[mma]) {
+                cute::copy(smem_tiled_copy_B, tCsB(mma, _, _0{}), tCrB_copy_view(mma, _, _0{}));
+            } else {
+                cute::clear(tCrB_copy_view(mma, _, _0{}));
+            }
+        }
+    }
+    #pragma unroll
+    for (int i = 0; i < size<2>(tCrA); ++i) {
+        if (i < size<2>(tCrA) - 1) {
+            if (!A_in_regs) { cute::copy(smem_tiled_copy_A, tCsA(_, _, i + 1), tCrA_copy_view(_, _, i + 1)); }
+            if (!B_in_regs) {
+                #pragma unroll
+                for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+                    if (mma_active[mma]) {
+                        cute::copy(smem_tiled_copy_B, tCsB(mma, _, i + 1), tCrB_copy_view(mma, _, i + 1));
+                    } else {
+                        cute::clear(tCrB_copy_view(mma, _, i + 1));
+                    }
+                    
+                }
+            }
+        }
+        // We must create a view to match `TiledMma` layout.
+        #pragma unroll
+        for (int mma = 0; mma < size<0>(active_mask); ++mma) {  // MMA
+            if (mma_active[mma]) {
+                cute::gemm(
+                    tiled_mma,
+                    tCrA(mma, _, i),                            // (MMA_M, MMA_K)
+                    tCrB(mma, _, i),                            // (MMA_N, MMA_K)
+                    acc(mma, _, _)                              // (MMA_M, MMA_N)
+                );
+            }
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
-         typename TiledMma, typename TiledCopy, typename ThrCopy>
-__forceinline__ __device__ void gemm_rs(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
-                               TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
-                               ThrCopy smem_thr_copy_B) {
-    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                     // MMA_M
-    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                     // MMA_N
-    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                     // MMA_K
+template <typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
+          typename TiledMma, typename TiledCopy,
+          typename ThrCopy>
+__forceinline__ __device__ void gemm_rs(
+    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
+    TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
+    ThrCopy smem_thr_copy_B
+) {
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
     Tensor tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
-    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // N
+    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));             // N
     cute::copy(smem_tiled_copy_B, tCsB(_, _, _0{}), tCrB_copy_view(_, _, _0{}));
     #pragma unroll
     for (int i = 0; i < size<2>(tCrA); ++i) {
@@ -215,44 +268,73 @@ __forceinline__ __device__ void gemm_rs(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tC
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// template<typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
-//          typename TiledMma, typename TiledCopy, typename ThrCopy,
-//          typename PredicateTensor>
-// __forceinline__ __device__ void sparse_gemm_rs(
-//     Tensor0 &acc,
-//     Tensor1 &tCrA,
-//     Tensor2 &tCrB,
-//     Tensor3 const& tCsB,
-//     TiledMma tiled_mma,
-//     TiledCopy smem_tiled_copy_B,
-//     ThrCopy smem_thr_copy_B,
-//     PredicateTensor const &predicate_K
-// ) {
-//     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                    // MMA_M
-//     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                    // MMA_N
-//     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                   // MMA_K
-//     // Retile B for thread-wise copy from shared memory to registers
-//     auto tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
-//     CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));         // N
-
-//     #pragma unroll
-//     for (int i = 0; i < size<2>(tCrA); ++i) {
-//         #pragma unroll
-//         for (int n = 0; n < size<1>(tCrB_copy_view); ++n) {
-//             if (!predicate_K(n)) {
-//                 cute::clear(tCrB_copy_view(_, n, i));
-//             }
-//             if (i < size<2>(tCrA) - 1) {
-//                 if (predicate_K(n)) {
-//                     cute::copy(smem_tiled_copy_B, tCsB(_, n, i + 1), tCrB_copy_view(_, n, i + 1));
-//                 } else {
-//                     cute::clear(tCrB_copy_view(_, n, i + 1));
-//                 }
-//             }
-//         }
-//         cute::gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc);
-//     }
-// }
+template <int kNWarps,
+          typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
+          typename TiledMma, typename TiledCopy,
+          typename ThrCopy>
+__forceinline__ __device__ void sparse_gemm_rs(
+    Tensor0 &acc,
+    Tensor1 &tCrA,
+    Tensor2 &tCrB,
+    Tensor3 const& tCsB,
+    Tensor4 const &active_mask,
+    TiledMma tiled_mma,
+    TiledCopy smem_tiled_copy_B,
+    ThrCopy smem_thr_copy_B
+) {
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(active_mask));                // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(active_mask));                // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
+    // Retile B for thread-wise copy from shared memory to registers
+    auto tCrB_copy_view = smem_thr_copy_B.retile_D(tCrB);
+    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));             // N
+    // Check if any row or column in the MMA block is active.
+    bool mma_active[kNWarps] = {};  // MMA
+    #pragma unroll
+    for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+        mma_active[mma] = false;
+        #pragma unroll
+        for (int m = 0; m < size<1>(active_mask); ++m) {
+            #pragma unroll
+            for (int n = 0; n < size<2>(active_mask); ++n) {
+                if (active_mask(mma, m, n)) {
+                    mma_active[mma] = true;
+                    goto mma_active_found;
+                }
+            }
+        }
+        mma_active_found:;
+    }
+    #pragma unroll
+    for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+        if (mma_active[mma]) {
+            cute::copy(smem_tiled_copy_B, tCsB(mma, _, _0{}), tCrB_copy_view(mma, _, _0{}));
+        } else {
+            cute::clear(tCrB_copy_view(mma, _, _0{}));
+        }
+    }
+    #pragma unroll
+    for (int i = 0; i < size<2>(tCrA); ++i) {
+        if (i < size<2>(tCrA) - 1) {
+            #pragma unroll
+            for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+                if (mma_active[mma]) {
+                    cute::copy(smem_tiled_copy_B, tCsB(mma, _, i + 1), tCrB_copy_view(mma, _, i + 1));
+                } else {
+                    cute::clear(tCrB_copy_view(mma, _, i + 1));
+                }
+            }
+        }
+        #pragma unroll
+        for (int mma = 0; mma < size<0>(active_mask); ++mma) {
+            if (mma_active[mma]) {
+                cute::gemm(tiled_mma, tCrA(mma, _, i), tCrB(mma, _, i), acc(mma, _, _));
+            }
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
