@@ -34,7 +34,7 @@ def prepare_dynamic_mask(
         attn_mask = attn_mask.masked_fill(attention_mask[:, :, :, : attn_mask.shape[-1]] != 0, min_dtype)
     if attn_mask.shape[-1] > keep_window_size:
         topk_indices = torch.topk(
-            attn_mask, attn_mask.shape[-1] - keep_window_size, dim=-1, largest=True, sorted=False
+            attn_mask, keep_window_size, dim=-1, largest=True, sorted=False
         ).indices
         active_mask = active_mask.scatter(-1, topk_indices, True)
         attn_mask = attn_mask.masked_fill(active_mask, min_dtype)
