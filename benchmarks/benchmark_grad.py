@@ -22,7 +22,7 @@ def prepare_dynamic_mask(
     """
     min_dtype = torch.finfo(hidden_states.dtype).min
     attn_mask = dt_states[:, :, None, :].expand(
-        -1, -1, hidden_states.shape[1], -1
+        -1, -1, hidden_states.shape[2], -1
     )  # [batch_size, num_heads, query_len, key_len]
     active_mask = torch.zeros_like(attn_mask, dtype=torch.bool, device=attn_mask.device)
     if attention_mask is not None:
@@ -37,7 +37,7 @@ def prepare_dynamic_mask(
             attn_mask, keep_window_size, dim=-1, largest=True, sorted=False
         ).indices
         active_mask = active_mask.scatter(-1, topk_indices, True)
-        attn_mask = attn_mask.masked_fill(active_mask, min_dtype)
+        attn_mask = attn_mask.masked_fill(~active_mask, min_dtype)
     return attn_mask, active_mask
 
 
@@ -61,7 +61,7 @@ def dynamic_mask_attention_cuda(
     dt_states = torch.matmul(value_states.transpose(-2, -3).reshape(batch_size, key_len, -1), dt_proj.T)
     dt_states = torch.exp(A * F.softplus(dt_states)).transpose(-1, -2)
     attn_mask, _ = prepare_dynamic_mask(
-        value_states, dt_states, keep_window_size=keep_window_size, attention_mask=causal_mask
+        query_states, dt_states, keep_window_size=keep_window_size, attention_mask=causal_mask
     )  # [batch_size, num_kv_heads, query_len, key_len]
 
     for b_idx in range(batch_size):
@@ -119,7 +119,7 @@ def dynamic_mask_attention_python(
     dt_states = torch.matmul(value_states.transpose(-2, -3).reshape(batch_size, key_len, -1), dt_proj.T)
     dt_states = torch.exp(A * F.softplus(dt_states)).transpose(-1, -2)
     attn_mask, _ = prepare_dynamic_mask(
-        value_states, dt_states, keep_window_size=keep_window_size, attention_mask=causal_mask
+        query_states, dt_states, keep_window_size=keep_window_size, attention_mask=causal_mask
     )  # [batch_size, num_kv_heads, query_len, key_len]
     
     attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1))  # [batch_size, num_heads, query_len, key_len]
@@ -140,7 +140,8 @@ def test_equivalence():
     # Set random seed for reproducibility
     torch.manual_seed(42)
     
-    batch_size, num_heads, query_len, key_len, head_dim = 1, 1, 16, 16, 64
+    batch_size, num_heads, query_len, key_len, head_dim = 1, 1, 64, 64, 64
+    keep_window_size = 32  # Set a smaller keep_window_size for testing
     
     # Create tensors with requires_grad=True for gradient testing
     query_states = torch.randn(batch_size, num_heads, query_len, head_dim, requires_grad=True)
@@ -177,7 +178,7 @@ def test_equivalence():
         A_cuda,
         scaling=scaling,
         causal_mask=causal_mask,
-        keep_window_size=16,
+        keep_window_size=keep_window_size,
     )
     
     # Test Python function
@@ -196,7 +197,7 @@ def test_equivalence():
         A_python,
         scaling=scaling,
         causal_mask=causal_mask,
-        keep_window_size=16,
+        keep_window_size=keep_window_size,
     )
     
     # Compare outputs
