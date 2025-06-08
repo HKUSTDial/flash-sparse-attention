@@ -21,13 +21,13 @@ def prepare_dynamic_mask(
         attention_mask (`torch.Tensor`, *optional*): attention mask of shape `(batch_size, 1, query_sequence_length, key_sequence_length)`.
     """
     min_dtype = torch.finfo(hidden_states.dtype).min
+    dtype = hidden_states.dtype
     attn_mask = dt_states[:, :, None, :].expand(
         -1, -1, hidden_states.shape[2], -1
     )  # [batch_size, num_heads, query_len, key_len]
-    active_mask = torch.zeros_like(attn_mask, dtype=torch.bool, device=attn_mask.device)
+    active_mask = torch.zeros_like(attn_mask, dtype=dtype, device=attn_mask.device)
     if attention_mask is not None:
         if attention_mask.dtype == torch.bool:
-            dtype = hidden_states.dtype
             attention_mask = torch.where(
                 attention_mask, torch.tensor(0.0, device=attention_mask.device, dtype=dtype), min_dtype
             )
@@ -36,8 +36,8 @@ def prepare_dynamic_mask(
         topk_indices = torch.topk(
             attn_mask, keep_window_size, dim=-1, largest=True, sorted=False
         ).indices
-        active_mask = active_mask.scatter(-1, topk_indices, True)
-        attn_mask = attn_mask.masked_fill(~active_mask, min_dtype)
+        active_mask = active_mask.scatter(-1, topk_indices, 1.0)
+        attn_mask = attn_mask.masked_fill(active_mask == 0.0, min_dtype)
     return attn_mask, active_mask
 
 
