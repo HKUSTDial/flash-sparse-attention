@@ -20,54 +20,6 @@ namespace FLASH_NAMESPACE {
 
 using namespace cute;
 
-// Value-Index pair for top-k selection
-template<typename ValueType>
-struct TopKPair {
-    ValueType value;
-    int index;
-    
-    __device__ __forceinline__ TopKPair()
-        : value(ValueType(-INFINITY)), index(-1) {}
-    __device__ __forceinline__ TopKPair(ValueType v, int idx)
-        : value(v), index(idx) {}
-
-    __device__ __forceinline__ bool is_valid() const {
-        return index >= 0 && isfinite(value);
-    }
-};
-
-// Comparison functor for descending sort (greater values first)
-template<typename ValueType>
-struct DescendingComparator {
-    __device__ __forceinline__ bool operator()(const TopKPair<ValueType>& a, const TopKPair<ValueType>& b) const {
-        if (isfinite(a.value) && isfinite(b.value)) {
-            return a.value > b.value;               // Descending order
-        } else if (isfinite(a.value)) {
-            return true;                            // a is valid, b is not
-        } else if (isfinite(b.value)) {
-            return false;                           // b is valid, a is not
-        } else {
-            return a.index < b.index;               // Compare indices if both are invalid
-        }
-    }
-};
-
-// Comparison functor for ascending index sort (lower indices first)
-template<typename ValueType>
-struct AscendingIndexComparator {
-    __device__ __forceinline__ bool operator()(const TopKPair<ValueType>& a, const TopKPair<ValueType>& b) const {
-        if (a.index >= 0 && b.index >= 0) {
-            return a.index < b.index;               // Ascending order by index
-        } else if (a.index >= 0) {
-            return true;                            // a is valid, b is not
-        } else if (b.index >= 0) {
-            return false;                           // b is valid, a is not
-        } else {
-            return false;                           // Both are invalid, keep original order
-        }
-    }
-};
-
 template <bool Is_causal, int kNThreads>
 struct DynamicMask {
     const int max_seqlen_k, max_seqlen_q;
@@ -86,8 +38,8 @@ struct DynamicMask {
     template <bool Causal_mask=false, bool Is_even_MN=true, typename TensorType, typename ZOHType, typename ActiveMaskType>
     __forceinline__ __device__ void apply_mask(
         TensorType &tensor_,                        // acc_s (attention scores, MMA=4, MMA_M, MMA_N)
-        ZOHType &tZOH,                              // ZOH states (MMA=4, MMA_M, MMA_N)
-        ActiveMaskType &tActiveMask,                // Active Mask (MMA=4, MMA_M, MMA_N)
+        ZOHType &tSrZOH,                            // ZOH states (MMA=4, MMA_M, MMA_N)
+        ActiveMaskType &tSrAM,                      // Active Mask (MMA=4, MMA_M, MMA_N)
         const float scale_softmax,                  // Scale for softmax
         const int col_idx_offset_,                  // Column index offset
         const int row_idx_offset,                   // Row index offset
@@ -100,8 +52,8 @@ struct DynamicMask {
         const bool Need_masking = Causal_mask || !Is_even_MN || (keep_window_size < max_seqlen_k);
         // Reshape tensors from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor tensor = make_tensor(tensor_.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tensor_.layout()));
-        Tensor zoh = make_tensor(tZOH.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tZOH.layout()));
-        Tensor active_mask = make_tensor(tActiveMask.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tActiveMask.layout()));
+        Tensor zoh = make_tensor(tSrZOH.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrZOH.layout()));
+        Tensor active_mask = make_tensor(tSrAM.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrAM.layout()));
 
         const int lane_id = threadIdx.x % 32;
         const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
@@ -120,7 +72,7 @@ struct DynamicMask {
                         for (int j = 0; j < size<1, 0>(tensor); ++j) {
                             const int col_idx = col_idx_base + j;
                             auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                            bool inactive = (col_idx >= col_idx_limit) || (active_mask(coord) == false);
+                            bool inactive = (col_idx >= col_idx_limit) || (active_mask(coord) <= 0.0f);
                             if (inactive) {
                                 tensor(coord) = -INFINITY;
                             } else {
