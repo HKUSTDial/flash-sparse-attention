@@ -47,13 +47,14 @@ struct QKV_params {
 
 struct ZOH_params {
     void *__restrict__ zoh_ptr;                 // ZOH states tensor [batch_size, num_kv_heads, key_len]
-    void * __restrict__ active_mask_ptr;        // Active mask tensor [batch_size, num_kv_heads, key_len]
+    void * __restrict__ active_mask_ptr;        // Active mask tensor [batch_size, num_kv_heads, query_len, key_len]
 
     // The stride of the zero-hold states and active mask tensors.
     index_t zoh_batch_stride;                   // Stride between batches of ZOH states
     index_t active_mask_batch_stride;           // Stride between batches of active mask
     index_t zoh_head_stride;                    // Stride between heads of ZOH states
     index_t active_mask_head_stride;            // Stride between heads of active mask
+    index_t active_mask_row_stride;             // Stride between rows of active mask
 
     // The keep window size.
     int keep_window_size;                       // Number of tokens to keep in top-k (0 means don't apply top-k)

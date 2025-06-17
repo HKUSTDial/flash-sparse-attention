@@ -23,20 +23,17 @@ using namespace cute;
 
 namespace FLASH_NAMESPACE {
 
-template <typename scalar_t, int HeadDim, bool IsCausal>
-__global__ void run_attention_fwd_kernel(Flash_fwd_params params) {
-    // 修改块大小选择逻辑，确保与HeadDim兼容
+// 为每种情况定义专用内核
+template <typename scalar_t, int HeadDim, bool IsCausal, bool IsEvenMN, bool IsEvenK>
+__global__ void run_attention_fwd_kernel_template(Flash_fwd_params params) {
     constexpr int kBlockM = 64;
     constexpr int kBlockN = 64;
     constexpr int kNWarps = 4;
     
     using Kernel_traits = Flash_fwd_kernel_traits<HeadDim, kBlockM, kBlockN, kNWarps, false, false, scalar_t>;
-    
-    constexpr bool kIsEvenMN = true; 
-    constexpr bool kIsEvenK = true;  
     constexpr bool kReturnSoftmax = false; 
     
-    compute_attn<Kernel_traits, false, IsCausal, kIsEvenMN, kIsEvenK, false, kReturnSoftmax>(params);
+    compute_attn<Kernel_traits, false, IsCausal, IsEvenMN, IsEvenK, false, kReturnSoftmax>(params);
 }
 
 // 修改host-side启动函数
@@ -67,16 +64,23 @@ void launch_attention_fwd_(Flash_fwd_params &params, cudaStream_t stream) {
         return;
     }
 
+    // 修正: 检查序列长度是否能被块大小整除
+    bool isEvenMN = false;
+    
+    // 检查头部维度是否能被 MMA tile 大小整除
+    bool isEvenK = true;
+
     // 如果需要，设置动态共享内存
     if (smem_size > 48 * 1024) {
         cudaFuncSetAttribute(
-            run_attention_fwd_kernel<scalar_t, HeadDim, IsCausal>,
+            run_attention_fwd_kernel_template<scalar_t, HeadDim, IsCausal, false, true>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             smem_size
         );
     }
 
-    run_attention_fwd_kernel<scalar_t, HeadDim, IsCausal><<<grid_dim, block_dim, smem_size, stream>>>(params);
+    // 根据实际维度分派不同的内核版本
+    run_attention_fwd_kernel_template<scalar_t, HeadDim, IsCausal, false, true><<<grid_dim, block_dim, smem_size, stream>>>(params);
     AT_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -86,8 +90,8 @@ std::vector<torch::Tensor> dynamic_mask_attention_dispatch(
     const torch::Tensor& query_states,
     const torch::Tensor& key_states,
     const torch::Tensor& value_states,
-    const torch::Tensor& zero_hold_states,
-    torch::Tensor& active_indices,
+    const torch::Tensor& zoh_states,
+    const torch::Tensor& active_mask,
     torch::Tensor& output,
     torch::Tensor& softmax_lse,
     float scale,
@@ -117,8 +121,8 @@ std::vector<torch::Tensor> dynamic_mask_attention_dispatch(
     params.k_ptr = key_states.data_ptr();
     params.v_ptr = value_states.data_ptr();
     params.o_ptr = output.data_ptr();
-    params.zero_hold_ptr = zero_hold_states.data_ptr();
-    params.active_indices_ptr = active_indices.data_ptr();
+    params.zoh_ptr = zoh_states.data_ptr();
+    params.active_mask_ptr = active_mask.data_ptr();
     params.softmax_lse_ptr = softmax_lse.data_ptr();
     
     // 基本维度参数
@@ -139,22 +143,20 @@ std::vector<torch::Tensor> dynamic_mask_attention_dispatch(
     params.k_batch_stride = key_states.stride(0);
     params.v_batch_stride = value_states.stride(0);
     params.o_batch_stride = output.stride(0);
-    params.zero_hold_batch_stride = zero_hold_states.stride(0);
-    params.active_indices_batch_stride = active_indices.stride(0);
+    params.zoh_batch_stride = zoh_states.stride(0);
+    params.active_mask_batch_stride = active_mask.stride(0);
 
     params.q_row_stride = query_states.stride(1);
     params.k_row_stride = key_states.stride(1);
     params.v_row_stride = value_states.stride(1);
     params.o_row_stride = output.stride(1);
-    params.zero_hold_row_stride = zero_hold_states.stride(2);
-    params.active_indices_row_stride = active_indices.stride(2);
 
     params.q_head_stride = query_states.stride(2);
     params.k_head_stride = key_states.stride(2);
     params.v_head_stride = value_states.stride(2);
     params.o_head_stride = output.stride(2);
-    params.zero_hold_head_stride = zero_hold_states.stride(1);
-    params.active_indices_head_stride = active_indices.stride(1);
+    params.zoh_head_stride = zoh_states.stride(1);
+    params.active_mask_head_stride = active_mask.stride(1);
 
     /// 缩放和掩码参数
     params.scale_softmax = scale;
@@ -182,13 +184,13 @@ std::vector<torch::Tensor> dynamic_mask_attention_dispatch(
     
     if (is_causal) {
         if (head_dim == 32)        { launch_attention_fwd_<scalar_t, 32, true>(params, stream); }
-        else if (head_dim == 64)   { launch_attention_fwd_<scalar_t, 64, true>(params, stream); }
-        else if (head_dim == 128)  { launch_attention_fwd_<scalar_t, 128, true>(params, stream); }
+        // else if (head_dim == 64)   { launch_attention_fwd_<scalar_t, 64, true>(params, stream); }
+        // else if (head_dim == 128)  { launch_attention_fwd_<scalar_t, 128, true>(params, stream); }
         else { TORCH_CHECK(false, "Unsupported head_dim for causal attention: ", head_dim); }
     } else {
         if (head_dim == 32)        { launch_attention_fwd_<scalar_t, 32, false>(params, stream); }
-        else if (head_dim == 64)   { launch_attention_fwd_<scalar_t, 64, false>(params, stream); }
-        else if (head_dim == 128)  { launch_attention_fwd_<scalar_t, 128, false>(params, stream); }
+        // else if (head_dim == 64)   { launch_attention_fwd_<scalar_t, 64, false>(params, stream); }
+        // else if (head_dim == 128)  { launch_attention_fwd_<scalar_t, 128, false>(params, stream); }
         else { TORCH_CHECK(false, "Unsupported head_dim for non-causal attention: ", head_dim); }
     }
 
@@ -203,7 +205,8 @@ std::vector<torch::Tensor> apply_dynamic_mask_attention_cuda(
     const torch::Tensor& query_states,
     const torch::Tensor& key_states,
     const torch::Tensor& value_states,
-    const torch::Tensor& zero_hold_states,
+    const torch::Tensor& zoh_states,
+    const torch::Tensor& active_mask,
     float scale,
     int keep_window_size,
     bool is_causal,
@@ -214,7 +217,8 @@ std::vector<torch::Tensor> apply_dynamic_mask_attention_cuda(
     TORCH_CHECK(query_states.dim() == 4, "query_states must be a 4D tensor");
     TORCH_CHECK(key_states.dim() == 4, "key_states must be a 4D tensor");
     TORCH_CHECK(value_states.dim() == 4, "value_states must be a 4D tensor");
-    TORCH_CHECK(zero_hold_states.dim() == 4, "zero_hold_states must be a 4D tensor");
+    TORCH_CHECK(zoh_states.dim() == 3, "zoh_states must be a 3D tensor");
+    TORCH_CHECK(active_mask.dim() == 3, "active_mask must be a 3D tensor");
 
     const int batch_size = query_states.size(0);
     const int seq_len_q = query_states.size(1);
@@ -240,13 +244,9 @@ std::vector<torch::Tensor> apply_dynamic_mask_attention_cuda(
     TORCH_CHECK(query_states.is_contiguous(), "query_states must be contiguous");
     TORCH_CHECK(key_states.is_contiguous(), "key_states must be contiguous");
     TORCH_CHECK(value_states.is_contiguous(), "value_states must be contiguous");
-    TORCH_CHECK(zero_hold_states.is_contiguous(), "zero_hold_states must be contiguous");
+    TORCH_CHECK(zoh_states.is_contiguous(), "zoh_states must be contiguous");
+    TORCH_CHECK(active_mask.is_contiguous(), "active_mask must be contiguous");
 
-    auto active_indices_options = torch::TensorOptions()
-        .dtype(torch::kInt32)
-        .device(query_states.device());
-    auto active_indices = torch::zeros({batch_size, num_kv_heads, seq_len_q, keep_window_size},
-                                       active_indices_options);
     auto output_options = torch::TensorOptions()
                               .dtype(query_states.dtype())
                               .device(query_states.device());
@@ -262,12 +262,12 @@ std::vector<torch::Tensor> apply_dynamic_mask_attention_cuda(
     std::vector<torch::Tensor> result_tensors;
     if (query_states.scalar_type() == at::kHalf) {
         result_tensors = FLASH_NAMESPACE::dynamic_mask_attention_dispatch<cutlass::half_t>(
-            query_states, key_states, value_states, zero_hold_states, active_indices,
+            query_states, key_states, value_states, zoh_states, active_mask,
             output, softmax_lse, scale, keep_window_size, is_causal, return_softmax
         );
     } else if (query_states.scalar_type() == at::kBFloat16) {
         result_tensors = FLASH_NAMESPACE::dynamic_mask_attention_dispatch<cutlass::bfloat16_t>(
-            query_states, key_states, value_states, zero_hold_states, active_indices,
+            query_states, key_states, value_states, zoh_states, active_mask,
             output, softmax_lse, scale, keep_window_size, is_causal, return_softmax
         );
     } else {

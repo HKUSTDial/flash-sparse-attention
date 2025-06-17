@@ -81,11 +81,15 @@ struct Flash_fwd_kernel_traits : public Base {
         composition(Swizzle<kSwizzle, 3, 3>{},
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
                     Layout<Shape<_8, Int<kBlockKSmem>>,
-                           Stride<Int<kBlockKSmem>, _1>>{}));
-    // using SmemLayoutAtomMask = decltype(
-    //     composition(Swizzle<kSwizzle, 3, 3>{},
-    //                 Layout<Shape<_8, Int<kBlockN>>,
-    //                     Stride<Int<kBlockN>, _1>>{}));
+                    Stride<Int<kBlockKSmem>, _1>>{}));
+    using SmemLayoutAtomZOH = decltype(
+        composition(Swizzle<kSwizzle, 3, 3>{},
+                    Layout<Shape<_8, _8>,
+                    Stride<_0, _1>>{}));
+    using SmemLayoutAtomActiveMask = decltype(
+        composition(Swizzle<kSwizzle, 3, 3>{},
+                    Layout<Shape<_8, _8>,
+                    Stride<_8, _1>>{}));
 
     using SmemLayoutQ = decltype(tile_to_shape(
         SmemLayoutAtomQ{},
@@ -100,12 +104,12 @@ struct Flash_fwd_kernel_traits : public Base {
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
-    // using SmemLayoutZeroHold = decltype(tile_to_shape(
-    //     SmemLayoutAtomMask{},
-    //     Shape<Int<kBlockM>, Int<kBlockN>>{}));
-    // using SmemLayoutActiveIndices = decltype(tile_to_shape(
-    //     SmemLayoutAtomMask{},
-    //     Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    using SmemLayoutZOH = decltype(tile_to_shape(
+        SmemLayoutAtomZOH{},
+        Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    using SmemLayoutActiveMask = decltype(tile_to_shape(
+        SmemLayoutAtomActiveMask{},
+        Shape<Int<kBlockM>, Int<kBlockN>>{}));
 
     // Shared memory layout for output
     using SmemLayoutAtomO = decltype(
@@ -121,11 +125,10 @@ struct Flash_fwd_kernel_traits : public Base {
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    // static constexpr int kSmemMaskSize = size(SmemLayoutZeroHold{}) * sizeof(Element) + size(SmemLayoutActiveIndices{}) * sizeof(int);
+    static constexpr int kSmemMaskSize = size(SmemLayoutZOH{}) * sizeof(Element) + size(SmemLayoutActiveMask{}) * sizeof(Element);
 
     // Shared memory size with QKV matrices
-    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize;
-    // kSmemSize = kSmemSize + kSmemMaskSize;   // For Mask
+    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + kSmemMaskSize;
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
@@ -149,11 +152,19 @@ struct Flash_fwd_kernel_traits : public Base {
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
+                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
+    using GmemTiledCopyZOH = decltype(
+        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+                        GmemLayoutAtom{},
+                        Layout<Shape<_1, _8>>{}));          // Val layout, 8 vals per read
+    using GmemTiledCopyActiveMask = decltype(
+        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+                        GmemLayoutAtom{},
+                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
     using GmemTiledCopyO = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
                         GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per store
+                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per store
 
     // Accumulator layout for output
     using GmemLayoutAtomOaccum = std::conditional_t<
