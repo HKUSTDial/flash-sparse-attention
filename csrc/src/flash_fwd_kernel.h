@@ -180,14 +180,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     );
     Tensor mZOH = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element*>(params.zoh_ptr) + binfo.zoh_offset(params.zoh_batch_stride, bidb)),
-        make_shape(params.h_k, binfo.actual_seqlen_k),
-        make_stride(params.zoh_head_stride, _1{})
+        make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
+        make_stride(params.zoh_head_stride, params.zoh_row_stride, _1{})
     );
     Tensor gZOH = local_tile(
-        mZOH(bidh / params.h_h_k_ratio, _),
-        Shape<Int<kBlockN>>{},
-        make_coord(_)
-    );  // (kBlockN, nblocksN)
+        mZOH(bidh / params.h_h_k_ratio, _, _),
+        Shape<Int<kBlockM>, Int<kBlockN>>{},
+        make_coord(m_block, _)
+    );  // (kBlockM, kBlockN, nblocksN)
     Tensor mActiveMask = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element*>(params.active_mask_ptr) + binfo.active_mask_offset(params.active_mask_batch_stride, bidb)),
         make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
@@ -254,8 +254,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
     Tensor tSrQ = thr_mma.partition_fragment_A(sQ);                                         // (MMA,MMA_M,MMA_K)
     Tensor tSrK = thr_mma.partition_fragment_B(sK);                                         // (MMA,MMA_N,MMA_K)
-    Tensor tSrZOH = thr_mma.partition_fragment_B(sZOH);                                     // (MMA, MMA_M, MMA_N)
-    Tensor tSrAM = thr_mma.partition_fragment_B(sActiveMask);                               // (MMA, MMA_M, MMA_N)
+    Tensor tSrZOH = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});   // (MMA, MMA_M, MMA_N)
+    Tensor tSrAM = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});    // (MMA, MMA_M, MMA_N)
     Tensor tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);                              // (MMA, MMA_K,MMA_N)
     Tensor tSgS  = thr_mma.partition_C(gP);
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // MMA, MMA_M, MMA_K
@@ -269,10 +269,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
     Tensor tSsK = smem_thr_copy_K.partition_S(sK);
-    auto smem_tiled_copy_ZOH = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
+    auto smem_tiled_copy_ZOH = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
     auto smem_thr_copy_ZOH = smem_tiled_copy_ZOH.get_thread_slice(tidx);
     Tensor tSsZOH = smem_thr_copy_ZOH.partition_S(sZOH);
-    auto smem_tiled_copy_AM = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
+    auto smem_tiled_copy_AM = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
     auto smem_thr_copy_AM = smem_tiled_copy_AM.get_thread_slice(tidx);
     Tensor tSsAM = smem_thr_copy_AM.partition_S(sActiveMask);
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
@@ -352,15 +352,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     );
     FLASH_NAMESPACE::copy_ZOH<Is_even_MN>(
         gmem_tiled_copy_ZOH,
-        tZOHgZOH(_, _, n_block),
+        tZOHgZOH(_, _, _, n_block),
         tZOHsZOH, 
         tZOHcZOH,
+        binfo.actual_seqlen_q - m_block * kBlockM,
         binfo.actual_seqlen_k - n_block * kBlockN
     );
-    FLASH_NAMESPACE::copy_AM<Is_even_MN>(
+    FLASH_NAMESPACE::copy_ZOH<Is_even_MN>(
         gmem_tiled_copy_AM,
-        tActiveMaskgAM(_, _, _, n_block),
-        tSsAM, 
+        tAMgAM(_, _, _, n_block),
+        tAMsAM, 
         tAMcAM,
         binfo.actual_seqlen_q - m_block * kBlockM,
         binfo.actual_seqlen_k - n_block * kBlockN
@@ -450,14 +451,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             // isn't right and we get race conditions.
             FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
                 gmem_tiled_copy_ZOH,
-                tZOHgZOH(_, _, n_block - 1),
+                tZOHgZOH(_, _, _, n_block - 1),
                 tZOHsZOH, 
-                tZOHcZOH
+                tZOHcZOH,
+                binfo.actual_seqlen_q - m_block * kBlockM,
+                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            FLASH_NAMESPACE::copy_AM</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
                 gmem_tiled_copy_AM,
-                tActiveMaskgAM(_, _, _, n_block - 1),
-                tSsAM, 
+                tAMgAM(_, _, _, n_block - 1),
+                tAMsAM, 
                 tAMcAM,
                 binfo.actual_seqlen_q - m_block * kBlockM,
                 binfo.actual_seqlen_k - (n_block - 1) * kBlockN
@@ -514,20 +517,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     for (; n_block >= n_block_min; --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
-        auto tZOH = FLASH_NAMESPACE::convert_global_zoh_to_mma_zoh(
-            gZOH, acc_s.layout(),
-            n_block * kBlockN,
-            m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
-            kNWarps * 16
-        );
-        auto tActiveMask = FLASH_NAMESPACE::convert_global_mask_to_mma_mask(
-            gActiveMask, acc_s.layout(),
-            n_block * kBlockN,
-            m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
-            kNWarps * 16
-        );
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
+
+        // Copy ZOH and ActiveMask from smem to registers
+        Tensor tSrZOH_copy_view = smem_thr_copy_ZOH.retile_D(tSrZOH);
+        cute::copy(smem_tiled_copy_ZOH, tSsZOH, tSrZOH_copy_view);
+        Tensor tSrAM_copy_view = smem_thr_copy_AM.retile_D(tSrAM);
+        cute::copy(smem_tiled_copy_AM, tSsAM, tSrAM_copy_view);
+
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
         cute::cp_async_fence();
 
@@ -543,20 +541,36 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
+        // Scale attention scores and apply dynamic mask
+        dynamic_mask.template apply_mask</*Causal_mask=*/false>(
+            acc_s, tSrZOH, tSrAM, params.scale_softmax,
+            n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
+        );
+
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
         if (n_block > n_block_min) {
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
+            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
+                gmem_tiled_copy_ZOH,
+                tZOHgZOH(_, _, _, n_block - 1),
+                tZOHsZOH, 
+                tZOHcZOH,
+                binfo.actual_seqlen_q - m_block * kBlockM,
+                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+            );
+            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
+                gmem_tiled_copy_AM,
+                tAMgAM(_, _, _, n_block - 1),
+                tAMsAM, 
+                tAMcAM,
+                binfo.actual_seqlen_q - m_block * kBlockM,
+                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+            );
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
             // isn't right and we get race conditions.
             cute::cp_async_fence();
         }
-
-        // Scale attention scores and apply dynamic mask
-        dynamic_mask.template apply_mask</*Causal_mask=*/false>(
-            acc_s, tZOH, tActiveMask, params.scale_softmax,
-            n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-        );
 
         softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
         // softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
