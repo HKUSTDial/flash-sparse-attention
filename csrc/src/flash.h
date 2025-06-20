@@ -54,6 +54,7 @@ struct ZOH_params {
     index_t active_mask_batch_stride;           // Stride between batches of active mask
     index_t zoh_head_stride;                    // Stride between heads of ZOH states
     index_t active_mask_head_stride;            // Stride between heads of active mask
+    index_t zoh_row_stride;                     // Stride between rows of ZOH states
     index_t active_mask_row_stride;             // Stride between rows of active mask
 
     // The keep window size.
