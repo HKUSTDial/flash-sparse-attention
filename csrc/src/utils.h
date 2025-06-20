@@ -392,110 +392,6 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Convert 1D global ZOH tensor to 3D MMA layout tensor for apply_mask
-template <typename Tensor, typename LayoutMMA>
-__forceinline__ __device__ auto convert_global_zoh_to_mma_zoh(
-    Tensor const &gZOH,                                       // ZOH tensor (actual_seqlen_k)
-    LayoutMMA const &mma_layout,                              // Target MMA layout (4, MMA_M, MMA_N)
-    const int col_idx_offset_,                                // Column index offset
-    const int row_idx_offset,                                 // Row index offset
-    const int warp_row_stride                                 // Warp row stride
-) {
-    using Element = typename Tensor::value_type;
-    // Create 3D tensor with MMA layout
-    constexpr int mma_size = decltype(size(mma_layout))::value;
-    Element mma_data[mma_size];
-    auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
-
-    // Initialize the MMA fragment to -INFINITY
-    #pragma unroll
-    for (int i = 0; i < mma_size; ++i) {
-        mma_data[i] = static_cast<Element>(-INFINITY);
-    }
-
-    // Convert layout to rowcol format for easier indexing
-    auto fragment_rowcol = make_tensor(mma_fragment.data(), convert_layout_acc_rowcol(mma_layout));
-
-    const int lane_id = threadIdx.x % 32;
-    const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-    const int actual_seqlen_k = size<0>(gZOH);
-
-    #pragma unroll
-    for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
-        #pragma unroll
-        for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {
-            #pragma unroll
-            for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
-                const int col_idx_base = col_idx_offset + nj * 8;
-                #pragma unroll
-                for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
-                    const int col_idx = col_idx_base + j;
-                    auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                    if (col_idx < actual_seqlen_k) {
-                        fragment_rowcol(coord) = gZOH(col_idx);
-                    }
-                }
-            }
-        }
-    }
-    
-    return mma_fragment;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Convert 1D global active mask to 3D MMA layout mask for apply_mask
-template <typename Tensor, typename Layout>
-__forceinline__ __device__ auto convert_global_mask_to_mma_mask(
-    Tensor const &gActiveMask,                    // Active mask tensor (actual_seqlen_k)
-    Layout const &mma_layout,                     // Target MMA layout (4, MMA_M, MMA_N)
-    const int col_idx_offset_,                    // Column index offset
-    const int row_idx_offset,                     // Row index offset
-    const int warp_row_stride                     // Warp row stride
-) {
-    using Element = bool;
-    // Create 3D tensor with MMA layout for mask
-    constexpr int mma_size = decltype(size(mma_layout))::value;
-    Element mma_data[mma_size];
-    auto mma_fragment = make_tensor(make_rmem_ptr<Element>(mma_data), mma_layout);
-
-    // Initialize the MMA fragment to false
-    #pragma unroll
-    for (int i = 0; i < mma_size; ++i) {
-        mma_data[i] = static_cast<Element>(false);
-    }
-
-    // Convert layout to rowcol format for easier indexing
-    auto fragment_rowcol = make_tensor(mma_fragment.data(), convert_layout_acc_rowcol(mma_layout));
-
-    const int lane_id = threadIdx.x % 32;
-    const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
-    const int actual_seqlen_k = size<0>(gActiveMask);
-
-    #pragma unroll
-    for (int mi = 0; mi < size<0, 1>(fragment_rowcol); ++mi) {
-        #pragma unroll
-        for (int i = 0; i < size<0, 0>(fragment_rowcol); ++i) {  
-            #pragma unroll
-            for (int nj = 0; nj < size<1, 1>(fragment_rowcol); ++nj) {
-                const int col_idx_base = col_idx_offset + nj * 8;
-                #pragma unroll
-                for (int j = 0; j < size<1, 0>(fragment_rowcol); ++j) {
-                    const int col_idx = col_idx_base + j;
-                    auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                    if (col_idx < actual_seqlen_k) {
-                        fragment_rowcol(coord) = gActiveMask(col_idx);
-                    }
-                }
-            }
-        }
-    }
-    
-    return mma_fragment;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 template <typename Engine, typename Layout>
 __forceinline__ __device__ void relu_(Tensor<Engine, Layout> &tensor) {
     constexpr int numel = decltype(size(tensor))::value;
@@ -623,43 +519,19 @@ __forceinline__ __device__ void copy(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool Is_even_N=true, bool Clear_OOB_N=false,
+template <bool Is_even_MN=true, bool Clear_OOB_MN=false,
           typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2>
 __forceinline__ __device__ void copy_ZOH(
     TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
-    Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_N, const int max_N=0
-) {
-    CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
-    CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
-    CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));     // MMA
-    CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
-    CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
-    #pragma unroll
-    for (int n = 0; n < size<2>(S); ++n) {
-        if (Is_even_N || get<1>(identity_N(0, 0, n)) < max_N) {
-            cute::copy(tiled_copy, S(_, _, n), D(_, _, n));
-        } else if (Clear_OOB_N) {
-            cute::clear(D(_, _, n));
-        }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template <bool Is_even_MN=true, bool Clear_OOB_MN=false,
-          typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
-          typename Engine2, typename Layout2>
-__forceinline__ __device__ void copy_AM(
-    TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
     Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
     const int max_M=0, const int max_N=0
 ) {
-    CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
-    CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
+    CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});          // (MMA, M, N) 
+    CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});          // (MMA, M, N)
     CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));     // MMA
-    CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
-    CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
+    CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // M
+    CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // N
     
     #pragma unroll
     for (int m = 0; m < size<1>(S); ++m) {
