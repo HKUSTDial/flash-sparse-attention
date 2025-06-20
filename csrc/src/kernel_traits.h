@@ -85,7 +85,7 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemLayoutAtomZOH = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<_8, _8>,
-                    Stride<_0, _1>>{}));
+                    Stride<_8, _1>>{}));
     using SmemLayoutAtomActiveMask = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<_8, _8>,
@@ -156,7 +156,7 @@ struct Flash_fwd_kernel_traits : public Base {
     using GmemTiledCopyZOH = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));          // Val layout, 8 vals per read
+                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
     using GmemTiledCopyActiveMask = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
