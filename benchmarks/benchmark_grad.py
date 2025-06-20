@@ -7,7 +7,7 @@ def prepare_dynamic_mask(
     hidden_states: torch.Tensor,
     dt_states: torch.Tensor,
     keep_window_size: int = 2048,
-    attention_mask: torch.Tensor = None,
+    attention_mask: torch.Tensor | None = None,
 ):
     """
     The core idea of DMA is to calculate the dynamic attention mask to mask the tokens that should be masked, so as to form sparse attention.
@@ -47,8 +47,8 @@ def dynamic_mask_attention_cuda(
     value_states: torch.Tensor,
     dt_proj: torch.Tensor,
     A: torch.Tensor,
-    scaling: float = None,
-    causal_mask: torch.Tensor = None,
+    scaling: float,
+    causal_mask: torch.Tensor,
     keep_window_size=2048,
 ):  
     batch_size, num_heads, query_len, head_dim = query_states.shape
@@ -109,8 +109,8 @@ def dynamic_mask_attention_python(
     value_states: torch.Tensor,
     dt_proj: torch.Tensor,
     A: torch.Tensor,
-    scaling: float = None,
-    causal_mask: torch.Tensor = None,
+    scaling: float,
+    causal_mask: torch.Tensor,
     keep_window_size=2048,
 ):  
     batch_size, num_heads, query_len, head_dim = query_states.shape
@@ -133,9 +133,9 @@ def dynamic_mask_attention_python(
 
 def test_equivalence():
     """Test equivalence of outputs and gradients between CUDA and Python implementations"""
-    print("=" * 80)
-    print("Testing Equivalence of Dynamic Mask Attention Functions")
-    print("=" * 80)
+    print("🔬" + "=" * 76 + "🔬")
+    print("🧠 Testing Equivalence of Dynamic Mask Attention Functions (Gradients) 🧠")
+    print("🔬" + "=" * 76 + "🔬")
     
     # Set random seed for reproducibility
     torch.manual_seed(42)
@@ -163,7 +163,7 @@ def test_equivalence():
     scaling = head_dim ** -0.5
     
     # Test CUDA function
-    print("\nTesting CUDA implementation...")
+    print("\n⚡ Testing CUDA implementation...")
     query_cuda = query_states.clone().detach().requires_grad_(True)
     key_cuda = key_states.clone().detach().requires_grad_(True)
     value_cuda = value_states.clone().detach().requires_grad_(True)
@@ -182,7 +182,7 @@ def test_equivalence():
     )
     
     # Test Python function
-    print("Testing Python implementation...")
+    print("🐍 Testing Python implementation...")
     query_python = query_states.clone().detach().requires_grad_(True)
     key_python = key_states.clone().detach().requires_grad_(True)
     value_python = value_states.clone().detach().requires_grad_(True)
@@ -201,20 +201,21 @@ def test_equivalence():
     )
     
     # Compare outputs
-    print("\nComparing outputs...")
+    print("\n📊 Comparing outputs...")
     output_diff = torch.abs(cuda_outputs - python_outputs)
     max_output_diff = torch.max(output_diff)
     mean_output_diff = torch.mean(output_diff)
     
-    print(f"   Max output difference: {max_output_diff:.2e}")
-    print(f"   Mean output difference: {mean_output_diff:.2e}")
-    print(f"   Output shapes - CUDA: {cuda_outputs.shape}, Python: {python_outputs.shape}")
+    print(f"   📌 Max output difference: {max_output_diff:.2e}")
+    print(f"   📍 Mean output difference: {mean_output_diff:.2e}")
+    print(f"   📋 Output shapes - CUDA: {cuda_outputs.shape}, Python: {python_outputs.shape}")
     
     outputs_equal = torch.allclose(cuda_outputs, python_outputs, atol=1e-5, rtol=1e-4)
-    print(f"   Outputs are equal (atol=1e-5, rtol=1e-4): {outputs_equal}")
+    output_icon = "✅" if outputs_equal else "❌"
+    print(f"   {output_icon} Outputs are equal (atol=1e-5, rtol=1e-4): {outputs_equal}")
     
     # Test gradients
-    print("\nTesting gradients...")
+    print("\n🧮 Testing gradients...")
     
     # Create a simple loss function (sum of outputs)
     cuda_loss = cuda_outputs.sum()
@@ -236,7 +237,7 @@ def test_equivalence():
     all_grads_equal = True
     for param_name, cuda_grad, python_grad in grad_comparisons:
         if cuda_grad is None or python_grad is None:
-            print(f"   {param_name}: One or both gradients are None")
+            print(f"   ⚠️ {param_name}: One or both gradients are None")
             if cuda_grad != python_grad:
                 all_grads_equal = False
             continue
@@ -247,23 +248,26 @@ def test_equivalence():
         
         grads_equal = torch.allclose(cuda_grad, python_grad, atol=1e-5, rtol=1e-4)
         all_grads_equal = all_grads_equal and grads_equal
+        grad_icon = "✅" if grads_equal else "❌"
         
-        print(f"   {param_name}:")
-        print(f"     Max gradient difference: {max_grad_diff:.2e}")
-        print(f"     Mean gradient difference: {mean_grad_diff:.2e}")
-        print(f"     Gradients equal (atol=1e-5, rtol=1e-4): {grads_equal}")
+        print(f"   📊 {param_name}:")
+        print(f"     📌 Max gradient difference: {max_grad_diff:.2e}")
+        print(f"     📍 Mean gradient difference: {mean_grad_diff:.2e}")
+        print(f"     {grad_icon} Gradients equal (atol=1e-5, rtol=1e-4): {grads_equal}")
     
     # Summary
-    print("\n" + "=" * 80)
-    print("SUMMARY")
-    print("=" * 80)
-    print(f"Outputs equivalent: {outputs_equal}")
-    print(f"Gradients equivalent: {all_grads_equal}")
+    print("\n" + "🏁" + "=" * 76 + "🏁")
+    print("📋 SUMMARY 📋")
+    print("🏁" + "=" * 76 + "🏁")
+    output_summary_icon = "✅" if outputs_equal else "❌"
+    grad_summary_icon = "✅" if all_grads_equal else "❌"
+    print(f"{output_summary_icon} Outputs equivalent: {outputs_equal}")
+    print(f"{grad_summary_icon} Gradients equivalent: {all_grads_equal}")
     
     if outputs_equal and all_grads_equal:
-        print("✅ Both functions are mathematically equivalent!")
+        print("🎉 Both functions are mathematically equivalent!")
     else:
-        print("❌ Functions are NOT equivalent. Check implementation differences.")
+        print("😞 Functions are NOT equivalent. Check implementation differences.")
         
     return outputs_equal, all_grads_equal
 
