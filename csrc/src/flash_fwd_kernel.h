@@ -423,12 +423,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
         cute::cp_async_fence();
 
-        // TODO: support sparse general matrix multiplication
-        FLASH_NAMESPACE::gemm</*kNWarps*/ /*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        // Use sparse general matrix multiplication
+        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
             tSrQ,
-            tSrK, tSsQ, tSsK,
-            // tSrAM, tAMsAM,      // Active key indices for sparse K matrix multiplication
+            tSrK, tSsQ, tSsK, tSrAM,        // Active key indices for sparse K matrix multiplication
             tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
@@ -497,11 +496,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
         // if (cute::thread0()) { print(tOrP); }
-        // TODO: support sparse general matrix multiplication with register accumulation
-        FLASH_NAMESPACE::gemm_rs</*kNWarps*/>(
+        // Use sparse general matrix multiplication with register accumulation for V as well
+        FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt,
-            // tSrAM, tAMsAM,        // Apply the same mask for sparse V matrix multiplication
+            tSrAM,        // Apply the same mask for sparse V matrix multiplication
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
         );
         // if (cute::thread0()) { print(scores); }
@@ -529,11 +528,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV(_, _, _, n_block), tVsV, tKVcKV, tKVpKV);
         cute::cp_async_fence();
 
-        FLASH_NAMESPACE::gemm</*kNWarps*/ /*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
             tSrQ,
-            tSrK, tSsQ, tSsK,
-            // tActiveMask,        // Active key indices for sparse K matrix multiplication
+            tSrK, tSsQ, tSsK, tSrAM,        // Active key indices for sparse K matrix multiplication
             tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
@@ -596,10 +594,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        FLASH_NAMESPACE::gemm_rs</*kNWarps*/>(
+        // Use sparse general matrix multiplication with register accumulation for V as well
+        FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt,
-            // tActiveMask,        // apply the same mask for sparse V matrix multiplication
+            tSrAM,        // Apply the same mask for sparse V matrix multiplication
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
         );
     }
