@@ -499,8 +499,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Use sparse general matrix multiplication with register accumulation for V as well
         FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
-            tOrP, tOrVt, tOsVt,
-            tSrAM,        // Apply the same mask for sparse V matrix multiplication
+            tOrP, tOrVt, tOsVt, tSrAM,      // Apply the same mask for sparse V matrix multiplication
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
         );
         // if (cute::thread0()) { print(scores); }
@@ -597,8 +596,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Use sparse general matrix multiplication with register accumulation for V as well
         FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
-            tOrP, tOrVt, tOsVt,
-            tSrAM,        // Apply the same mask for sparse V matrix multiplication
+            tOrP, tOrVt, tOsVt, tSrAM,      // Apply the same mask for sparse V matrix multiplication
             tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
         );
     }
