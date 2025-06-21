@@ -277,7 +277,7 @@ def dynamic_mask_attention_cuda_no_topk(
             zoh_states=zero_hold_states,
             active_mask=active_mask,
             scale=scaling,
-            keep_window_size=key_len,  # Use full key length since no topk
+            keep_window_size=0,
             is_causal=is_causal,
             return_softmax=return_softmax
         )
@@ -676,4 +676,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
