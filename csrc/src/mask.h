@@ -20,7 +20,7 @@ namespace FLASH_NAMESPACE {
 
 using namespace cute;
 
-template <bool Is_causal, int kNThreads>
+template <bool Is_causal>
 struct DynamicMask {
     const int max_seqlen_k, max_seqlen_q;
     const int keep_window_size;
