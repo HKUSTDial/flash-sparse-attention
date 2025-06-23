@@ -46,7 +46,7 @@ struct QKV_params {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct ZOH_params {
-    void *__restrict__ zoh_ptr;                 // ZOH states tensor [batch_size, num_kv_heads, key_len]
+    void *__restrict__ zoh_ptr;                 // ZOH states tensor [batch_size, num_kv_heads, query_len, key_len]
     void * __restrict__ active_mask_ptr;        // Active mask tensor [batch_size, num_kv_heads, query_len, key_len]
 
     // The stride of the zero-hold states and active mask tensors.
