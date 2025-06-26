@@ -2,7 +2,7 @@ import argparse
 import itertools
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional, Generator
 
 DTYPE_MAP = {
     "fp16": "cutlass::half_t",
@@ -73,7 +73,7 @@ class Kernel:
     def filename(self) -> str:
         return f"flash_{self.direction}_hdim{self.head_dim}_{self.dtype}_{'causal_' if self.is_causal == 'true' else ''}sm{self.sm}.cu"
 
-def get_all_kernels() -> List[Kernel]:
+def get_all_kernels() -> Generator[Kernel, None, None]:
     # for direction in ["fwd", "fwd_split", "bwd"]:
     for direction in ["fwd", "fwd_split"]:
         for dtype, head_dim, is_causal, sm in itertools.product(DTYPE_MAP.keys(), HEAD_DIMENSIONS, IS_CAUSAL, SM):
