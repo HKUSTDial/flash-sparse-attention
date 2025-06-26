@@ -87,16 +87,16 @@ struct DynamicMask {
             // If no masking is needed, just scale the tensor and add zoh
             #pragma unroll
             for (int mi = 0; mi < size<0, 1>(tensor); ++mi) {
-                const int row_idx_base = row_idx_offset + mi * warp_row_stride;
+                // const int row_idx_base = row_idx_offset + mi * warp_row_stride;
                 #pragma unroll
                 for (int i = 0; i < size<0, 0>(tensor); ++i) {
-                    const int row_idx = row_idx_base + i * 8;
+                    // const int row_idx = row_idx_base + i * 8;
                     #pragma unroll
                     for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
-                        const int col_idx_base = col_idx_offset + nj * 8;
+                        // const int col_idx_base = col_idx_offset + nj * 8;
                         #pragma unroll
                         for (int j = 0; j < size<1, 0>(tensor); ++j) {
-                            const int col_idx = col_idx_base + j;
+                            // const int col_idx = col_idx_base + j;
                             auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
                             tensor(coord) = tensor(coord) * scale_softmax + zoh(coord);
                         }
