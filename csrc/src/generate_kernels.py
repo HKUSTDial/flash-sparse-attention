@@ -52,7 +52,7 @@ class Kernel:
     sm: int
     dtype: str
     head_dim: int
-    is_causal: bool
+    is_causal: str
     direction: str
 
     @property
