@@ -121,7 +121,7 @@ cd flash-dmattn
 pip install -e .
 
 # Run tests to verify installation
-python -c "import flash_dma_cpp; print('✅ Flash DMA CUDA extension imported successfully')"
+python -c "import flash_dma_cuda; print('✅ Flash DMA CUDA extension imported successfully')"
 ```
 
 ### Build Requirements
@@ -189,7 +189,7 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 ```python
 # Test basic import
 try:
-    import flash_dma_cpp
+    import flash_dma_cuda
     print("✅ Flash DMA CUDA extension imported successfully")
 except ImportError as e:
     print(f"❌ Import failed: {e}")
