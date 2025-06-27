@@ -76,7 +76,7 @@ def prepare_dynamic_mask(
     return attn_mask, active_mask
 
 
-def calculate_zero_hold_states(value_states, dt_proj, A, causal_mask=None):
+def calculate_zero_hold_states(value_states, dt_proj, A):
     """
     Calculate zero hold states for dynamic mask attention.
     
@@ -152,7 +152,7 @@ def dynamic_mask_attention_python(
 
     num_queries_per_kv = num_heads // num_kv_heads
 
-    zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A, causal_mask)
+    zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
 
     # Use prepare_dynamic_mask function to process dynamic mask
     attn_mask, _ = prepare_dynamic_mask(
@@ -208,7 +208,7 @@ def dynamic_mask_attention_cuda(
     """
     
     # Calculate zero_hold_states
-    zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A, causal_mask)
+    zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
 
     # Use prepare_dynamic_mask to get the processed attention mask  
     _, active_mask = prepare_dynamic_mask(
