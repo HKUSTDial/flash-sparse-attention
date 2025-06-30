@@ -131,7 +131,7 @@ def flash_attention_cuda(
     """
     _, _, query_len, _ = query_states.shape
     _, _, key_len, _ = key_states.shape
-    if query_len > 32768 or key_len > 32768:
+    if query_len > 32768 and key_len > 32768:
         return "OOM"
 
     query_states = query_states.contiguous()
@@ -186,7 +186,7 @@ def dynamic_mask_attention_cuda(
     # Calculate zero_hold_states
     zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
 
-    _, active_mask = prepare_dynamic_mask(
+    attn_mask, active_mask = prepare_dynamic_mask(
         query_states,
         zero_hold_states,
         keep_window_size,
@@ -201,6 +201,7 @@ def dynamic_mask_attention_cuda(
     zero_hold_states = zero_hold_states[:, :, None, :].expand(
         -1, -1, query_states.shape[1], -1
     ).contiguous()  # [batch, num_kv_heads, query_len, key_len]
+    attn_mask = attn_mask.contiguous()  # [batch, num_kv_heads, query_len, key_len]
     active_mask = active_mask.contiguous()  # [batch, num_kv_heads, query_len, key_len]
 
     try:
@@ -211,7 +212,7 @@ def dynamic_mask_attention_cuda(
             key_states,               # k: [batch, seqlen_k, num_kv_heads, head_dim]
             value_states,             # v: [batch, seqlen_k, num_kv_heads, head_dim]
             zero_hold_states,         # zoh: [batch, num_kv_heads, seqlen_q, seqlen_k] - processed attention mask
-            active_mask,              # active_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
+            attn_mask,                # active_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
             out_tensor,               # out: None to auto-allocate
             0.0,                      # p_dropout
             scaling,                  # softmax_scale
@@ -374,6 +375,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
     # Set scaling factor and keep window size
     scaling = head_dim ** -0.5
     keep_window_size = 2048
+    is_causal = True
     
     results = {
         'config': config,
@@ -396,7 +398,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
     for _ in range(warmup_runs):
         result = flash_attention_cuda(
             query_states, key_states, value_states,
-            scaling, causal_mask, True
+            scaling, causal_mask, is_causal
         )
         if result == "OOM":
             results['flash_attention_status'] = 'OOM'
@@ -412,7 +414,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
             start_time = time.time()
             result = flash_attention_cuda(
                 query_states, key_states, value_states,
-                scaling, causal_mask, True
+                scaling, causal_mask, is_causal
             )
             torch.cuda.synchronize()
             end_time = time.time()
@@ -436,7 +438,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
         result = dynamic_mask_attention_cuda(
             query_states, key_states, value_states,
             dt_proj, A, scaling, causal_mask,
-            keep_window_size, True
+            keep_window_size, is_causal
         )
         if result == "OOM":
             results['dynamic_mask_attention_status'] = 'OOM'
@@ -453,7 +455,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
             result = dynamic_mask_attention_cuda(
                 query_states, key_states, value_states,
                 dt_proj, A, scaling, causal_mask,
-                keep_window_size, True
+                keep_window_size, is_causal
             )
             torch.cuda.synchronize()
             end_time = time.time()
@@ -477,7 +479,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
         result = dynamic_mask_attention_cuda_no_topk(
             query_states, key_states, value_states,
             dt_proj, A, scaling, causal_mask,
-            keep_window_size, True
+            keep_window_size, is_causal
         )
         if result == "OOM":
             results['dynamic_mask_attention_no_topk_status'] = 'OOM'
@@ -494,7 +496,7 @@ def benchmark_attention_performance(config, num_runs=5, warmup_runs=2):
             result = dynamic_mask_attention_cuda_no_topk(
                 query_states, key_states, value_states,
                 dt_proj, A, scaling, causal_mask,
-                keep_window_size, True
+                keep_window_size, is_causal
             )
             torch.cuda.synchronize()
             end_time = time.time()
@@ -531,14 +533,18 @@ def run_performance_benchmark():
         (1, 2, 1, 32768, 32768, 32),
 
         # Inference
-        (1, 2, 1, 64, 256, 32),
-        (1, 2, 1, 64, 512, 32),
-        (1, 2, 1, 64, 1024, 32),
-        (1, 2, 1, 64, 2048, 32),
-        (1, 2, 1, 64, 4096, 32),
-        (1, 2, 1, 64, 8192, 32),
-        (1, 2, 1, 64, 16384, 32),
-        (1, 2, 1, 64, 32768, 32),
+        (1, 2, 1, 64, 256, 128),
+        (1, 2, 1, 64, 512, 128),
+        (1, 2, 1, 64, 1024, 128),
+        (1, 2, 1, 64, 2048, 128),
+        (1, 2, 1, 64, 4096, 128),
+        (1, 2, 1, 64, 8192, 128),
+        (1, 2, 1, 64, 16384, 128),
+        (1, 2, 1, 64, 32768, 128),
+        (1, 2, 1, 64, 65536, 128),
+        (1, 2, 1, 64, 131072, 128),
+        (1, 2, 1, 64, 262144, 128),
+        (1, 2, 1, 64, 524288, 128),
         
         # Vary batch size
         (1, 2, 1, 1024, 1024, 32),
@@ -555,7 +561,10 @@ def run_performance_benchmark():
         # Vary head dimension
         (1, 2, 1, 1024, 1024, 32),
         (1, 2, 1, 1024, 1024, 64),
+        (1, 2, 1, 1024, 1024, 96),
         (1, 2, 1, 1024, 1024, 128),
+        (1, 2, 1, 1024, 1024, 192),
+        (1, 2, 1, 1024, 1024, 256),
     ]
 
     num_runs = 3  # Run 3 times and take average
