@@ -56,6 +56,8 @@ struct ZOH_params {
     index_t active_mask_head_stride;            // Stride between heads of active mask
     index_t zoh_row_stride;                     // Stride between rows of ZOH states
     index_t active_mask_row_stride;             // Stride between rows of active mask
+    index_t zoh_col_stride;                     // Stride between columns of ZOH states
+    index_t active_mask_col_stride;             // Stride between columns of active mask
 
     // The keep window size.
     int keep_window_size;                       // Number of tokens to keep in top-k (0 means don't apply top-k)
