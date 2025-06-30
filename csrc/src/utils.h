@@ -497,7 +497,7 @@ __forceinline__ __device__ void copy(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool Is_even_MN=true, bool Clear_OOB_MN=false,
+template <bool Is_even_MN=true, bool Clear_OOB_MN=true,
           typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2>
 __forceinline__ __device__ void copy_ZOH(
@@ -505,11 +505,11 @@ __forceinline__ __device__ void copy_ZOH(
     Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
     const int max_M=0, const int max_N=0
 ) {
-    CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});          // (MMA, M, N) 
-    CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});          // (MMA, M, N)
+    CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});          // (MMA, MMA_M, MMA_N) 
+    CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});          // (MMA, MMA_M, MMA_N)
     CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));     // MMA
-    CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // M
-    CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // N
+    CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
+    CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
     
     #pragma unroll
     for (int m = 0; m < size<1>(S); ++m) {
