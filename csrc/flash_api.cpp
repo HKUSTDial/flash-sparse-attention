@@ -75,13 +75,15 @@ void set_params_fprop(
     params.v_row_stride = v.stride(-3);
     params.zoh_row_stride = zoh.stride(-2);
     params.active_mask_row_stride = active_mask.stride(-2);
+    params.o_row_stride = out.stride(-3);
     params.q_head_stride = q.stride(-2);
     params.k_head_stride = k.stride(-2);
     params.v_head_stride = v.stride(-2);
     params.zoh_head_stride = zoh.stride(-3);
     params.active_mask_head_stride = active_mask.stride(-3);
-    params.o_row_stride = out.stride(-3);
     params.o_head_stride = out.stride(-2);
+    params.zoh_col_stride = zoh.stride(-1);
+    params.active_mask_col_stride = active_mask.stride(-1);
 
     if (cu_seqlens_q_d == nullptr) {
         params.q_batch_stride = q.stride(0);
