@@ -154,13 +154,13 @@ struct Flash_fwd_kernel_traits : public Base {
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
     using GmemTiledCopyZOH = decltype(
-        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+        make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, Element>{},
                         GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
+                        Layout<Shape<_1, _4>>{}));      // Val layout, 4 vals per read
     using GmemTiledCopyActiveMask = decltype(
-        make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
+        make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, Element>{},
                         GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
+                        Layout<Shape<_1, _4>>{}));      // Val layout, 4 vals per read
     using GmemTiledCopyO = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
                         GmemLayoutAtom{},
