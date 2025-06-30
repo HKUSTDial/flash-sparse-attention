@@ -22,7 +22,7 @@ import gc
 
 # Import the compiled CUDA extension
 try:
-    import flash_dma_cuda
+    import flash_dma_cuda   # type: ignore[import]
     print("✅ Successfully imported flash_dma_cuda")
 except ImportError as e:
     print(f"❌ Failed to import flash_dma_cuda: {e}")
