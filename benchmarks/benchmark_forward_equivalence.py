@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 import argparse
 import time
+import gc
 
 # Import the compiled CUDA extension
 try:
@@ -155,7 +156,7 @@ def dynamic_mask_attention_python(
     zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
 
     # Use prepare_dynamic_mask function to process dynamic mask
-    attn_mask, _ = prepare_dynamic_mask(
+    attn_mask, active_mask = prepare_dynamic_mask(
         query_states,
         zero_hold_states,
         keep_window_size,
@@ -211,7 +212,7 @@ def dynamic_mask_attention_cuda(
     zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
 
     # Use prepare_dynamic_mask to get the processed attention mask  
-    _, active_mask = prepare_dynamic_mask(
+    attn_mask, active_mask = prepare_dynamic_mask(
         query_states,
         zero_hold_states, 
         keep_window_size,
@@ -226,6 +227,7 @@ def dynamic_mask_attention_cuda(
     zero_hold_states = zero_hold_states[:, :, None, :].expand(
         -1, -1, query_states.shape[1], -1
     ).contiguous()  # [batch, num_kv_heads, query_len, key_len]
+    attn_mask = attn_mask.contiguous()  # [batch, num_kv_heads, query_len, key_len]
     active_mask = active_mask.contiguous()  # [batch, num_kv_heads, query_len, key_len]
 
     # Call the CUDA implementation using the mha_fwd function signature
@@ -234,7 +236,7 @@ def dynamic_mask_attention_cuda(
         query_states,             # q: [batch, seqlen_q, num_heads, head_dim]
         key_states,               # k: [batch, seqlen_k, num_kv_heads, head_dim]
         value_states,             # v: [batch, seqlen_k, num_kv_heads, head_dim]
-        zero_hold_states,         # zoh: [batch, num_kv_heads, seqlen_q, seqlen_k] - processed attention mask
+        attn_mask,                # zoh: [batch, num_kv_heads, seqlen_q, seqlen_k] - processed attention mask
         active_mask,              # active_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
         out_tensor,               # out: None to auto-allocate
         0.0,                      # p_dropout
@@ -352,16 +354,30 @@ def test_forward_equivalence(accuracy_threshold=0.95):
     torch.manual_seed(0)
     
     # Test different parameter configurations
+    # If you encounter NAN issues when running multiple configurations, try running a single configuration
     test_configs = [
         # (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal)
-        (1, 1, 1, 64, 64, 32, True),     # Small scale test, causal mask
-        (1, 1, 1, 64, 64, 32, False),    # Small scale test, non-causal mask
-        (1, 1, 1, 128, 128, 32, True),   # Medium scale test, causal mask
-        (1, 1, 1, 128, 128, 32, False),  # Medium scale test, non-causal mask
-        (1, 1, 1, 256, 256, 32, True),   # Large scale test, causal mask
-        (1, 2, 1, 64, 64, 32, True),   # Medium scale test, GQA mode
-        (2, 1, 1, 128, 128, 32, True),   # Medium scale test, Multi batch
-        (2, 2, 1, 128, 128, 32, True),   # Medium scale test, Multi batch GQA mode
+        (1, 1, 1, 4, 64, 32, True),
+        (1, 1, 1, 4, 64, 32, False),
+        (1, 1, 1, 128, 128, 32, True),
+        (1, 1, 1, 128, 128, 32, False),
+        (1, 1, 1, 256, 256, 32, True),
+        (1, 1, 1, 256, 256, 32, False),
+        (1, 1, 1, 512, 512, 32, True),
+        (1, 1, 1, 512, 512, 32, False),
+        (1, 1, 1, 1024, 1024, 32, True),
+        (1, 1, 1, 1024, 1024, 32, False),
+        (1, 1, 1, 2048, 2048, 32, True),
+        (1, 1, 1, 2048, 2048, 32, False),
+        (1, 1, 1, 4096, 4096, 32, True),
+        (1, 1, 1, 4096, 4096, 32, False),
+        (1, 2, 1, 64, 64, 32, True),
+        (2, 1, 1, 128, 128, 32, True),
+        (2, 2, 1, 128, 128, 32, True),
+        (1, 2, 1, 64, 64, 128, True),
+        (1, 2, 1, 128, 128, 128, True),
+        (1, 2, 1, 256, 256, 128, True),
+        (1, 2, 1, 2, 256, 128, True),
     ]
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -371,6 +387,10 @@ def test_forward_equivalence(accuracy_threshold=0.95):
     all_passed = True
     
     for i, config in enumerate(test_configs):
+        torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.synchronize()
+
         batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal = config
         
         # Progress indicator
@@ -425,7 +445,7 @@ def test_forward_equivalence(accuracy_threshold=0.95):
             dt_proj, A, scaling, causal_mask,
             keep_window_size, is_causal
         )
-        py_output_copy = py_output.clone()
+        torch.cuda.synchronize()
         py_time = time.time() - start_time
         
         # Run CUDA implementation
@@ -435,10 +455,14 @@ def test_forward_equivalence(accuracy_threshold=0.95):
             dt_proj, A, scaling, causal_mask,
             keep_window_size, is_causal
         )
+        torch.cuda.synchronize()
         cuda_time = time.time() - start_time
-
+        
+        
         # Analyze differences
-        is_close, max_diff, mean_diff = analyze_differences(py_output_copy, cuda_output, accuracy_threshold)
+        py_output_copy = py_output.clone()
+        cuda_output_copy = cuda_output.clone()
+        is_close, max_diff, mean_diff = analyze_differences(py_output_copy, cuda_output_copy, accuracy_threshold)
         
         # Report performance difference
         speedup = py_time / cuda_time if cuda_time > 0 else float('inf')
@@ -457,6 +481,10 @@ def test_forward_equivalence(accuracy_threshold=0.95):
         if not is_close and max_diff > 1e-2:
             print("  ⚠️ Difference too large, stopping subsequent tests.")
             break
+        del query_states, key_states, value_states, dt_proj, A, causal_mask, py_output, cuda_output, py_output_copy, cuda_output_copy
+        torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.synchronize()
     
     print("\n" + "🏁" + "=" * 76 + "🏁")
     summary_icon = "🎉" if all_passed else "😞"
