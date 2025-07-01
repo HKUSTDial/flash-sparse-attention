@@ -236,7 +236,7 @@ struct Flash_bwd_kernel_traits : public Base {
 
     using TiledMmadQ = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<AtomLayoutMdQ>, Int<kNWarps / AtomLayoutMdQ>, _1>>,  // 2x4x1 or 4x2x1 thread group
+        Layout<Shape<Int<AtomLayoutMdQ>, Int<kNWarps / AtomLayoutMdQ>, _1>>,    // 2x4x1 or 4x2x1 thread group
         Tile<Int<16 * AtomLayoutMdQ>, Int<16 * kNWarps / AtomLayoutMdQ>, _16>>;
 
     using SmemLayoutAtomQdO = decltype(
@@ -340,36 +340,36 @@ struct Flash_bwd_kernel_traits : public Base {
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, elem_type>{},
                         GmemLayoutAtom{},
-                        Layout<Shape<_1, _8>>{}));  // Val layout, 8 vals per read
+                        Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
     using GmemTiledCopydO = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
                         GmemLayoutAtom{},
-                        Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per store
+                        Layout<Shape < _1, _8>>{}));    // Val layout, 8 vals per store
     using GmemTiledCopydKV = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
                         GmemLayoutAtom{},
-                        Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per store
+                        Layout<Shape < _1, _8>>{}));    // Val layout, 8 vals per store
     using GmemTiledCopydQ = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
                         GmemLayoutAtom{},
-                        Layout<Shape < _1, _8>>{}));  // Val layout, 8 vals per store
+                        Layout<Shape < _1, _8>>{}));    // Val layout, 8 vals per store
     using GmemLayoutAtomdQaccum = std::conditional_t<
         kBlockKSmem == 32,
-        Layout<Shape <_32, _8>,  // Thread layout, 8 threads per row
+        Layout<Shape <_32, _8>,     // Thread layout, 8 threads per row
                Stride< _8, _1>>,
-        Layout<Shape <_16, _16>,  // Thread layout, 16 threads per row
+        Layout<Shape <_16, _16>,    // Thread layout, 16 threads per row
                Stride< _16, _1>>
     >;
     using GmemTiledCopydQaccum = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
                         GmemLayoutAtomdQaccum{},
-                        Layout<Shape < _1, _4>>{}));  // Val layout, 4 vals per store
+                        Layout<Shape < _1, _4>>{}));    // Val layout, 4 vals per store
 
     using GmemTiledCopydQaccumAtomicAdd = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
-                        Layout<Shape <_8, _32>,  // Thread layout, 8 threads per row
+                        Layout<Shape <_8, _32>,         // Thread layout, 8 threads per row
                                Stride<_32, _1>>{},
-                        Layout<Shape < _1, _1>>{}));  // Val layout, 1 val per store
+                        Layout<Shape < _1, _1>>{}));    // Val layout, 1 val per store
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
