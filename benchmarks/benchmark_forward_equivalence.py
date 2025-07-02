@@ -30,27 +30,27 @@ except ImportError as e:
 
 def prepare_dynamic_mask(
     hidden_states: torch.Tensor,
-    dt_states: torch.Tensor,
+    zoh_states: torch.Tensor,
     keep_window_size: int = 2048,
     attention_mask: torch.Tensor | None = None,
 ):
     """
     Calculate dynamic attention mask to mask tokens for sparse attention.
 
-    Combine `dt_states` with `attention_mask` to generate the final `attn_mask`.
+    Combine `zoh_states` with `attention_mask` to generate the final `attn_mask`.
 
     Args:
         hidden_states: Input hidden states to determine dtype minimum value
-        dt_states: dt_states of shape (batch_size, num_kv_heads, key_sequence_length)
+        zoh_states: zoh_states of shape (batch_size, num_kv_heads, key_sequence_length)
         keep_window_size: Window size of tokens not dynamically masked
         attention_mask: Optional attention mask of shape (batch_size, 1, query_len, key_len)
     
     Returns:
-        tuple: (attn_mask, active_mask)
+        tuple: (attn_bias, attn_mask)
     """
     min_dtype = torch.finfo(hidden_states.dtype).min
     dtype = hidden_states.dtype
-    attn_mask = dt_states[:, :, None, :].expand(
+    attn_bias = zoh_states[:, :, None, :].expand(
         -1, -1, hidden_states.shape[2], -1
     )  # [batch_size, num_kv_heads, query_len, key_len]
     
@@ -61,25 +61,25 @@ def prepare_dynamic_mask(
                 torch.tensor(0.0, device=attention_mask.device, dtype=dtype), 
                 min_dtype
             )
-        attn_mask = attn_mask.masked_fill(
-            attention_mask[:, :, :, : attn_mask.shape[-1]] != 0, min_dtype
+        attn_bias = attn_bias.masked_fill(
+            attention_mask[:, :, :, : attn_bias.shape[-1]] != 0, min_dtype
         )
     
-    if attn_mask.shape[-1] > keep_window_size:
+    if attn_bias.shape[-1] > keep_window_size:
         topk_indices = torch.topk(
-            attn_mask, keep_window_size, dim=-1, largest=True, sorted=False
+            attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
         ).indices
-        active_mask = torch.zeros_like(attn_mask, dtype=dtype, device=attn_mask.device)
-        active_mask = active_mask.scatter(-1, topk_indices, 1.0)
-        attn_mask = attn_mask.masked_fill(active_mask == 0.0, min_dtype)
+        attn_mask = torch.zeros_like(attn_bias, dtype=dtype, device=attn_bias.device)
+        attn_mask = attn_mask.scatter(-1, topk_indices, 1.0)
+        attn_bias = attn_bias.masked_fill(attn_mask == 0.0, min_dtype)
     else:
-        active_mask = torch.ones_like(attn_mask, dtype=dtype, device=attn_mask.device)
-    return attn_mask, active_mask
+        attn_mask = torch.ones_like(attn_mask, dtype=dtype, device=attn_mask.device)
+    return attn_bias, attn_mask
 
 
-def calculate_zero_hold_states(value_states, dt_proj, A):
+def calculate_zoh_states(value_states, dt_proj, A):
     """
-    Calculate zero hold states for dynamic mask attention.
+    Calculate zoh states for dynamic mask attention.
     
     Args:
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
@@ -88,7 +88,7 @@ def calculate_zero_hold_states(value_states, dt_proj, A):
         causal_mask: Optional causal mask
     
     Returns:
-        zero_hold_states: [batch_size, num_kv_heads, key_len]
+        zoh_states: [batch_size, num_kv_heads, key_len]
     """
     batch_size, _, key_len, _ = value_states.shape
     
@@ -100,9 +100,9 @@ def calculate_zero_hold_states(value_states, dt_proj, A):
     
     # Apply softplus activation and coefficient A
     dt_states = torch.exp(F.softplus(dt_result) * A)
-    zero_hold_states = dt_states.transpose(-1, -2)  # [batch_size, num_kv_heads, key_len]
-        
-    return zero_hold_states
+    zoh_states = dt_states.transpose(-1, -2)  # [batch_size, num_kv_heads, key_len]
+
+    return zoh_states
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -153,12 +153,12 @@ def dynamic_mask_attention_python(
 
     num_queries_per_kv = num_heads // num_kv_heads
 
-    zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
+    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
 
     # Use prepare_dynamic_mask function to process dynamic mask
-    attn_mask, active_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_dynamic_mask(
         query_states,
-        zero_hold_states,
+        zoh_states,
         keep_window_size,
         causal_mask if is_causal else None
     )
@@ -166,13 +166,13 @@ def dynamic_mask_attention_python(
     # Sparse attention weight calculation
     key_states = repeat_kv(key_states, num_queries_per_kv)
     value_states = repeat_kv(value_states, num_queries_per_kv)
-    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+    attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
     
     attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1))
-    attn_weights = attn_weights * scaling + attn_mask  # Apply scaling and dynamic_mask
-    attn_weights = F.softmax(attn_weights, dim=-1)  # Softmax normalization
+    attn_weights = attn_weights * scaling + attn_bias           # Apply scaling and zoh
+    attn_weights = F.softmax(attn_weights, dim=-1)              # Softmax normalization
     attn_outputs = torch.matmul(attn_weights, value_states)
-    attn_outputs = attn_outputs.transpose(1, 2).contiguous()  # Transpose to [batch, query_len, num_heads, head_dim]
+    attn_outputs = attn_outputs.transpose(1, 2).contiguous()    # Transpose to [batch, query_len, num_heads, head_dim]
     
     return attn_outputs
 
@@ -207,28 +207,28 @@ def dynamic_mask_attention_cuda(
     Returns:
         attn_outputs: [batch_size, query_len, num_heads, head_dim]
     """
-    
-    # Calculate zero_hold_states
-    zero_hold_states = calculate_zero_hold_states(value_states, dt_proj, A)
+
+    # Calculate zoh_states
+    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
 
     # Use prepare_dynamic_mask to get the processed attention mask  
-    attn_mask, active_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_dynamic_mask(
         query_states,
-        zero_hold_states, 
+        zoh_states,
         keep_window_size,
         causal_mask if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
     
     # Ensure correct data types and memory layout for CUDA function
     # CUDA function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-    query_states = query_states.transpose(1, 2).contiguous()  # [batch, query_len, num_heads, head_dim]
-    key_states = key_states.transpose(1, 2).contiguous()      # [batch, key_len, num_kv_heads, head_dim]
-    value_states = value_states.transpose(1, 2).contiguous()  # [batch, key_len, num_kv_heads, head_dim]
-    zero_hold_states = zero_hold_states[:, :, None, :].expand(
+    query_states = query_states.transpose(1, 2).contiguous()    # [batch, query_len, num_heads, head_dim]
+    key_states = key_states.transpose(1, 2).contiguous()        # [batch, key_len, num_kv_heads, head_dim]
+    value_states = value_states.transpose(1, 2).contiguous()    # [batch, key_len, num_kv_heads, head_dim]
+    zoh_states = zoh_states[:, :, None, :].expand(
         -1, -1, query_states.shape[1], -1
-    ).contiguous()  # [batch, num_kv_heads, query_len, key_len]
-    attn_mask = attn_mask.contiguous()  # [batch, num_kv_heads, query_len, key_len]
-    active_mask = active_mask.contiguous()  # [batch, num_kv_heads, query_len, key_len]
+    ).contiguous()                                              # [batch, num_kv_heads, query_len, key_len]
+    attn_bias = attn_bias.contiguous()                          # [batch, num_kv_heads, query_len, key_len]
+    attn_mask = attn_mask.contiguous()                          # [batch, num_kv_heads, query_len, key_len]
 
     # Call the CUDA implementation using the mha_fwd function signature
     out_tensor = None  # Let the function allocate the output tensor
@@ -237,7 +237,7 @@ def dynamic_mask_attention_cuda(
         key_states,                 # k: [batch, seqlen_k, num_kv_heads, head_dim]
         value_states,               # v: [batch, seqlen_k, num_kv_heads, head_dim]
         attn_mask,                  # attn_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
-        active_mask,                # attn_bias: [batch, num_kv_heads, seqlen_q, seqlen_k]
+        attn_bias,                  # attn_bias: [batch, num_kv_heads, seqlen_q, seqlen_k]
         out_tensor,                 # out: None to auto-allocate
         0.0,                        # p_dropout
         scaling,                    # softmax_scale
