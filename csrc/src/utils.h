@@ -500,7 +500,7 @@ __forceinline__ __device__ void copy(
 template <bool Is_even_MN=true, bool Clear_OOB_MN=true,
           typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2>
-__forceinline__ __device__ void copy_ZOH(
+__forceinline__ __device__ void copy_Mask(
     TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
     Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
     const int max_M=0, const int max_N=0

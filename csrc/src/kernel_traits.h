@@ -82,11 +82,11 @@ struct Flash_fwd_kernel_traits : public Base {
                     // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
                     Layout<Shape<_8, Int<kBlockKSmem>>,
                     Stride<Int<kBlockKSmem>, _1>>{}));
-    using SmemLayoutAtomZOH = decltype(
+    using SmemLayoutAtomMask = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<_8, _8>,
                     Stride<_8, _1>>{}));
-    using SmemLayoutAtomActiveMask = decltype(
+    using SmemLayoutAtomBias = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
                     Layout<Shape<_8, _8>,
                     Stride<_8, _1>>{}));
@@ -104,11 +104,11 @@ struct Flash_fwd_kernel_traits : public Base {
         composition(SmemLayoutKV{}, make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})));
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
-    using SmemLayoutZOH = decltype(tile_to_shape(
-        SmemLayoutAtomZOH{},
+    using SmemLayoutMask = decltype(tile_to_shape(
+        SmemLayoutAtomMask{},
         Shape<Int<kBlockM>, Int<kBlockN>>{}));
-    using SmemLayoutActiveMask = decltype(tile_to_shape(
-        SmemLayoutAtomActiveMask{},
+    using SmemLayoutBias = decltype(tile_to_shape(
+        SmemLayoutAtomBias{},
         Shape<Int<kBlockM>, Int<kBlockN>>{}));
 
     // Shared memory layout for output
@@ -125,10 +125,11 @@ struct Flash_fwd_kernel_traits : public Base {
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemMaskSize = size(SmemLayoutZOH{}) * sizeof(Element) + size(SmemLayoutActiveMask{}) * sizeof(Element);
+    static constexpr int kSmemMaskSize = size(SmemLayoutMask{}) * sizeof(Element);
+    static constexpr int kSmemBiasSize = size(SmemLayoutBias{}) * sizeof(Element);
 
-    // Shared memory size with QKV matrices
-    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + kSmemMaskSize;
+    // Shared memory size with QKV matrices and mask/bias matrices
+    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + kSmemMaskSize + kSmemBiasSize;
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
@@ -153,11 +154,11 @@ struct Flash_fwd_kernel_traits : public Base {
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _8>>{}));      // Val layout, 8 vals per read
-    using GmemTiledCopyZOH = decltype(
+    using GmemTiledCopyMask = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, Element>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _4>>{}));      // Val layout, 4 vals per read
-    using GmemTiledCopyActiveMask = decltype(
+    using GmemTiledCopyBias = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, Element>{},
                         GmemLayoutAtom{},
                         Layout<Shape<_1, _4>>{}));      // Val layout, 4 vals per read

@@ -40,8 +40,8 @@ void set_params_fprop(
     const at::Tensor q,
     const at::Tensor k,
     const at::Tensor v,
-    const at::Tensor zoh,
-    const at::Tensor active_mask,
+    const at::Tensor attn_mask,
+    const at::Tensor attn_bias,
     at::Tensor out,
     void *cu_seqlens_q_d,
     void *cu_seqlens_k_d,
@@ -65,32 +65,32 @@ void set_params_fprop(
     params.q_ptr = q.data_ptr();
     params.k_ptr = k.data_ptr();
     params.v_ptr = v.data_ptr();
-    params.zoh_ptr = zoh.data_ptr();
-    params.active_mask_ptr = active_mask.data_ptr();
+    params.attn_mask_ptr = attn_mask.data_ptr();
+    params.attn_bias_ptr = attn_bias.data_ptr();
     params.o_ptr = out.data_ptr();
     
     // All stride are in elements, not bytes.
     params.q_row_stride = q.stride(-3);
     params.k_row_stride = k.stride(-3);
     params.v_row_stride = v.stride(-3);
-    params.zoh_row_stride = zoh.stride(-2);
-    params.active_mask_row_stride = active_mask.stride(-2);
+    params.attn_mask_row_stride = attn_mask.stride(-2);
+    params.attn_bias_row_stride = attn_bias.stride(-2);
     params.o_row_stride = out.stride(-3);
     params.q_head_stride = q.stride(-2);
     params.k_head_stride = k.stride(-2);
     params.v_head_stride = v.stride(-2);
-    params.zoh_head_stride = zoh.stride(-3);
-    params.active_mask_head_stride = active_mask.stride(-3);
+    params.attn_mask_head_stride = attn_mask.stride(-3);
+    params.attn_bias_head_stride = attn_bias.stride(-3);
     params.o_head_stride = out.stride(-2);
-    params.zoh_col_stride = zoh.stride(-1);
-    params.active_mask_col_stride = active_mask.stride(-1);
+    params.attn_mask_col_stride = attn_mask.stride(-1);
+    params.attn_bias_col_stride = attn_bias.stride(-1);
 
     if (cu_seqlens_q_d == nullptr) {
         params.q_batch_stride = q.stride(0);
         params.k_batch_stride = k.stride(0);
         params.v_batch_stride = v.stride(0);
-        params.zoh_batch_stride = zoh.stride(0);
-        params.active_mask_batch_stride = active_mask.stride(0);
+        params.attn_mask_batch_stride = attn_mask.stride(0);
+        params.attn_bias_batch_stride = attn_bias.stride(0);
         params.o_batch_stride = out.stride(0);
         if (seqlenq_ngroups_swapped) {
              params.q_batch_stride *= seqlen_q;
@@ -271,8 +271,8 @@ mha_fwd(
     at::Tensor &q,                      // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
     const at::Tensor &k,                // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
     const at::Tensor &v,                // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
-    const at::Tensor &zoh,              // batch_size x num_heads_k x seqlen_q x seqlen_k
-    const at::Tensor &active_mask,      // batch_size x num_heads_k x seqlen_q x seqlen_k
+    const at::Tensor &attn_mask,        // batch_size x num_heads_k x seqlen_q x seqlen_k
+    const at::Tensor &attn_bias,        // batch_size x num_heads_k x seqlen_q x seqlen_k
     std::optional<at::Tensor> &out_,    // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
     const float p_dropout,
     const float softmax_scale,
@@ -295,10 +295,10 @@ mha_fwd(
                 "FlashAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(zoh.dtype() == q_dtype, "zoh must have the same dtype as inputs");
-    TORCH_CHECK(active_mask.dtype() == q_dtype, "active_mask must have the same dtype as inputs");
+    TORCH_CHECK(attn_mask.dtype() == q_dtype, "attn_mask must have the same dtype as inputs");
+    TORCH_CHECK(attn_bias.dtype() == q_dtype, "attn_bias must have the same dtype as inputs");
 
-    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v); CHECK_DEVICE(zoh); CHECK_DEVICE(active_mask);
+    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v); CHECK_DEVICE(attn_mask); CHECK_DEVICE(attn_bias); 
 
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
@@ -335,8 +335,8 @@ mha_fwd(
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size);
     CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size);
-    CHECK_SHAPE(zoh, batch_size, num_heads_k, seqlen_q, seqlen_k);
-    CHECK_SHAPE(active_mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
+    CHECK_SHAPE(attn_mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
+    CHECK_SHAPE(attn_bias, batch_size, num_heads_k, seqlen_q, seqlen_k);
 
     at::Tensor out;
     if (out_.has_value()) {
@@ -379,7 +379,7 @@ mha_fwd(
         num_heads, num_heads_k,
         head_size, head_size_rounded,
         keep_window_size,
-        q, k, v, zoh, active_mask, out,
+        q, k, v, attn_mask, attn_bias, out,
         /*cu_seqlens_q_d=*/nullptr,
         /*cu_seqlens_k_d=*/nullptr,
         /*seqused_k=*/nullptr,
