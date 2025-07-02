@@ -236,8 +236,8 @@ def dynamic_mask_attention_cuda(
         query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
         key_states,                 # k: [batch, seqlen_k, num_kv_heads, head_dim]
         value_states,               # v: [batch, seqlen_k, num_kv_heads, head_dim]
-        active_mask,                # attn_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
-        attn_mask,                  # bias: [batch, num_kv_heads, seqlen_q, seqlen_k]
+        attn_mask,                  # attn_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
+        active_mask,                # attn_bias: [batch, num_kv_heads, seqlen_q, seqlen_k]
         out_tensor,                 # out: None to auto-allocate
         0.0,                        # p_dropout
         scaling,                    # softmax_scale
