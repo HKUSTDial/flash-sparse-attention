@@ -167,18 +167,18 @@ struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_par
 
 struct Flash_bwd_params : public Flash_fwd_params {
 
-    // The dO and dQKV and dZeroHold matrices.
+    // The dO and dQKV and dBias matrices.
     void *__restrict__ do_ptr;
     void *__restrict__ dq_ptr;
     void *__restrict__ dk_ptr;
     void *__restrict__ dv_ptr;
-    void *__restrict__ dzoh_ptr;
+    void *__restrict__ dbias_ptr;
 
     // To accumulate dQ
     void *__restrict__ dq_accum_ptr;
     void *__restrict__ dk_accum_ptr;
     void *__restrict__ dv_accum_ptr;
-    void *__restrict__ dzoh_accum_ptr;
+    void *__restrict__ dbias_accum_ptr;
 
     // // To accumulate dK and dV in case we're splitting the bwd along seqlen_q
     // dimension void *__restrict__ dk_accum_ptr; void *__restrict__
@@ -199,10 +199,10 @@ struct Flash_bwd_params : public Flash_fwd_params {
     index_t dq_head_stride;
     index_t dk_head_stride;
     index_t dv_head_stride;
-    index_t dzoh_batch_stride;
-    index_t dzoh_head_stride;
-    index_t dzoh_row_stride;
-    index_t dzoh_col_stride;
+    index_t dbias_batch_stride;
+    index_t dbias_head_stride;
+    index_t dbias_row_stride;
+    index_t dbias_col_stride;
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;
