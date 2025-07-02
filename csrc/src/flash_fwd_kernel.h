@@ -113,7 +113,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Tensor tOrO = make_tensor<Element>(shape(tOgO));
         clear(tOrO);
         // Construct identity layout for sO
-        Tensor cO = make_identity_tensor(make_shape(size<0>(gO), size<1>(gO)));  // (BLK_M,BLK_K) -> (blk_m,blk_k)
+        Tensor cO = make_identity_tensor(make_shape(size<0>(gO), size<1>(gO)));  // (BLK_M, BLK_K) -> (blk_m, blk_k)
         // Repeat the partitioning with identity layouts
         Tensor tOcO = gmem_thr_copy_O.partition_D(cO);
         Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgO)));
@@ -273,12 +273,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
-    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
-    auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
-    Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
     auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
     auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
     Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
+    Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
     // PREDICATES
     // // Allocate predicate tensors for m and n
