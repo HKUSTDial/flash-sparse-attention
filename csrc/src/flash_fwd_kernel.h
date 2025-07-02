@@ -676,745 +676,745 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Split, bool Append_KV, typename Params>
 inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, const int bidb, const int bidh, const int m_block, const int n_split_idx, const int num_n_splits) {
 
-    using Element = typename Kernel_traits::Element;
-    using ElementAccum = typename Kernel_traits::ElementAccum;
-    using index_t = typename Kernel_traits::index_t;
+    // using Element = typename Kernel_traits::Element;
+    // using ElementAccum = typename Kernel_traits::ElementAccum;
+    // using index_t = typename Kernel_traits::index_t;
 
-    // Shared memory.
-    extern __shared__ char smem_[];
+    // // Shared memory.
+    // extern __shared__ char smem_[];
 
-    // The thread index.
-    const int tidx = threadIdx.x;
+    // // The thread index.
+    // const int tidx = threadIdx.x;
 
-    constexpr int kBlockM = Kernel_traits::kBlockM;
-    constexpr int kBlockN = Kernel_traits::kBlockN;
-    constexpr int kHeadDim = Kernel_traits::kHeadDim;
-    constexpr int kNWarps = Kernel_traits::kNWarps;
+    // constexpr int kBlockM = Kernel_traits::kBlockM;
+    // constexpr int kBlockN = Kernel_traits::kBlockN;
+    // constexpr int kHeadDim = Kernel_traits::kHeadDim;
+    // constexpr int kNWarps = Kernel_traits::kNWarps;
 
-    using GmemTiledCopyO = std::conditional_t<
-        !Split,
-        typename Kernel_traits::GmemTiledCopyO,
-        typename Kernel_traits::GmemTiledCopyOaccum
-    >;
-    using ElementO = std::conditional_t<!Split, Element, ElementAccum>;
+    // using GmemTiledCopyO = std::conditional_t<
+    //     !Split,
+    //     typename Kernel_traits::GmemTiledCopyO,
+    //     typename Kernel_traits::GmemTiledCopyOaccum
+    // >;
+    // using ElementO = std::conditional_t<!Split, Element, ElementAccum>;
 
-    const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
-    // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) { printf("Is_even_MN = %d, is_cumulativ = %d, seqlen_k_cache = %d, actual_seqlen_k = %d\n", Is_even_MN, params.is_seqlens_k_cumulative, binfo.seqlen_k_cache, binfo.actual_seqlen_k); }
-    // if (threadIdx.x == 0 && blockIdx.y == 1 && blockIdx.z == 0) { printf("params.knew_ptr = %p, seqlen_k_cache + seqlen_knew = %d\n", params.knew_ptr, binfo.seqlen_k_cache + (params.knew_ptr == nullptr ? 0 : params.seqlen_knew)); }
-    if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
+    // const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
+    // // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) { printf("Is_even_MN = %d, is_cumulativ = %d, seqlen_k_cache = %d, actual_seqlen_k = %d\n", Is_even_MN, params.is_seqlens_k_cumulative, binfo.seqlen_k_cache, binfo.actual_seqlen_k); }
+    // // if (threadIdx.x == 0 && blockIdx.y == 1 && blockIdx.z == 0) { printf("params.knew_ptr = %p, seqlen_k_cache + seqlen_knew = %d\n", params.knew_ptr, binfo.seqlen_k_cache + (params.knew_ptr == nullptr ? 0 : params.seqlen_knew)); }
+    // if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
 
-    const int n_blocks_per_split = ((params.seqlen_k + kBlockN - 1) / kBlockN + num_n_splits - 1) / num_n_splits;
-    const int n_block_min = n_split_idx * n_blocks_per_split;
-    int n_block_max = std::min(cute::ceil_div(binfo.actual_seqlen_k, kBlockN), (n_split_idx + 1) * n_blocks_per_split);
-    if (Is_causal) {
-        n_block_max = std::min(n_block_max,
-                               cute::ceil_div((m_block + 1) * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q, kBlockN));
-    }
-    if (n_block_min >= n_block_max) {  // This also covers the case where n_block_max <= 0
-        // We exit early and write 0 to gOaccum and -inf to gLSEaccum.
-        // Otherwise we might read OOB elements from gK and gV,
-        // or get wrong results when we combine gOaccum from different blocks.
-        const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
-            + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
-        const index_t row_offset_oaccum = (((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q
-            + m_block * kBlockM) * params.d_rounded;
-        const index_t row_offset_lseaccum = ((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q + m_block * kBlockM;
-        Tensor gOaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementO *>(Split ? params.oaccum_ptr : params.o_ptr) + (Split ? row_offset_oaccum : row_offset_o)),
-                                      Shape<Int<kBlockM>, Int<kHeadDim>>{},
-                                     make_stride(Split ? kHeadDim : params.o_row_stride, _1{}));
-        Tensor gLSEaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(Split ? params.softmax_lseaccum_ptr : params.softmax_lse_ptr) + row_offset_lseaccum),
-                                      Shape<Int<kBlockM>>{}, Stride<_1>{});
+    // const int n_blocks_per_split = ((params.seqlen_k + kBlockN - 1) / kBlockN + num_n_splits - 1) / num_n_splits;
+    // const int n_block_min = n_split_idx * n_blocks_per_split;
+    // int n_block_max = std::min(cute::ceil_div(binfo.actual_seqlen_k, kBlockN), (n_split_idx + 1) * n_blocks_per_split);
+    // if (Is_causal) {
+    //     n_block_max = std::min(n_block_max,
+    //                            cute::ceil_div((m_block + 1) * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q, kBlockN));
+    // }
+    // if (n_block_min >= n_block_max) {  // This also covers the case where n_block_max <= 0
+    //     // We exit early and write 0 to gOaccum and -inf to gLSEaccum.
+    //     // Otherwise we might read OOB elements from gK and gV,
+    //     // or get wrong results when we combine gOaccum from different blocks.
+    //     const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
+    //         + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
+    //     const index_t row_offset_oaccum = (((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q
+    //         + m_block * kBlockM) * params.d_rounded;
+    //     const index_t row_offset_lseaccum = ((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q + m_block * kBlockM;
+    //     Tensor gOaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementO *>(Split ? params.oaccum_ptr : params.o_ptr) + (Split ? row_offset_oaccum : row_offset_o)),
+    //                                   Shape<Int<kBlockM>, Int<kHeadDim>>{},
+    //                                  make_stride(Split ? kHeadDim : params.o_row_stride, _1{}));
+    //     Tensor gLSEaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(Split ? params.softmax_lseaccum_ptr : params.softmax_lse_ptr) + row_offset_lseaccum),
+    //                                   Shape<Int<kBlockM>>{}, Stride<_1>{});
 
-        GmemTiledCopyO gmem_tiled_copy_Oaccum;
-        auto gmem_thr_copy_Oaccum = gmem_tiled_copy_Oaccum.get_thread_slice(tidx);
-        Tensor tOgOaccum = gmem_thr_copy_Oaccum.partition_D(gOaccum);
-        Tensor tOrOaccum = make_tensor<ElementO>(shape(tOgOaccum));
-        clear(tOrOaccum);
-        // Construct identity layout for sO
-        Tensor cO = make_identity_tensor(make_shape(size<0>(gOaccum), size<1>(gOaccum)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
-        // Repeat the partitioning with identity layouts
-        Tensor tOcO = gmem_thr_copy_Oaccum.partition_D(cO);
-        Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgOaccum)));
-        if (!Is_even_K) {
-            #pragma unroll
-            for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
-        }
-        // Clear_OOB_K must be false since we don't want to write zeros to gmem
-        FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
-            gmem_tiled_copy_Oaccum, tOrOaccum, tOgOaccum, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
-        );
-        #pragma unroll
-        for (int m = 0; m < size<1>(tOgOaccum); ++m) {
-            const int row = get<0>(tOcO(0, m, 0));
-            if (row < binfo.actual_seqlen_q - m_block * kBlockM && get<1>(tOcO(0, m, 0)) == 0) { gLSEaccum(row) = Split ? -INFINITY : INFINITY; }
-        }
-        return;
-    }
+    //     GmemTiledCopyO gmem_tiled_copy_Oaccum;
+    //     auto gmem_thr_copy_Oaccum = gmem_tiled_copy_Oaccum.get_thread_slice(tidx);
+    //     Tensor tOgOaccum = gmem_thr_copy_Oaccum.partition_D(gOaccum);
+    //     Tensor tOrOaccum = make_tensor<ElementO>(shape(tOgOaccum));
+    //     clear(tOrOaccum);
+    //     // Construct identity layout for sO
+    //     Tensor cO = make_identity_tensor(make_shape(size<0>(gOaccum), size<1>(gOaccum)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    //     // Repeat the partitioning with identity layouts
+    //     Tensor tOcO = gmem_thr_copy_Oaccum.partition_D(cO);
+    //     Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgOaccum)));
+    //     if (!Is_even_K) {
+    //         #pragma unroll
+    //         for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
+    //     }
+    //     // Clear_OOB_K must be false since we don't want to write zeros to gmem
+    //     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
+    //         gmem_tiled_copy_Oaccum, tOrOaccum, tOgOaccum, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
+    //     );
+    //     #pragma unroll
+    //     for (int m = 0; m < size<1>(tOgOaccum); ++m) {
+    //         const int row = get<0>(tOcO(0, m, 0));
+    //         if (row < binfo.actual_seqlen_q - m_block * kBlockM && get<1>(tOcO(0, m, 0)) == 0) { gLSEaccum(row) = Split ? -INFINITY : INFINITY; }
+    //     }
+    //     return;
+    // }
 
-    // We iterate over the blocks in reverse order. This is because the last block is the only one
-    // that needs masking when we read K and V from global memory. Moreover, iterating in reverse
-    // might save us 1 register (we just need n_block instead of both n_block and n_block_max).
+    // // We iterate over the blocks in reverse order. This is because the last block is the only one
+    // // that needs masking when we read K and V from global memory. Moreover, iterating in reverse
+    // // might save us 1 register (we just need n_block instead of both n_block and n_block_max).
 
-    // We move K and V to the last block.
-    const int bidb_cache = params.cache_batch_idx == nullptr ? bidb : params.cache_batch_idx[bidb];
-    const int *block_table = params.block_table == nullptr ? nullptr : params.block_table + bidb * params.block_table_batch_stride;
-    const int block_table_idx = block_table == nullptr ? 0 : (n_block_max - 1) * kBlockN / params.page_block_size;
-    const int block_table_offset = block_table == nullptr ? 0 : (n_block_max - 1) * kBlockN - block_table_idx * params.page_block_size;
-    const index_t row_offset_k = block_table == nullptr
-        ? binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb_cache)
-          + (n_block_max - 1) * kBlockN * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride
-        : block_table[block_table_idx] * params.k_batch_stride + block_table_offset * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
-    const index_t row_offset_v = block_table == nullptr
-        ? binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb_cache)
-          + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride
-        : block_table[block_table_idx] * params.v_batch_stride + block_table_offset * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
-    const index_t col_offset_zoh = block_table == nullptr
-        ? binfo.zoh_offset(params.zoh_batch_stride, params.zoh_row_stride, params.zoh_col_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.zoh_head_stride + m_block * kBlockM * params.zoh_row_stride + (n_block_max - 1) * kBlockN * params.zoh_col_stride
-        : block_table[block_table_idx] * params.zoh_batch_stride + (bidh / params.h_h_k_ratio) * params.zoh_head_stride + m_block * kBlockM * params.zoh_row_stride + block_table_offset * params.zoh_col_stride;
-    const index_t col_offset_am = block_table == nullptr
-        ? binfo.active_mask_offset(params.active_mask_batch_stride, params.active_mask_row_stride, params.active_mask_col_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.active_mask_head_stride + m_block * kBlockM * params.active_mask_row_stride + (n_block_max - 1) * kBlockN * params.active_mask_col_stride
-        : block_table[block_table_idx] * params.active_mask_batch_stride + (bidh / params.h_h_k_ratio) * params.active_mask_head_stride + m_block * kBlockM * params.active_mask_row_stride + block_table_offset * params.active_mask_col_stride;
+    // // We move K and V to the last block.
+    // const int bidb_cache = params.cache_batch_idx == nullptr ? bidb : params.cache_batch_idx[bidb];
+    // const int *block_table = params.block_table == nullptr ? nullptr : params.block_table + bidb * params.block_table_batch_stride;
+    // const int block_table_idx = block_table == nullptr ? 0 : (n_block_max - 1) * kBlockN / params.page_block_size;
+    // const int block_table_offset = block_table == nullptr ? 0 : (n_block_max - 1) * kBlockN - block_table_idx * params.page_block_size;
+    // const index_t row_offset_k = block_table == nullptr
+    //     ? binfo.k_offset(params.k_batch_stride, params.k_row_stride, bidb_cache)
+    //       + (n_block_max - 1) * kBlockN * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride
+    //     : block_table[block_table_idx] * params.k_batch_stride + block_table_offset * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
+    // const index_t row_offset_v = block_table == nullptr
+    //     ? binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb_cache)
+    //       + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride
+    //     : block_table[block_table_idx] * params.v_batch_stride + block_table_offset * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
+    // const index_t col_offset_zoh = block_table == nullptr
+    //     ? binfo.zoh_offset(params.zoh_batch_stride, params.zoh_row_stride, params.zoh_col_stride, bidb_cache)
+    //       + (bidh / params.h_h_k_ratio) * params.zoh_head_stride + m_block * kBlockM * params.zoh_row_stride + (n_block_max - 1) * kBlockN * params.zoh_col_stride
+    //     : block_table[block_table_idx] * params.zoh_batch_stride + (bidh / params.h_h_k_ratio) * params.zoh_head_stride + m_block * kBlockM * params.zoh_row_stride + block_table_offset * params.zoh_col_stride;
+    // const index_t col_offset_am = block_table == nullptr
+    //     ? binfo.active_mask_offset(params.active_mask_batch_stride, params.active_mask_row_stride, params.active_mask_col_stride, bidb_cache)
+    //       + (bidh / params.h_h_k_ratio) * params.active_mask_head_stride + m_block * kBlockM * params.active_mask_row_stride + (n_block_max - 1) * kBlockN * params.active_mask_col_stride
+    //     : block_table[block_table_idx] * params.active_mask_batch_stride + (bidh / params.h_h_k_ratio) * params.active_mask_head_stride + m_block * kBlockM * params.active_mask_row_stride + block_table_offset * params.active_mask_col_stride;
 
-    // Global memory tensor configuration
-    Tensor mQ = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.q_ptr) + binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)),
-        make_shape(binfo.actual_seqlen_q, params.h, params.d),
-        make_stride(params.q_row_stride, params.q_head_stride, _1{})
-    );
-    Tensor gQ = local_tile(
-        mQ(_, bidh, _),
-        Shape<Int<kBlockM>, Int<kHeadDim>>{},
-        make_coord(m_block, 0)
-    );  // (kBlockM, kHeadDim)
-    Tensor gK = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + row_offset_k),
-        Shape<Int<kBlockN>, Int<kHeadDim>>{},
-        make_stride(params.k_row_stride, _1{})
-    );
-    Tensor gV = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + row_offset_v),
-        Shape<Int<kBlockN>, Int<kHeadDim>>{},
-        make_stride(params.v_row_stride, _1{})
-    );
-    Tensor gZOH = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.zoh_ptr) + col_offset_zoh),
-        Shape<Int<kBlockM>, Int<kBlockN>>{},
-        make_stride(params.zoh_row_stride, params.zoh_col_stride)
-    );
-    Tensor gActiveMask = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.active_mask_ptr) + col_offset_am),
-        Shape<Int<kBlockM>, Int<kBlockN>>{},
-        make_stride(params.active_mask_row_stride, params.active_mask_col_stride)
-    );
-    if (tidx == 0 && bidh == 0 && bidb == 0 && m_block == 0) {
-        printf("SplitKV: m_block=%d, n_block_max=%d, n_block_min=%d, n_split_idx=%d\n", 
-            m_block, n_block_max, n_block_min, n_split_idx);
-        printf("col_offset_zoh=%ld, row_offset=%ld, zoh_ptr=%p, final_ptr=%p\n",
-            col_offset_zoh, m_block * kBlockM * params.zoh_row_stride,
-            params.zoh_ptr, 
-            reinterpret_cast<Element *>(params.zoh_ptr) + col_offset_zoh + m_block * kBlockM * params.zoh_row_stride);
-    }
+    // // Global memory tensor configuration
+    // Tensor mQ = make_tensor(
+    //     make_gmem_ptr(reinterpret_cast<Element*>(params.q_ptr) + binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)),
+    //     make_shape(binfo.actual_seqlen_q, params.h, params.d),
+    //     make_stride(params.q_row_stride, params.q_head_stride, _1{})
+    // );
+    // Tensor gQ = local_tile(
+    //     mQ(_, bidh, _),
+    //     Shape<Int<kBlockM>, Int<kHeadDim>>{},
+    //     make_coord(m_block, 0)
+    // );  // (kBlockM, kHeadDim)
+    // Tensor gK = make_tensor(
+    //     make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + row_offset_k),
+    //     Shape<Int<kBlockN>, Int<kHeadDim>>{},
+    //     make_stride(params.k_row_stride, _1{})
+    // );
+    // Tensor gV = make_tensor(
+    //     make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + row_offset_v),
+    //     Shape<Int<kBlockN>, Int<kHeadDim>>{},
+    //     make_stride(params.v_row_stride, _1{})
+    // );
+    // Tensor gZOH = make_tensor(
+    //     make_gmem_ptr(reinterpret_cast<Element *>(params.zoh_ptr) + col_offset_zoh),
+    //     Shape<Int<kBlockM>, Int<kBlockN>>{},
+    //     make_stride(params.zoh_row_stride, params.zoh_col_stride)
+    // );
+    // Tensor gActiveMask = make_tensor(
+    //     make_gmem_ptr(reinterpret_cast<Element *>(params.active_mask_ptr) + col_offset_am),
+    //     Shape<Int<kBlockM>, Int<kBlockN>>{},
+    //     make_stride(params.active_mask_row_stride, params.active_mask_col_stride)
+    // );
+    // if (tidx == 0 && bidh == 0 && bidb == 0 && m_block == 0) {
+    //     printf("SplitKV: m_block=%d, n_block_max=%d, n_block_min=%d, n_split_idx=%d\n", 
+    //         m_block, n_block_max, n_block_min, n_split_idx);
+    //     printf("col_offset_zoh=%ld, row_offset=%ld, zoh_ptr=%p, final_ptr=%p\n",
+    //         col_offset_zoh, m_block * kBlockM * params.zoh_row_stride,
+    //         params.zoh_ptr, 
+    //         reinterpret_cast<Element *>(params.zoh_ptr) + col_offset_zoh + m_block * kBlockM * params.zoh_row_stride);
+    // }
 
-    // Shared memory layout configuration
-    Tensor sQ = make_tensor(
-        make_smem_ptr(reinterpret_cast<Element *>(smem_)),
-        typename Kernel_traits::SmemLayoutQ{}
-    );
-    Tensor sK = make_tensor(
-        sQ.data() + size(sQ),
-        typename Kernel_traits::SmemLayoutKV{}
-    );
-    Tensor sV = make_tensor(
-        sK.data() + size(sK),
-        typename Kernel_traits::SmemLayoutKV{}
-    );
-    Tensor sVt = make_tensor(
-        sV.data(),
-        typename Kernel_traits::SmemLayoutVtransposed{}
-    );
-    Tensor sVtNoSwizzle = make_tensor(
-        sV.data().get(),
-        typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{}
-    );
-    Tensor sZOH = make_tensor(
-        sV.data() + size(sV),
-        typename Kernel_traits::SmemLayoutZOH{}
-    );
-    Tensor sActiveMask = make_tensor(
-        sZOH.data() + size(sZOH),
-        typename Kernel_traits::SmemLayoutActiveMask{}
-    );
+    // // Shared memory layout configuration
+    // Tensor sQ = make_tensor(
+    //     make_smem_ptr(reinterpret_cast<Element *>(smem_)),
+    //     typename Kernel_traits::SmemLayoutQ{}
+    // );
+    // Tensor sK = make_tensor(
+    //     sQ.data() + size(sQ),
+    //     typename Kernel_traits::SmemLayoutKV{}
+    // );
+    // Tensor sV = make_tensor(
+    //     sK.data() + size(sK),
+    //     typename Kernel_traits::SmemLayoutKV{}
+    // );
+    // Tensor sVt = make_tensor(
+    //     sV.data(),
+    //     typename Kernel_traits::SmemLayoutVtransposed{}
+    // );
+    // Tensor sVtNoSwizzle = make_tensor(
+    //     sV.data().get(),
+    //     typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{}
+    // );
+    // Tensor sZOH = make_tensor(
+    //     sV.data() + size(sV),
+    //     typename Kernel_traits::SmemLayoutZOH{}
+    // );
+    // Tensor sActiveMask = make_tensor(
+    //     sZOH.data() + size(sZOH),
+    //     typename Kernel_traits::SmemLayoutActiveMask{}
+    // );
 
-    // Global to Shared Memory operation
-    typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
-    auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyZOH gmem_tiled_copy_ZOH;
-    auto gmem_thr_copy_ZOH = gmem_tiled_copy_ZOH.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyActiveMask gmem_tiled_copy_AM;
-    auto gmem_thr_copy_AM = gmem_tiled_copy_AM.get_thread_slice(tidx);
+    // // Global to Shared Memory operation
+    // typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
+    // auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
+    // typename Kernel_traits::GmemTiledCopyZOH gmem_tiled_copy_ZOH;
+    // auto gmem_thr_copy_ZOH = gmem_tiled_copy_ZOH.get_thread_slice(tidx);
+    // typename Kernel_traits::GmemTiledCopyActiveMask gmem_tiled_copy_AM;
+    // auto gmem_thr_copy_AM = gmem_tiled_copy_AM.get_thread_slice(tidx);
 
-    Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
-    Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);            // (KCPY, KCPY_N, KCPY_K)
-    Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);            // (VCPY, VCPY_N, VCPY_K)
-    Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tZOHgZOH = gmem_thr_copy_ZOH.partition_S(gZOH);      // (ZOHCPY, ZOHCPY_M, ZOHCPY_N)
-    Tensor tZOHsZOH = gmem_thr_copy_ZOH.partition_D(sZOH);
-    Tensor tAMgAM = gmem_thr_copy_AM.partition_S(gActiveMask);  // (AMCPY, AMCPY_M, AMCPY_N)
-    Tensor tAMsAM = gmem_thr_copy_AM.partition_D(sActiveMask);
+    // Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
+    // Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
+    // Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);            // (KCPY, KCPY_N, KCPY_K)
+    // Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
+    // Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);            // (VCPY, VCPY_N, VCPY_K)
+    // Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
+    // Tensor tZOHgZOH = gmem_thr_copy_ZOH.partition_S(gZOH);      // (ZOHCPY, ZOHCPY_M, ZOHCPY_N)
+    // Tensor tZOHsZOH = gmem_thr_copy_ZOH.partition_D(sZOH);
+    // Tensor tAMgAM = gmem_thr_copy_AM.partition_S(gActiveMask);  // (AMCPY, AMCPY_M, AMCPY_N)
+    // Tensor tAMsAM = gmem_thr_copy_AM.partition_D(sActiveMask);
 
-    // Matrix Multiply Accumulate
-    typename Kernel_traits::TiledMma tiled_mma;
-    auto thr_mma = tiled_mma.get_thread_slice(tidx);
-    Tensor tSrQ = thr_mma.partition_fragment_A(sQ);                                         // (MMA, MMA_M, MMA_K)
-    Tensor tSrK = thr_mma.partition_fragment_B(sK);                                         // (MMA, MMA_N, MMA_K)
-    Tensor tSrZOH = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});   // (MMA, MMA_M, MMA_N)
-    Tensor tSrAM = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});    // (MMA, MMA_M, MMA_N)
-    Tensor tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);                              // (MMA, MMA_K, MMA_N)
-    Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // (MMA, MMA_M, MMA_K)
+    // // Matrix Multiply Accumulate
+    // typename Kernel_traits::TiledMma tiled_mma;
+    // auto thr_mma = tiled_mma.get_thread_slice(tidx);
+    // Tensor tSrQ = thr_mma.partition_fragment_A(sQ);                                         // (MMA, MMA_M, MMA_K)
+    // Tensor tSrK = thr_mma.partition_fragment_B(sK);                                         // (MMA, MMA_N, MMA_K)
+    // Tensor tSrZOH = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});   // (MMA, MMA_M, MMA_N)
+    // Tensor tSrAM = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});    // (MMA, MMA_M, MMA_N)
+    // Tensor tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);                              // (MMA, MMA_K, MMA_N)
+    // Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // (MMA, MMA_M, MMA_K)
 
-    // Copy Atom retiling
-    auto smem_tiled_copy_Q = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
-    auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(tidx);
-    Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);
-    auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
-    auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
-    Tensor tSsK = smem_thr_copy_K.partition_S(sK);
-    auto smem_tiled_copy_ZOH = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
-    auto smem_thr_copy_ZOH = smem_tiled_copy_ZOH.get_thread_slice(tidx);
-    Tensor tSsZOH = smem_thr_copy_ZOH.partition_S(sZOH);
-    auto smem_tiled_copy_AM = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
-    auto smem_thr_copy_AM = smem_tiled_copy_AM.get_thread_slice(tidx);
-    Tensor tSsAM = smem_thr_copy_AM.partition_S(sActiveMask);
-    auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
-    auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
-    Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
+    // // Copy Atom retiling
+    // auto smem_tiled_copy_Q = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
+    // auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(tidx);
+    // Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);
+    // auto smem_tiled_copy_K = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtom{}, tiled_mma);
+    // auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
+    // Tensor tSsK = smem_thr_copy_K.partition_S(sK);
+    // auto smem_tiled_copy_ZOH = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    // auto smem_thr_copy_ZOH = smem_tiled_copy_ZOH.get_thread_slice(tidx);
+    // Tensor tSsZOH = smem_thr_copy_ZOH.partition_S(sZOH);
+    // auto smem_tiled_copy_AM = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    // auto smem_thr_copy_AM = smem_tiled_copy_AM.get_thread_slice(tidx);
+    // Tensor tSsAM = smem_thr_copy_AM.partition_S(sActiveMask);
+    // auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
+    // auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
+    // Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
 
-    // PREDICATES
-    // Construct identity layout for sQ and sK
-    Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));                     // (BLK_M,BLK_K) -> (blk_m,blk_k)
-    Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));                    // (BLK_N,BLK_K) -> (blk_n,blk_k)
-    Tensor cZOH = make_identity_tensor(make_shape(size<0>(sZOH), size<1>(sZOH)));               // (BLK_M,BLK_N) -> (blk_m,blk_n)
-    Tensor cAM = make_identity_tensor(make_shape(size<0>(sActiveMask), size<1>(sActiveMask)));  // (BLK_M,BLK_N) -> (blk_m,blk_n)
-    // Repeat the partitioning with identity layouts
-    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);        // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
-    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);     // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
-    Tensor tZOHcZOH = gmem_thr_copy_ZOH.partition_S(cZOH);  // (ZOHCPY, ZOHCPY_M, ZOHCPY_N) -> (blk_m, blk_n)
-    Tensor tAMcAM = gmem_thr_copy_AM.partition_S(cAM);      // (AMCPY, AMCPY_M, AMCPY_N) -> (blk_m, blk_n)
-    // Allocate predicate tensors for k
-    Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
-    Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
-    // Set predicates for k bounds
-    if (!Is_even_K) {
-        #pragma unroll
-        for (int k = 0; k < size(tQpQ); ++k) {
-            tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d;
-        }
-        #pragma unroll
-        for (int k = 0; k < size(tKVpKV); ++k) {
-            tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d;
-        }
-    }
+    // // PREDICATES
+    // // Construct identity layout for sQ and sK
+    // Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));                     // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    // Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));                    // (BLK_N,BLK_K) -> (blk_n,blk_k)
+    // Tensor cZOH = make_identity_tensor(make_shape(size<0>(sZOH), size<1>(sZOH)));               // (BLK_M,BLK_N) -> (blk_m,blk_n)
+    // Tensor cAM = make_identity_tensor(make_shape(size<0>(sActiveMask), size<1>(sActiveMask)));  // (BLK_M,BLK_N) -> (blk_m,blk_n)
+    // // Repeat the partitioning with identity layouts
+    // Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);        // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    // Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);     // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
+    // Tensor tZOHcZOH = gmem_thr_copy_ZOH.partition_S(cZOH);  // (ZOHCPY, ZOHCPY_M, ZOHCPY_N) -> (blk_m, blk_n)
+    // Tensor tAMcAM = gmem_thr_copy_AM.partition_S(cAM);      // (AMCPY, AMCPY_M, AMCPY_N) -> (blk_m, blk_n)
+    // // Allocate predicate tensors for k
+    // Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
+    // Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
+    // // Set predicates for k bounds
+    // if (!Is_even_K) {
+    //     #pragma unroll
+    //     for (int k = 0; k < size(tQpQ); ++k) {
+    //         tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d;
+    //     }
+    //     #pragma unroll
+    //     for (int k = 0; k < size(tKVpKV); ++k) {
+    //         tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d;
+    //     }
+    // }
 
-    // Prologue
-    // Copy from Knew to K, optionally apply rotary embedding.
-    typename Kernel_traits::GmemTiledCopyRotcossin gmem_tiled_copy_rotary;
-    auto gmem_thr_copy_rotary = gmem_tiled_copy_rotary.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyRotcossinCont gmem_tiled_copy_rotary_cont;
-    auto gmem_thr_copy_rotary_cont = gmem_tiled_copy_rotary_cont.get_thread_slice(tidx);
-    if constexpr (Append_KV) {
-        // Even if we have MQA / GQA, all threadblocks responsible for the same KV head are writing to
-        // gmem. Technically it's a race condition, but they all write the same content anyway, and it's safe.
-        // We want to do this so that all threadblocks can proceed right after they finish writing the KV cache.
-        const index_t row_offset_cossin = ((n_block_max - 1) * kBlockN + (params.leftpad_k == nullptr ? 0 : params.leftpad_k[bidb])) * (params.rotary_dim / 2);
-        Tensor gCos = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockN>, Int<kHeadDim / 2>>{},
-                                  make_stride(params.rotary_dim / 2, _1{}));
-        Tensor gSin = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockN>, Int<kHeadDim / 2>>{},
-                                  make_stride(params.rotary_dim / 2, _1{}));
-        Tensor gCosCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
-                                      Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                                      make_stride(params.rotary_dim / 2, _1{}));
-        Tensor gSinCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
-                                      Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                                      make_stride(params.rotary_dim / 2, _1{}));
-        Tensor tRgCos = gmem_thr_copy_rotary.partition_S(gCos);
-        Tensor tRgSin = gmem_thr_copy_rotary.partition_S(gSin);
-        Tensor tRgCosCont = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
-        Tensor tRgSinCont = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
-        // if (cute::thread(0, 0)) { printf("rotary_cos_ptr = %p, gCos.data() = %p, tRgCos.data() = %p, rotary_dim = %d\n", params.rotary_cos_ptr, gCos.data(), tRgCos.data(), params.rotary_dim); }
-        // if (cute::thread(8, 0)) { print_tensor(gCos); }
-        // if (cute::thread(0, 0)) { print_tensor(tRgCos); }
+    // // Prologue
+    // // Copy from Knew to K, optionally apply rotary embedding.
+    // typename Kernel_traits::GmemTiledCopyRotcossin gmem_tiled_copy_rotary;
+    // auto gmem_thr_copy_rotary = gmem_tiled_copy_rotary.get_thread_slice(tidx);
+    // typename Kernel_traits::GmemTiledCopyRotcossinCont gmem_tiled_copy_rotary_cont;
+    // auto gmem_thr_copy_rotary_cont = gmem_tiled_copy_rotary_cont.get_thread_slice(tidx);
+    // if constexpr (Append_KV) {
+    //     // Even if we have MQA / GQA, all threadblocks responsible for the same KV head are writing to
+    //     // gmem. Technically it's a race condition, but they all write the same content anyway, and it's safe.
+    //     // We want to do this so that all threadblocks can proceed right after they finish writing the KV cache.
+    //     const index_t row_offset_cossin = ((n_block_max - 1) * kBlockN + (params.leftpad_k == nullptr ? 0 : params.leftpad_k[bidb])) * (params.rotary_dim / 2);
+    //     Tensor gCos = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
+    //                               Shape<Int<kBlockN>, Int<kHeadDim / 2>>{},
+    //                               make_stride(params.rotary_dim / 2, _1{}));
+    //     Tensor gSin = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
+    //                               Shape<Int<kBlockN>, Int<kHeadDim / 2>>{},
+    //                               make_stride(params.rotary_dim / 2, _1{}));
+    //     Tensor gCosCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
+    //                                   Shape<Int<kBlockN>, Int<kHeadDim>>{},
+    //                                   make_stride(params.rotary_dim / 2, _1{}));
+    //     Tensor gSinCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
+    //                                   Shape<Int<kBlockN>, Int<kHeadDim>>{},
+    //                                   make_stride(params.rotary_dim / 2, _1{}));
+    //     Tensor tRgCos = gmem_thr_copy_rotary.partition_S(gCos);
+    //     Tensor tRgSin = gmem_thr_copy_rotary.partition_S(gSin);
+    //     Tensor tRgCosCont = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
+    //     Tensor tRgSinCont = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
+    //     // if (cute::thread(0, 0)) { printf("rotary_cos_ptr = %p, gCos.data() = %p, tRgCos.data() = %p, rotary_dim = %d\n", params.rotary_cos_ptr, gCos.data(), tRgCos.data(), params.rotary_dim); }
+    //     // if (cute::thread(8, 0)) { print_tensor(gCos); }
+    //     // if (cute::thread(0, 0)) { print_tensor(tRgCos); }
 
-        // const index_t row_offset_knew = binfo.k_offset(params.knew_batch_stride, params.knew_row_stride, bidb)
-        const index_t row_offset_knew = bidb * params.knew_batch_stride
-            + ((n_block_max - 1) * kBlockN) * params.knew_row_stride + (bidh / params.h_h_k_ratio) * params.knew_head_stride;
-        // const index_t row_offset_vnew = binfo.k_offset(params.vnew_batch_stride, params.vnew_row_stride, bidb)
-        const index_t row_offset_vnew = bidb * params.vnew_batch_stride
-            + ((n_block_max - 1) * kBlockN) * params.vnew_row_stride + (bidh / params.h_h_k_ratio) * params.vnew_head_stride;
-        // Subtract seqlen_k_cache * row stride so that conceptually gK and gKnew "line up". When we access them,
-        // e.g. if gK has 128 rows and gKnew has 64 rows, we access gK[:128] and gKNew[128:128 + 64].
-        // This maps to accessing the first 64 rows of knew_ptr.
-        Tensor gKnew = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.knew_ptr)
-                                                + row_offset_knew - binfo.seqlen_k_cache * params.knew_row_stride),
-                                  Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                                  make_stride(params.knew_row_stride, _1{}));
-        // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) { printf("knew_ptr = %p, row_offset_knew = %d, gKnew_ptr = %p\n", params.knew_ptr, row_offset_knew, gKnew.data()); }
-        Tensor gVnew = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.vnew_ptr)
-                                                + row_offset_vnew - binfo.seqlen_k_cache * params.vnew_row_stride),
-                                  Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                                  make_stride(params.vnew_row_stride, _1{}));
-        Tensor tKgKnew = gmem_thr_copy_QKV.partition_S(gKnew);  // (KCPY, KCPY_N, KCPY_K)
-        Tensor tVgVnew = gmem_thr_copy_QKV.partition_S(gVnew);  // (VCPY, VCPY_N, VCPY_K)
+    //     // const index_t row_offset_knew = binfo.k_offset(params.knew_batch_stride, params.knew_row_stride, bidb)
+    //     const index_t row_offset_knew = bidb * params.knew_batch_stride
+    //         + ((n_block_max - 1) * kBlockN) * params.knew_row_stride + (bidh / params.h_h_k_ratio) * params.knew_head_stride;
+    //     // const index_t row_offset_vnew = binfo.k_offset(params.vnew_batch_stride, params.vnew_row_stride, bidb)
+    //     const index_t row_offset_vnew = bidb * params.vnew_batch_stride
+    //         + ((n_block_max - 1) * kBlockN) * params.vnew_row_stride + (bidh / params.h_h_k_ratio) * params.vnew_head_stride;
+    //     // Subtract seqlen_k_cache * row stride so that conceptually gK and gKnew "line up". When we access them,
+    //     // e.g. if gK has 128 rows and gKnew has 64 rows, we access gK[:128] and gKNew[128:128 + 64].
+    //     // This maps to accessing the first 64 rows of knew_ptr.
+    //     Tensor gKnew = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.knew_ptr)
+    //                                             + row_offset_knew - binfo.seqlen_k_cache * params.knew_row_stride),
+    //                               Shape<Int<kBlockN>, Int<kHeadDim>>{},
+    //                               make_stride(params.knew_row_stride, _1{}));
+    //     // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) { printf("knew_ptr = %p, row_offset_knew = %d, gKnew_ptr = %p\n", params.knew_ptr, row_offset_knew, gKnew.data()); }
+    //     Tensor gVnew = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.vnew_ptr)
+    //                                             + row_offset_vnew - binfo.seqlen_k_cache * params.vnew_row_stride),
+    //                               Shape<Int<kBlockN>, Int<kHeadDim>>{},
+    //                               make_stride(params.vnew_row_stride, _1{}));
+    //     Tensor tKgKnew = gmem_thr_copy_QKV.partition_S(gKnew);  // (KCPY, KCPY_N, KCPY_K)
+    //     Tensor tVgVnew = gmem_thr_copy_QKV.partition_S(gVnew);  // (VCPY, VCPY_N, VCPY_K)
 
-        const int n_block_copy_min = std::max(n_block_min, binfo.seqlen_k_cache / kBlockN);
-        auto tKgK_data = tKgK.data();
-        auto tVgV_data = tVgV.data();
-        for (int n_block = n_block_max - 1; n_block >= n_block_copy_min; n_block--) {
-            FLASH_NAMESPACE::copy_w_min_idx<Is_even_K>(
-                tVgVnew, tVgV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
-            );
-            tVgVnew.data() = tVgVnew.data() + (-int(kBlockN * params.vnew_row_stride));
-            if (params.rotary_dim == 0) {
-                FLASH_NAMESPACE::copy_w_min_idx<Is_even_K>(
-                    tKgKnew, tKgK, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
-                );
-            } else {
-                if (params.is_rotary_interleaved) {
-                    // Don't clear OOB_K because we're writing to global memory
-                    FLASH_NAMESPACE::copy_rotary_interleaved<Is_even_K, /*Clear_OOB_K=*/false>(
-                        tKgKnew, tKgK, tRgCos, tRgSin, tKVcKV, binfo.actual_seqlen_k - n_block * kBlockN,
-                        binfo.seqlen_k_cache - n_block * kBlockN, params.d, params.rotary_dim
-                    );
-                    tRgCos.data() = tRgCos.data() + (-int(kBlockN * params.rotary_dim / 2));
-                    tRgSin.data() = tRgSin.data() + (-int(kBlockN * params.rotary_dim / 2));
-                } else {
-                    // Don't clear OOB_K because we're writing to global memory
-                    FLASH_NAMESPACE::copy_rotary_contiguous<Is_even_K, /*Clear_OOB_K=*/false>(
-                        tKgKnew, tKgK, tRgCosCont, tRgSinCont, tKVcKV, binfo.actual_seqlen_k - n_block * kBlockN,
-                        binfo.seqlen_k_cache - n_block * kBlockN, params.d, params.rotary_dim
-                    );
-                    tRgCosCont.data() = tRgCosCont.data() + (-int(kBlockN * params.rotary_dim / 2));
-                    tRgSinCont.data() = tRgSinCont.data() + (-int(kBlockN * params.rotary_dim / 2));
+    //     const int n_block_copy_min = std::max(n_block_min, binfo.seqlen_k_cache / kBlockN);
+    //     auto tKgK_data = tKgK.data();
+    //     auto tVgV_data = tVgV.data();
+    //     for (int n_block = n_block_max - 1; n_block >= n_block_copy_min; n_block--) {
+    //         FLASH_NAMESPACE::copy_w_min_idx<Is_even_K>(
+    //             tVgVnew, tVgV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
+    //         );
+    //         tVgVnew.data() = tVgVnew.data() + (-int(kBlockN * params.vnew_row_stride));
+    //         if (params.rotary_dim == 0) {
+    //             FLASH_NAMESPACE::copy_w_min_idx<Is_even_K>(
+    //                 tKgKnew, tKgK, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
+    //             );
+    //         } else {
+    //             if (params.is_rotary_interleaved) {
+    //                 // Don't clear OOB_K because we're writing to global memory
+    //                 FLASH_NAMESPACE::copy_rotary_interleaved<Is_even_K, /*Clear_OOB_K=*/false>(
+    //                     tKgKnew, tKgK, tRgCos, tRgSin, tKVcKV, binfo.actual_seqlen_k - n_block * kBlockN,
+    //                     binfo.seqlen_k_cache - n_block * kBlockN, params.d, params.rotary_dim
+    //                 );
+    //                 tRgCos.data() = tRgCos.data() + (-int(kBlockN * params.rotary_dim / 2));
+    //                 tRgSin.data() = tRgSin.data() + (-int(kBlockN * params.rotary_dim / 2));
+    //             } else {
+    //                 // Don't clear OOB_K because we're writing to global memory
+    //                 FLASH_NAMESPACE::copy_rotary_contiguous<Is_even_K, /*Clear_OOB_K=*/false>(
+    //                     tKgKnew, tKgK, tRgCosCont, tRgSinCont, tKVcKV, binfo.actual_seqlen_k - n_block * kBlockN,
+    //                     binfo.seqlen_k_cache - n_block * kBlockN, params.d, params.rotary_dim
+    //                 );
+    //                 tRgCosCont.data() = tRgCosCont.data() + (-int(kBlockN * params.rotary_dim / 2));
+    //                 tRgSinCont.data() = tRgSinCont.data() + (-int(kBlockN * params.rotary_dim / 2));
 
-                }
-            }
-            tKgKnew.data() = tKgKnew.data() + (-int(kBlockN * params.knew_row_stride));
-            if (block_table == nullptr) {
-                tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
-                tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
-            } else {
-                if (n_block > n_block_copy_min) {
-                    const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
-                    const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
-                    const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
-                    const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
-                    const int table_diff = block_table[block_table_idx_next] - block_table[block_table_idx_cur];
-                    const int offset_diff = block_table_offset_next - block_table_offset_cur;
-                    tVgV.data() = tVgV.data() + table_diff * params.v_batch_stride + offset_diff * params.v_row_stride;
-                    tKgK.data() = tKgK.data() + table_diff * params.k_batch_stride + offset_diff * params.k_row_stride;
-                }
-            }
-        }
-        // Need this before we can read in K again, so that we'll see the updated K values.
-        __syncthreads();
-        tKgK.data() = tKgK_data;
-        tVgV.data() = tVgV_data;
-    }
+    //             }
+    //         }
+    //         tKgKnew.data() = tKgKnew.data() + (-int(kBlockN * params.knew_row_stride));
+    //         if (block_table == nullptr) {
+    //             tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
+    //             tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
+    //         } else {
+    //             if (n_block > n_block_copy_min) {
+    //                 const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
+    //                 const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
+    //                 const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
+    //                 const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+    //                 const int table_diff = block_table[block_table_idx_next] - block_table[block_table_idx_cur];
+    //                 const int offset_diff = block_table_offset_next - block_table_offset_cur;
+    //                 tVgV.data() = tVgV.data() + table_diff * params.v_batch_stride + offset_diff * params.v_row_stride;
+    //                 tKgK.data() = tKgK.data() + table_diff * params.k_batch_stride + offset_diff * params.k_row_stride;
+    //             }
+    //         }
+    //     }
+    //     // Need this before we can read in K again, so that we'll see the updated K values.
+    //     __syncthreads();
+    //     tKgK.data() = tKgK_data;
+    //     tVgV.data() = tVgV_data;
+    // }
 
-    // Read Q from gmem to smem, optionally apply rotary embedding.
-    if (!Append_KV || params.rotary_dim == 0) {
-        // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
-        FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
-                                           binfo.actual_seqlen_q - m_block * kBlockM);
-    } else {
-        const index_t row_offset_cossin = (binfo.seqlen_k_cache + (params.leftpad_k == nullptr ? 0 : params.leftpad_k[bidb]) + (Is_causal ? m_block * kBlockM : 0)) * (params.rotary_dim / 2);
-        // If not causal, all the queries get the same the cos/sin, taken at location seqlen_k_cache.
-        // We do this by setting the row stride of gCos / gSin to 0.
-        Tensor gCos = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockM>, Int<kHeadDim / 2>>{},
-                                  make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
-        Tensor gSin = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockM>, Int<kHeadDim / 2>>{},
-                                  make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
-        Tensor gCosCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockM>, Int<kHeadDim>>{},
-                                  make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
-        Tensor gSinCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockM>, Int<kHeadDim>>{},
-                                  make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
-        Tensor tRgCos = gmem_thr_copy_rotary.partition_S(gCos);
-        Tensor tRgSin = gmem_thr_copy_rotary.partition_S(gSin);
-        Tensor tRgCosCont = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
-        Tensor tRgSinCont = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
-        if (params.is_rotary_interleaved) {
-            FLASH_NAMESPACE::copy_rotary_interleaved<Is_even_K>(
-                tQgQ, tQsQ, tRgCos, tRgSin, tQcQ, binfo.actual_seqlen_q - m_block * kBlockM,
-                0, params.d, params.rotary_dim
-            );
-        } else {
-            FLASH_NAMESPACE::copy_rotary_contiguous<Is_even_K>(
-                tQgQ, tQsQ, tRgCosCont, tRgSinCont, tQcQ, binfo.actual_seqlen_q - m_block * kBlockM,
-                0, params.d, params.rotary_dim
-            );
-        }
-    }
+    // // Read Q from gmem to smem, optionally apply rotary embedding.
+    // if (!Append_KV || params.rotary_dim == 0) {
+    //     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
+    //     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tQgQ, tQsQ, tQcQ, tQpQ,
+    //                                        binfo.actual_seqlen_q - m_block * kBlockM);
+    // } else {
+    //     const index_t row_offset_cossin = (binfo.seqlen_k_cache + (params.leftpad_k == nullptr ? 0 : params.leftpad_k[bidb]) + (Is_causal ? m_block * kBlockM : 0)) * (params.rotary_dim / 2);
+    //     // If not causal, all the queries get the same the cos/sin, taken at location seqlen_k_cache.
+    //     // We do this by setting the row stride of gCos / gSin to 0.
+    //     Tensor gCos = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
+    //                               Shape<Int<kBlockM>, Int<kHeadDim / 2>>{},
+    //                               make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
+    //     Tensor gSin = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
+    //                               Shape<Int<kBlockM>, Int<kHeadDim / 2>>{},
+    //                               make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
+    //     Tensor gCosCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
+    //                               Shape<Int<kBlockM>, Int<kHeadDim>>{},
+    //                               make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
+    //     Tensor gSinCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
+    //                               Shape<Int<kBlockM>, Int<kHeadDim>>{},
+    //                               make_stride(Is_causal ? params.rotary_dim / 2 : 0, _1{}));
+    //     Tensor tRgCos = gmem_thr_copy_rotary.partition_S(gCos);
+    //     Tensor tRgSin = gmem_thr_copy_rotary.partition_S(gSin);
+    //     Tensor tRgCosCont = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
+    //     Tensor tRgSinCont = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
+    //     if (params.is_rotary_interleaved) {
+    //         FLASH_NAMESPACE::copy_rotary_interleaved<Is_even_K>(
+    //             tQgQ, tQsQ, tRgCos, tRgSin, tQcQ, binfo.actual_seqlen_q - m_block * kBlockM,
+    //             0, params.d, params.rotary_dim
+    //         );
+    //     } else {
+    //         FLASH_NAMESPACE::copy_rotary_contiguous<Is_even_K>(
+    //             tQgQ, tQsQ, tRgCosCont, tRgSinCont, tQcQ, binfo.actual_seqlen_q - m_block * kBlockM,
+    //             0, params.d, params.rotary_dim
+    //         );
+    //     }
+    // }
 
-    int n_block = n_block_max - 1;
-    // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
-    FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV,
-                                       binfo.actual_seqlen_k - n_block * kBlockN);
-    if (tidx == 0 && bidh == 0 && bidb == 0) {
-        printf("Before copy_ZOH: n_block=%d, seqlen_q_offset=%d, seqlen_k_offset=%d\n",
-            n_block, 
-            binfo.actual_seqlen_q - m_block * kBlockM,
-            binfo.actual_seqlen_k - n_block * kBlockN);
-    }
-    FLASH_NAMESPACE::copy_ZOH<Is_even_MN>(
-        gmem_tiled_copy_ZOH,
-        tZOHgZOH,
-        tZOHsZOH, 
-        tZOHcZOH,
-        binfo.actual_seqlen_q - m_block * kBlockM,
-        binfo.actual_seqlen_k - n_block * kBlockN
-    );
-    FLASH_NAMESPACE::copy_ZOH<Is_even_MN>(
-        gmem_tiled_copy_AM,
-        tAMgAM,
-        tAMsAM, 
-        tAMcAM,
-        binfo.actual_seqlen_q - m_block * kBlockM,
-        binfo.actual_seqlen_k - n_block * kBlockN
-    );
-    cute::cp_async_fence();
+    // int n_block = n_block_max - 1;
+    // // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
+    // FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV,
+    //                                    binfo.actual_seqlen_k - n_block * kBlockN);
+    // if (tidx == 0 && bidh == 0 && bidb == 0) {
+    //     printf("Before copy_ZOH: n_block=%d, seqlen_q_offset=%d, seqlen_k_offset=%d\n",
+    //         n_block, 
+    //         binfo.actual_seqlen_q - m_block * kBlockM,
+    //         binfo.actual_seqlen_k - n_block * kBlockN);
+    // }
+    // FLASH_NAMESPACE::copy_ZOH<Is_even_MN>(
+    //     gmem_tiled_copy_ZOH,
+    //     tZOHgZOH,
+    //     tZOHsZOH, 
+    //     tZOHcZOH,
+    //     binfo.actual_seqlen_q - m_block * kBlockM,
+    //     binfo.actual_seqlen_k - n_block * kBlockN
+    // );
+    // FLASH_NAMESPACE::copy_ZOH<Is_even_MN>(
+    //     gmem_tiled_copy_AM,
+    //     tAMgAM,
+    //     tAMsAM, 
+    //     tAMcAM,
+    //     binfo.actual_seqlen_q - m_block * kBlockM,
+    //     binfo.actual_seqlen_k - n_block * kBlockN
+    // );
+    // cute::cp_async_fence();
 
-    // FLASH_NAMESPACE::cp_async_wait<0>();
-    // __syncthreads();
-    // if (tidx == 0 && blockIdx.y == 0 && blockIdx.z == 0) { print(tKsK); }
-    // __syncthreads();
+    // // FLASH_NAMESPACE::cp_async_wait<0>();
+    // // __syncthreads();
+    // // if (tidx == 0 && blockIdx.y == 0 && blockIdx.z == 0) { print(tKsK); }
+    // // __syncthreads();
 
-    clear(acc_o);
+    // clear(acc_o);
 
-    FLASH_NAMESPACE::Softmax<2 * size<1>(acc_o)> softmax;
+    // FLASH_NAMESPACE::Softmax<2 * size<1>(acc_o)> softmax;
 
-    // Init dynamic mask processor
-    FLASH_NAMESPACE::DynamicMask<Is_causal> dynamic_mask(
-        binfo.actual_seqlen_k, binfo.actual_seqlen_q,
-        params.keep_window_size
-    );
+    // // Init dynamic mask processor
+    // FLASH_NAMESPACE::DynamicMask<Is_causal> dynamic_mask(
+    //     binfo.actual_seqlen_k, binfo.actual_seqlen_q,
+    //     params.keep_window_size
+    // );
 
-    // For performance reason, we separate out two kinds of iterations:
-    // those that need masking on S, and those that don't.
-    // We need masking on S for the very last block when K and V has length not multiple of kBlockN.
-    // We also need masking on S if it's causal, for the last ceil_div(kBlockM, kBlockN) blocks.
-    // We will have at least 1 "masking" iteration.
+    // // For performance reason, we separate out two kinds of iterations:
+    // // those that need masking on S, and those that don't.
+    // // We need masking on S for the very last block when K and V has length not multiple of kBlockN.
+    // // We also need masking on S if it's causal, for the last ceil_div(kBlockM, kBlockN) blocks.
+    // // We will have at least 1 "masking" iteration.
 
-    // If not even_N, then seqlen_k might end in the middle of a block. In that case we need to
-    // mask 2 blocks (e.g. when kBlockM == kBlockN), not just 1.
-    constexpr int n_masking_steps = (!Is_causal)
-        ? 1
-        : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
-    #pragma unroll
-    for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
-        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
-        clear(acc_s);
-        FLASH_NAMESPACE::cp_async_wait<0>();
-        __syncthreads();
+    // // If not even_N, then seqlen_k might end in the middle of a block. In that case we need to
+    // // mask 2 blocks (e.g. when kBlockM == kBlockN), not just 1.
+    // constexpr int n_masking_steps = (!Is_causal)
+    //     ? 1
+    //     : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
+    // #pragma unroll
+    // for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
+    //     Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
+    //     clear(acc_s);
+    //     FLASH_NAMESPACE::cp_async_wait<0>();
+    //     __syncthreads();
 
-        // Copy ZOH and ActiveMask from smem to registers
-        Tensor tSrZOH_copy_view = smem_thr_copy_ZOH.retile_D(tSrZOH);
-        cute::copy(smem_tiled_copy_ZOH, tSsZOH, tSrZOH_copy_view);
-        Tensor tSrAM_copy_view = smem_thr_copy_AM.retile_D(tSrAM);
-        cute::copy(smem_tiled_copy_AM, tSsAM, tSrAM_copy_view);
+    //     // Copy ZOH and ActiveMask from smem to registers
+    //     Tensor tSrZOH_copy_view = smem_thr_copy_ZOH.retile_D(tSrZOH);
+    //     cute::copy(smem_tiled_copy_ZOH, tSsZOH, tSrZOH_copy_view);
+    //     Tensor tSrAM_copy_view = smem_thr_copy_AM.retile_D(tSrAM);
+    //     cute::copy(smem_tiled_copy_AM, tSsAM, tSrAM_copy_view);
 
-        // Advance gV
-        if (masking_step > 0) {
-            if (block_table == nullptr) {
-                tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
-            } else {
-                const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
-                const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
-                const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
-                const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
-                tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
-            }
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
-        } else {
-            // Clear the smem tiles to account for predicated off loads
-            FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
-            );
-        }
-        cute::cp_async_fence();
+    //     // Advance gV
+    //     if (masking_step > 0) {
+    //         if (block_table == nullptr) {
+    //             tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
+    //         } else {
+    //             const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
+    //             const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
+    //             const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
+    //             const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
+    //             tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
+    //         }
+    //         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
+    //     } else {
+    //         // Clear the smem tiles to account for predicated off loads
+    //         FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
+    //             gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
+    //         );
+    //     }
+    //     cute::cp_async_fence();
 
-        // Use sparse general matrix multiplication
-        FLASH_NAMESPACE::sparse_gemm(
-            acc_s,
-            tSrQ,
-            tSrK, tSsQ, tSsK, tSrAM,        // Active key indices for sparse K matrix multiplication
-            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
-            smem_thr_copy_Q, smem_thr_copy_K
-        );
-        // if (cute::thread0()) { print(acc_s); }
-        if constexpr (Is_softcap){
-            FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
-        }
+    //     // Use sparse general matrix multiplication
+    //     FLASH_NAMESPACE::sparse_gemm(
+    //         acc_s,
+    //         tSrQ,
+    //         tSrK, tSsQ, tSsK, tSrAM,        // Active key indices for sparse K matrix multiplication
+    //         tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+    //         smem_thr_copy_Q, smem_thr_copy_K
+    //     );
+    //     // if (cute::thread0()) { print(acc_s); }
+    //     if constexpr (Is_softcap){
+    //         FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
+    //     }
 
-        // Scale attention scores and apply dynamic mask
-        dynamic_mask.template apply_mask<Is_causal, Is_even_MN>(
-            acc_s, tSrZOH, tSrAM, params.scale_softmax,
-            n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-        );
+    //     // Scale attention scores and apply dynamic mask
+    //     dynamic_mask.template apply_mask<Is_causal, Is_even_MN>(
+    //         acc_s, tSrZOH, tSrAM, params.scale_softmax,
+    //         n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
+    //     );
 
-        FLASH_NAMESPACE::cp_async_wait<0>();
-        __syncthreads();
-        // if (tidx == 0 && blockIdx.y == 0 && blockIdx.z == 0) { print(tVsV); }
-        // __syncthreads();
+    //     FLASH_NAMESPACE::cp_async_wait<0>();
+    //     __syncthreads();
+    //     // if (tidx == 0 && blockIdx.y == 0 && blockIdx.z == 0) { print(tVsV); }
+    //     // __syncthreads();
 
-        if (n_block > n_block_min) {
-            // Advance gK
-            if (block_table == nullptr) {
-                tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
-                tZOHgZOH.data() = tZOHgZOH.data() + (-int(kBlockN * params.zoh_col_stride));
-                tAMgAM.data() = tAMgAM.data() + (-int(kBlockN * params.active_mask_col_stride));
-            } else {
-                const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
-                const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
-                const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
-                const int block_table_offset_next =(n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
-                tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
-                tZOHgZOH.data() = tZOHgZOH.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.zoh_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.zoh_col_stride;
-                tAMgAM.data() = tAMgAM.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.active_mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.active_mask_col_stride;
-            }
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
-            // This cp_async_fence needs to be in the if block, otherwise the synchronization
-            // isn't right and we get race conditions.
-            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
-                gmem_tiled_copy_ZOH,
-                tZOHgZOH,
-                tZOHsZOH, 
-                tZOHcZOH,
-                binfo.actual_seqlen_q - m_block * kBlockM,
-                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
-            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
-                gmem_tiled_copy_AM,
-                tAMgAM,
-                tAMsAM, 
-                tAMcAM,
-                binfo.actual_seqlen_q - m_block * kBlockM,
-                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
-            cute::cp_async_fence();
-        }
+    //     if (n_block > n_block_min) {
+    //         // Advance gK
+    //         if (block_table == nullptr) {
+    //             tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
+    //             tZOHgZOH.data() = tZOHgZOH.data() + (-int(kBlockN * params.zoh_col_stride));
+    //             tAMgAM.data() = tAMgAM.data() + (-int(kBlockN * params.active_mask_col_stride));
+    //         } else {
+    //             const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
+    //             const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
+    //             const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
+    //             const int block_table_offset_next =(n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+    //             tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
+    //             tZOHgZOH.data() = tZOHgZOH.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.zoh_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.zoh_col_stride;
+    //             tAMgAM.data() = tAMgAM.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.active_mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.active_mask_col_stride;
+    //         }
+    //         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
+    //         // This cp_async_fence needs to be in the if block, otherwise the synchronization
+    //         // isn't right and we get race conditions.
+    //         FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
+    //             gmem_tiled_copy_ZOH,
+    //             tZOHgZOH,
+    //             tZOHsZOH, 
+    //             tZOHcZOH,
+    //             binfo.actual_seqlen_q - m_block * kBlockM,
+    //             binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+    //         );
+    //         FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
+    //             gmem_tiled_copy_AM,
+    //             tAMgAM,
+    //             tAMsAM, 
+    //             tAMcAM,
+    //             binfo.actual_seqlen_q - m_block * kBlockM,
+    //             binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+    //         );
+    //         cute::cp_async_fence();
+    //     }
 
-        // TODO: when we have key_padding_mask we'll need to Check_inf
-        masking_step == 0
-            ? softmax.template softmax</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o)
-            : softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
-        // masking_step == 0
-        //     ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2)
-        //     : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
+    //     // TODO: when we have key_padding_mask we'll need to Check_inf
+    //     masking_step == 0
+    //         ? softmax.template softmax</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o)
+    //         : softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+    //     // masking_step == 0
+    //     //     ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2)
+    //     //     : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
         
-        // Convert acc_s from fp32 to fp16/bf16
-        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
-        // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
-        // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
-        Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
+    //     // Convert acc_s from fp32 to fp16/bf16
+    //     Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+    //     // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
+    //     // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
+    //     Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        // Use sparse general matrix multiplication with register accumulation for V as well
-        FLASH_NAMESPACE::sparse_gemm_rs(
-            acc_o,
-            tOrP, tOrVt, tOsVt, tSrAM,      // Apply the same mask for sparse V matrix multiplication
-            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
-        );
+    //     // Use sparse general matrix multiplication with register accumulation for V as well
+    //     FLASH_NAMESPACE::sparse_gemm_rs(
+    //         acc_o,
+    //         tOrP, tOrVt, tOsVt, tSrAM,      // Apply the same mask for sparse V matrix multiplication
+    //         tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
+    //     );
 
-        // This check is at the end of the loop since we always have at least 1 iteration
-        if (n_masking_steps > 1 && n_block <= n_block_min) {
-            --n_block;
-            break;
-        }
-    }
+    //     // This check is at the end of the loop since we always have at least 1 iteration
+    //     if (n_masking_steps > 1 && n_block <= n_block_min) {
+    //         --n_block;
+    //         break;
+    //     }
+    // }
 
-    // These are the iterations where we don't need masking on S
-    for (; n_block >= n_block_min; --n_block) {
-        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
-        clear(acc_s);
-        FLASH_NAMESPACE::cp_async_wait<0>();
-        __syncthreads();
+    // // These are the iterations where we don't need masking on S
+    // for (; n_block >= n_block_min; --n_block) {
+    //     Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
+    //     clear(acc_s);
+    //     FLASH_NAMESPACE::cp_async_wait<0>();
+    //     __syncthreads();
 
-        // Copy ZOH and ActiveMask from smem to registers
-        Tensor tSrZOH_copy_view = smem_thr_copy_ZOH.retile_D(tSrZOH);
-        cute::copy(smem_tiled_copy_ZOH, tSsZOH, tSrZOH_copy_view);
-        Tensor tSrAM_copy_view = smem_thr_copy_AM.retile_D(tSrAM);
-        cute::copy(smem_tiled_copy_AM, tSsAM, tSrAM_copy_view);
+    //     // Copy ZOH and ActiveMask from smem to registers
+    //     Tensor tSrZOH_copy_view = smem_thr_copy_ZOH.retile_D(tSrZOH);
+    //     cute::copy(smem_tiled_copy_ZOH, tSsZOH, tSrZOH_copy_view);
+    //     Tensor tSrAM_copy_view = smem_thr_copy_AM.retile_D(tSrAM);
+    //     cute::copy(smem_tiled_copy_AM, tSsAM, tSrAM_copy_view);
 
-        // Advance gV
-        if (block_table == nullptr) {
-            tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
-        } else {
-            const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
-            const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
-            const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
-            const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
-            tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
-        }
-        FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
-        cute::cp_async_fence();
+    //     // Advance gV
+    //     if (block_table == nullptr) {
+    //         tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
+    //     } else {
+    //         const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
+    //         const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
+    //         const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
+    //         const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
+    //         tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
+    //     }
+    //     FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tVgV, tVsV, tKVcKV, tKVpKV);
+    //     cute::cp_async_fence();
 
-        FLASH_NAMESPACE::sparse_gemm(
-            acc_s,
-            tSrQ,
-            tSrK, tSsQ, tSsK, tSrAM,        // Active key indices for sparse K matrix multiplication
-            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
-            smem_thr_copy_Q, smem_thr_copy_K
-        );
-        if constexpr (Is_softcap){
-            FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
-        }
+    //     FLASH_NAMESPACE::sparse_gemm(
+    //         acc_s,
+    //         tSrQ,
+    //         tSrK, tSsQ, tSsK, tSrAM,        // Active key indices for sparse K matrix multiplication
+    //         tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+    //         smem_thr_copy_Q, smem_thr_copy_K
+    //     );
+    //     if constexpr (Is_softcap){
+    //         FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
+    //     }
 
-        FLASH_NAMESPACE::cp_async_wait<0>();
-        __syncthreads();
-        if (n_block > n_block_min) {
-            // Advance gK
-            if (block_table == nullptr) {
-                tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
-                tZOHgZOH.data() = tZOHgZOH.data() + (-int(kBlockN * params.zoh_col_stride));
-                tAMgAM.data() = tAMgAM.data() + (-int(kBlockN * params.active_mask_col_stride));
-            } else {
-                const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
-                const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
-                const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
-                const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
-                tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
-                tZOHgZOH.data() = tZOHgZOH.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.zoh_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.zoh_col_stride;
-                tAMgAM.data() = tAMgAM.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.active_mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.active_mask_col_stride;
-            }
-            FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
-            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
-                gmem_tiled_copy_ZOH,
-                tZOHgZOH,
-                tZOHsZOH, 
-                tZOHcZOH,
-                binfo.actual_seqlen_q - m_block * kBlockM,
-                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
-            FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
-                gmem_tiled_copy_AM,
-                tAMgAM,
-                tAMsAM, 
-                tAMcAM,
-                binfo.actual_seqlen_q - m_block * kBlockM,
-                binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
-            // This cp_async_fence needs to be in the if block, otherwise the synchronization
-            // isn't right and we get race conditions.
-            cute::cp_async_fence();
-        }
+    //     FLASH_NAMESPACE::cp_async_wait<0>();
+    //     __syncthreads();
+    //     if (n_block > n_block_min) {
+    //         // Advance gK
+    //         if (block_table == nullptr) {
+    //             tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
+    //             tZOHgZOH.data() = tZOHgZOH.data() + (-int(kBlockN * params.zoh_col_stride));
+    //             tAMgAM.data() = tAMgAM.data() + (-int(kBlockN * params.active_mask_col_stride));
+    //         } else {
+    //             const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
+    //             const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
+    //             const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
+    //             const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+    //             tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
+    //             tZOHgZOH.data() = tZOHgZOH.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.zoh_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.zoh_col_stride;
+    //             tAMgAM.data() = tAMgAM.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.active_mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.active_mask_col_stride;
+    //         }
+    //         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
+    //         FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
+    //             gmem_tiled_copy_ZOH,
+    //             tZOHgZOH,
+    //             tZOHsZOH, 
+    //             tZOHcZOH,
+    //             binfo.actual_seqlen_q - m_block * kBlockM,
+    //             binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+    //         );
+    //         FLASH_NAMESPACE::copy_ZOH</*Is_even_MN=*/true>(
+    //             gmem_tiled_copy_AM,
+    //             tAMgAM,
+    //             tAMsAM, 
+    //             tAMcAM,
+    //             binfo.actual_seqlen_q - m_block * kBlockM,
+    //             binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+    //         );
+    //         // This cp_async_fence needs to be in the if block, otherwise the synchronization
+    //         // isn't right and we get race conditions.
+    //         cute::cp_async_fence();
+    //     }
 
-        // Scale attention scores and apply dynamic mask
-        dynamic_mask.template apply_mask</*Causal_mask=*/false>(
-            acc_s, tSrZOH, tSrAM, params.scale_softmax,
-            n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-        );
-        softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
-        // softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
+    //     // Scale attention scores and apply dynamic mask
+    //     dynamic_mask.template apply_mask</*Causal_mask=*/false>(
+    //         acc_s, tSrZOH, tSrAM, params.scale_softmax,
+    //         n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
+    //     );
+    //     softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+    //     // softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
 
-        // Convert acc_s from fp32 to fp16/bf16
-        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+    //     // Convert acc_s from fp32 to fp16/bf16
+    //     Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
 
-        // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
-        // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
-        Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
+    //     // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
+    //     // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
+    //     Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        // Use sparse general matrix multiplication with register accumulation for V as well
-        FLASH_NAMESPACE::sparse_gemm_rs(
-            acc_o,
-            tOrP, tOrVt, tOsVt, tSrAM,      // Apply the same mask for sparse V matrix multiplication
-            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
-        );
-    }
+    //     // Use sparse general matrix multiplication with register accumulation for V as well
+    //     FLASH_NAMESPACE::sparse_gemm_rs(
+    //         acc_o,
+    //         tOrP, tOrVt, tOsVt, tSrAM,      // Apply the same mask for sparse V matrix multiplication
+    //         tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
+    //     );
+    // }
 
-    // Epilogue
+    // // Epilogue
 
-    Tensor lse = softmax.template normalize_softmax_lse</*Is_dropout=*/false, Split>(acc_o, params.scale_softmax);
-    // if (cute::thread0()) { print(lse); }
+    // Tensor lse = softmax.template normalize_softmax_lse</*Is_dropout=*/false, Split>(acc_o, params.scale_softmax);
+    // // if (cute::thread0()) { print(lse); }
 
-    Tensor sOaccum = make_tensor(make_smem_ptr(reinterpret_cast<ElementO *>(smem_)), typename Kernel_traits::SmemLayoutO{}); // (SMEM_M,SMEM_N)
-    // Partition sO to match the accumulator partitioning
-    using SmemTiledCopyO = std::conditional_t<
-        !Split,
-        typename Kernel_traits::SmemCopyAtomO,
-        typename Kernel_traits::SmemCopyAtomOaccum
-    >;
-    auto smem_tiled_copy_Oaccum = make_tiled_copy_C(SmemTiledCopyO{}, tiled_mma);
-    auto smem_thr_copy_Oaccum = smem_tiled_copy_Oaccum.get_thread_slice(tidx);
-    Tensor rO = FLASH_NAMESPACE::convert_type<ElementO>(acc_o);
-    Tensor taccOrOaccum = smem_thr_copy_Oaccum.retile_S(rO);        // ((Atom,AtomNum), MMA_M, MMA_N)
-    Tensor taccOsOaccum = smem_thr_copy_Oaccum.partition_D(sOaccum);     // ((Atom,AtomNum),PIPE_M,PIPE_N)
+    // Tensor sOaccum = make_tensor(make_smem_ptr(reinterpret_cast<ElementO *>(smem_)), typename Kernel_traits::SmemLayoutO{}); // (SMEM_M,SMEM_N)
+    // // Partition sO to match the accumulator partitioning
+    // using SmemTiledCopyO = std::conditional_t<
+    //     !Split,
+    //     typename Kernel_traits::SmemCopyAtomO,
+    //     typename Kernel_traits::SmemCopyAtomOaccum
+    // >;
+    // auto smem_tiled_copy_Oaccum = make_tiled_copy_C(SmemTiledCopyO{}, tiled_mma);
+    // auto smem_thr_copy_Oaccum = smem_tiled_copy_Oaccum.get_thread_slice(tidx);
+    // Tensor rO = FLASH_NAMESPACE::convert_type<ElementO>(acc_o);
+    // Tensor taccOrOaccum = smem_thr_copy_Oaccum.retile_S(rO);        // ((Atom,AtomNum), MMA_M, MMA_N)
+    // Tensor taccOsOaccum = smem_thr_copy_Oaccum.partition_D(sOaccum);     // ((Atom,AtomNum),PIPE_M,PIPE_N)
 
-    // sOaccum is larger than sQ, so we need to syncthreads here
-    // TODO: allocate enough smem for sOaccum
-    if constexpr (Split) { __syncthreads(); }
+    // // sOaccum is larger than sQ, so we need to syncthreads here
+    // // TODO: allocate enough smem for sOaccum
+    // if constexpr (Split) { __syncthreads(); }
 
-    cute::copy(smem_tiled_copy_Oaccum, taccOrOaccum, taccOsOaccum);
+    // cute::copy(smem_tiled_copy_Oaccum, taccOrOaccum, taccOsOaccum);
 
-    const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
-        + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
-    const index_t row_offset_oaccum = (((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q
-                                         + m_block * kBlockM) * params.d_rounded;
-    const index_t row_offset_lseaccum = (Split || !params.unpadded_lse ?
-            ((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q : bidh * params.total_q + binfo.q_offset(params.seqlen_q, 1, bidb)
-        ) + m_block * kBlockM;
+    // const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
+    //     + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
+    // const index_t row_offset_oaccum = (((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q
+    //                                      + m_block * kBlockM) * params.d_rounded;
+    // const index_t row_offset_lseaccum = (Split || !params.unpadded_lse ?
+    //         ((n_split_idx * params.b + bidb) * params.h + bidh) * params.seqlen_q : bidh * params.total_q + binfo.q_offset(params.seqlen_q, 1, bidb)
+    //     ) + m_block * kBlockM;
 
-    Tensor gOaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementO *>(Split ? params.oaccum_ptr : params.o_ptr) + (Split ? row_offset_oaccum : row_offset_o)),
-                                 Shape<Int<kBlockM>, Int<kHeadDim>>{},
-                                 make_stride(Split ? kHeadDim : params.o_row_stride, _1{}));
-    Tensor gLSEaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(Split ? params.softmax_lseaccum_ptr : params.softmax_lse_ptr) + row_offset_lseaccum),
-                                   Shape<Int<kBlockM>>{}, Stride<_1>{});
-    // if (tidx == 0) { printf("row_offset_o = %d, bidh = %d, gOaccum = %p\n", row_offset_o, bidh, gOaccum.data()); }
+    // Tensor gOaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementO *>(Split ? params.oaccum_ptr : params.o_ptr) + (Split ? row_offset_oaccum : row_offset_o)),
+    //                              Shape<Int<kBlockM>, Int<kHeadDim>>{},
+    //                              make_stride(Split ? kHeadDim : params.o_row_stride, _1{}));
+    // Tensor gLSEaccum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(Split ? params.softmax_lseaccum_ptr : params.softmax_lse_ptr) + row_offset_lseaccum),
+    //                                Shape<Int<kBlockM>>{}, Stride<_1>{});
+    // // if (tidx == 0) { printf("row_offset_o = %d, bidh = %d, gOaccum = %p\n", row_offset_o, bidh, gOaccum.data()); }
 
-    GmemTiledCopyO gmem_tiled_copy_Oaccum;
-    auto gmem_thr_copy_Oaccum = gmem_tiled_copy_Oaccum.get_thread_slice(tidx);
-    Tensor tOsOaccum = gmem_thr_copy_Oaccum.partition_S(sOaccum);        // ((Atom,AtomNum),ATOM_M,ATOM_N)
-    Tensor tOgOaccum = gmem_thr_copy_Oaccum.partition_D(gOaccum);
+    // GmemTiledCopyO gmem_tiled_copy_Oaccum;
+    // auto gmem_thr_copy_Oaccum = gmem_tiled_copy_Oaccum.get_thread_slice(tidx);
+    // Tensor tOsOaccum = gmem_thr_copy_Oaccum.partition_S(sOaccum);        // ((Atom,AtomNum),ATOM_M,ATOM_N)
+    // Tensor tOgOaccum = gmem_thr_copy_Oaccum.partition_D(gOaccum);
 
-    __syncthreads();
+    // __syncthreads();
 
-    Tensor tOrOaccum = make_tensor<ElementO>(shape(tOgOaccum));
-    cute::copy(gmem_tiled_copy_Oaccum, tOsOaccum, tOrOaccum);
+    // Tensor tOrOaccum = make_tensor<ElementO>(shape(tOgOaccum));
+    // cute::copy(gmem_tiled_copy_Oaccum, tOsOaccum, tOrOaccum);
 
-    Tensor caccO = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M,BLK_K) -> (blk_m,blk_k)
-    Tensor taccOcO = thr_mma.partition_C(caccO);                           // (MMA,MMA_M,MMA_K)
-    static_assert(decltype(size<0>(taccOcO))::value == 4);
-    // Convert to ((2, 2), MMA_M, MMA_K) then take only the row indices.
-    Tensor taccOcO_row = logical_divide(taccOcO, Shape<_2>{})(make_coord(0, _), _, 0);
-    CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));                     // MMA_M
-    if (get<1>(taccOcO_row(0)) == 0) {
-        #pragma unroll
-        for (int mi = 0; mi < size(lse); ++mi) {
-            const int row = get<0>(taccOcO_row(mi));
-            if (row < binfo.actual_seqlen_q - m_block * kBlockM) { gLSEaccum(row) = lse(mi); }
-        }
-    }
+    // Tensor caccO = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    // Tensor taccOcO = thr_mma.partition_C(caccO);                           // (MMA,MMA_M,MMA_K)
+    // static_assert(decltype(size<0>(taccOcO))::value == 4);
+    // // Convert to ((2, 2), MMA_M, MMA_K) then take only the row indices.
+    // Tensor taccOcO_row = logical_divide(taccOcO, Shape<_2>{})(make_coord(0, _), _, 0);
+    // CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));                     // MMA_M
+    // if (get<1>(taccOcO_row(0)) == 0) {
+    //     #pragma unroll
+    //     for (int mi = 0; mi < size(lse); ++mi) {
+    //         const int row = get<0>(taccOcO_row(mi));
+    //         if (row < binfo.actual_seqlen_q - m_block * kBlockM) { gLSEaccum(row) = lse(mi); }
+    //     }
+    // }
 
-    // Construct identity layout for sO
-    Tensor cO = make_identity_tensor(make_shape(size<0>(sOaccum), size<1>(sOaccum)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
-    // Repeat the partitioning with identity layouts
-    Tensor tOcO = gmem_thr_copy_Oaccum.partition_D(cO);                           // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
-    Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgOaccum)));
-    if (!Is_even_K) {
-        #pragma unroll
-        for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
-    }
-    // Clear_OOB_K must be false since we don't want to write zeros to gmem
-    FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
-        gmem_tiled_copy_Oaccum, tOrOaccum, tOgOaccum, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
-    );
+    // // Construct identity layout for sO
+    // Tensor cO = make_identity_tensor(make_shape(size<0>(sOaccum), size<1>(sOaccum)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    // // Repeat the partitioning with identity layouts
+    // Tensor tOcO = gmem_thr_copy_Oaccum.partition_D(cO);                           // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
+    // Tensor tOpO = make_tensor<bool>(make_shape(size<2>(tOgOaccum)));
+    // if (!Is_even_K) {
+    //     #pragma unroll
+    //     for (int k = 0; k < size(tOpO); ++k) { tOpO(k) = get<1>(tOcO(0, 0, k)) < params.d; }
+    // }
+    // // Clear_OOB_K must be false since we don't want to write zeros to gmem
+    // FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
+    //     gmem_tiled_copy_Oaccum, tOrOaccum, tOgOaccum, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
+    // );
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
