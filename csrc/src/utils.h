@@ -167,14 +167,14 @@ template <bool A_in_regs=false, bool B_in_regs=false,
           typename TiledMma, typename TiledCopyA, typename TiledCopyB,
           typename ThrCopyA, typename ThrCopyB>
 __forceinline__ __device__ void sparse_gemm(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &tCrAM,
+    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &tCrM,
     TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
-    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(tCrAM));                      // MMA_M
-    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(tCrAM));                      // MMA_N
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(tCrM));                       // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(tCrM));                       // MMA_N
     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
     auto tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));             // M
@@ -184,13 +184,13 @@ __forceinline__ __device__ void sparse_gemm(
     // Use thread-local computation then sync across all threads in the CTA
     bool local_any_active = false;
     #pragma unroll
-    for (int mma = 0; mma < size<0>(tCrAM) && !local_any_active; ++mma) {
+    for (int mma = 0; mma < size<0>(tCrM) && !local_any_active; ++mma) {
         #pragma unroll
-        for (int m = 0; m < size<1>(tCrAM) && !local_any_active; ++m) {
+        for (int m = 0; m < size<1>(tCrM) && !local_any_active; ++m) {
             #pragma unroll
-            for (int n = 0; n < size<2>(tCrAM) && !local_any_active; ++n) {
+            for (int n = 0; n < size<2>(tCrM) && !local_any_active; ++n) {
                 // Use direct comparison to avoid potential branching
-                local_any_active |= (tCrAM(mma, m, n) > 0);
+                local_any_active |= (tCrM(mma, m, n) > 0);
             }
         }
     }
@@ -258,13 +258,8 @@ template <typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3
           typename TiledMma, typename TiledCopy,
           typename ThrCopy>
 __forceinline__ __device__ void sparse_gemm_rs(
-    Tensor0 &acc,
-    Tensor1 &tCrA,
-    Tensor2 &tCrB,
-    Tensor3 const& tCsB,
-    Tensor4 const &tCrAM,
-    TiledMma tiled_mma,
-    TiledCopy smem_tiled_copy_B,
+    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB, Tensor4 const &tCrM,
+    TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
     ThrCopy smem_thr_copy_B
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
@@ -277,13 +272,13 @@ __forceinline__ __device__ void sparse_gemm_rs(
     // Use thread-local computation then sync across all threads in the CTA
     bool local_any_active = false;
     #pragma unroll
-    for (int mma = 0; mma < size<0>(tCrAM) && !local_any_active; ++mma) {
+    for (int mma = 0; mma < size<0>(tCrM) && !local_any_active; ++mma) {
         #pragma unroll
-        for (int m = 0; m < size<1>(tCrAM) && !local_any_active; ++m) {
+        for (int m = 0; m < size<1>(tCrM) && !local_any_active; ++m) {
             #pragma unroll
-            for (int n = 0; n < size<2>(tCrAM) && !local_any_active; ++n) {
+            for (int n = 0; n < size<2>(tCrM) && !local_any_active; ++n) {
                 // Use direct comparison to avoid potential branching
-                local_any_active |= (tCrAM(mma, m, n) > 0);
+                local_any_active |= (tCrM(mma, m, n) > 0);
             }
         }
     }
