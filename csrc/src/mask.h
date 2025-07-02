@@ -38,8 +38,8 @@ struct Mask {
     template <bool Causal_mask=false, bool Is_even_MN=true, typename TensorType, typename MaskType, typename BiasType>
     __forceinline__ __device__ void apply_mask(
         TensorType &tensor_,                        // acc_s (attention scores, MMA=4, MMA_M, MMA_N)
-        MaskType &Mask,                          // Attention Mask (MMA=4, MMA_M, MMA_N)
-        BiasType &Bias,                          // Attention Bias (MMA=4, MMA_M, MMA_N)
+        MaskType &Mask,                             // Attention Mask (MMA=4, MMA_M, MMA_N)
+        BiasType &Bias,                             // Attention Bias (MMA=4, MMA_M, MMA_N)
         const float scale_softmax,                  // Scale for softmax
         const int col_idx_offset_,                  // Column index offset
         const int row_idx_offset,                   // Row index offset
