@@ -232,20 +232,20 @@ def dynamic_mask_attention_cuda(
 
     # Call the CUDA implementation using the mha_fwd function signature
     out_tensor = None  # Let the function allocate the output tensor
-    result = flash_dma_cuda.fwd(  # type: ignore
-        query_states,             # q: [batch, seqlen_q, num_heads, head_dim]
-        key_states,               # k: [batch, seqlen_k, num_kv_heads, head_dim]
-        value_states,             # v: [batch, seqlen_k, num_kv_heads, head_dim]
-        zero_hold_states,         # zoh: [batch, num_kv_heads, seqlen_q, seqlen_k] - processed attention mask
-        active_mask,              # active_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
-        out_tensor,               # out: None to auto-allocate
-        0.0,                      # p_dropout
-        scaling,                  # softmax_scale
-        is_causal,                # is_causal
-        keep_window_size,         # keep_window_size
-        0.0,                      # softcap
-        return_softmax,           # return_softmax
-        None                      # gen (generator)
+    result = flash_dma_cuda.fwd(    # type: ignore
+        query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
+        key_states,                 # k: [batch, seqlen_k, num_kv_heads, head_dim]
+        value_states,               # v: [batch, seqlen_k, num_kv_heads, head_dim]
+        active_mask,                # attn_mask: [batch, num_kv_heads, seqlen_q, seqlen_k]
+        attn_mask,                  # bias: [batch, num_kv_heads, seqlen_q, seqlen_k]
+        out_tensor,                 # out: None to auto-allocate
+        0.0,                        # p_dropout
+        scaling,                    # softmax_scale
+        is_causal,                  # is_causal
+        keep_window_size,           # keep_window_size
+        0.0,                        # softcap
+        return_softmax,             # return_softmax
+        None                        # gen (generator)
     )
     
     attn_outputs = result[0]  # [batch, query_len, num_heads, head_dim]
