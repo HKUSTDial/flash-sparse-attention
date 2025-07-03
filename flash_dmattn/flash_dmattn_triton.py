@@ -132,8 +132,7 @@ def _fwd_kernel(
             )
         
         # Check if any element in mask is non-zero
-        # any_active = tl.sum(mask > 0) > 0
-        any_active = True
+        any_active = tl.sum(mask > 0) > 0
         
         # compute acc_s
         acc_s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32) 
