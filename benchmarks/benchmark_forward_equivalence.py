@@ -73,7 +73,7 @@ def prepare_dynamic_mask(
         attn_mask = attn_mask.scatter(-1, topk_indices, 1.0)
         attn_bias = attn_bias.masked_fill(attn_mask == 0.0, min_dtype)
     else:
-        attn_mask = torch.ones_like(attn_mask, dtype=dtype, device=attn_mask.device)
+        attn_mask = torch.ones_like(attn_bias, dtype=dtype, device=attn_bias.device)
     return attn_bias, attn_mask
 
 
