@@ -348,6 +348,127 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, causal=False, softmax_sca
     return o, lse, softmax_scale  # softmax_scale could have been updated
 
 
+def _flash_attn_backward(
+    do, q, k, v, mask, bias, o, lse, dq, dk, dv, dbias, causal=False, softmax_scale=None
+):
+    # Make sure that the last dimension is contiguous
+    if do.stride(-1) != 1:
+        do = do.contiguous()
+    batch, seqlen_q, nheads, d = q.shape
+    _, seqlen_k, _, _ = k.shape
+    # assert d in {16, 32, 64, 128}
+    assert d <= 128
+    seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
+    assert lse.shape == (batch, nheads, seqlen_q_rounded)
+    assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
+    assert dq.stride(-1) == dk.stride(-1) == dv.stride(-1) == 1
+
+    assert mask.dtype in [q.dtype, torch.float]
+    assert mask.is_cuda
+    assert mask.dim() == 4
+    assert mask.stride(-1) == 1
+
+    assert bias.dtype in [q.dtype, torch.float]
+    assert bias.is_cuda
+    assert bias.dim() == 4
+    assert bias.stride(-1) == 1
+
+    softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
+    # dq_accum = torch.zeros_like(q, dtype=torch.float32)
+    dq_accum = torch.empty_like(q, dtype=torch.float32)
+    delta = torch.empty_like(lse)
+    # delta = torch.zeros_like(lse)
+
+    BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
+    grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads)
+    _bwd_preprocess_do_o_dot[grid](
+        o,
+        do,
+        delta,
+        o.stride(0),
+        o.stride(2),
+        o.stride(1),
+        do.stride(0),
+        do.stride(2),
+        do.stride(1),
+        nheads,
+        seqlen_q,
+        seqlen_q_rounded,
+        d,
+        BLOCK_M=64,
+        BLOCK_HEADDIM=BLOCK_HEADDIM,
+    )
+
+    # BLOCK_M = 128
+    # BLOCK_N = 64
+    # num_warps = 4
+    grid = lambda META: (
+        triton.cdiv(seqlen_k, META["BLOCK_N"]) if META["SEQUENCE_PARALLEL"] else 1,
+        batch * nheads,
+    )
+    _bwd_kernel[grid](
+        q,
+        k,
+        v,
+        mask,
+        bias,
+        do,
+        dq_accum,
+        dk,
+        dv,
+        dbias,
+        lse,
+        delta,
+        softmax_scale,
+        q.stride(0),
+        q.stride(2),
+        q.stride(1),
+        k.stride(0),
+        k.stride(2),
+        k.stride(1),
+        v.stride(0),
+        v.stride(2),
+        v.stride(1),
+        mask.stride(0),
+        mask.stride(1),
+        mask.stride(2),
+        bias.stride(0),
+        bias.stride(1),
+        bias.stride(2),
+        do.stride(0),
+        do.stride(2),
+        do.stride(1),
+        dq_accum.stride(0),
+        dq_accum.stride(2),
+        dq_accum.stride(1),
+        dk.stride(0),
+        dk.stride(2),
+        dk.stride(1),
+        dv.stride(0),
+        dv.stride(2),
+        dv.stride(1),
+        dbias.stride(0),
+        dbias.stride(1),
+        dbias.stride(2),
+        nheads,
+        seqlen_q,
+        seqlen_k,
+        seqlen_q_rounded,
+        d,
+        seqlen_q // 32,
+        seqlen_k // 32,  # key for triton cache (limit number of compilations)
+        # Can't use kwargs here because triton autotune expects key to be args, not kwargs
+        # IS_CAUSAL=causal, BLOCK_HEADDIM=d,
+        causal,
+        BLOCK_HEADDIM,
+        # SEQUENCE_PARALLEL=False,
+        # BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+        # num_warps=num_warps,
+        # num_stages=1,
+    )
+    dq.copy_(dq_accum)
+
+
 class FlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, mask=None, bias=None, causal=False, softmax_scale=None):
