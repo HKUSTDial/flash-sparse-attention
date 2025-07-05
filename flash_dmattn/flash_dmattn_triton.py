@@ -258,7 +258,7 @@ def _fwd_kernel(
             )
 
 
-def _flash_attn_forward(q, k, v, mask=None, bias=None, causal=False, softmax_scale=None):
+def _flash_attn_forward(q, k, v, mask, bias, causal=False, softmax_scale=None):
     # shape constraints
     batch, seqlen_q, nheads, d = q.shape
     _, seqlen_k, _, _ = k.shape
@@ -269,26 +269,18 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, causal=False, softmax_sca
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert q.is_cuda and k.is_cuda and v.is_cuda
 
-    if mask is not None:
-        assert mask.shape == (batch, nheads, seqlen_q, seqlen_k), f"mask shape {mask.shape} does not match expected shape {(batch, nheads, seqlen_q, seqlen_k)}"
-        assert mask.dtype in [torch.float16, torch.bfloat16, torch.float32], "mask must be fp16, bf16, or fp32"
-        assert mask.is_cuda, "mask must be on CUDA"
-        if mask.stride(-1) != 1:
-            mask = mask.contiguous()
-    else:
-        # Create a default mask of all ones
-        mask = torch.ones((batch, nheads, seqlen_q, seqlen_k), device=q.device, dtype=q.dtype)
+    assert mask.shape == (batch, nheads, seqlen_q, seqlen_k), f"mask shape {mask.shape} does not match expected shape {(batch, nheads, seqlen_q, seqlen_k)}"
+    assert mask.dtype in [torch.float16, torch.bfloat16, torch.float32], "mask must be fp16, bf16, or fp32"
+    assert mask.is_cuda, "mask must be on CUDA"
+    if mask.stride(-1) != 1:
+        mask = mask.contiguous()
 
-    if bias is not None:
-        assert bias.dtype in [q.dtype, torch.float], f"bias dtype {bias.dtype} must match q dtype {q.dtype} or be float"
-        assert bias.is_cuda, "bias must be on CUDA"
-        assert bias.dim() == 4, f"bias must be 4D, got {bias.dim()}D"
-        assert bias.shape == (batch, nheads, seqlen_q, seqlen_k), f"bias shape {bias.shape} must be (batch={batch}, nheads={nheads}, seqlen_q={seqlen_q}, seqlen_k={seqlen_k})"
-        if bias.stride(-1) != 1:
-            bias = bias.contiguous()
-    else:
-        # Create zero bias if none provided
-        bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=q.device, dtype=q.dtype)
+    assert bias.dtype in [q.dtype, torch.float], f"bias dtype {bias.dtype} must match q dtype {q.dtype} or be float"
+    assert bias.is_cuda, "bias must be on CUDA"
+    assert bias.dim() == 4, f"bias must be 4D, got {bias.dim()}D"
+    assert bias.shape == (batch, nheads, seqlen_q, seqlen_k), f"bias shape {bias.shape} must be (batch={batch}, nheads={nheads}, seqlen_q={seqlen_q}, seqlen_k={seqlen_k})"
+    if bias.stride(-1) != 1:
+        bias = bias.contiguous()
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
