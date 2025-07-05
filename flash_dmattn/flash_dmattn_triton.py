@@ -790,7 +790,7 @@ class FlashAttnFunc(torch.autograd.Function):
                 causal=ctx.causal,
                 softmax_scale=ctx.softmax_scale,
             )
-        return dq, dk, dv, None, None, None, None
+        return dq, dk, dv, None, dbias, None, None
 
 
 flash_dmattn_func = FlashAttnFunc.apply
