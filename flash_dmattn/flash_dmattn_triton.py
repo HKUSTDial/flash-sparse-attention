@@ -749,9 +749,9 @@ class FlashAttnFunc(torch.autograd.Function):
             if mask.dtype == torch.bool:
                 mask = torch.where(mask, 1.0, 0.0)
         else:
-            mask = torch.ones((batch, nheads, seqlen_q, seqlen_k), device=q.device)
+            mask = torch.ones((batch, nheads, seqlen_q, seqlen_k), device=q.device, dtype=q.dtype)
         if bias is None:
-            bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=q.device)
+            bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=q.device, dtype=q.dtype)
 
         # Make sure that the last dimension is contiguous
         q, k, v, mask, bias = [x if x.stride(-1) == 1 else x.contiguous() for x in [q, k, v, mask, bias]]
