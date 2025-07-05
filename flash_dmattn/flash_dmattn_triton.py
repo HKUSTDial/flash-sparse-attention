@@ -258,6 +258,10 @@ def _fwd_kernel(
             )
 
 
+def init_to_zero(name):
+    return lambda nargs: nargs[name].zero_()
+
+
 @triton.autotune(
     configs=[
         triton.Config(
