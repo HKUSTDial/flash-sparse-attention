@@ -353,16 +353,27 @@ class FlashAttnFunc(torch.autograd.Function):
     def forward(ctx, q, k, v, mask=None, bias=None, causal=False, softmax_scale=None):
         """
         q: (batch_size, seqlen_q, nheads, headdim)
-        k, v: (batch_size, seqlen_k, nheads, headdim)
-        mask: optional, shape (batch, nheads, seqlen_q, seqlen_k), dynamic attention mask
-        bias: optional, shape must be exactly (batch, nheads, seqlen_q, seqlen_k), attention bias matrix
+        k: (batch_size, seqlen_k, nheads, headdim)
+        v: (batch_size, seqlen_k, nheads, headdim)
+        mask: optional, (batch, nheads, seqlen_q, seqlen_k)
+        bias: optional, (batch, nheads, seqlen_q, seqlen_k)
         causal: bool, whether to apply causal masking
         softmax_scale: float, scaling factor for attention scores
         """
+        batch, seqlen_q, nheads, _ = q.shape
+        _, seqlen_k, _, _ = k.shape
+        if mask is not None:
+            if mask.dtype == torch.bool:
+                mask = torch.where(mask, 1.0, 0.0)
+        else:
+            mask = torch.ones((batch, nheads, seqlen_q, seqlen_k), device=q.device)
+        if bias is None:
+            bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=q.device)
+
         # Make sure that the last dimension is contiguous
-        q, k, v = [x if x.stride(-1) == 1 else x.contiguous() for x in [q, k, v]]
+        q, k, v, mask, bias = [x if x.stride(-1) == 1 else x.contiguous() for x in [q, k, v, mask, bias]]
         o, lse, ctx.softmax_scale = _flash_attn_forward(
-            q, k, v, mask=mask, bias=bias, causal=causal, softmax_scale=softmax_scale
+            q, k, v, mask, bias, causal=causal, softmax_scale=softmax_scale
         )
         ctx.save_for_backward(q, k, v, o, lse, mask, bias)
         ctx.causal = causal
