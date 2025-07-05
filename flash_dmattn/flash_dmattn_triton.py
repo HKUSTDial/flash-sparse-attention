@@ -732,7 +732,7 @@ def _flash_attn_backward(
     dq.copy_(dq_accum)
 
 
-class FlashAttnFunc(torch.autograd.Function):
+class FlashDMAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, mask=None, bias=None, causal=False, softmax_scale=None):
         """
@@ -766,7 +766,7 @@ class FlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, do):
         q, k, v, o, lse, mask, bias = ctx.saved_tensors
-        assert not ctx.needs_input_grad[3], "FlashDynamicMaskAttention does not support mask gradient yet"
+        assert not ctx.needs_input_grad[3], "FlashDMAttn does not support mask gradient yet"
         # Triton's autotune causes the Tensor._version to change, and so Pytorch autograd
         # does a memcpy. To avoid this we run in inference_mode, which doesn't track the version.
         with torch.inference_mode():
@@ -793,4 +793,4 @@ class FlashAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, dbias, None, None
 
 
-flash_dmattn_func = FlashAttnFunc.apply
+flash_dmattn_func = FlashDMAttnFunc.apply
