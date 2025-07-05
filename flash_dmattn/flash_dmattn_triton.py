@@ -12,7 +12,7 @@ import triton.language as tl
 #         # This config has a race condition when EVEN_M == False, disabling it for now.
 #         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
 #     ],
-#     key=['CACHE_KEY_SEQLEN_Q', 'CACHE_KEY_SEQLEN_K', 'BIAS_TYPE', 'IS_CAUSAL', 'BLOCK_HEADDIM']
+#     key=['CACHE_KEY_SEQLEN_Q', 'CACHE_KEY_SEQLEN_K', 'IS_CAUSAL', 'BLOCK_HEADDIM']
 # )
 @triton.heuristics(
     {
@@ -120,6 +120,38 @@ def _fwd_kernel(
     end_n = seqlen_k if not IS_CAUSAL else tl.minimum((start_m + 1) * BLOCK_M, seqlen_k)
     for start_n in range(0, end_n, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
+
+        # Load k
+        if EVEN_N & EVEN_M:  # If we just do "if EVEN_N", there seems to be some race condition
+            if EVEN_HEADDIM:
+                k = tl.load(k_ptrs + start_n * stride_kn)
+            else:
+                k = tl.load(k_ptrs + start_n * stride_kn, mask=offs_d[None, :] < headdim, other=0.0)
+        else:
+            if EVEN_HEADDIM:
+                k = tl.load(
+                    k_ptrs + start_n * stride_kn,
+                    mask=(start_n + offs_n)[:, None] < seqlen_k,
+                    other=0.0,
+                )
+            else:
+                k = tl.load(
+                    k_ptrs + start_n * stride_kn,
+                    mask=((start_n + offs_n)[:, None] < seqlen_k) & (offs_d[None, :] < headdim),
+                    other=0.0,
+                )
+
+        # compute acc_s
+        acc_s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        acc_s += tl.dot(q, tl.trans(k))
+
+        # Trying to combine the two masks seem to make the result wrong
+        # Apply sequence length mask
+        if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
+            acc_s += tl.where((start_n + offs_n)[None, :] < seqlen_k, 0, float("-inf"))
+        # Apply causal mask
+        if IS_CAUSAL:
+            acc_s += tl.where(offs_m[:, None] >= (start_n + offs_n)[None, :], 0, float("-inf"))
         
         # Load mask
         if EVEN_M & EVEN_N:
@@ -132,41 +164,11 @@ def _fwd_kernel(
             )
         
         # Check if any element in mask is non-zero
-        any_active = tl.sum(mask) > 0
-        
-        # compute acc_s
-        acc_s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        if any_active:
-            # Load k
-            if EVEN_N & EVEN_M:  # If we just do "if EVEN_N", there seems to be some race condition
-                if EVEN_HEADDIM:
-                    k = tl.load(k_ptrs + start_n * stride_kn)
-                else:
-                    k = tl.load(k_ptrs + start_n * stride_kn, mask=offs_d[None, :] < headdim, other=0.0)
-            else:
-                if EVEN_HEADDIM:
-                    k = tl.load(
-                        k_ptrs + start_n * stride_kn,
-                        mask=(start_n + offs_n)[:, None] < seqlen_k,
-                        other=0.0,
-                    )
-                else:
-                    k = tl.load(
-                        k_ptrs + start_n * stride_kn,
-                        mask=((start_n + offs_n)[:, None] < seqlen_k) & (offs_d[None, :] < headdim),
-                        other=0.0,
-                    )
-            acc_s += tl.dot(q, tl.trans(k))
-
-        # Trying to combine the two masks seem to make the result wrong
-        # Apply sequence length mask
-        if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
-            acc_s += tl.where((start_n + offs_n)[None, :] < seqlen_k, 0, float("-inf"))
-        # Apply causal mask
-        if IS_CAUSAL:
-            acc_s += tl.where(offs_m[:, None] >= (start_n + offs_n)[None, :], 0, float("-inf"))
+        # BUG: Triton needs to determine the control flow at compile time.
+        # Dynamic conditions at runtime can undermine this optimization.
+        # any_active = tl.sum(mask) != 0
         # Apply dynamic mask
-        acc_s += tl.where(mask > 0, 0, float("-inf"))
+        acc_s += tl.where(mask > 0.0, 0.0, float("-inf"))
 
         # Load bias
         if EVEN_M & EVEN_N:
@@ -184,7 +186,7 @@ def _fwd_kernel(
         # can then fuse the mult and add into an fma instruction. But if we have bias we need to
         # to multiply with softmax_scale here.
         acc_s = acc_s * softmax_scale + bias
-        acc_s = tl.where(acc_s != float("-inf"), acc_s * softmax_scale + bias, acc_s)
+        # acc_s = tl.where(acc_s != float("-inf"), acc_s * softmax_scale + bias, acc_s)
         m_ij = tl.maximum(tl.max(acc_s, 1), lse_i)
         p = tl.exp(acc_s - m_ij[:, None])
         l_ij = tl.sum(p, 1)
@@ -198,27 +200,26 @@ def _fwd_kernel(
         acc_o_scale = tl.load(t_ptrs)
         acc_o = acc_o * acc_o_scale[:, None]
 
-        if any_active:
-            # load v
-            if EVEN_N & EVEN_M:  # If we just do "if EVEN_N", there seems to be some race condition
-                if EVEN_HEADDIM:
-                    v = tl.load(v_ptrs + start_n * stride_vn)
-                else:
-                    v = tl.load(v_ptrs + start_n * stride_vn, mask=offs_d[None, :] < headdim, other=0.0)
+        # load v
+        if EVEN_N & EVEN_M:  # If we just do "if EVEN_N", there seems to be some race condition
+            if EVEN_HEADDIM:
+                v = tl.load(v_ptrs + start_n * stride_vn)
             else:
-                if EVEN_HEADDIM:
-                    v = tl.load(
-                        v_ptrs + start_n * stride_vn,
-                        mask=(start_n + offs_n)[:, None] < seqlen_k,
-                        other=0.0,
-                    )
-                else:
-                    v = tl.load(
-                        v_ptrs + start_n * stride_vn,
-                        mask=((start_n + offs_n)[:, None] < seqlen_k) & (offs_d[None, :] < headdim),
-                        other=0.0,
-                    )
-            acc_o += tl.dot(p.to(v.dtype), v)
+                v = tl.load(v_ptrs + start_n * stride_vn, mask=offs_d[None, :] < headdim, other=0.0)
+        else:
+            if EVEN_HEADDIM:
+                v = tl.load(
+                    v_ptrs + start_n * stride_vn,
+                    mask=(start_n + offs_n)[:, None] < seqlen_k,
+                    other=0.0,
+                )
+            else:
+                v = tl.load(
+                    v_ptrs + start_n * stride_vn,
+                    mask=((start_n + offs_n)[:, None] < seqlen_k) & (offs_d[None, :] < headdim),
+                    other=0.0,
+                )
+        acc_o += tl.dot(p.to(v.dtype), v)
 
         # update statistics
         m_i = m_ij
