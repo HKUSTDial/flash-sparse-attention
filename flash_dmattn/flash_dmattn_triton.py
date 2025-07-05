@@ -411,9 +411,9 @@ def _bwd_kernel(
     stride_dvb,
     stride_dvh,
     stride_dvn,
-    stride_dbiasb,
-    stride_dbiash,
-    stride_dbiasm,
+    stride_dbb,
+    stride_dbh,
+    stride_dbm,
     nheads,
     seqlen_q,
     seqlen_k,
@@ -443,7 +443,7 @@ def _bwd_kernel(
     DQ += off_b * stride_dqb + off_h * stride_dqh
     DK += off_b * stride_dkb + off_h * stride_dkh
     DV += off_b * stride_dvb + off_h * stride_dvh
-    DBias += off_b * stride_dbiasb + off_h * stride_dbiash
+    DBias += off_b * stride_dbb + off_h * stride_dbh
     # pointer to row-wise quantities in value-like data
     D += off_hb * seqlen_q_rounded
     LSE += off_hb * seqlen_q_rounded
@@ -474,7 +474,7 @@ def _bwd_kernel(
                 stride_dqm,
                 stride_dkn,
                 stride_dvn,
-                stride_dbiasm,
+                stride_dbm,
                 seqlen_q,
                 seqlen_k,
                 headdim,
@@ -513,7 +513,7 @@ def _bwd_kernel(
             stride_dqm,
             stride_dkn,
             stride_dvn,
-            stride_dbiasm,
+            stride_dbm,
             seqlen_q,
             seqlen_k,
             headdim,
