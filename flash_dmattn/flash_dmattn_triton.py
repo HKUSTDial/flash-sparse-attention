@@ -379,32 +379,34 @@ class FlashAttnFunc(torch.autograd.Function):
         ctx.causal = causal
         return o
 
-    # @staticmethod
-    # def backward(ctx, do):
-    #     q, k, v, o, lse, mask, bias = ctx.saved_tensors
-    #     assert not ctx.needs_input_grad[3], "FlashAttention does not support mask gradient yet"
-    #     assert not ctx.needs_input_grad[4], "FlashAttention does not support bias gradient yet"
-    #     # Triton's autotune causes the Tensor._version to change, and so Pytorch autograd
-    #     # does a memcpy. To avoid this we run in inference_mode, which doesn't track the version.
-    #     with torch.inference_mode():
-    #         dq = torch.empty_like(q)
-    #         dk = torch.empty_like(k)
-    #         dv = torch.empty_like(v)
-    #         _flash_attn_backward(
-    #             do,
-    #             q,
-    #             k,
-    #             v,
-    #             o,
-    #             lse,
-    #             dq,
-    #             dk,
-    #             dv,
-    #             bias=bias,
-    #             causal=ctx.causal,
-    #             softmax_scale=ctx.softmax_scale,
-    #         )
-    #     return dq, dk, dv, None, None, None, None
+    @staticmethod
+    def backward(ctx, do):
+        q, k, v, o, lse, mask, bias = ctx.saved_tensors
+        assert not ctx.needs_input_grad[3], "FlashDynamicMaskAttention does not support mask gradient yet"
+        # Triton's autotune causes the Tensor._version to change, and so Pytorch autograd
+        # does a memcpy. To avoid this we run in inference_mode, which doesn't track the version.
+        with torch.inference_mode():
+            dq = torch.empty_like(q)
+            dk = torch.empty_like(k)
+            dv = torch.empty_like(v)
+            dbias = torch.empty_like(bias)
+            _flash_attn_backward(
+                do,
+                q,
+                k,
+                v,
+                mask,
+                bias,
+                o,
+                lse,
+                dq,
+                dk,
+                dv,
+                dbias,
+                causal=ctx.causal,
+                softmax_scale=ctx.softmax_scale,
+            )
+        return dq, dk, dv, None, None, None, None
 
 
 flash_dmattn_func = FlashAttnFunc.apply
