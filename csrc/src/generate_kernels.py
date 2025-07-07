@@ -98,11 +98,12 @@ def main(output_dir: Optional[str]) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="generate_kernels",
-        description="Generate the flash_attention kernels template instantiations",
+        description="Generate the flash_dmattn kernels template instantiations",
     )
     parser.add_argument(
         "-o",
         "--output_dir",
+        default="instantiations",
         required=False,
         help="Where to generate the kernels "
         " will default to the current directory ",
