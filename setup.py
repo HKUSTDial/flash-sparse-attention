@@ -60,12 +60,11 @@ def should_skip_cuda_build():
     if len(sys.argv) > 1:
         install_args = ' '.join(sys.argv)
         
-        # If user specifically asks for triton or flex only (not all/dev), skip CUDA
-        has_triton_or_flex = '.[triton]' in install_args or '.[flex]' in install_args or '[triton]' in install_args or '[flex]' in install_args or 'triton,' in install_args or ',flex' in install_args
-        has_all_or_dev = '[all]' in install_args or '[dev]' in install_args
-        has_plain_install = install_args.endswith('flash_dmattn') or install_args.endswith('.')
-        
-        if has_triton_or_flex and not has_all_or_dev and not has_plain_install:
+        # Check if Triton or Flex extras are requested
+        has_triton_or_flex = 'triton' in install_args or 'flex' in install_args
+        has_all_or_dev = 'all' in install_args or 'dev' in install_args
+
+        if has_triton_or_flex and not has_all_or_dev:
             print("Detected Triton/Flex-only installation. Skipping CUDA compilation.")
             print("Set FLASH_DMATTN_FORCE_BUILD=TRUE to force CUDA compilation.")
             return True
