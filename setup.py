@@ -39,10 +39,41 @@ PACKAGE_NAME = "flash_dmattn"
 
 # FORCE_BUILD: Force a fresh build locally, instead of attempting to find prebuilt wheels
 # SKIP_CUDA_BUILD: Intended to allow CI to use a simple `python setup.py sdist` run to copy over raw files, without any cuda compilation
+# Also useful when user only wants Triton/Flex backends without CUDA compilation
 FORCE_BUILD = os.getenv("FLASH_DMATTN_FORCE_BUILD", "FALSE") == "TRUE"
 SKIP_CUDA_BUILD = os.getenv("FLASH_DMATTN_SKIP_CUDA_BUILD", "FALSE") == "TRUE"
 # For CI, we want the option to build with C++11 ABI since the nvcr images use C++11 ABI
 FORCE_CXX11_ABI = os.getenv("FLASH_DMATTN_FORCE_CXX11_ABI", "FALSE") == "TRUE"
+
+# Auto-detect if user wants only Triton/Flex backends based on pip install command
+# This helps avoid unnecessary CUDA compilation when user only wants Python backends
+def should_skip_cuda_build():
+    """Determine if CUDA build should be skipped based on installation context."""
+    
+    if SKIP_CUDA_BUILD:
+        return True
+    
+    if FORCE_BUILD:
+        return False  # User explicitly wants to build, respect that
+    
+    # Check command line arguments for installation hints
+    if len(sys.argv) > 1:
+        install_args = ' '.join(sys.argv)
+        
+        # If user specifically asks for triton or flex only (not all/dev), skip CUDA
+        has_triton_or_flex = '.[triton]' in install_args or '.[flex]' in install_args or '[triton]' in install_args or '[flex]' in install_args or 'triton,' in install_args or ',flex' in install_args
+        has_all_or_dev = '[all]' in install_args or '[dev]' in install_args
+        has_plain_install = install_args.endswith('flash_dmattn') or install_args.endswith('.')
+        
+        if has_triton_or_flex and not has_all_or_dev and not has_plain_install:
+            print("Detected Triton/Flex-only installation. Skipping CUDA compilation.")
+            print("Set FLASH_DMATTN_FORCE_BUILD=TRUE to force CUDA compilation.")
+            return True
+    
+    return False
+
+# Update SKIP_CUDA_BUILD based on auto-detection
+SKIP_CUDA_BUILD = should_skip_cuda_build()
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
@@ -289,9 +320,47 @@ setup(
         "torch",
         "einops",
     ],
+    extras_require={
+        # Individual backend options - choose one or more
+        "triton": [
+            "triton>=2.0.0",
+        ],
+        "flex": [
+            "transformers>=4.38.0",
+        ],
+        
+        # Combined options
+        "all": [
+            "triton>=2.0.0",        # Triton backend
+            "transformers>=4.38.0", # Flex backend
+            # CUDA backend included by default compilation
+        ],
+        
+        # Development dependencies
+        "dev": [
+            "triton>=2.0.0",
+            "transformers>=4.38.0",
+            "pytest>=6.0",
+            "pytest-benchmark",
+            "numpy",
+        ],
+        
+        # Testing only
+        "test": [
+            "pytest>=6.0",
+            "pytest-benchmark",
+            "numpy",
+        ],
+    },
     setup_requires=[
         "packaging",
         "psutil",
         "ninja",
     ],
+    # Include package data
+    package_data={
+        "flash_dmattn": ["*.py"],
+    },
+    # Ensure the package is properly included
+    include_package_data=True,
 )
