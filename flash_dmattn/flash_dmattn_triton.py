@@ -1110,4 +1110,4 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, dbias, None, None
 
 
-flash_dmattn_func = FlashDMAttnFunc.apply
+triton_dmattn_func = FlashDMAttnFunc.apply
