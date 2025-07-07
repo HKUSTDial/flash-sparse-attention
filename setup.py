@@ -35,19 +35,19 @@ with open("README.md", "r", encoding="utf-8") as fh:
 # ninja build does not work unless include_dirs are abs path
 this_dir = os.path.dirname(os.path.abspath(__file__))
 
-PACKAGE_NAME = "flash_dma"
+PACKAGE_NAME = "flash_dmattn"
 
 # FORCE_BUILD: Force a fresh build locally, instead of attempting to find prebuilt wheels
 # SKIP_CUDA_BUILD: Intended to allow CI to use a simple `python setup.py sdist` run to copy over raw files, without any cuda compilation
-FORCE_BUILD = os.getenv("FLASH_DMA_FORCE_BUILD", "FALSE") == "TRUE"
-SKIP_CUDA_BUILD = os.getenv("FLASH_DMA_SKIP_CUDA_BUILD", "FALSE") == "TRUE"
+FORCE_BUILD = os.getenv("FLASH_DMATTN_FORCE_BUILD", "FALSE") == "TRUE"
+SKIP_CUDA_BUILD = os.getenv("FLASH_DMATTN_SKIP_CUDA_BUILD", "FALSE") == "TRUE"
 # For CI, we want the option to build with C++11 ABI since the nvcr images use C++11 ABI
-FORCE_CXX11_ABI = os.getenv("FLASH_DMA_FORCE_CXX11_ABI", "FALSE") == "TRUE"
+FORCE_CXX11_ABI = os.getenv("FLASH_DMATTN_FORCE_CXX11_ABI", "FALSE") == "TRUE"
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
-    # return os.getenv("FLASH_DMA_CUDA_ARCHS", "80;90;100;120").split(";")
-    return os.getenv("FLASH_DMA_CUDA_ARCHS", "80").split(";")
+    # return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100;120").split(";")
+    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80").split(";")
 
 
 def get_platform():
@@ -108,7 +108,7 @@ if not SKIP_CUDA_BUILD:
     TORCH_MAJOR = int(torch.__version__.split(".")[0])
     TORCH_MINOR = int(torch.__version__.split(".")[1])
 
-    check_if_cuda_home_none("flash_dma")
+    check_if_cuda_home_none("flash_dmattn")
     # Check, if CUDA11 is installed for compute capability 8.0
     cc_flag = []
     if CUDA_HOME is not None:
@@ -141,61 +141,61 @@ if not SKIP_CUDA_BUILD:
     
     ext_modules.append(
         CUDAExtension(
-            name="flash_dma_cuda",
+            name="flash_dmattn_cuda",
             sources=[
                 "csrc/flash_api.cpp",
                 # Forward kernels - regular
-                "csrc/src/flash_fwd_hdim32_fp16_sm80.cu",
-                "csrc/src/flash_fwd_hdim32_bf16_sm80.cu",
-                "csrc/src/flash_fwd_hdim64_fp16_sm80.cu",
-                "csrc/src/flash_fwd_hdim64_bf16_sm80.cu",
-                "csrc/src/flash_fwd_hdim96_fp16_sm80.cu",
-                "csrc/src/flash_fwd_hdim96_bf16_sm80.cu",
-                "csrc/src/flash_fwd_hdim128_fp16_sm80.cu",
-                "csrc/src/flash_fwd_hdim128_bf16_sm80.cu",
-                "csrc/src/flash_fwd_hdim192_fp16_sm80.cu",
-                "csrc/src/flash_fwd_hdim192_bf16_sm80.cu",
-                "csrc/src/flash_fwd_hdim256_fp16_sm80.cu",
-                "csrc/src/flash_fwd_hdim256_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim32_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim32_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim64_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim64_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim96_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim96_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim128_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim128_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim192_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim192_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim256_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim256_bf16_sm80.cu",
                 # Forward kernels - causal
-                "csrc/src/flash_fwd_hdim32_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim32_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim64_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim64_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim96_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim96_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim128_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim128_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim192_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim192_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim256_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_hdim256_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim32_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim32_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim64_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim64_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim96_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim96_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim128_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim128_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim192_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim192_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim256_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_hdim256_bf16_causal_sm80.cu",
                 # Forward kernels - split
-                "csrc/src/flash_fwd_split_hdim32_fp16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim32_bf16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim64_fp16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim64_bf16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim96_fp16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim96_bf16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim128_fp16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim128_bf16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim192_fp16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim192_bf16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim256_fp16_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim256_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim32_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim32_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim64_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim64_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim96_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim96_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim128_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim128_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim192_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim192_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim256_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim256_bf16_sm80.cu",
                 # Forward kernels - split causal
-                "csrc/src/flash_fwd_split_hdim32_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim32_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim64_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim64_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim96_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
-                "csrc/src/flash_fwd_split_hdim256_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim32_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim32_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim64_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim64_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim96_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim96_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim128_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim128_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim192_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_fwd_split_hdim256_bf16_causal_sm80.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
@@ -266,7 +266,7 @@ setup(
             "dist",
             "docs",
             "benchmarks",
-            "flash_dma.egg-info",
+            "flash_dmattn.egg-info",
         )
     ),
     author="Jingze Shi",

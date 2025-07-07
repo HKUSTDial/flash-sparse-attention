@@ -21,10 +21,10 @@ import sys
 
 # Import the compiled CUDA extension
 try:
-    import flash_dma_cuda   # type: ignore[import]
-    print("✅ Successfully imported flash_dma_cuda")
+    import flash_dmattn_cuda   # type: ignore[import]
+    print("✅ Successfully imported flash_dmattn_cuda")
 except ImportError as e:
-    print(f"❌ Failed to import flash_dma_cuda: {e}")
+    print(f"❌ Failed to import flash_dmattn_cuda: {e}")
     print("Please make sure the package is properly installed with: pip install .")
     exit(1)
 
@@ -36,7 +36,7 @@ except ImportError as e:
     print(f"❌ Failed to import flash_dmattn_triton: {e}")
     print("Please make sure the Triton implementation is available.")
     # Don't exit here, just warn
-    flash_attn_with_mask = None
+    flash_dmattn_func = None
 
 # Import the Flex Attention implementation
 try:
@@ -253,7 +253,7 @@ def dynamic_mask_attention_cuda(
 
     # Call the CUDA implementation using the mha_fwd function signature
     out_tensor = None  # Let the function allocate the output tensor
-    result = flash_dma_cuda.fwd(    # type: ignore
+    result = flash_dmattn_cuda.fwd(    # type: ignore
         query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
         key_states,                 # k: [batch, seqlen_k, num_kv_heads, head_dim]
         value_states,               # v: [batch, seqlen_k, num_kv_heads, head_dim]
@@ -301,7 +301,7 @@ def dynamic_mask_attention_triton(
     Returns:
         attn_outputs: [batch_size, query_len, num_heads, head_dim]
     """
-    if flash_attn_with_mask is None:
+    if flash_dmattn_func is None:
         raise RuntimeError("Triton implementation not available")
     
     _, num_heads, _, _ = query_states.shape
@@ -333,7 +333,7 @@ def dynamic_mask_attention_triton(
     attn_bias = attn_bias.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
     
     # Call the Triton implementation
-    attn_outputs = flash_attn_with_mask(
+    attn_outputs = flash_dmattn_func(
         query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
         key_states,                 # k: [batch, seqlen_k, num_heads, head_dim]
         value_states,               # v: [batch, seqlen_k, num_heads, head_dim]
@@ -662,7 +662,7 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
     print("🔬 Testing Forward Pass Equivalence: Python vs Triton 🔬")
     print("🔥" + "=" * 76 + "🔥")
     
-    if flash_attn_with_mask is None:
+    if flash_dmattn_func is None:
         print("❌ Triton implementation not available, skipping Triton tests")
         return False
     
