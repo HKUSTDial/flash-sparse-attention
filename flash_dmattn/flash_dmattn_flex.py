@@ -62,3 +62,5 @@ def flex_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attention_weights
+
+flex_dmattn_func = flex_attention_forward
