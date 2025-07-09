@@ -174,11 +174,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Shape<Int<kBlockN>, Int<kHeadDim>>{},
         make_coord(_, 0)
     );  // (kBlockN, kHeadDim, nblocksN)
-    Tensor gP = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.p_ptr) + row_offset_p),
-        Shape<Int<kBlockM>, Int<kBlockN>>{},
-        make_stride(params.seqlen_k_rounded, _1{})
-    );
     Tensor mMask = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element*>(params.attn_mask_ptr) + binfo.attn_mask_offset(params.attn_mask_batch_stride, params.attn_mask_row_stride, params.attn_mask_col_stride, bidb)),
         make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
@@ -199,6 +194,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_coord(m_block, _)
     );  // (kBlockM, kBlockN, nblocksN)
+    Tensor gP = make_tensor(
+        make_gmem_ptr(reinterpret_cast<Element*>(params.p_ptr) + row_offset_p),
+        Shape<Int<kBlockM>, Int<kBlockN>>{},
+        make_stride(params.seqlen_k_rounded, _1{})
+    );
 
     // Shared memory layout configuration
     Tensor sQ = make_tensor(
