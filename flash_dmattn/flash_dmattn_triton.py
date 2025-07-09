@@ -660,13 +660,13 @@ def init_to_zero(names):
 @triton.autotune(
     configs=[
         triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False},
+            {"BLOCK_M": 64, "BLOCK_N": 128, "SEQUENCE_PARALLEL": False},
             num_warps=8,
             num_stages=1,
             pre_hook=init_to_zero(["DQ", "DBias"]),
         ),
         triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 64, "SEQUENCE_PARALLEL": True},
+            {"BLOCK_M": 64, "BLOCK_N": 128, "SEQUENCE_PARALLEL": True},
             num_warps=8,
             num_stages=1,
             pre_hook=init_to_zero(["DQ", "DBias"]),
@@ -878,7 +878,8 @@ def _flash_attn_forward(q, k, v, mask, bias, causal=False, softmax_scale=None):
     o = torch.empty_like(q)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
-    BLOCK = 64  # Reduced from 128 to 64 to avoid shared memory overflow
+    BLOCK_M = 128
+    BLOCK_N = 64
     num_warps = 4 if d <= 64 else 8
     grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads)
     _fwd_kernel[grid](
@@ -920,8 +921,8 @@ def _flash_attn_forward(q, k, v, mask, bias, causal=False, softmax_scale=None):
         # IS_CAUSAL=causal, BLOCK_HEADDIM=d,
         causal,
         BLOCK_HEADDIM,
-        BLOCK_M=BLOCK,
-        BLOCK_N=BLOCK,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
         num_warps=num_warps,
         num_stages=1,
     )
