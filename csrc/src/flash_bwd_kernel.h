@@ -129,7 +129,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // Regarding 128 * params.b see a comment in mha_varlen_bwd about padding of dq_accum and softmax_d
     const index_t row_offset_dpsum = (params.unpadded_lse? bidh * (params.total_q + 128 * params.b) + binfo.q_offset(params.seqlen_q_rounded, 1, bidb) + 128 * bidb: (bidb * params.h + bidh) * params.seqlen_q_rounded) + (m_block_max - 1) * kBlockM;
 
-    // Golobal memory tensor configuration
+    // Global memory tensor configuration
     Tensor gQ = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
         Shape<Int<kBlockM>, Int<kHeadDim>>{},
