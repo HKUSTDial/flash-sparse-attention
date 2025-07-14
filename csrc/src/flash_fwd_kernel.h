@@ -273,10 +273,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
-    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma);
     auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
     Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma);
     auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
@@ -883,10 +883,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
-    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma);
     auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
     Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomO{}, tiled_mma);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma);
     auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
