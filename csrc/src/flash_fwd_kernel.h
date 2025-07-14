@@ -231,7 +231,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         typename Kernel_traits::SmemLayoutBias{}
     );
 
-    // Golobal to Shared Memory operation
+    // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
     typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
@@ -351,7 +351,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         tKsK, tKVcKV, tKVpKV,
         binfo.actual_seqlen_k - n_block * kBlockN
     );
-    FLASH_NAMESPACE::copy_Mask<Is_even_MN>(
+    FLASH_NAMESPACE::copy_MN<Is_even_MN>(
         gmem_tiled_copy_Mask,
         tMaskgMask(_, _, _, n_block),
         tMasksMask,
@@ -359,7 +359,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         binfo.actual_seqlen_q - m_block * kBlockM,
         binfo.actual_seqlen_k - n_block * kBlockN
     );
-    FLASH_NAMESPACE::copy_Mask<Is_even_MN>(
+    FLASH_NAMESPACE::copy_MN<Is_even_MN>(
         gmem_tiled_copy_Bias,
         tBiasgBias(_, _, _, n_block),
         tBiassBias,
@@ -449,7 +449,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
             // isn't right and we get race conditions.
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Mask,
                 tMaskgMask(_, _, _, n_block - 1),
                 tMasksMask, 
@@ -457,7 +457,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 binfo.actual_seqlen_q - m_block * kBlockM,
                 binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Bias,
                 tBiasgBias(_, _, _, n_block - 1),
                 tBiassBias,
@@ -549,7 +549,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         __syncthreads();
         if (n_block > n_block_min) {
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK(_, _, _, n_block - 1), tKsK, tKVcKV, tKVpKV);
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Mask,
                 tMaskgMask(_, _, _, n_block - 1),
                 tMasksMask, 
@@ -557,7 +557,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 binfo.actual_seqlen_q - m_block * kBlockM,
                 binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Bias,
                 tBiasgBias(_, _, _, n_block - 1),
                 tBiassBias, 
@@ -932,7 +932,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         tKgK, tKsK, tKVcKV, tKVpKV,
         binfo.actual_seqlen_k - n_block * kBlockN
     );
-    FLASH_NAMESPACE::copy_Mask<Is_even_MN>(
+    FLASH_NAMESPACE::copy_MN<Is_even_MN>(
         gmem_tiled_copy_Mask,
         tMaskgMask,
         tMasksMask, 
@@ -940,7 +940,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         binfo.actual_seqlen_q - m_block * kBlockM,
         binfo.actual_seqlen_k - n_block * kBlockN
     );
-    FLASH_NAMESPACE::copy_Mask<Is_even_MN>(
+    FLASH_NAMESPACE::copy_MN<Is_even_MN>(
         gmem_tiled_copy_Bias,
         tBiasgBias,
         tBiassBias, 
@@ -1051,7 +1051,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
             // isn't right and we get race conditions.
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Mask,
                 tMaskgMask,
                 tMasksMask, 
@@ -1059,7 +1059,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 binfo.actual_seqlen_q - m_block * kBlockM,
                 binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Bias,
                 tBiasgBias,
                 tBiassBias, 
@@ -1159,7 +1159,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.attn_bias_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.attn_bias_col_stride;
             }
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Mask,
                 tMaskgMask,
                 tMasksMask, 
@@ -1167,7 +1167,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 binfo.actual_seqlen_q - m_block * kBlockM,
                 binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            FLASH_NAMESPACE::copy_Mask</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_Bias,
                 tBiasgBias,
                 tBiassBias, 
