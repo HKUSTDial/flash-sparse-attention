@@ -107,9 +107,11 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemLayoutMask = decltype(tile_to_shape(
         SmemLayoutAtomMask{},
         Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
     using SmemLayoutBias = decltype(tile_to_shape(
         SmemLayoutAtomBias{},
         Shape<Int<kBlockM>, Int<kBlockN>>{}));
+    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
 
     // Shared memory layout for output
     using SmemLayoutAtomO = decltype(
@@ -268,6 +270,7 @@ struct Flash_bwd_kernel_traits : public Base {
     using SmemLayoutMask = decltype(tile_to_shape(
         SmemLayoutAtomMask{},
         make_shape(Int<kBlockM>{}, Int<kBlockN>{})));
+    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
 
     using SmemLayoutAtomBias = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},
@@ -276,6 +279,7 @@ struct Flash_bwd_kernel_traits : public Base {
     using SmemLayoutBias = decltype(tile_to_shape(
         SmemLayoutAtomBias{},
         make_shape(Int<kBlockM>{}, Int<kBlockN>{})));
+    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
 
     // TODO: generalize to other values of kBlockN
     // TODO: what should be the Swizzle here? 3 is faster than 1, and 1 is faster than 2
@@ -322,7 +326,6 @@ struct Flash_bwd_kernel_traits : public Base {
         SmemLayoutAtomdQ{},
         make_shape(Int<kBlockM>{}, Int<kHeadDim>{})));
     using SmemCopyAtomdQ = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
-    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, elem_type>;
 
     // Double buffer for sQ
     static constexpr int kSmemQdOSize = size(SmemLayoutQdO{}) * (No_double_buffer ? 2 : 3) * sizeof(Element);
