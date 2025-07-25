@@ -436,8 +436,8 @@ mha_varlen_fwd(
     at::Tensor &q,                                  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
     const at::Tensor &k,                            // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
     const at::Tensor &v,                            // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-    const at::Tensor &attn_mask,                    // total_mask x num_heads_k, total_mask := total_q x total_k or total_q x num_blocks x page_block_size x num_heads_k if there's a block_table.
-    const at::Tensor &attn_bias,                    // total_bias x num_heads_k, total_bias := total_q x total_k or total_q x num_blocks x page_block_size x num_heads_k if there's a block_table.
+    const at::Tensor &attn_mask,                    // total_q x num_heads_k x max_seqlen_k
+    const at::Tensor &attn_bias,                    // total_q x num_heads_k x max_seqlen_k
     std::optional<at::Tensor> &out_,                // total_q x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
     const at::Tensor &cu_seqlens_q,                 // b+1
     const at::Tensor &cu_seqlens_k,                 // b+1
