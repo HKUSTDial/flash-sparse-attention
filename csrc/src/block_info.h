@@ -36,15 +36,14 @@ struct BlockInfo {
     }
 
     template <typename index_t>
-    __forceinline__ __device__ index_t mask_offset(const index_t batch_stride, int row_stride, const int col_stride, const int bidb) const {
+    __forceinline__ __device__ index_t mask_offset(const index_t batch_stride, const index_t row_stride, const index_t col_stride, const int bidb) const {
         index_t offset = sum_s_q == -1 ? bidb * batch_stride : uint32_t(sum_s_q) * row_stride;
         sum_s_k == -1 ? offset += leftpad_k * col_stride : offset += uint32_t(sum_s_k + leftpad_k) * col_stride;
         return offset;
     }
 
     template <typename index_t>
-    __forceinline__ __device__ index_t bias_offset(const index_t batch_stride, const int row_stride, const int col_stride, const int bidb
-    ) const {
+    __forceinline__ __device__ index_t bias_offset(const index_t batch_stride, const index_t row_stride, const index_t col_stride, const int bidb) const {
         index_t offset = sum_s_q == -1 ? bidb * batch_stride : uint32_t(sum_s_q) * row_stride;
         sum_s_k == -1 ? offset += leftpad_k * col_stride : offset += uint32_t(sum_s_k + leftpad_k) * col_stride;
         return offset;
