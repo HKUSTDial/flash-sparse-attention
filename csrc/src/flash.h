@@ -46,28 +46,25 @@ struct QKV_params {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Mask_params {
-    void * __restrict__ attn_mask_ptr;      // Attention mask tensor [batch_size, num_kv_heads, query_len, key_len]
+    void * __restrict__ mask_ptr;       // Attention mask tensor [batch_size, num_kv_heads, query_len, key_len]
 
     // The stride of the attention mask tensors.
-    index_t attn_mask_batch_stride;         // Stride between batches of attention mask
-    index_t attn_mask_head_stride;          // Stride between heads of attention mask
-    index_t attn_mask_row_stride;           // Stride between rows of attention mask
-    index_t attn_mask_col_stride;           // Stride between columns of attention mask
-
-    // The keep window size.
-    int keep_window_size;                   // Number of tokens to keep in top-k
+    index_t mask_batch_stride;          // Stride between batches of attention mask
+    index_t mask_head_stride;           // Stride between heads of attention mask
+    index_t mask_row_stride;            // Stride between rows of attention mask
+    index_t mask_col_stride;            // Stride between columns of attention mask
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Bias_params {
-    void *__restrict__ attn_bias_ptr;       // Attention bias tensor [batch_size, num_kv_heads, query_len, key_len]
+    void *__restrict__ bias_ptr;        // Attention bias tensor [batch_size, num_kv_heads, query_len, key_len]
 
     // The stride of the attention bias tensor.
-    index_t attn_bias_batch_stride;         // Stride between batches of attention bias
-    index_t attn_bias_head_stride;          // Stride between heads of attention bias
-    index_t attn_bias_row_stride;           // Stride between rows of attention bias
-    index_t attn_bias_col_stride;           // Stride between columns of attention bias
+    index_t bias_batch_stride;          // Stride between batches of attention bias
+    index_t bias_head_stride;           // Stride between heads of attention bias
+    index_t bias_row_stride;            // Stride between rows of attention bias
+    index_t bias_col_stride;            // Stride between columns of attention bias
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
