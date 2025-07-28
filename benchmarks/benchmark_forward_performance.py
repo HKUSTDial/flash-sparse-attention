@@ -502,7 +502,7 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
     A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
     
     # Create custom causal mask with cache position
-    cache_position = torch.arange(0, query_len + 0, device=device)
+    cache_position = torch.arange(key_len - query_len, key_len, device=device)
     min_type = torch.finfo(value_states.dtype).min
     causal_mask = torch.full(
         (query_len, key_len), fill_value=min_type, 
