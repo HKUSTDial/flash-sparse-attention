@@ -580,7 +580,7 @@ mha_varlen_fwd(
     if (zero_tensors) {
         out.zero_();
         softmax_lse.fill_(-std::numeric_limits<float>::infinity());
-        if (return_softmax) {p.zero_();}
+        if (return_softmax) { p.zero_(); }
     }
 
     Flash_fwd_params params;
