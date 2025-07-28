@@ -385,8 +385,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     // Init dynamic mask processor
     FLASH_NAMESPACE::Mask<Is_causal> mask(
-        binfo.actual_seqlen_k, binfo.actual_seqlen_q,
-        params.keep_window_size
+        binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
 
     // For performance reason, we separate out two kinds of iterations:
@@ -961,8 +960,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     // Init dynamic mask processor
     FLASH_NAMESPACE::Mask<Is_causal> mask(
-        binfo.actual_seqlen_k, binfo.actual_seqlen_q,
-        params.keep_window_size
+        binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
 
     // For performance reason, we separate out two kinds of iterations:
