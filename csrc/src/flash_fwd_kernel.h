@@ -175,9 +175,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         make_coord(_, 0)
     );  // (kBlockN, kHeadDim, nblocksN)
     Tensor mMask = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.attn_mask_ptr) + binfo.attn_mask_offset(params.attn_mask_batch_stride, params.attn_mask_row_stride, params.attn_mask_col_stride, bidb)),
+        make_gmem_ptr(reinterpret_cast<Element*>(params.mask_ptr) + binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, params.mask_col_stride, bidb)),
         make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
-        make_stride(params.attn_mask_head_stride, params.attn_mask_row_stride, params.attn_mask_col_stride)
+        make_stride(params.mask_head_stride, params.mask_row_stride, params.mask_col_stride)
     );
     Tensor gMask = local_tile(
         mMask(bidh / params.h_h_k_ratio, _, _),
@@ -185,9 +185,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         make_coord(m_block, _)
     );  // (kBlockM, kBlockN, nblocksN)
     Tensor mBias = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.attn_bias_ptr) + binfo.attn_bias_offset(params.attn_bias_batch_stride, params.attn_bias_row_stride, params.attn_bias_col_stride, bidb)),
+        make_gmem_ptr(reinterpret_cast<Element*>(params.bias_ptr) + binfo.bias_offset(params.bias_batch_stride, params.bias_row_stride, params.bias_col_stride, bidb)),
         make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
-        make_stride(params.attn_bias_head_stride, params.attn_bias_row_stride, params.attn_bias_col_stride)
+        make_stride(params.bias_head_stride, params.bias_row_stride, params.bias_col_stride)
     );
     Tensor gBias = local_tile(
         mBias(bidh / params.h_h_k_ratio, _, _),
@@ -774,13 +774,13 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
           + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride
         : block_table[block_table_idx] * params.v_batch_stride + block_table_offset * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
     const index_t col_offset_mask = block_table == nullptr
-        ? binfo.attn_mask_offset(params.attn_mask_batch_stride, params.attn_mask_row_stride, params.attn_mask_col_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.attn_mask_head_stride + m_block * kBlockM * params.attn_mask_row_stride + (n_block_max - 1) * kBlockN * params.attn_mask_col_stride
-        : block_table[block_table_idx] * params.attn_mask_batch_stride + (bidh / params.h_h_k_ratio) * params.attn_mask_head_stride + m_block * kBlockM * params.attn_mask_row_stride + block_table_offset * params.attn_mask_col_stride;
+        ? binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, params.mask_col_stride, bidb_cache)
+          + (bidh / params.h_h_k_ratio) * params.mask_head_stride + m_block * kBlockM * params.mask_row_stride + (n_block_max - 1) * kBlockN * params.mask_col_stride
+        : block_table[block_table_idx] * params.mask_batch_stride + (bidh / params.h_h_k_ratio) * params.mask_head_stride + m_block * kBlockM * params.mask_row_stride + block_table_offset * params.mask_col_stride;
     const index_t col_offset_bias = block_table == nullptr
-        ? binfo.attn_bias_offset(params.attn_bias_batch_stride, params.attn_bias_row_stride, params.attn_bias_col_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.attn_bias_head_stride + m_block * kBlockM * params.attn_bias_row_stride + (n_block_max - 1) * kBlockN * params.attn_bias_col_stride
-        : block_table[block_table_idx] * params.attn_bias_batch_stride + (bidh / params.h_h_k_ratio) * params.attn_bias_head_stride + m_block * kBlockM * params.attn_bias_row_stride + block_table_offset * params.attn_bias_col_stride;
+        ? binfo.bias_offset(params.bias_batch_stride, params.bias_row_stride, params.bias_col_stride, bidb_cache)
+          + (bidh / params.h_h_k_ratio) * params.bias_head_stride + m_block * kBlockM * params.bias_row_stride + (n_block_max - 1) * kBlockN * params.bias_col_stride
+        : block_table[block_table_idx] * params.bias_batch_stride + (bidh / params.h_h_k_ratio) * params.bias_head_stride + m_block * kBlockM * params.bias_row_stride + block_table_offset * params.bias_col_stride;
 
     // Global memory tensor configuration
     Tensor mQ = make_tensor(
@@ -804,14 +804,14 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         make_stride(params.v_row_stride, _1{})
     );
     Tensor gMask = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + col_offset_mask),
+        make_gmem_ptr(reinterpret_cast<Element *>(params.mask_ptr) + col_offset_mask),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
-        make_stride(params.attn_mask_row_stride, params.attn_mask_col_stride)
+        make_stride(params.mask_row_stride, params.mask_col_stride)
     );
     Tensor gBias = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.attn_bias_ptr) + col_offset_bias),
+        make_gmem_ptr(reinterpret_cast<Element *>(params.bias_ptr) + col_offset_bias),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
-        make_stride(params.attn_bias_row_stride, params.attn_bias_col_stride)
+        make_stride(params.bias_row_stride, params.bias_col_stride)
     );
 
     // Shared memory layout configuration
@@ -1037,16 +1037,16 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             // Advance gK
             if (block_table == nullptr) {
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
-                tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN * params.attn_mask_col_stride));
-                tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockN * params.attn_bias_col_stride));
+                tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN * params.mask_col_stride));
+                tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockN * params.bias_col_stride));
             } else {
                 const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
                 const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
                 const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
                 const int block_table_offset_next =(n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
                 tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
-                tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.attn_mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.attn_mask_col_stride;
-                tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.attn_bias_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.attn_bias_col_stride;
+                tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.mask_col_stride;
+                tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.bias_col_stride;
             }
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
@@ -1147,16 +1147,16 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             // Advance gK
             if (block_table == nullptr) {
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
-                tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN * params.attn_mask_col_stride));
-                tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockN * params.attn_bias_col_stride));
+                tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN * params.mask_col_stride));
+                tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockN * params.bias_col_stride));
             } else {
                 const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
                 const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
                 const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
                 const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
                 tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
-                tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.attn_mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.attn_mask_col_stride;
-                tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.attn_bias_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.attn_bias_col_stride;
+                tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.mask_col_stride;
+                tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.bias_col_stride;
             }
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_QKV, tKgK, tKsK, tKVcKV, tKVpKV);
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
