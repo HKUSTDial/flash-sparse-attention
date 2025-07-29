@@ -434,7 +434,7 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
         is_grad_enabled: bool = True,
     ):
         # qkv is expected to be of shape (batch_size, seqlen, 3, num_heads, head_size)
-        batch_size, seqlen, _, num_heads, head_size = qkv.shape
+        batch_size, seqlen, _, num_heads, _ = qkv.shape
         is_grad = is_grad_enabled and qkv.requires_grad
         if mask is None:
             mask = torch.ones((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
@@ -545,13 +545,14 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
         return_softmax: Optional[bool],
         is_grad_enabled: bool = True,
     ):
-        # qkv is expected to be of shape (batch_size, seqlen, 3, num_heads, head_size)
-        batch_size, seqlen, _, num_heads, head_size = qkv.shape
+        # qkv is expected to be of shape (total 3, num_heads, head_size)
+        batch_size = cu_seqlens.numel() - 1
+        _, num_heads, _ = qkv.shape
         is_grad = is_grad_enabled and qkv.requires_grad
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
+            mask = torch.ones((batch_size, num_heads, max_seqlen, max_seqlen), dtype=qkv.dtype, device=qkv.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
+            bias = torch.zeros((batch_size, num_heads, max_seqlen, max_seqlen), dtype=qkv.dtype, device=qkv.device)
         if dropout_p is None:
             dropout_p = 0.0
         if dropout_p < 0.0 or dropout_p > 1.0:
@@ -640,11 +641,8 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
             ctx.max_seqlen,
             ctx.dropout_p,
             ctx.softmax_scale,
-            ctx.causal,
-            ctx.window_size[0],
-            ctx.window_size[1],
+            ctx.is_causal,
             ctx.softcap,
-            ctx.alibi_slopes,
             ctx.deterministic,
             rng_state=rng_state,
         )
@@ -671,14 +669,15 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
     ):
         # q is expected to be of shape (batch_size, seqlen_q, num_heads, head_size)
         # kv is expected to be of shape (batch_size, seqlen_k, 2, num_heads, head_size)
-        batch_size, seqlen_q, num_heads, head_size = q.shape
+        batch_size, seqlen_q, num_heads, _ = q.shape
+        seqlen_k = kv.shape[1]
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, kv]
         )
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_q), dtype=q.dtype, device=q.device)
+            mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_q), dtype=q.dtype, device=q.device)
+            bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if dropout_p is None:
             dropout_p = 0.0
         if dropout_p < 0.0 or dropout_p > 1.0:
@@ -758,11 +757,8 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
             dbias,
             ctx.dropout_p,
             ctx.softmax_scale,
-            ctx.causal,
-            ctx.window_size[0],
-            ctx.window_size[1],
+            ctx.is_causal,
             ctx.softcap,
-            ctx.alibi_slopes,
             ctx.deterministic,
             rng_state=rng_state,
         )
@@ -792,16 +788,17 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
         return_softmax: Optional[bool],
         is_grad_enabled: bool = True,
     ):
-        # q is expected to be of shape (batch_size, seqlen_q, num_heads, head_size)
-        # kv is expected to be of shape (batch_size, seqlen_k, 2, num_heads, head_size)
-        batch_size, seqlen_q, num_heads, head_size = q.shape
+        # q is expected to be of shape (total, num_heads, head_size)
+        # kv is expected to be of shape (total, 2, num_heads, head_size)
+        batch_size = cu_seqlens_q.numel() - 1
+        _, num_heads, _ = q.shape
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, kv]
         )
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_q), dtype=q.dtype, device=q.device)
+            mask = torch.ones((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_q), dtype=q.dtype, device=q.device)
+            bias = torch.zeros((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
         if dropout_p is None:
             dropout_p = 0.0
         if dropout_p < 0.0 or dropout_p > 1.0:
@@ -923,7 +920,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         is_grad_enabled: bool = True,
     ):
         # q, k, v are expected to be of shape (batch_size, seqlen, num_heads, head_size)
-        batch_size, seqlen_q, num_heads, head_size = q.shape
+        batch_size, seqlen_q, num_heads, _ = q.shape
         seqlen_k = k.shape[1]
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
@@ -1040,16 +1037,16 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         block_table: Optional[torch.Tensor] = None,
         is_grad_enabled: bool = True,
     ):
-        # q, k, v are expected to be of shape (batch_size, seqlen_q, num_heads, head_size)
-        batch_size, seqlen_q, num_heads, head_size = q.shape
-        seqlen_k = k.shape[1]
+        # q, k, v are expected to be of shape (total, num_heads, head_size)
+        batch_size = cu_seqlens_q.numel() - 1
+        _, num_heads, _ = q.shape
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
         )
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
+            mask = torch.ones((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
+            bias = torch.zeros((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
         if dropout_p is None:
             dropout_p = 0.0
         if dropout_p < 0.0 or dropout_p > 1.0:
