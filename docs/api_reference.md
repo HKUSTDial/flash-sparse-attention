@@ -276,10 +276,13 @@ print(f"Output shape: {output.shape}")  # [2, 4096, 12, 128]
 ```python
 import torch
 from flash_dmattn import flash_dmattn_func
+import math
 
 # Create attention mask and bias for dynamic masking
 batch_size, num_heads, seq_len = 2, 12, 4096
 keep_window_size = 1024
+device = torch.device('cuda')
+dtype = torch.bfloat16
 
 # Create sparse attention mask (attend to top-k positions)
 attention_bias = torch.randn(batch_size, num_heads, seq_len, seq_len, device=device, dtype=dtype)
@@ -310,6 +313,8 @@ from flash_dmattn import flash_dmattn_func
 
 # GQA setup: fewer key/value heads than query heads
 batch_size, seq_len, num_heads, num_kv_heads, head_dim = 2, 2048, 32, 8, 128
+device = torch.device('cuda')
+dtype = torch.bfloat16
 
 q = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
 k = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
@@ -332,6 +337,8 @@ batch_size = 3
 seq_lens = [512, 1024, 768]  # Different lengths per batch
 total_tokens = sum(seq_lens)
 num_heads, head_dim = 16, 64
+device = torch.device('cuda')
+dtype = torch.bfloat16
 
 # Concatenated tensors
 q = torch.randn(total_tokens, num_heads, head_dim, device=device, dtype=dtype)
