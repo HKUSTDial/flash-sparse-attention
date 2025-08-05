@@ -235,11 +235,14 @@ This project is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) 
 If you use Flash-DMA in your research, please cite:
 
 ```bibtex
-@misc{flash_dma_2025,
-  title={Trainable Dynamic Mask Sparse Attention},
-  author={Jingze Shi and Yifan Wu and Bingheng Wu and Yiran Peng and Yuyu Luo},
-  year={2025},
-  url={https://github.com/SmallDoges/flash-dmattn}
+@misc{shi2025trainabledynamicmasksparse,
+      title={Trainable Dynamic Mask Sparse Attention}, 
+      author={Jingze Shi and Yifan Wu and Bingheng Wu and Yiran Peng and Liangdong Wang and Guang Liu and Yuyu Luo},
+      year={2025},
+      eprint={2508.02124},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2508.02124}, 
 }
 ```
 
@@ -247,6 +250,7 @@ If you use Flash-DMA in your research, please cite:
 
 This project builds upon and integrates several excellent works:
 
+- **[OpenSeek](https://github.com/FlagAI-Open/OpenSeek)** - Kernel development support
 - **[Flash-Attention](https://github.com/Dao-AILab/flash-attention)** - Memory-efficient attention computation
 - **[NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass)** - High-performance matrix operations library
 
