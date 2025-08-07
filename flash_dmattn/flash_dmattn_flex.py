@@ -37,7 +37,7 @@ def flex_attention_forward(
         Q_LEN=query.shape[2],
         KV_LEN=key.shape[2],
         device=query.device,
-        _compile=False,
+        _compile=True,
     )
 
     kernel_options = {
