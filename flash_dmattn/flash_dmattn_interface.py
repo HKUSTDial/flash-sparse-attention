@@ -1151,8 +1151,8 @@ def flash_dmattn_qkvpacked_func(
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
     dropout_p: Optional[float] = None,
-    softmax_scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
+    scale: Optional[float] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
     return_attn_probs: Optional[bool] = None,
@@ -1174,9 +1174,9 @@ def flash_dmattn_qkvpacked_func(
         attn_bias: (batch_size, nheads, seqlen, seqlen). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim).
         softcap: float. Anything > 0 activates softcapping attention.
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
@@ -1197,7 +1197,7 @@ def flash_dmattn_qkvpacked_func(
         attn_mask,
         attn_bias,
         dropout_p,
-        softmax_scale,
+        scale,
         is_causal,
         softcap,
         deterministic,
@@ -1212,7 +1212,7 @@ def flash_dmattn_kvpacked_func(
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
     dropout_p: Optional[float] = None,
-    softmax_scale: Optional[float] = None,
+    scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
@@ -1247,9 +1247,9 @@ def flash_dmattn_kvpacked_func(
         attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim).
         softcap: float. Anything > 0 activates softcapping attention.
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
@@ -1271,7 +1271,7 @@ def flash_dmattn_kvpacked_func(
         attn_mask,
         attn_bias,
         dropout_p,
-        softmax_scale,
+        scale,
         is_causal,
         softcap,
         deterministic,
@@ -1281,13 +1281,13 @@ def flash_dmattn_kvpacked_func(
 
 
 def flash_dmattn_func(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
     dropout_p: Optional[float] = None,
-    softmax_scale: Optional[float] = None,
+    scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
@@ -1312,17 +1312,17 @@ def flash_dmattn_func(
     If the row of the mask is all zero, the output will be zero.
 
     Arguments:
-        q: (batch_size, seqlen, nheads, headdim)
-        k: (batch_size, seqlen, nheads_k, headdim)
-        v: (batch_size, seqlen, nheads_k, headdim)
+        query: (batch_size, seqlen, nheads, headdim)
+        key: (batch_size, seqlen, nheads_k, headdim)
+        value: (batch_size, seqlen, nheads_k, headdim)
         attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
         attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim).
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
         return_attn_probs: bool. Whether to return the attention probabilities. This option is for
@@ -1338,13 +1338,13 @@ def flash_dmattn_func(
             pattern (negative means that location was dropped, nonnegative means it was kept).
     """
     return FlashDMAttnFunc.apply(
-        q,
-        k,
-        v,
+        query,
+        key,
+        value,
         attn_mask,
         attn_bias,
         dropout_p,
-        softmax_scale,
+        scale,
         is_causal,
         softcap,
         deterministic,
@@ -1360,7 +1360,7 @@ def flash_dmattn_varlen_qkvpacked_func(
     cu_seqlens: torch.Tensor = None,
     max_seqlen: int = None,
     dropout_p: Optional[float] = None,
-    softmax_scale: Optional[float] = None,
+    scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
@@ -1383,9 +1383,9 @@ def flash_dmattn_varlen_qkvpacked_func(
            of the sequences in the batch, used to index into qkv.
         max_seqlen: int. Maximum sequence length in the batch.
         dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim).
         softcap: float. Anything > 0 activates softcapping attention.
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
@@ -1408,7 +1408,7 @@ def flash_dmattn_varlen_qkvpacked_func(
         cu_seqlens,
         max_seqlen,
         dropout_p,
-        softmax_scale,
+        scale,
         is_causal,
         softcap,
         deterministic,
@@ -1427,7 +1427,7 @@ def flash_dmattn_varlen_kvpacked_func(
     max_seqlen_q: int = None,
     max_seqlen_k: int = None,
     dropout_p: Optional[float] = None,
-    softmax_scale: Optional[float] = None,
+    scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
@@ -1468,9 +1468,9 @@ def flash_dmattn_varlen_kvpacked_func(
         max_seqlen_q: int. Maximum query sequence length in the batch.
         max_seqlen_k: int. Maximum key sequence length in the batch.
         dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim).
         softcap: float. Anything > 0 activates softcapping attention.
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
@@ -1496,7 +1496,7 @@ def flash_dmattn_varlen_kvpacked_func(
         max_seqlen_q,
         max_seqlen_k,
         dropout_p,
-        softmax_scale,
+        scale,
         is_causal,
         softcap,
         deterministic,
@@ -1506,9 +1506,9 @@ def flash_dmattn_varlen_kvpacked_func(
 
 
 def flash_dmattn_varlen_func(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
     cu_seqlens_q: torch.Tensor = None,
@@ -1516,7 +1516,7 @@ def flash_dmattn_varlen_func(
     max_seqlen_q: int = None,
     max_seqlen_k: int = None,
     dropout_p: Optional[float] = None,
-    softmax_scale: Optional[float] = None,
+    scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
@@ -1542,9 +1542,9 @@ def flash_dmattn_varlen_func(
     If the row of the mask is all zero, the output will be zero.
 
     Arguments:
-        q: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
-        k: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        v: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
+        query: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
+        key: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
+        value: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
         attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
         attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
@@ -1556,9 +1556,9 @@ def flash_dmattn_varlen_func(
         max_seqlen_q: int. Maximum query sequence length in the batch.
         max_seqlen_k: int. Maximum key sequence length in the batch.
         dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        scale: float. The scaling of QK^T before applying softmax.
+            Default to 1 / sqrt(headdim).
         softcap: float. Anything > 0 activates softcapping attention.
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
@@ -1575,9 +1575,9 @@ def flash_dmattn_varlen_func(
             pattern (negative means that location was dropped, nonnegative means it was kept).
     """
     return FlashDMAttnVarlenFunc.apply(
-        q,
-        k,
-        v,
+        query,
+        key,
+        value,
         attn_mask,
         attn_bias,
         cu_seqlens_q,
@@ -1585,7 +1585,7 @@ def flash_dmattn_varlen_func(
         max_seqlen_q,
         max_seqlen_k,
         dropout_p,
-        softmax_scale,
+        scale,
         is_causal,
         softcap,
         deterministic,
