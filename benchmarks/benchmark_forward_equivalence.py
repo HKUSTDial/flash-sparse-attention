@@ -257,8 +257,8 @@ def dynamic_mask_attention_cuda(
         attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
         attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
         dropout_p=0.0,
-        softmax_scale=scaling,
         is_causal=is_causal,
+        scale=scaling,
         softcap=0.0,
         deterministic=True,
         return_attn_probs=return_softmax
@@ -331,10 +331,10 @@ def dynamic_mask_attention_triton(
         query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
         key_states,                 # k: [batch, seqlen_k, num_heads, head_dim]
         value_states,               # v: [batch, seqlen_k, num_heads, head_dim]
-        attn_mask,                  # mask: [batch, num_heads, seqlen_q, seqlen_k]
-        attn_bias,                  # bias: [batch, num_heads, seqlen_q, seqlen_k]
-        is_causal,                  # causal masking
-        scaling                     # scaling factor
+        attn_mask=attn_mask,        # mask: [batch, num_heads, seqlen_q, seqlen_k]
+        attn_bias=attn_bias,        # bias: [batch, num_heads, seqlen_q, seqlen_k]
+        is_causal=is_causal,        # causal masking
+        scale=scaling               # scaling factor
     )
     
     return attn_outputs  # [batch, query_len, num_heads, head_dim]
@@ -396,14 +396,14 @@ def dynamic_mask_attention_flex(
     # But attention_mask and attention_bias in [batch, num_heads, query_len, key_len] format
     
     # Call the Flex Attention implementation
-    attn_outputs, _ = flex_dmattn_func(
-        query_states,               # q: [batch, num_heads, query_len, head_dim]
-        key_states,                 # k: [batch, num_heads, key_len, head_dim]
-        value_states,               # v: [batch, num_heads, key_len, head_dim]
-        attention_mask=attn_mask,   # attention_mask: [batch, num_heads, query_len, key_len]
-        attention_bias=attn_bias,   # attention_bias: [batch, num_heads, query_len, key_len]
-        is_causal=is_causal,        # is_causal: whether to apply causal masking
-        scaling=scaling             # scaling factor
+    attn_outputs = flex_dmattn_func(
+        query_states.transpose(1, 2),               # q: [batch, query_len, num_heads, head_dim]
+        key_states.transpose(1, 2),                 # k: [batch, key_len, num_heads, head_dim]
+        value_states.transpose(1, 2),               # v: [batch, key_len, num_heads, head_dim]
+        attn_mask=attn_mask,                        # attn_mask: [batch, num_heads, query_len, key_len]
+        attn_bias=attn_bias,                        # attn_bias: [batch, num_heads, query_len, key_len]
+        is_causal=is_causal,                        # is_causal: whether to apply causal masking
+        scale=scaling                               # scaling factor
     )
     
     return attn_outputs  # [batch, query_len, num_heads, head_dim]

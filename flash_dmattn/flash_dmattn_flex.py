@@ -10,8 +10,8 @@ def flex_attention_forward(
     value: torch.Tensor,
     attn_mask: torch.Tensor,
     attn_bias: torch.Tensor,
-    scale: Optional[float] = None,
     is_causal: bool = True,
+    scale: Optional[float] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     query = query.transpose(1, 2).contiguous()  # [B, H, Q_LEN, D]

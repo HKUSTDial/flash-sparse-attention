@@ -1052,15 +1052,15 @@ def _flash_attn_backward(
 
 class FlashDMAttnFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, query, key, value, attn_mask=None, attn_bias=None, softmax_scale=None, is_causal=False):
+    def forward(ctx, query, key, value, attn_mask=None, attn_bias=None, is_causal=False, softmax_scale=None):
         """
         query: (batch_size, seqlen_q, nheads, headdim)
         key: (batch_size, seqlen_k, nheads, headdim)
         value: (batch_size, seqlen_k, nheads, headdim)
         attn_mask: optional, (batch, nheads, seqlen_q, seqlen_k)
         attn_bias: optional, (batch, nheads, seqlen_q, seqlen_k)
-        softmax_scale: float, scaling factor for attention scores
         is_causal: bool, whether to apply causal masking
+        softmax_scale: float, scaling factor for attention scores
         """
         batch, seqlen_q, nheads, _ = query.shape
         _, seqlen_k, _, _ = key.shape
@@ -1111,5 +1111,5 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, dbias, None, None
 
 
-def triton_dmattn_func(query, key, value, attn_mask=None, attn_bias=None, scale=None, is_causal=False):
-    return FlashDMAttnFunc.apply(query, key, value, attn_mask, attn_bias, scale, is_causal)
+def triton_dmattn_func(query, key, value, attn_mask=None, attn_bias=None, is_causal=False, scale=None):
+    return FlashDMAttnFunc.apply(query, key, value, attn_mask, attn_bias, is_causal, scale)

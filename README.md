@@ -72,11 +72,11 @@ pip install .
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func
+from flash_dmattn import flash_dmattn_func_auto
 import math
 
 # Setup
-batch_size, seq_len, num_heads, head_dim = 2, 4096, 12, 128
+batch_size, seq_len, num_heads, head_dim = 2, 4096, 16, 128
 device = torch.device('cuda')
 dtype = torch.bfloat16
 
@@ -103,6 +103,9 @@ if seq_len > keep_window_size:
     attention_mask.zero_()
     attention_mask.scatter(-1, topk_indices, 1.0)
 
+# Select backend
+flash_dmattn_func = flash_dmattn_func_auto(backend="cuda")
+
 # Run Flash Dynamic Mask Attention
 output = flash_dmattn_func(
     q=query,
@@ -110,11 +113,11 @@ output = flash_dmattn_func(
     v=value,
     attn_mask=attention_mask,
     attn_bias=attention_bias,
-    softmax_scale=1.0/math.sqrt(head_dim),
-    is_causal=True
+    is_causal=True,
+    scale=1.0/math.sqrt(head_dim),
 )
 
-print(f"Output shape: {output.shape}")  # [2, 4096, 12, 128]
+print(f"Output shape: {output.shape}")  # [2, 4096, 16, 128]
 ```
 
 
