@@ -72,11 +72,11 @@ pip install .
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func
+from flash_dmattn import flash_dmattn_func_auto
 import math
 
 # 设置
-batch_size, seq_len, num_heads, head_dim = 2, 4096, 12, 128
+batch_size, seq_len, num_heads, head_dim = 2, 4096, 16, 128
 device = torch.device('cuda')
 dtype = torch.bfloat16
 
@@ -103,18 +103,21 @@ if seq_len > keep_window_size:
     attention_mask.zero_()
     attention_mask.scatter(-1, topk_indices, 1.0)
 
+# 选择后端
+flash_dmattn_func = flash_dmattn_func_auto(backend="cuda")
+
 # 运行 Flash 动态掩码注意力
 output = flash_dmattn_func(
-    q=query,
-    k=key, 
-    v=value,
+    query=query,
+    key=key, 
+    value=value,
     attn_mask=attention_mask,
     attn_bias=attention_bias,
-    softmax_scale=1.0/math.sqrt(head_dim),
-    is_causal=True
+    is_causal=True,
+    scale=1.0/math.sqrt(head_dim),
 )
 
-print(f"输出形状: {output.shape}")  # [2, 4096, 12, 128]
+print(f"输出形状: {output.shape}")  # [2, 4096, 16, 128]
 ```
 
 
