@@ -1,8 +1,24 @@
-# Flash Dynamic Mask Attention
+<div align="center">
+  <img src="./assets/logo.png" alt="SmallDoges" width="100%">
+</div>
+
+<div align="center">
+
+
+**English** | [简体中文](./README_zh.md)
+
+</div>
+
+**Trainable Dynamic Mask Sparse Attention**
+
+> Jingze Shi, Yifan Wu, Bingheng Wu, Yiran Peng, Liangdong Wang, Guang Liu, Yuyu Luo
+
+> Paper: https://huggingface.co/papers/2508.02124
 
 ![Flash-DMA Banner](assets/flash_dmattn_banner.png)
 
 Flash-DMA is a high-performance attention implementation that integrates Flash Attention's memory efficiency with Dynamic Mask Attention's sparse computation capabilities for processing extremely long sequences in transformer models.
+
 
 ## Key Features
 
@@ -11,6 +27,14 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 - **CUDA-Accelerated**: Deep integration at the CUDA kernel level with custom sparse GEMM operations for maximum performance.
 - **Long Sequence Support**: Efficiently handles sequences of 128K+ tokens through dynamic masking when sequence length exceeds `keep_window_size`.
 - **Advanced Integration**: Complete integration from Python frontend to CUDA backend with optimized memory layouts and sparse computation strategies.
+
+
+## Performance
+
+We present expected speedup of Flash-DMA over standard PyTorch SDPA.
+
+![Speedup](assets/speedup.png)
+
 
 ## Installation
 
@@ -42,6 +66,7 @@ cd flash-dmattn
 git submodule update --init --recursive
 pip install .
 ```
+
 
 ## Quick Start
 
@@ -254,4 +279,4 @@ This project builds upon and integrates several excellent works:
 - **[Flash-Attention](https://github.com/Dao-AILab/flash-attention)** - Memory-efficient attention computation
 - **[NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass)** - High-performance matrix operations library
 
-We thank the open-source community for their contributions to efficient transformer implementations.
+We thank the open-source community for their contributions to efficient transformer implementations. 🤗
