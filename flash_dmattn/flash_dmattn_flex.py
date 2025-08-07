@@ -8,14 +8,17 @@ def flex_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attention_mask: torch.Tensor,
-    attention_bias: torch.Tensor,
+    attn_mask: torch.Tensor,
+    attn_bias: torch.Tensor,
+    scale: Optional[float] = None,
     is_causal: bool = True,
-    scaling: Optional[float] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    attn_mask = attention_mask[:, :, :, : key.shape[-2]]
-    attn_bias = attention_bias[:, :, :, : key.shape[-2]]
+    query = query.transpose(1, 2).contiguous()  # [B, H, Q_LEN, D]
+    key = key.transpose(1, 2).contiguous()      # [B, H, KV_LEN, D]
+    value = value.transpose(1, 2).contiguous()  # [B, H, KV_LEN, D]
+    attn_mask = attn_mask[:, :, :, : key.shape[-2]]
+    attn_bias = attn_bias[:, :, :, : key.shape[-2]]
 
     def score_mod(score, batch_idx, head_idx, q_idx, kv_idx):
         score = score + attn_bias[batch_idx][head_idx][q_idx][kv_idx]
@@ -34,7 +37,7 @@ def flex_attention_forward(
         Q_LEN=query.shape[2],
         KV_LEN=key.shape[2],
         device=query.device,
-        _compile=True,
+        _compile=False,
     )
 
     kernel_options = {
@@ -44,23 +47,21 @@ def flex_attention_forward(
         "num_stages": 1, 
         "num_warps": 8,
     }
-    attn_output, attention_weights = compile_friendly_flex_attention(
+    attn_output = compile_friendly_flex_attention(
         query,
         key,
         value,
         score_mod=score_mod,
         block_mask=block_mask if is_causal else None,
-        scale=scaling,
+        scale=scale,
         kernel_options=kernel_options,
         # Last time checked on PyTorch == 2.5.1: Flex Attention always computes the lse regardless.
         # For simplification, we thus always return it as no additional computations are introduced.
-        return_lse=True,
+        return_lse=False,
         training=False,
     )
-    # lse is returned in float32
-    attention_weights = attention_weights.to(value.dtype)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
-    return attn_output, attention_weights
+    return attn_output
 
 flex_dmattn_func = flex_attention_forward
