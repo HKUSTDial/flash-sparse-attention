@@ -93,6 +93,7 @@ struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_par
     // The scaling factors for the kernel.
     float scale_softmax;
     float scale_softmax_log2;
+    float softcap;
 
     // array of length b+1 holding starting offset of each sequence.
     int * __restrict__ cu_seqlens_q;
@@ -128,31 +129,12 @@ struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_par
     index_t block_table_batch_stride;
     int page_block_size;
 
-    // The dropout probability (probability of keeping an activation).
-    float p_dropout;
-    // uint32_t p_dropout_in_uint;
-    // uint16_t p_dropout_in_uint16_t;
-    uint8_t p_dropout_in_uint8_t;
-
-    // Scale factor of 1 / (1 - p_dropout).
-    float rp_dropout;
-    float scale_softmax_rp_dropout;
-    float softcap;
-
-    // Random state.
-    at::PhiloxCudaState philox_args;
-
-    // Pointer to the RNG seed (idx 0) and offset (idx 1).
-    uint64_t * rng_state;
-
     bool is_bf16;
     bool is_causal;
 
     // If is_seqlens_k_cumulative, then seqlen_k is cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb].
     // Otherwise it's cu_seqlens_k[bidb], i.e., we use cu_seqlens_k to store the sequence lengths of K.
     bool is_seqlens_k_cumulative;
-
-    bool is_rotary_interleaved;
 
     int num_splits;  // For split-KV version
 
