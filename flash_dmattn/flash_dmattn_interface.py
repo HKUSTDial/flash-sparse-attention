@@ -13,7 +13,7 @@ def maybe_contiguous(x):
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
 
 
-def _get_block_size_n(device, head_dim, is_dropout, is_causal):
+def _get_block_size_n(device, head_dim, is_causal):
     # This should match the block sizes in the CUDA kernel
     assert head_dim <= 256
     major, minor = torch.cuda.get_device_capability(device)
@@ -23,14 +23,14 @@ def _get_block_size_n(device, head_dim, is_dropout, is_causal):
     if head_dim <= 32:
         return 128
     if head_dim <= 64:
-        return 128 if not is_dropout else 64
+        return 128
     elif head_dim <= 96:
         return 64
     elif head_dim <= 128:
         if is_sm8x:
-            return 64 if (not is_dropout and is_causal) else 32
+            return 64 if (is_causal) else 32
         else:
-            return 64 if not is_dropout else 32
+            return 64
     elif head_dim <= 192:
         return 64
     elif head_dim <= 224:
@@ -73,28 +73,25 @@ def _flash_dmattn_forward(
     v: torch.Tensor,
     mask: torch.Tensor,
     bias: torch.Tensor,
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     return_softmax: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask, rng_state = flash_dmattn_gpu.fwd(
+    out, softmax_lse, S_dmask = flash_dmattn_gpu.fwd(
         q,
         k,
         v,
         mask,
         bias,
         None,
-        dropout_p,
         softmax_scale,
         is_causal,
         softcap,
         return_softmax,
-        None,
     )
-    return out, softmax_lse, S_dmask, rng_state
+    return out, softmax_lse, S_dmask
 
 
 @_torch_register_fake_wrapper("flash_dmattn::_flash_dmattn_forward")
@@ -104,7 +101,6 @@ def _flash_dmattn_forward_fake(
     v: torch.Tensor,
     mask: torch.Tensor,
     bias: torch.Tensor,
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
@@ -118,9 +114,8 @@ def _flash_dmattn_forward_fake(
     p = torch.empty((0,), dtype=q.dtype, device=q.device, layout=q.layout)
     if return_softmax:
         p = torch.empty((batch_size, num_heads, round_multiple(seqlen_q, 128), round_multiple(seqlen_k, 128)), dtype=q.dtype, device=q.device, layout=q.layout)
-    rng_state = torch.empty((2,), dtype=torch.int64, device=q.device)
 
-    return out, softmax_lse, p, rng_state
+    return out, softmax_lse, p
 
 
 _wrapped_flash_dmattn_forward = _flash_dmattn_forward
@@ -137,7 +132,6 @@ def _flash_dmattn_varlen_forward(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float = 0.0,
@@ -148,7 +142,7 @@ def _flash_dmattn_varlen_forward(
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask, rng_state = flash_dmattn_gpu.varlen_fwd(
+    out, softmax_lse, S_dmask = flash_dmattn_gpu.varlen_fwd(
         q,
         k,
         v,
@@ -162,17 +156,15 @@ def _flash_dmattn_varlen_forward(
         block_table,
         max_seqlen_q,
         max_seqlen_k,
-        dropout_p,
         softmax_scale,
         zero_tensors,
         is_causal,
         softcap,
         return_softmax,
-        None,
     )
     # if out.isnan().any() or softmax_lse.isnan().any():
     #     breakpoint()
-    return out, softmax_lse, S_dmask, rng_state
+    return out, softmax_lse, S_dmask
 
 
 @_torch_register_fake_wrapper("flash_dmattn::_flash_dmattn_varlen_forward")
@@ -186,7 +178,6 @@ def _flash_dmattn_varlen_forward_fake(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float = 0.0,
@@ -208,8 +199,7 @@ def _flash_dmattn_varlen_forward_fake(
     seqlen_k_rounded = round_multiple(max_seqlen_k, 128)
     if return_softmax:
         p = torch.empty((batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded), dtype=q.dtype, device=q.device, layout=q.layout)
-    rng_state = torch.empty((2,), dtype=torch.int64, device=q.device)
-    return out, softmax_lse, p, rng_state
+    return out, softmax_lse, p
 
 
 _wrapped_flash_dmattn_varlen_forward = _flash_dmattn_varlen_forward
@@ -229,12 +219,10 @@ def _flash_dmattn_backward(
     dk: Optional[torch.Tensor],
     dv: Optional[torch.Tensor],
     dbias: Optional[torch.Tensor],
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     deterministic: bool,
-    rng_state: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     # dq, dk, dv, dbias are allocated by us so they should already be contiguous
     dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
@@ -257,13 +245,11 @@ def _flash_dmattn_backward(
         dk,
         dv,
         dbias,
-        dropout_p,
         softmax_scale,
         is_causal,
         softcap,
         deterministic,
         None,
-        rng_state,
     )
     return softmax_d
 
@@ -282,12 +268,10 @@ def _flash_dmattn_backward_fake(
     dk: Optional[torch.Tensor],
     dv: Optional[torch.Tensor],
     dbias: Optional[torch.Tensor],
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     deterministic: bool,
-    rng_state: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
     if dq is None:
@@ -325,12 +309,10 @@ def _flash_dmattn_varlen_backward(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     deterministic: bool,
-    rng_state: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> torch.Tensor:
     # dq, dk, dv are allocated by us so they should already be contiguous
@@ -358,14 +340,12 @@ def _flash_dmattn_varlen_backward(
         cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        dropout_p,
         softmax_scale,
         zero_tensors,
         is_causal,
         softcap,
         deterministic,
         None,
-        rng_state,
     )
     # if dk.isnan().any() or dk.isnan().any() or dv.isnan().any() or softmax_d.isnan().any():
     #     breakpoint()
@@ -390,12 +370,10 @@ def _flash_dmattn_varlen_backward_fake(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    dropout_p: float,
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     deterministic: bool,
-    rng_state: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> torch.Tensor:
     dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
@@ -425,7 +403,6 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
         qkv: torch.Tensor,
         mask: Optional[torch.Tensor],
         bias: Optional[torch.Tensor],
-        dropout_p: Optional[float],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -440,10 +417,6 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
             mask = torch.ones((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
         if bias is None:
             bias = torch.zeros((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
-        if dropout_p is None:
-            dropout_p = 0.0
-        if dropout_p < 0.0 or dropout_p > 1.0:
-            raise ValueError(f"Invalid dropout_p: {dropout_p}. It should be in [0, 1].")
         if is_causal is None:
             is_causal = False
         if softcap is None:
@@ -462,22 +435,20 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask, rng_state =  _wrapped_flash_dmattn_forward(
+        out_padded, softmax_lse, S_dmask =  _wrapped_flash_dmattn_forward(
             q,
             k,
             v,
             mask,
             bias,
-            dropout_p,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
         )
 
         if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse, rng_state)
-            ctx.dropout_p = dropout_p
+            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
@@ -492,7 +463,7 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any,
     ):
-        q, k, v, mask, bias, out, softmax_lse, rng_state = ctx.saved_tensors
+        q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
         qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
 
         dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
@@ -516,12 +487,10 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
             dqkv[:, :, 1],
             dqkv[:, :, 2],
             dbias,
-            ctx.dropout_p,
             ctx.softmax_scale,
             ctx.is_causal,
             ctx.softcap,
             ctx.deterministic,
-            rng_state=rng_state,
         )
 
         dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
@@ -537,7 +506,6 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
         bias: Optional[torch.Tensor],
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
-        dropout_p: Optional[float],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -553,10 +521,6 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
             mask = torch.ones((batch_size, num_heads, max_seqlen, max_seqlen), dtype=qkv.dtype, device=qkv.device)
         if bias is None:
             bias = torch.zeros((batch_size, num_heads, max_seqlen, max_seqlen), dtype=qkv.dtype, device=qkv.device)
-        if dropout_p is None:
-            dropout_p = 0.0
-        if dropout_p < 0.0 or dropout_p > 1.0:
-            raise ValueError(f"Invalid dropout_p: {dropout_p}. It should be in [0, 1].")
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -575,7 +539,7 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_dmattn_varlen_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
             q,
             k,
             v,
@@ -585,17 +549,15 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
             cu_seqlens,
             max_seqlen,
             max_seqlen,
-            dropout_p,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
             block_table=None,
         )
 
         if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens, rng_state)
-            ctx.dropout_p = dropout_p
+            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens)
             ctx.max_seqlen = max_seqlen
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
@@ -611,7 +573,7 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any,
     ):
-        q, k, v, mask, bias, out, softmax_lse, cu_seqlens, rng_state = ctx.saved_tensors
+        q, k, v, mask, bias, out, softmax_lse, cu_seqlens = ctx.saved_tensors
         qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
 
         dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
@@ -639,12 +601,10 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
             cu_seqlens,
             ctx.max_seqlen,
             ctx.max_seqlen,
-            ctx.dropout_p,
             ctx.softmax_scale,
             ctx.is_causal,
             ctx.softcap,
             ctx.deterministic,
-            rng_state=rng_state,
         )
 
         dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
@@ -659,7 +619,6 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
         kv: torch.Tensor,
         mask: Optional[torch.Tensor],
         bias: Optional[torch.Tensor],
-        dropout_p: Optional[float],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -678,10 +637,6 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
             mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
             bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
-        if dropout_p is None:
-            dropout_p = 0.0
-        if dropout_p < 0.0 or dropout_p > 1.0:
-            raise ValueError(f"Invalid dropout_p: {dropout_p}. It should be in [0, 1].")
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -700,22 +655,20 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_dmattn_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
             k,
             v,
             mask,
             bias,
-            dropout_p,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
         )
 
         if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse, rng_state)
-            ctx.dropout_p = dropout_p
+            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
@@ -730,7 +683,7 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any
     ):
-        q, k, v, mask, bias, out, softmax_lse, rng_state = ctx.saved_tensors
+        q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
         kv_shape = k.shape[:-2] + (2, *k.shape[-2:])
 
         dq = torch.empty_like(q)
@@ -755,12 +708,10 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
             dkv[:, :, 0],
             dkv[:, :, 1],
             dbias,
-            ctx.dropout_p,
             ctx.softmax_scale,
             ctx.is_causal,
             ctx.softcap,
             ctx.deterministic,
-            rng_state=rng_state,
         )
 
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
@@ -780,7 +731,6 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
         max_seqlen_k: int,
-        dropout_p: Optional[float],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -799,10 +749,6 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
             mask = torch.ones((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
             bias = torch.zeros((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
-        if dropout_p is None:
-            dropout_p = 0.0
-        if dropout_p < 0.0 or dropout_p > 1.0:
-            raise ValueError(f"Invalid dropout_p: {dropout_p}. It should be in [0, 1].")
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -821,7 +767,7 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_dmattn_varlen_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
             q,
             k,
             v,
@@ -831,19 +777,17 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
             cu_seqlens_k,
             max_seqlen_q,
             max_seqlen_k,
-            dropout_p,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
             block_table=None,
         )
 
         if is_grad:
             ctx.save_for_backward(
-                q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state
+                q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
             )
-            ctx.dropout_p = dropout_p
             ctx.max_seqlen_q = max_seqlen_q
             ctx.max_seqlen_k = max_seqlen_k
             ctx.softmax_scale = softmax_scale
@@ -860,7 +804,7 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any,
     ):
-        q, k, v, mask, bias, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state = ctx.saved_tensors
+        q, k, v, mask, bias, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
         kv_shape = k.shape[:-2] + (2, *k.shape[-2:])
 
         dq = torch.empty_like(q)
@@ -889,12 +833,10 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
             cu_seqlens_k,
             ctx.max_seqlen_q,
             ctx.max_seqlen_k,
-            ctx.dropout_p,
             ctx.softmax_scale,
             ctx.is_causal,
             ctx.softcap,
             ctx.deterministic,
-            rng_state=rng_state,
         )
 
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
@@ -911,7 +853,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
         v: torch.Tensor,
         mask: Optional[torch.Tensor],
         bias: Optional[torch.Tensor],
-        dropout_p: Optional[float],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -929,10 +870,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
             mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
             bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
-        if dropout_p is None:
-            dropout_p = 0.0
-        if dropout_p < 0.0 or dropout_p > 1.0:
-            raise ValueError(f"Invalid dropout_p: {dropout_p}. It should be in [0, 1].")
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -950,22 +887,20 @@ class FlashDMAttnFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_dmattn_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
             k,
             v,
             mask,
             bias,
-            dropout_p,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
         )
 
         if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse, rng_state)
-            ctx.dropout_p = dropout_p
+            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
@@ -980,7 +915,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any,
     ):
-        q, k, v, mask, bias, out, softmax_lse, rng_state = ctx.saved_tensors
+        q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
         dq, dk, dv, dbias = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v), torch.empty_like(bias)
 
         head_size_og = dout.size(3)
@@ -1001,12 +936,10 @@ class FlashDMAttnFunc(torch.autograd.Function):
             dk,
             dv,
             dbias,
-            ctx.dropout_p,
             ctx.softmax_scale,
             ctx.is_causal,
             ctx.softcap,
             ctx.deterministic,
-            rng_state=rng_state,
         )
 
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
@@ -1028,7 +961,6 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
         max_seqlen_k: int,
-        dropout_p: Optional[float],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -1047,10 +979,6 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             mask = torch.ones((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
             bias = torch.zeros((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
-        if dropout_p is None:
-            dropout_p = 0.0
-        if dropout_p < 0.0 or dropout_p > 1.0:
-            raise ValueError(f"Invalid dropout_p: {dropout_p}. It should be in [0, 1].")
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -1068,7 +996,7 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask, rng_state = _wrapped_flash_dmattn_varlen_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
             q,
             k,
             v,
@@ -1078,19 +1006,17 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             cu_seqlens_k,
             max_seqlen_q,
             max_seqlen_k,
-            dropout_p,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
             block_table=block_table,
         )
 
         if is_grad:
             ctx.save_for_backward(
-                q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state
+                q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
             )
-            ctx.dropout_p = dropout_p
             ctx.max_seqlen_q = max_seqlen_q
             ctx.max_seqlen_k = max_seqlen_k
             ctx.softmax_scale = softmax_scale
@@ -1107,7 +1033,7 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any,
     ):
-        q, k, v, mask, bias, out, softmax_lse, cu_seqlens_q, cu_seqlens_k, rng_state = ctx.saved_tensors
+        q, k, v, mask, bias, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
         dq, dk, dv, dbias = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v), torch.empty_like(bias)
 
         head_size_og = dout.size(2)
@@ -1132,12 +1058,10 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             cu_seqlens_k,
             ctx.max_seqlen_q,
             ctx.max_seqlen_k,
-            ctx.dropout_p,
             ctx.softmax_scale,
             ctx.is_causal,
             ctx.softcap,
             ctx.deterministic,
-            rng_state=rng_state,
         )
 
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
@@ -1150,14 +1074,13 @@ def flash_dmattn_qkvpacked_func(
     qkv: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
-    dropout_p: Optional[float] = None,
     is_causal: Optional[bool] = None,
     scale: Optional[float] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
     return_attn_probs: Optional[bool] = None,
 ):
-    """dropout_p should be set to 0.0 during evaluation
+    """
     If Q, K, V are already stacked into 1 tensor, this function will be faster than
     calling flash_dmattn_func on Q, K, V since the backward pass avoids explicit concatenation
     of the gradients of Q, K, V.
@@ -1173,7 +1096,6 @@ def flash_dmattn_qkvpacked_func(
             If None, no mask is applied.
         attn_bias: (batch_size, nheads, seqlen, seqlen). Attention Bias to add to the attention scores.
             If None, no bias is applied.
-        dropout_p: float. Dropout probability.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
@@ -1189,14 +1111,12 @@ def flash_dmattn_qkvpacked_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
         S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling). It also encodes the dropout
-            pattern (negative means that location was dropped, nonnegative means it was kept).
+            The output of softmax (possibly with different scaling).
     """
     return FlashDMAttnQKVPackedFunc.apply(
         qkv,
         attn_mask,
         attn_bias,
-        dropout_p,
         scale,
         is_causal,
         softcap,
@@ -1211,14 +1131,13 @@ def flash_dmattn_kvpacked_func(
     kv: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
-    dropout_p: Optional[float] = None,
     scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
     return_attn_probs: Optional[bool] = None,
 ):
-    """dropout_p should be set to 0.0 during evaluation
+    """
     If K, V are already stacked into 1 tensor, this function will be faster than
     calling flash_dmattn_func on Q, K, V since the backward pass avoids explicit concatenation
     of the gradients of K, V.
@@ -1246,7 +1165,6 @@ def flash_dmattn_kvpacked_func(
             If None, no mask is applied.
         attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
-        dropout_p: float. Dropout probability.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
@@ -1262,15 +1180,13 @@ def flash_dmattn_kvpacked_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
         S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling). It also encodes the dropout
-            pattern (negative means that location was dropped, nonnegative means it was kept).
+            The output of softmax (possibly with different scaling).
     """
     return FlashDMAttnKVPackedFunc.apply(
         q,
         kv,
         attn_mask,
         attn_bias,
-        dropout_p,
         scale,
         is_causal,
         softcap,
@@ -1286,14 +1202,13 @@ def flash_dmattn_func(
     value: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
-    dropout_p: Optional[float] = None,
     scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
     return_attn_probs: Optional[bool] = None,
 ):
-    """dropout_p should be set to 0.0 during evaluation
+    """
     Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
     than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
     For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
@@ -1319,7 +1234,6 @@ def flash_dmattn_func(
             If None, no mask is applied.
         attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
-        dropout_p: float. Dropout probability.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
@@ -1334,8 +1248,7 @@ def flash_dmattn_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
         S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling). It also encodes the dropout
-            pattern (negative means that location was dropped, nonnegative means it was kept).
+            The output of softmax (possibly with different scaling).
     """
     return FlashDMAttnFunc.apply(
         query,
@@ -1343,7 +1256,6 @@ def flash_dmattn_func(
         value,
         attn_mask,
         attn_bias,
-        dropout_p,
         scale,
         is_causal,
         softcap,
@@ -1359,14 +1271,13 @@ def flash_dmattn_varlen_qkvpacked_func(
     attn_bias: Optional[torch.Tensor] = None,
     cu_seqlens: torch.Tensor = None,
     max_seqlen: int = None,
-    dropout_p: Optional[float] = None,
     scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
     return_attn_probs: Optional[bool] = None,
 ):
-    """dropout_p should be set to 0.0 during evaluation
+    """
     If Q, K, V are already stacked into 1 tensor, this function will be faster than
     calling flash_dmattn_varlen_func on Q, K, V since the backward pass avoids explicit concatenation
     of the gradients of Q, K, V.
@@ -1382,7 +1293,6 @@ def flash_dmattn_varlen_qkvpacked_func(
         cu_seqlens: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
            of the sequences in the batch, used to index into qkv.
         max_seqlen: int. Maximum sequence length in the batch.
-        dropout_p: float. Dropout probability.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
@@ -1398,8 +1308,7 @@ def flash_dmattn_varlen_qkvpacked_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
         S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling). It also encodes the dropout
-            pattern (negative means that location was dropped, nonnegative means it was kept).
+            The output of softmax (possibly with different scaling).
     """
     return FlashDMAttnVarlenQKVPackedFunc.apply(
         qkv,
@@ -1407,7 +1316,6 @@ def flash_dmattn_varlen_qkvpacked_func(
         attn_bias,
         cu_seqlens,
         max_seqlen,
-        dropout_p,
         scale,
         is_causal,
         softcap,
@@ -1426,14 +1334,13 @@ def flash_dmattn_varlen_kvpacked_func(
     cu_seqlens_k: torch.Tensor = None,
     max_seqlen_q: int = None,
     max_seqlen_k: int = None,
-    dropout_p: Optional[float] = None,
     scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
     return_attn_probs: Optional[bool] = None,
 ):
-    """dropout_p should be set to 0.0 during evaluation
+    """
     If K, V are already stacked into 1 tensor, this function will be faster than
     calling flash_dmattn_func on Q, K, V since the backward pass avoids explicit concatenation
     of the gradients of K, V.
@@ -1467,7 +1374,6 @@ def flash_dmattn_varlen_kvpacked_func(
            of the sequences in the batch, used to index into kv.
         max_seqlen_q: int. Maximum query sequence length in the batch.
         max_seqlen_k: int. Maximum key sequence length in the batch.
-        dropout_p: float. Dropout probability.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
@@ -1483,8 +1389,7 @@ def flash_dmattn_varlen_kvpacked_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
         S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling). It also encodes the dropout
-            pattern (negative means that location was dropped, nonnegative means it was kept).
+            The output of softmax (possibly with different scaling).
     """
     return FlashDMAttnVarlenKVPackedFunc.apply(
         q,
@@ -1495,7 +1400,6 @@ def flash_dmattn_varlen_kvpacked_func(
         cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        dropout_p,
         scale,
         is_causal,
         softcap,
@@ -1515,7 +1419,6 @@ def flash_dmattn_varlen_func(
     cu_seqlens_k: torch.Tensor = None,
     max_seqlen_q: int = None,
     max_seqlen_k: int = None,
-    dropout_p: Optional[float] = None,
     scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
@@ -1523,7 +1426,7 @@ def flash_dmattn_varlen_func(
     return_attn_probs: Optional[bool] = None,
     block_table: Optional[torch.Tensor] = None,
 ):
-    """dropout_p should be set to 0.0 during evaluation
+    """
     Supports multi-query and grouped-query attention (MQA/GQA) by passing in K, V with fewer heads
     than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
     For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
@@ -1555,7 +1458,6 @@ def flash_dmattn_varlen_func(
            of the sequences in the batch, used to index into kv.
         max_seqlen_q: int. Maximum query sequence length in the batch.
         max_seqlen_k: int. Maximum key sequence length in the batch.
-        dropout_p: float. Dropout probability.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
@@ -1571,8 +1473,7 @@ def flash_dmattn_varlen_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
         S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling). It also encodes the dropout
-            pattern (negative means that location was dropped, nonnegative means it was kept).
+            The output of softmax (possibly with different scaling).
     """
     return FlashDMAttnVarlenFunc.apply(
         query,
@@ -1584,7 +1485,6 @@ def flash_dmattn_varlen_func(
         cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        dropout_p,
         scale,
         is_causal,
         softcap,

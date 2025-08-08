@@ -256,7 +256,6 @@ def dynamic_mask_attention_cuda(
         value_states,               # [batch, key_len, num_kv_heads, head_dim]
         attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
         attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
-        dropout_p=0.0,
         is_causal=is_causal,
         scale=scaling,
         softcap=0.0,
