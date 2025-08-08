@@ -1,4 +1,5 @@
 from typing import Optional, Tuple
+import math
 import torch
 from torch.nn.attention.flex_attention import create_block_mask
 from transformers.integrations.flex_attention import compile_friendly_flex_attention
@@ -8,17 +9,29 @@ def flex_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attn_mask: torch.Tensor,
-    attn_bias: torch.Tensor,
-    is_causal: bool = True,
+    attn_mask: Optional[torch.Tensor] = None,
+    attn_bias: Optional[torch.Tensor] = None,
+    is_causal: Optional[bool] = None,
     scale: Optional[float] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    batch, seqlen_q, nheads, dhead = query.shape
+    _, seqlen_k, _, _ = key.shape
     query = query.transpose(1, 2).contiguous()  # [B, H, Q_LEN, D]
     key = key.transpose(1, 2).contiguous()      # [B, H, KV_LEN, D]
     value = value.transpose(1, 2).contiguous()  # [B, H, KV_LEN, D]
-    attn_mask = attn_mask[:, :, :, : key.shape[-2]]
-    attn_bias = attn_bias[:, :, :, : key.shape[-2]]
+    if attn_mask is not None:
+        attn_mask = attn_mask[:, :, :, : key.shape[-2]]
+    else:
+        attn_mask = torch.ones((batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype)
+    if attn_bias is not None:
+        attn_bias = attn_bias[:, :, :, : key.shape[-2]]
+    else:
+        attn_bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype)
+    if is_causal is None:
+        is_causal = True
+    if scale is None:
+        scale = 1.0 / math.sqrt(dhead)
 
     def score_mod(score, batch_idx, head_idx, q_idx, kv_idx):
         score = score + attn_bias[batch_idx][head_idx][q_idx][kv_idx]
