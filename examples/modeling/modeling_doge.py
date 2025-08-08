@@ -43,7 +43,14 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from transformers.utils.generic import OutputRecorder, check_model_inputs
 from .configuration_doge import DogeConfig
 
-from flash_dmattn import flash_dmattn_func_auto
+try:
+    from flash_dmattn import flash_dmattn_func_auto
+except ImportError:
+    def flash_dmattn_func_auto(*args, **kwargs):
+        raise ImportError(
+            "flash_dmattn is not installed. Please install it to use flash_dmattn_func_auto. "
+            "You can install it with `pip install flash-dmattn` or consult the documentation."
+        )
 
 if is_torch_flex_attn_available():
     from torch.nn.attention.flex_attention import BlockMask
