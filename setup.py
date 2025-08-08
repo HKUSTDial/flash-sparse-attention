@@ -244,7 +244,6 @@ if not SKIP_CUDA_BUILD:
                         # "--ptxas-options=-O2",
                         # "-lineinfo",
                         "-DFLASHATTENTION_DISABLE_BACKWARD",  # Only forward pass
-                        # "-DFLASHATTENTION_DISABLE_DROPOUT",
                         # "-DFLASHATTENTION_DISABLE_SOFTCAP",
                         # "-DFLASHATTENTION_DISABLE_UNEVEN_K",
                     ]
