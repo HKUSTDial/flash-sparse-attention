@@ -5,7 +5,6 @@
 #pragma once
 
 #include "namespace_config.h"
-#include <ATen/cuda/detail/UnpackRaw.cuh> // For at::cuda::philox::unpack
 
 #include <cute/tensor.hpp>
 
@@ -18,8 +17,6 @@
 #include "utils.h"
 #include "softmax.h"
 #include "mask.h"
-#include "dropout.h"
-#include "rotary.h"
 
 namespace FLASH_NAMESPACE {
 
@@ -47,7 +44,7 @@ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bid
         return local_tile(mLSE_slice, Shape<Int<kBlockM>>{}, make_coord(m_block));
 }
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
 
     using Element = typename Kernel_traits::Element;
@@ -64,17 +61,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int kBlockN = Kernel_traits::kBlockN;    // key_block_len
     constexpr int kHeadDim = Kernel_traits::kHeadDim;  // head_dim
     constexpr int kNWarps = Kernel_traits::kNWarps;
-
-    auto seed_offset = at::cuda::philox::unpack(params.philox_args);
-    FLASH_NAMESPACE::Dropout dropout(std::get<0>(seed_offset), std::get<1>(seed_offset), params.p_dropout_in_uint8_t,
-                           bidb, bidh, tidx, params.h);
-
-    // Save seed and offset for backward, before any early exiting. Otherwise the 0-th thread block might
-    // exit early and no one saves the rng states.
-    if (Is_dropout && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && tidx == 0) {
-        params.rng_state[0] = std::get<0>(seed_offset);
-        params.rng_state[1] = std::get<1>(seed_offset);
-    }
 
     // Check if there are any queries to process in the block
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
@@ -477,19 +463,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         
         // Convert acc_s from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
-        int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
-        int block_col_idx = n_block * (kBlockN / 32);
         if (Return_softmax) {
-            Tensor rP_drop = make_fragment_like(rP);
-            cute::copy(rP, rP_drop);
-            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
-                rP_drop, block_row_idx, block_col_idx, kNWarps
-            );
-            cute::copy(rP_drop, tSgS);
+            cute::copy(rP, tSgS);
             tSgS.data() = tSgS.data() + (-kBlockN);
-        }
-        if (Is_dropout) {
-            dropout.apply_dropout(rP, block_row_idx, block_col_idx, kNWarps);
         }
 
         // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
@@ -574,19 +550,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Convert acc_s from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
-        int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
-        int block_col_idx = n_block * (kBlockN / 32);
         if (Return_softmax) {
-            Tensor rP_drop = make_fragment_like(rP);
-            cute::copy(rP, rP_drop);
-            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
-                rP_drop, block_row_idx, block_col_idx, kNWarps
-            );
-            cute::copy(rP_drop, tSgS);
+            cute::copy(rP, tSgS);
             tSgS.data() = tSgS.data() + (-kBlockN);
-        }
-        if (Is_dropout) {
-            dropout.apply_dropout(rP, block_row_idx, block_col_idx, kNWarps);
         }
 
         // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_M, MMA_N / 2)
@@ -603,7 +569,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     // Epilogue
 
-    Tensor lse = softmax.template normalize_softmax_lse<Is_dropout>(acc_o, params.scale_softmax, params.rp_dropout);
+    Tensor lse = softmax.template normalize_softmax_lse(acc_o, params.scale_softmax);
 
     // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = FLASH_NAMESPACE::convert_type<Element>(acc_o);
@@ -1198,7 +1164,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     // Epilogue
 
-    Tensor lse = softmax.template normalize_softmax_lse</*Is_dropout=*/false, Split>(acc_o, params.scale_softmax);
+    Tensor lse = softmax.template normalize_softmax_lse<Split>(acc_o, params.scale_softmax);
     // if (cute::thread0()) { print(lse); }
 
     Tensor sOaccum = make_tensor(make_smem_ptr(reinterpret_cast<ElementO *>(smem_)), typename Kernel_traits::SmemLayoutO{}); // (SMEM_M,SMEM_N)
@@ -1276,7 +1242,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
 inline __device__ void compute_attn(const Params &params) {
     const int m_block = blockIdx.x;
     // The block index for the batch.
@@ -1284,15 +1250,7 @@ inline __device__ void compute_attn(const Params &params) {
     // The block index for the head.
     const int bidh = blockIdx.z;
 
-    // We want the fwd and bwd to generate the same dropout pattern (RNG), without restricting
-    // them to have the same number of threads or have to traverse the attention matrix
-    // in the same order.
-    // In the Philox RNG, we use the offset to store the batch, head, and the lane id
-    // (within a warp). We use the subsequence to store the location of the 16 x 32 blocks within
-    // the attention matrix. This way, as long as we have the batch, head, and the location of
-    // the 16 x 32 block within the attention matrix, we can generate the exact same dropout pattern.
-
-    FLASH_NAMESPACE::compute_attn_1rowblock<Kernel_traits, Is_dropout, Is_causal, Is_even_MN, Is_even_K, Is_softcap, Return_softmax>(params, bidb, bidh, m_block);
+    FLASH_NAMESPACE::compute_attn_1rowblock<Kernel_traits, Is_causal, Is_even_MN, Is_even_K, Is_softcap, Return_softmax>(params, bidb, bidh, m_block);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
