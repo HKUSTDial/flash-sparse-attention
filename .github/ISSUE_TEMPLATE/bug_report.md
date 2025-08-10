@@ -40,7 +40,7 @@ If applicable, add the full error traceback:
 Paste the full traceback here
 ```
 
-**Additional context**
+**Debugging Information**
 Add any other context about the problem here, including:
 - Sequence lengths and batch sizes you're using
 - Whether this works with standard PyTorch SDPA
