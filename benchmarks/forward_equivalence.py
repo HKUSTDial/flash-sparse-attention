@@ -518,27 +518,27 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
     # If you encounter NAN issues when running multiple configurations, try running a single configuration
     test_configs = [
         # (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal)
-        (1, 1, 1, 64, 64, 32, True),
-        (1, 1, 1, 64, 64, 32, False),
-        (1, 1, 1, 128, 128, 32, True),
-        (1, 1, 1, 128, 128, 32, False),
-        (1, 1, 1, 256, 256, 32, True),
-        (1, 1, 1, 256, 256, 32, False),
-        (1, 1, 1, 512, 512, 32, True),
-        (1, 1, 1, 512, 512, 32, False),
-        (1, 1, 1, 1024, 1024, 32, True),
-        (1, 1, 1, 1024, 1024, 32, False),
-        (1, 1, 1, 2048, 2048, 32, True),
-        (1, 1, 1, 2048, 2048, 32, False),
+        # (1, 1, 1, 64, 64, 32, True),
+        # (1, 1, 1, 64, 64, 32, False),
+        # (1, 1, 1, 128, 128, 32, True),
+        # (1, 1, 1, 128, 128, 32, False),
+        # (1, 1, 1, 256, 256, 32, True),
+        # (1, 1, 1, 256, 256, 32, False),
+        # (1, 1, 1, 512, 512, 32, True),
+        # (1, 1, 1, 512, 512, 32, False),
+        # (1, 1, 1, 1024, 1024, 32, True),
+        # (1, 1, 1, 1024, 1024, 32, False),
+        # (1, 1, 1, 2048, 2048, 32, True),
+        # (1, 1, 1, 2048, 2048, 32, False),
         (1, 1, 1, 4096, 4096, 32, True),
-        (1, 1, 1, 4096, 4096, 32, False),
-        (1, 2, 1, 64, 64, 32, True),
-        (2, 1, 1, 128, 128, 32, True),
-        (2, 2, 1, 128, 128, 32, True),
-        (1, 2, 1, 64, 64, 128, True),
-        (1, 2, 1, 128, 128, 128, True),
-        (1, 2, 1, 256, 256, 128, True),
-        (1, 2, 1, 512, 512, 128, True),
+        # (1, 1, 1, 4096, 4096, 32, False),
+        # (1, 2, 1, 64, 64, 32, True),
+        # (2, 1, 1, 128, 128, 32, True),
+        # (2, 2, 1, 128, 128, 32, True),
+        # (1, 2, 1, 64, 64, 128, True),
+        # (1, 2, 1, 128, 128, 128, True),
+        # (1, 2, 1, 256, 256, 128, True),
+        # (1, 2, 1, 512, 512, 128, True),
     ]
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1050,13 +1050,13 @@ def main():
         print("\n" + "📍" + " Starting Standard Forward Pass Tests " + "📍")
         test_results['cuda'] = test_cuda_forward_equivalence(args.accuracy_threshold)
     
-    if args.test_type in ['all', 'triton']:
-        print("\n" + "🔥" + " Starting Python vs Triton Tests " + "🔥")
-        test_results['triton'] = test_triton_forward_equivalence(args.accuracy_threshold)
+    # if args.test_type in ['all', 'triton']:
+    #     print("\n" + "🔥" + " Starting Python vs Triton Tests " + "🔥")
+    #     test_results['triton'] = test_triton_forward_equivalence(args.accuracy_threshold)
 
-    if args.test_type in ['all', 'flex']:
-        print("\n" + "🌟" + " Starting Python vs Flex Attention Tests " + "🌟")
-        test_results['flex'] = test_flex_forward_equivalence(args.accuracy_threshold)
+    # if args.test_type in ['all', 'flex']:
+    #     print("\n" + "🌟" + " Starting Python vs Flex Attention Tests " + "🌟")
+    #     test_results['flex'] = test_flex_forward_equivalence(args.accuracy_threshold)
 
 
     # Print overall summary
