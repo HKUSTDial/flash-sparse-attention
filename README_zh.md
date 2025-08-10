@@ -9,11 +9,6 @@
 
 </div>
 
-**可训练的动态掩码稀疏注意力**
-
-> Jingze Shi, Yifan Wu, Bingheng Wu, Yiran Peng, Liangdong Wang, Guang Liu, Yuyu Luo
-
-> 论文: https://huggingface.co/papers/2508.02124
 
 ![Flash-DMA Banner](assets/flash_dmattn_banner.png)
 
