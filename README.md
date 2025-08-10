@@ -179,33 +179,28 @@ python -c "import flash_dma_cuda; print('✅ Flash DMA CUDA extension imported s
 
 **Note**: Flash Dynamic Mask Attention requires CUDA compute capability 8.0+ for optimal performance. Earlier architectures are not supported.
 
+
 ## Benchmarking
 
 Flash-DMA provides comprehensive benchmarking tools to evaluate performance across different configurations:
 
 ### Forward Pass Equivalence
 ```bash
-python benchmarks/benchmark_forward_equivalence.py
+python benchmarks/forward_equivalence.py
 ```
 Validates numerical consistency between Python reference and CUDA implementation.
 
 ### Performance Benchmarking  
 ```bash
-python benchmarks/benchmark_forward_performance.py
+python benchmarks/forward_performance.py
 ```
-Compares Flash-DMA against standard Flash Attention across various sequence lengths and batch sizes.
+Compares Flash-DMA against standard SDPA across various sequence lengths and batch sizes.
 
 ### Gradient Computation
 ```bash
-python benchmarks/benchmark_grad.py
+python benchmarks/grad_equivalence.py
 ```
 Tests backward pass implementation and gradient equivalence.
-
-### Multi-Query Associative Recall
-```bash
-python benchmarks/benchmark_mqar.py
-```
-Evaluates performance on long-range reasoning tasks.
 
 
 ## Troubleshooting
@@ -254,9 +249,36 @@ print_memory_stats()
 torch.cuda.empty_cache()
 ```
 
+
+## Contributing
+
+We welcome contributions from the community! Flash-DMA is an open-source project and we value all types of contributions.
+
+### How to Contribute
+
+- **Report bugs**: Found a bug? Please [open an issue](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
+- **Request features**: Have an idea for improvement? [Let us know](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
+- **Submit code**: Ready to contribute code? Check our [Contributing Guide](CONTRIBUTING.md)
+- **Improve docs**: Help us make the documentation better
+
+### Quick Start for Contributors
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make your changes and test them
+4. Submit a pull request
+
+For detailed instructions, see our [Contributing Guide](CONTRIBUTING.md).
+
+### Code of Conduct
+
+This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
+
+
 ## License
 
 This project is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) for details.
+
 
 ## Citation
 
@@ -273,6 +295,7 @@ If you use Flash-DMA in your research, please cite:
       url={https://arxiv.org/abs/2508.02124}, 
 }
 ```
+
 
 ## Acknowledgments
 
