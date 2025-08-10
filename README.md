@@ -9,11 +9,6 @@
 
 </div>
 
-**Trainable Dynamic Mask Sparse Attention**
-
-> Jingze Shi, Yifan Wu, Bingheng Wu, Yiran Peng, Liangdong Wang, Guang Liu, Yuyu Luo
-
-> Paper: https://huggingface.co/papers/2508.02124
 
 ![Flash-DMA Banner](assets/flash_dmattn_banner.png)
 
