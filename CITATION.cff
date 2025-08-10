@@ -1,0 +1,50 @@
+cff-version: "1.2.0"
+date-released: 2025-06
+message: "If you use this software, please cite it using these metadata."
+title: "Flash Dynamic Mask Attention: Trainable Dynamic Mask Sparse Attention"
+url: "https://github.com/SmallDoges/flash-dmattn"
+authors:
+  - family-names: Shi
+    given-names: Jingze
+    email: losercheems@gmail.com
+  - family-names: Wu
+    given-names: Yifan
+    email: ywu012@connect.hkust-gz.edu.cn
+  - family-names: Wu
+    given-names: Bingheng
+    email: wubingheng52136@gmail.com
+  - family-names: Peng
+    given-names: Yiran
+    email: amagipeng@gmail.com
+  - family-names: Wang
+    given-names: Liangdong
+    email: wangliangdong@baai.ac.cn
+  - family-names: Liu
+    given-names: Guang
+    email: liuguang@baai.ac.cn
+  - family-names: Luo
+    given-names: Yuyu
+    email: yuyuluo@hkust-gz.edu.cn
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Shi
+      given-names: Jingze
+    - family-names: Wu
+      given-names: Yifan
+    - family-names: Wu
+      given-names: Bingheng
+    - family-names: Peng
+      given-names: Yiran
+    - family-names: Wang
+      given-names: Liangdong
+    - family-names: Liu
+      given-names: Guang
+    - family-names: Luo
+      given-names: Yuyu
+  title: "Trainable Dynamic Mask Sparse Attention"
+  year: 2025
+  url: "https://arxiv.org/abs/2508.02124"
+  doi: "10.48550/arXiv.2508.02124"
+  journal: "arXiv preprint"
+  volume: "arXiv:2508.02124"

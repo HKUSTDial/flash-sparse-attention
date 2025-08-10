@@ -185,27 +185,21 @@ Flash-DMA 提供全面的基准测试工具，用于评估不同配置下的性�
 
 ### 前向传播等效性
 ```bash
-python benchmarks/benchmark_forward_equivalence.py
+python benchmarks/forward_equivalence.py
 ```
 验证 Python 参考实现与 CUDA 实现之间的数值一致性。
 
 ### 性能基准测试  
 ```bash
-python benchmarks/benchmark_forward_performance.py
+python benchmarks/forward_performance.py
 ```
-在各种序列长度和批大小下比较 Flash-DMA 与标准 Flash Attention。
+在各种序列长度和批大小下比较 Flash-DMA 与标准 SDPA。
 
 ### 梯度计算
 ```bash
-python benchmarks/benchmark_grad.py
+python benchmarks/grad_equivalence.py
 ```
 测试反向传播实现和梯度等效性。
-
-### 多查询联想回忆
-```bash
-python benchmarks/benchmark_mqar.py
-```
-评估长程推理任务的性能。
 
 
 ## 故障排除
@@ -253,6 +247,31 @@ print_memory_stats()
 # 如需要，清除缓存
 torch.cuda.empty_cache()
 ```
+
+
+## 贡献
+
+我们欢迎社区的贡献！Flash-DMA 是一个开源项目，我们重视所有类型的贡献。
+
+### 如何贡献
+
+- **报告错误**: 发现了错误？请[提交 issue](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
+- **功能请求**: 有改进想法？[告诉我们](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
+- **提交代码**: 准备贡献代码？查看我们的[贡献指南](CONTRIBUTING.md)
+- **改进文档**: 帮助我们完善文档
+
+### 贡献者快速入门
+
+1. Fork 仓库
+2. 创建功能分支: `git checkout -b feature-name`
+3. 进行修改并测试
+4. 提交 Pull Request
+
+详细说明请参见我们的[贡献指南](CONTRIBUTING.md)。
+
+### 行为准则
+
+本项目遵循[贡献者公约行为准则](CODE_OF_CONDUCT.md)。参与时，您需要遵守此准则。
 
 ## 许可证
 
