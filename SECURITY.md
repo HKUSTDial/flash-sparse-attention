@@ -109,4 +109,4 @@ For security-related questions or concerns:
 
 For general support:
 - GitHub Issues: https://github.com/SmallDoges/flash-dmattn/issues
-- Documentation: https://github.com/SmallDoges/flash-dmattn/docs/
+- Documentation: https://github.com/SmallDoges/flash-dmattn/tree/main/docs/
