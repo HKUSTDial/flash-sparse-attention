@@ -16,7 +16,6 @@
 #include "utils.h"
 #include "softmax.h"
 #include "mask.h"
-#include "dropout.h"
 
 namespace FLASH_NAMESPACE {
 
@@ -75,7 +74,7 @@ make_tiled_copy_C_warpcontiguousN(Copy_Atom<Args...> const& copy_atom,
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Is_first, bool Is_last, bool Seq_parallel=false, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Is_first, bool Is_last, bool Seq_parallel=false, typename Params>
 inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const int bidb, const int bidh, const int n_block) {
 
     using Element = typename Kernel_traits::Element;
@@ -273,9 +272,13 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         typename Kernel_traits::SmemLayoutdQ{}
     );
 
-
+    // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
+    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
+    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
     using GmemTiledCopydO = std::conditional_t<
         Is_first,
         typename Kernel_traits::GmemTiledCopydO,
@@ -298,11 +301,15 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tdOgdO = gmem_thr_copy_dO.partition_S(gdO);
     Tensor tdOsdO = gmem_thr_copy_dO.partition_D(sdO);
     Tensor tdOgO = gmem_thr_copy_dO.partition_S(gO);
-    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K)
+    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);                // (KCPY, KCPY_N, KCPY_K)
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K)
+    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);    // ((Atom,AtomNum),ATOM_M,ATOM_N)
+    Tensor tMaskgMask = gmem_thr_copy_Mask.partition_S(gMask);      // (MaskCPY, MaskCPY_M, MaskCPY_N)
+    Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
+    Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N)
+    Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
+    Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);              // ((Atom,AtomNum),ATOM_M,ATOM_N)
     Tensor tdQgdQ = gmem_thr_copy_dQ.partition_D(gdQ);
     Tensor tdQgdQaccum = gmem_thr_copy_dQaccum.partition_D(gdQaccum);
     // if (cute::thread0()) { print(tdQgdQaccum.layout()); printf("\n"); }
@@ -311,32 +318,32 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     //     printf("tidx = %d, tdQgdQaccum = 0x%p\n", tidx, tdQgdQaccum.data());
     // }
 
+    // Matrix Multiply Accumulate
     typename Kernel_traits::TiledMmaSdP tiled_mma_sdp;
     auto thr_mma_sdp = tiled_mma_sdp.get_thread_slice(tidx);
-    Tensor tSrQ = thr_mma_sdp.partition_fragment_A(sQ);         // (MMA,MMA_N,MMA_K)
-    Tensor tSrK = thr_mma_sdp.partition_fragment_B(sK);         // (MMA,MMA_N,MMA_K)
-    Tensor tdPrdO = thr_mma_sdp.partition_fragment_A(sdO);      // (MMA,MMA_N,MMA_K)
-    Tensor tdPrV = thr_mma_sdp.partition_fragment_B(sV);        // (MMA,MMA_N,MMA_K)
+    Tensor tSrQ = thr_mma_sdp.partition_fragment_A(sQ);                                         // (MMA, MMA_N, MMA_K)
+    Tensor tSrK = thr_mma_sdp.partition_fragment_B(sK);                                         // (MMA, MMA_N, MMA_K)
+    Tensor tdPrdO = thr_mma_sdp.partition_fragment_A(sdO);                                      // (MMA, MMA_N, MMA_K)
+    Tensor tdPrV = thr_mma_sdp.partition_fragment_B(sV);                                        // (MMA, MMA_N, MMA_K)
+    Tensor tSrMask = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
+    Tensor tSrBias = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
 
     typename Kernel_traits::TiledMmadKV tiled_mma_dkv;
     auto thr_mma_dkv = tiled_mma_dkv.get_thread_slice(tidx);
-    Tensor tdKrdSt = thr_mma_dkv.partition_fragment_A(sdStNoSwizzle); // (MMA, MMA_N, MMA_N)
-    Tensor tdKrQt = thr_mma_dkv.partition_fragment_B(sQtNoSwizzle);   // (MMA, MMA_K, MMA_N)
-    Tensor tdVrPt = thr_mma_dkv.partition_fragment_A(sPtNoSwizzle);   // (MMA, MMA_N, MMA_N)
-    Tensor tdVrdO = thr_mma_dkv.partition_fragment_B(sdOtransposedNoSwizzle); // (MMA, MMA_K, MMA_N)
+    Tensor tdKrdSt = thr_mma_dkv.partition_fragment_A(sdStNoSwizzle);                           // (MMA, MMA_N, MMA_N)
+    Tensor tdKrQt = thr_mma_dkv.partition_fragment_B(sQtNoSwizzle);                             // (MMA, MMA_K, MMA_N)
+    Tensor tdVrPt = thr_mma_dkv.partition_fragment_A(sPtNoSwizzle);                             // (MMA, MMA_N, MMA_N)
+    Tensor tdVrdO = thr_mma_dkv.partition_fragment_B(sdOtransposedNoSwizzle);                   // (MMA, MMA_K, MMA_N)
 
     typename Kernel_traits::TiledMmadQ tiled_mma_dq;
     auto thr_mma_dq = tiled_mma_dq.get_thread_slice(tidx);
-    Tensor tdQrdS = thr_mma_dq.partition_fragment_A(sdS);                      // (MMA, MMA_N, MMA_N)
-    Tensor tdQrKt = thr_mma_dq.partition_fragment_B(sKtNoSwizzle);    // (MMA, MMA_K, MMA_N)
+    Tensor tdQrdS = thr_mma_dq.partition_fragment_A(sdS);                                       // (MMA, MMA_N, MMA_N)
+    Tensor tdQrKt = thr_mma_dq.partition_fragment_B(sKtNoSwizzle);                              // (MMA, MMA_K, MMA_N)
 
-    Tensor acc_dk = partition_fragment_C(tiled_mma_dkv, Shape<Int<kBlockN>, Int<kHeadDim>>{});  // MMA, MMA_N, MMA_K
-    Tensor acc_dv = partition_fragment_C(tiled_mma_dkv, Shape<Int<kBlockN>, Int<kHeadDim>>{});  // MMA, MMA_N, MMA_K
+    Tensor acc_dk = partition_fragment_C(tiled_mma_dkv, Shape<Int<kBlockN>, Int<kHeadDim>>{});  // (MMA, MMA_N, MMA_K)
+    Tensor acc_dv = partition_fragment_C(tiled_mma_dkv, Shape<Int<kBlockN>, Int<kHeadDim>>{});  // (MMA, MMA_N, MMA_K)
 
-    //
     // Copy Atom retiling
-    //
-
     auto smem_tiled_copy_QdO = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtom{}, tiled_mma_sdp);
     auto smem_thr_copy_QdO = smem_tiled_copy_QdO.get_thread_slice(tidx);
     Tensor tSsQ = smem_thr_copy_QdO.partition_S(sQ);
@@ -363,6 +370,14 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // }
     Tensor tdSsdS = smem_thr_copy_PdS.partition_D(sdS);   // ((Atom,AtomNum),PIPE_M,PIPE_N)
 
+    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
+    auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
+    Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
+
+    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
+    auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
+    Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
+
     auto smem_tiled_copy_PdSt = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma_dkv);
     auto smem_thr_copy_PdSt = smem_tiled_copy_PdSt.get_thread_slice(tidx);
     Tensor tdVsPt = smem_thr_copy_PdSt.partition_S(sPt);
@@ -385,14 +400,15 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     auto smem_thr_copy_dQ = smem_tiled_copy_dQ.get_thread_slice(tidx);
     Tensor taccdQsdQ = smem_thr_copy_dQ.partition_D(sdQ);  // ((Atom,AtomNum),PIPE_M,PIPE_N)
 
-    //
     // PREDICATES
-    //
-
-    Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));    // (BLK_M,BLK_K) -> (blk_m,blk_k)
-    Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));    // (BLK_N,BLK_K) -> (blk_n,blk_k)
+    Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));             // (BLK_M,BLK_K) -> (blk_m,blk_k)
+    Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));            // (BLK_N,BLK_K) -> (blk_n,blk_k)
+    Tensor cMask = make_identity_tensor(make_shape(size<0>(sMask), size<1>(sMask)));    // (BLK_M,BLK_N) -> (blk_m,blk_n)
+    Tensor cBias = make_identity_tensor(make_shape(size<0>(sBias), size<1>(sBias)));    // (BLK_M,BLK_N) -> (blk_m,blk_n)
     Tensor tQcQ = gmem_thr_copy_QKV.partition_D(cQ);
     Tensor tKVcKV = gmem_thr_copy_QKV.partition_D(cKV);
+    Tensor tMaskcMask = gmem_thr_copy_Mask.partition_D(cMask);
+    Tensor tBiascBias = gmem_thr_copy_Bias.partition_D(cBias);
 
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
@@ -407,7 +423,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     }
 
     // Prologue
-
     // We'll advance gdQ and gdQaccum before the 1st read/write.
     tdQgdQ.data() = tdQgdQ.data() + kBlockM * params.dq_row_stride;
     tdQgdQaccum.data() = tdQgdQaccum.data() + kBlockM * params.h * params.d_rounded;
@@ -531,7 +546,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     if (Is_first) {
         cute::copy(tdOrdO, tdOsdO);
         dot_do_o<Kernel_traits::kGmemThreadsPerRow>(tdOrdO, tdOrO, gdPsum,
-                                                    Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow), params.p_dropout);
+                                                    Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow), 0.0f);
     }
 
     if (Kernel_traits::Is_V_in_regs) {
@@ -541,9 +556,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         CUTE_STATIC_ASSERT_V(size<1>(tdPsV) == size<1>(tdPrV_copy_view));            // M
         cute::copy(smem_tiled_copy_KV, tdPsV, tdPrV_copy_view);
     }
-
-    FLASH_NAMESPACE::Dropout dropout(params.rng_state[0], params.rng_state[1], params.p_dropout_in_uint8_t,
-                           bidb, bidh, tidx, params.h);
 
     clear(acc_dv);
     clear(acc_dk);
@@ -608,24 +620,23 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                                          AtomLayoutMS * 16);
             }
         }
+        FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal>(
+            scores,
+            mask,
+            bias,
+            params.scale_softmax,
+            n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
+            binfo.actual_seqlen_k,
+            m_block * kBlockM + get<0>(taccScS_row(0)),
+            binfo.actual_seqlen_q,
+            AtomLayoutMS * 16
+        );
 
         // if (cute::thread(32, 0)) { print(scores); }
         // Compute the exponential value.
         FLASH_NAMESPACE::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
-        if constexpr (Is_dropout) {
-            int warp_id = tidx / 32;
-            int block_row_idx = m_block * (kBlockM / 16) + warp_id % AtomLayoutMS;
-            // Need col to be multiples of 32, since we're doing dropout with block of 16 x 32
-            static_assert(MMA_N_SdP % 2 == 0);
-            int block_col_idx = n_block * (kBlockN / 32) + (warp_id / AtomLayoutMS) * (MMA_N_SdP / 2);
-            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
-                acc_s, block_row_idx, block_col_idx, AtomLayoutMS
-            );
-        }
         // Convert scores from fp32 to fp16/bf16
-        Tensor rP = !Is_dropout
-            ? FLASH_NAMESPACE::convert_type<Element>(acc_s)
-            : FLASH_NAMESPACE::convert_type_relu<Element>(acc_s);
+        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
         // Reshape rP from (MMA=4, MMA_M, MMA_N) to ((4, 2), MMA_N, MMA_N / 2)
         // if using m16n8k16 or (4, MMA_N, MMA_N) if using m16n8k8.
         Tensor tPrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<Kernel_traits::TiledMmaSdP>(rP.layout()));
@@ -660,7 +671,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // Reshape acc_dp from (MMA=4, MMA_N, MMA_N) to (row=(2, MMA_N), col=(2, MMA_N))
         Tensor dS = make_tensor(acc_dp.data(), scores.layout());
         auto pointwise_mult = [](float p, float dp, float d) {
-            return p * (!Is_dropout || p >= 0 ? dp - d : d);
+            return p * (dp - d);
         };
         #pragma unroll
         for (int mi = 0; mi < size<0>(dS); ++mi) {
@@ -757,7 +768,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             }
         } else {
             #pragma unroll
-            for (int i = 0; i < size(acc_dq); ++i) { acc_dq(i) *= params.scale_softmax_rp_dropout; }
+            for (int i = 0; i < size(acc_dq); ++i) { acc_dq(i) *= params.scale_softmax; }
             // Convert acc_dq from fp32 to fp16
             Tensor rdQ = FLASH_NAMESPACE::convert_type<Element>(acc_dq);
             Tensor taccdQrdQ = smem_thr_copy_dQ.retile_S(rdQ);  // ((Atom,AtomNum), MMA_N, MMA_N)
@@ -781,7 +792,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         if (Is_first && m_block > m_block_min) {
             cute::copy(tdOrdO, tdOsdO);
             dot_do_o<Kernel_traits::kGmemThreadsPerRow>(tdOrdO, tdOrO, gdPsum,
-                                                        Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow), params.p_dropout);
+                                                        Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow), 0.0f);
         }
 
         if (Is_last) {
@@ -803,12 +814,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     // Epilogue
 
-    if (Is_dropout) {
-        #pragma unroll
-        for (int i = 0; i < size(acc_dv); ++i) { acc_dv(i) *= params.rp_dropout; }
-    }
     #pragma unroll
-    for (int i = 0; i < size(acc_dk); ++i) { acc_dk(i) *= params.scale_softmax_rp_dropout; }
+    for (int i = 0; i < size(acc_dk); ++i) { acc_dk(i) *= params.scale_softmax; }
 
     // Convert acc_dv from fp32 to fp16
     Tensor rdK = FLASH_NAMESPACE::convert_type<Element>(acc_dk);
@@ -874,7 +881,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_M, bool Is_even_K, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Is_even_M, bool Is_even_K, typename Params>
 inline __device__ void compute_dq_dk_dv(const Params &params) {
 
     // The block index for the batch.
@@ -888,20 +895,20 @@ inline __device__ void compute_dq_dk_dv(const Params &params) {
 
     const int n_block_max = (params.seqlen_k + Kernel_traits::kBlockN - 1) / Kernel_traits::kBlockN;
     if (n_block_max == 1) {
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_dropout, Is_causal, Is_even_M, Is_even_K, true, true>(params, bidb, bidh, 0);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, true, true>(params, bidb, bidh, 0);
     } else {
         // Iterating backward from n_block_max - 1 to 0 might save 1 register
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_dropout, Is_causal, Is_even_M, Is_even_K, true, false>(params, bidb, bidh, n_block_max - 1);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, true, false>(params, bidb, bidh, n_block_max - 1);
         for (int n_block = n_block_max - 2; n_block > 0; n_block--) {
-            compute_dq_dk_dv_1colblock<Kernel_traits, Is_dropout, Is_causal, Is_even_M, Is_even_K, false, false>(params, bidb, bidh, n_block);
+            compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, false, false>(params, bidb, bidh, n_block);
         }
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_dropout, Is_causal, Is_even_M, Is_even_K, false, true>(params, bidb, bidh, 0);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, false, true>(params, bidb, bidh, 0);
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, typename Params>
 inline __device__ void compute_dq_dk_dv_seqk_parallel(const Params &params) {
 
     // The block index for the batch.
@@ -911,9 +918,8 @@ inline __device__ void compute_dq_dk_dv_seqk_parallel(const Params &params) {
 
     // If deterministic, each thread block will do atomicAdd to a different dQ_accum buffer.
     for (int n_block = blockIdx.x; n_block < (params.seqlen_k + Kernel_traits::kBlockN - 1) / Kernel_traits::kBlockN; n_block += gridDim.x) {
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_dropout, Is_causal, Is_even_MN, Is_even_K, Is_softcap, false, false, /*Seq_parallel=*/true>(params, bidb, bidh, n_block);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_MN, Is_even_K, Is_softcap, false, false, /*Seq_parallel=*/true>(params, bidb, bidh, n_block);
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-} // namespace flash
+} // namespace FLASH_NAMESPACE
