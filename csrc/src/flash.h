@@ -50,7 +50,6 @@ struct Mask_params {
     index_t mask_batch_stride;          // Stride between batches of attention mask
     index_t mask_head_stride;           // Stride between heads of attention mask
     index_t mask_row_stride;            // Stride between rows of attention mask
-    index_t mask_col_stride;            // Stride between columns of attention mask
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -62,7 +61,6 @@ struct Bias_params {
     index_t bias_batch_stride;          // Stride between batches of attention bias
     index_t bias_head_stride;           // Stride between heads of attention bias
     index_t bias_row_stride;            // Stride between rows of attention bias
-    index_t bias_col_stride;            // Stride between columns of attention bias
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -179,7 +177,6 @@ struct Flash_bwd_params : public Flash_fwd_params {
     index_t dbias_batch_stride;
     index_t dbias_head_stride;
     index_t dbias_row_stride;
-    index_t dbias_col_stride;
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;

@@ -425,9 +425,10 @@ template <bool Is_even_MN=true, bool Is_even_K=true, bool Clear_OOB_MN=false, bo
           typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2, typename Engine3, typename Layout3>
 __forceinline__ __device__ void copy(
-    TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
-    Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
-    Tensor<Engine3, Layout3> const &predicate_K, const int max_MN=0
+    TiledCopy tiled_copy,
+    Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D, 
+    Tensor<Engine2, Layout2> const &identity_MN, Tensor<Engine3, Layout3> const &predicate_K,
+    const int max_MN=0
 ) {
     CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
     CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
@@ -496,8 +497,9 @@ template <bool Is_even_MN=true, bool Clear_OOB_MN=true,
           typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2>
 __forceinline__ __device__ void copy_MN(
-    TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
-    Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
+    TiledCopy tiled_copy,
+    Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D,
+    Tensor<Engine2, Layout2> const &identity_MN,
     const int max_M=0, const int max_N=0
 ) {
     CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});          // (MMA, MMA_M, MMA_N) 

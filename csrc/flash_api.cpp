@@ -78,8 +78,6 @@ void set_params_fprop(
     params.mask_head_stride = mask.stride(-3);
     params.bias_head_stride = bias.stride(-3);
     params.o_head_stride = out.stride(-2);
-    params.mask_col_stride = mask.stride(-1);
-    params.bias_col_stride = bias.stride(-1);
 
     if (cu_seqlens_q_d == nullptr) {
         params.q_batch_stride = q.stride(0);
@@ -140,6 +138,93 @@ void set_params_fprop(
 
     params.unpadded_lse = unpadded_lse;
     params.seqlenq_ngroups_swapped = seqlenq_ngroups_swapped;
+}
+
+void set_params_dgrad(
+    Flash_bwd_params &params,
+    // sizes
+    const size_t b,
+    const size_t seqlen_q,
+    const size_t seqlen_k,
+    const size_t seqlen_q_rounded,
+    const size_t seqlen_k_rounded,
+    const size_t h,
+    const size_t h_k,
+    const size_t d,
+    const size_t d_rounded,
+    // device pointers
+    const at::Tensor q,
+    const at::Tensor k,
+    const at::Tensor v,
+    const at::Tensor mask,
+    const at::Tensor bias,
+    const at::Tensor out,
+    const at::Tensor dout,
+    at::Tensor dq,
+    at::Tensor dk,
+    at::Tensor dv,
+    at::Tensor dbias,
+    void *cu_seqlens_q_d,
+    void *cu_seqlens_k_d,
+    void *dq_accum_d,
+    void *dk_accum_d,
+    void *dv_accum_d,
+    void *softmax_lse_d,
+    void *dsoftmax_sum_d,
+    float p_dropout,
+    float softmax_scale,
+    bool is_causal,
+    const float softcap,
+    bool deterministic,
+    const bool unpadded_lse
+) {
+    set_params_fprop(
+        params,
+        b, seqlen_q, seqlen_k, seqlen_q_rounded, seqlen_k_rounded, h, h_k, d, d_rounded,
+        q, k, v, mask, bias, out,
+        cu_seqlens_q_d,
+        cu_seqlens_k_d,
+        nullptr,
+        nullptr,
+        softmax_lse_d,
+        softmax_scale,
+        is_causal,
+        softcap,
+        false,  // seqlenq_ngroups_swapped
+        unpadded_lse
+    );
+
+    // Set the pointers and strides.
+    params.do_ptr = dout.data_ptr();
+    params.do_row_stride = dout.stride(-3);
+    params.do_head_stride = dout.stride(-2);
+    params.dq_ptr = dq.data_ptr();
+    params.dk_ptr = dk.data_ptr();
+    params.dv_ptr = dv.data_ptr();
+    params.dbias_ptr = dbias.data_ptr();
+    params.dq_row_stride = dq.stride(-3);
+    params.dk_row_stride = dk.stride(-3);
+    params.dv_row_stride = dv.stride(-3);
+    params.dq_head_stride = dq.stride(-2);
+    params.dk_head_stride = dk.stride(-2);
+    params.dv_head_stride = dv.stride(-2);
+
+    if (cu_seqlens_q_d == nullptr) {
+        params.do_batch_stride = dout.stride(0);
+        params.dq_batch_stride = dq.stride(0);
+        params.dk_batch_stride = dk.stride(0);
+        params.dv_batch_stride = dv.stride(0);
+        params.dbias_batch_stride = dbias.stride(0);
+    }
+
+    params.dq_accum_ptr = dq_accum_d;
+    params.dk_accum_ptr = dk_accum_d;
+    params.dv_accum_ptr = dv_accum_d;
+
+    // Softmax sum
+    params.dsoftmax_sum = dsoftmax_sum_d;
+
+    params.deterministic = deterministic;
 }
 
 void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split_kernel=false) {
@@ -232,14 +317,6 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(
         params.oaccum_ptr = out_accum.data_ptr();
     }
     TORCH_CHECK(params.num_splits <= 128, "num_splits > 128 not supported");
-
-    // Temporarily disable Split-KV, because some bugs are still being fixed.
-    // See: https://github.com/SmallDoges/flash-dmattn/issues/47
-    // Regardless of how it is set externally, always set num_splits back to 1.
-    // This is to avoid the extra memory overhead of Split-KV.
-    params.num_splits = 1;
-    softmax_lse_accum.reset();
-    out_accum.reset();
 
     return std::make_tuple(softmax_lse_accum, out_accum);
 }
