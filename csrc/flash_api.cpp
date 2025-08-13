@@ -116,7 +116,7 @@ void set_params_fprop(
 
     // Set the different scale values.
     #ifdef FLASHATTENTION_DISABLE_SOFTCAP
-        TORCH_CHECK(softcap <= 0.0, "This flash attention build does not support softcap.");
+        TORCH_CHECK(softcap <= 0.0, "This flash dynamic mask attention build does not support softcap.");
     #endif
     if (softcap > 0.0) {
         params.softcap = softmax_scale / softcap;
@@ -133,7 +133,7 @@ void set_params_fprop(
     params.is_seqlens_k_cumulative = true;
 
     #ifdef FLASHATTENTION_DISABLE_UNEVEN_K
-        TORCH_CHECK(d == d_rounded, "This flash attention build does not support headdim not being a multiple of 32.");
+        TORCH_CHECK(d == d_rounded, "This flash dynamic mask attention build does not support headdim not being a multiple of 32.");
     #endif
 
     params.unpadded_lse = unpadded_lse;
@@ -231,7 +231,7 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split
     FP16_SWITCH(!params.is_bf16, [&] {
         HEADDIM_SWITCH(params.d, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-                if (params.num_splits <= 1 && !force_split_kernel) {  // If we don't set it num_splits == 0
+                if (params.num_splits <= 1 && !force_split_kernel) {    // If we don't set it num_splits == 0
                     run_mha_fwd_<elem_type, kHeadDim, Is_causal>(params, stream);
                 } else {
                     run_mha_fwd_splitkv_dispatch<elem_type, kHeadDim, Is_causal>(params, stream);
@@ -354,6 +354,8 @@ mha_fwd(
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(v.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    TORCH_CHECK(mask.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    TORCH_CHECK(bias.stride(-1) == 1, "Input tensor must have contiguous last dimension");
 
     const auto sizes = q.sizes();
 
@@ -375,8 +377,12 @@ mha_fwd(
     // H/t Daniel Haziza
     const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && head_size % 8 == 0;
     const int ngroups = num_heads / num_heads_k;
+    at::Tensor mask_view = mask;
+    at::Tensor bias_view = bias;
     if (seqlenq_ngroups_swapped) {
         q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2);
+        mask_view = mask.expand({batch_size, num_heads_k, ngroups, seqlen_k});
+        bias_view = bias.expand({batch_size, num_heads_k, ngroups, seqlen_k});
         seqlen_q = ngroups;
         num_heads = num_heads_k;
     }
@@ -384,8 +390,8 @@ mha_fwd(
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size);
     CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size);
-    CHECK_SHAPE(mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
-    CHECK_SHAPE(bias, batch_size, num_heads_k, seqlen_q, seqlen_k);
+    CHECK_SHAPE(mask_view, batch_size, num_heads_k, seqlen_q, seqlen_k);
+    CHECK_SHAPE(bias_view, batch_size, num_heads_k, seqlen_q, seqlen_k);
 
     at::Tensor out;
     if (out_.has_value()) {
@@ -425,7 +431,7 @@ mha_fwd(
         seqlen_q_rounded, seqlen_k_rounded,
         num_heads, num_heads_k,
         head_size, head_size_rounded,
-        q, k, v, mask, bias, out,
+        q, k, v, mask_view, bias_view, out,
         /*cu_seqlens_q_d=*/nullptr,
         /*cu_seqlens_k_d=*/nullptr,
         /*seqused_k=*/nullptr,
