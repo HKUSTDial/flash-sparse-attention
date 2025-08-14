@@ -134,12 +134,14 @@ static __device__ __forceinline__ T run(T x, Operator &op) {
 
 template <
     bool A_in_regs=false, bool B_in_regs=false,
-    typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
     typename TiledMma, typename TiledCopyA, typename TiledCopyB,
     typename ThrCopyA, typename ThrCopyB
 >
 __forceinline__ __device__ void gemm(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB,
     TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
 ) {
@@ -166,12 +168,14 @@ __forceinline__ __device__ void gemm(
 
 template <
     bool A_in_regs=false, bool B_in_regs=false,
-    typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4, typename Tensor5,
+    typename Tensor0, typename Tensor1,
+    typename Tensor2, typename Tensor3, typename Tensor4, typename Tensor5,
     typename TiledMma, typename TiledCopyA, typename TiledCopyB,
     typename ThrCopyA, typename ThrCopyB
 >
 __forceinline__ __device__ void sparse_gemm(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &tCrM,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &tCrM,
     TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
 ) {
@@ -234,12 +238,14 @@ __forceinline__ __device__ void sparse_gemm(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
-    typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3,
     typename TiledMma, typename TiledCopy,
     typename ThrCopy
 >
 __forceinline__ __device__ void gemm_rs(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
     TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
     ThrCopy smem_thr_copy_B
 ) {
@@ -261,12 +267,14 @@ __forceinline__ __device__ void gemm_rs(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
-    typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
     typename TiledMma, typename TiledCopy,
     typename ThrCopy
 >
 __forceinline__ __device__ void sparse_gemm_rs(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB, Tensor4 const &tCrM,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB, Tensor4 const &tCrM,
     TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
     ThrCopy smem_thr_copy_B
 ) {
