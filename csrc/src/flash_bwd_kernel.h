@@ -23,13 +23,11 @@ using namespace cute;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <int MMA_N,
-          class... Args,
-          class TiledMMA>
-CUTE_HOST_DEVICE
-auto
-make_tiled_copy_B_warpcontiguousN(Copy_Atom<Args...> const& copy_atom,
-                                  TiledMMA           const& tiled_mma) {
+template <int MMA_N, class... Args, class TiledMMA>
+CUTE_HOST_DEVICE auto make_tiled_copy_B_warpcontiguousN(
+    Copy_Atom<Args...> const& copy_atom,
+    TiledMMA const& tiled_mma
+) {
     constexpr int TileShape_N = decltype(tiled_mma.template tile_size_mnk<1>())::value;
     constexpr int TileShape_K = decltype(tiled_mma.template tile_size_mnk<2>())::value;
     using AtomShape_MNK = typename TiledMMA::AtomShape_MNK;
@@ -38,26 +36,28 @@ make_tiled_copy_B_warpcontiguousN(Copy_Atom<Args...> const& copy_atom,
     constexpr int kNWarpsN = TileShape_N / AtomShape_N / 2;
     constexpr int MMAStride_N = MMA_N * AtomShape_N * 2;
     // This gives the correct layout, idk why.
-    // auto t = make_tile(Layout<Shape<Shape<_8, _2>, _2>,
-    //                           Stride<Stride<_1, _64>, _8> >{},
-    // auto t = make_tile(Layout<Shape<_8, _2, _2>,
-    //                           Stride<_1, _64, _8> >{},
-    auto t = make_tile(Layout<Shape<Int<AtomShape_N>, Int<kNWarpsN>, _2>,   // (8, 2, 2) or (8, 4, 2)
-                              Stride<_1, Int<MMAStride_N>, _8> >{},       // (1, 64, 8) or (1, 32, 8)
-                       make_layout(Int<TileShape_K>{}));
+    // auto t = make_tile(
+    //     Layout<Shape<Shape<_8, _2>, _2>,
+    //     Stride<Stride<_1, _64>, _8> >{},
+    // auto t = make_tile(
+    //     Layout<Shape<_8, _2, _2>,
+    //     Stride<_1, _64, _8> >{},
+    auto t = make_tile(
+        Layout<Shape<Int<AtomShape_N>, Int<kNWarpsN>, _2>,      // (8, 2, 2) or (8, 4, 2)
+        Stride<_1, Int<MMAStride_N>, _8> >{},                   // (1, 64, 8) or (1, 32, 8)
+        make_layout(Int<TileShape_K>{})
+    );
     // if (cute::thread0()) {printf("make_tiled_copy_B_warpcontiguousN "); print(t); printf("\n");  }
     return make_tiled_copy_impl(copy_atom, tiled_mma.get_layoutB_TV(), t);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <int MMA_N,
-          class... Args,
-          class TiledMMA>
-CUTE_HOST_DEVICE
-auto
-make_tiled_copy_C_warpcontiguousN(Copy_Atom<Args...> const& copy_atom,
-                                  TiledMMA           const& tiled_mma) {
+template <int MMA_N, class... Args, class TiledMMA>
+CUTE_HOST_DEVICE auto make_tiled_copy_C_warpcontiguousN(
+    Copy_Atom<Args...> const& copy_atom,
+    TiledMMA const& tiled_mma
+) {
     constexpr int TileShape_M = decltype(tiled_mma.template tile_size_mnk<0>())::value;
     constexpr int TileShape_N = decltype(tiled_mma.template tile_size_mnk<1>())::value;
     using AtomShape_MNK = typename TiledMMA::AtomShape_MNK;
@@ -65,9 +65,11 @@ make_tiled_copy_C_warpcontiguousN(Copy_Atom<Args...> const& copy_atom,
     // Divide by 2 because right now we always use 2 for the ValLayout
     constexpr int kNWarpsN = TileShape_N / AtomShape_N / 2;
     constexpr int MMAStride_N = MMA_N * AtomShape_N * 2;
-    auto t = make_tile(make_layout(Int<TileShape_M>{}),
-                       Layout<Shape<Int<AtomShape_N>, Int<kNWarpsN>, _2>,   // (8, 2, 2) or (8, 4, 2)
-                              Stride<_1, Int<MMAStride_N>, _8> >{});       // (1, 64, 8) or (1, 32, 8)
+    auto t = make_tile(
+        make_layout(Int<TileShape_M>{}),
+        Layout<Shape<Int<AtomShape_N>, Int<kNWarpsN>, _2>,      // (8, 2, 2) or (8, 4, 2)
+        Stride<_1, Int<MMAStride_N>, _8> >{}
+    );                                                          // (1, 64, 8) or (1, 32, 8)
     // if (cute::thread0()) {printf("make_tiled_copy_C_warpcontiguousN "); print(t); printf("\n");  }
     return make_tiled_copy_impl(copy_atom, tiled_mma.get_layoutC_TV(), t);
 }
@@ -546,7 +548,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     if (Is_first) {
         cute::copy(tdOrdO, tdOsdO);
         dot_do_o<Kernel_traits::kGmemThreadsPerRow>(tdOrdO, tdOrO, gdPsum,
-                                                    Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow), 0.0f);
+                                                    Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow));
     }
 
     if (Kernel_traits::Is_V_in_regs) {
@@ -792,7 +794,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         if (Is_first && m_block > m_block_min) {
             cute::copy(tdOrdO, tdOsdO);
             dot_do_o<Kernel_traits::kGmemThreadsPerRow>(tdOrdO, tdOrO, gdPsum,
-                                                        Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow), 0.0f);
+                                                        Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow));
         }
 
         if (Is_last) {
