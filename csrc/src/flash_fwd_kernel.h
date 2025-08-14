@@ -51,12 +51,7 @@ __forceinline__ __device__ auto get_lse_tile(
 }
 
 template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
-inline __device__ void compute_attn_1rowblock(
-    const Params &params,
-    const int bidb,
-    const int bidh,
-    const int m_block
-) {
+inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
 
     using Element = typename Kernel_traits::Element;
     using ElementAccum = typename Kernel_traits::ElementAccum;
