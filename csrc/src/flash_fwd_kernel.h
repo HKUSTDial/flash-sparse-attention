@@ -25,7 +25,13 @@ using namespace cute;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename ElementAccum, typename Params, int kBlockM, bool Is_even_MN>
-__forceinline__ __device__ auto get_lse_tile(const Params &params, const int bidb, const int bidh, const int m_block, const BlockInfo</*Varlen=*/!Is_even_MN> &binfo) {
+__forceinline__ __device__ auto get_lse_tile(
+    const Params &params,
+    const int bidb,
+    const int bidh,
+    const int m_block,
+    const BlockInfo</*Varlen=*/!Is_even_MN> &binfo
+) {
         // When params.unpadded_lse is false, LSE is written as (b, h, seqlen_q) - this is non-variable seqlen path.
         // Otherwise, when params.seqlenq_ngroups_swapped is true, it is written as (h, seqlen_q, b) to account for seqlen_q <-> h swapping trick.
         // Otherwise, it's written as (h, b, seqlen_q).
@@ -45,7 +51,12 @@ __forceinline__ __device__ auto get_lse_tile(const Params &params, const int bid
 }
 
 template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax, typename Params>
-inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
+inline __device__ void compute_attn_1rowblock(
+    const Params &params,
+    const int bidb,
+    const int bidh,
+    const int m_block
+) {
 
     using Element = typename Kernel_traits::Element;
     using ElementAccum = typename Kernel_traits::ElementAccum;
@@ -419,9 +430,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Use sparse general matrix multiplication
         FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ,
-            tSrK, tSsQ, tSsK, tSrMask,      // Active key mask for sparse K matrix multiplication
-            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tiled_mma,
+            smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
         // if (cute::thread0()) { print(acc_s); }
@@ -483,7 +494,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
-            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
+            tiled_mma,
+            smem_tiled_copy_V, smem_thr_copy_V
         );
         // if (cute::thread0()) { print(scores); }
 
@@ -514,11 +526,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         );
         cute::cp_async_fence();
 
+        // Use sparse general matrix multiplication
         FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ,
-            tSrK, tSsQ, tSsK, tSrMask,      // Active key mask for sparse K matrix multiplication
-            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tiled_mma,
+            smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
         if constexpr (Is_softcap){
@@ -574,7 +587,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
-            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
+            tiled_mma,
+            smem_tiled_copy_V, smem_thr_copy_V
         );
     }
 
@@ -1004,9 +1018,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         // Use sparse general matrix multiplication
         FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ,
-            tSrK, tSsQ, tSsK, tSrMask,      // Active key mask for sparse K matrix multiplication
-            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tiled_mma,
+            smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
         // if (cute::thread0()) { print(acc_s); }
@@ -1080,7 +1094,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
-            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
+            tiled_mma,
+            smem_tiled_copy_V, smem_thr_copy_V
         );
 
         // This check is at the end of the loop since we always have at least 1 iteration
@@ -1120,11 +1135,12 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         );
         cute::cp_async_fence();
 
+        // Use sparse general matrix multiplication
         FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ,
-            tSrK, tSsQ, tSsK, tSrMask,      // Active key mask for sparse K matrix multiplication
-            tiled_mma, smem_tiled_copy_Q, smem_tiled_copy_K,
+            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tiled_mma,
+            smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
         );
         if constexpr (Is_softcap){
@@ -1190,7 +1206,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::sparse_gemm_rs(
             acc_o,
             tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
-            tiled_mma, smem_tiled_copy_V, smem_thr_copy_V
+            tiled_mma,
+            smem_tiled_copy_V, smem_thr_copy_V
         );
     }
 
