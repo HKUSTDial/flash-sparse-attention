@@ -274,7 +274,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
+
     // PREDICATES
+
     // // Allocate predicate tensors for m and n
     // Tensor tQpQ = make_tensor<bool>(make_shape(size<1>(tQsQ), size<2>(tQsQ)), Stride<_1,_0>{});
     // Tensor tKVpKV = make_tensor<bool>(make_shape(size<1>(tKsK), size<2>(tKsK)), Stride<_1,_0>{});
@@ -315,7 +317,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
     }
 
+
     // Prologue
+
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
         gmem_tiled_copy_QKV,
@@ -586,6 +590,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             smem_tiled_copy_V, smem_thr_copy_V
         );
     }
+
 
     // Epilogue
 
@@ -887,7 +892,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
+
     // PREDICATES
+
     // Construct identity layout for sQ and sK
     Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));                     // (BLK_M, BLK_K) -> (blk_m, blk_k)
     Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));                    // (BLK_N, BLK_K) -> (blk_n, blk_k)
@@ -913,7 +920,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         }
     }
 
+
     // Prologue
+
     // Read Q from gmem to smem
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
@@ -1205,6 +1214,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             smem_tiled_copy_V, smem_thr_copy_V
         );
     }
+
 
     // Epilogue
 

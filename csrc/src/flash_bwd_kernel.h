@@ -263,7 +263,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);              // ((Atom,AtomNum),ATOM_M,ATOM_N)
+    Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);              // ((Atom, AtomNum), ATOM_M, ATOM_N)
     Tensor tdQgdQ = gmem_thr_copy_dQ.partition_D(gdQ);
     Tensor tdQgdQaccum = gmem_thr_copy_dQaccum.partition_D(gdQaccum);
     // if (cute::thread0()) { print(tdQgdQaccum.layout()); printf("\n"); }
@@ -344,7 +344,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     auto smem_thr_copy_dQ = smem_tiled_copy_dQ.get_thread_slice(tidx);
     Tensor taccdQsdQ = smem_thr_copy_dQ.partition_D(sdQ);   // ((Atom, AtomNum), PIPE_M, PIPE_N)
 
+
     // PREDICATES
+
     Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));             // (BLK_M, BLK_K) -> (blk_m, blk_k)
     Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));            // (BLK_N, BLK_K) -> (blk_n, blk_k)
     Tensor tQcQ = gmem_thr_copy_QKV.partition_D(cQ);
@@ -362,15 +364,17 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
     }
 
+
     // Prologue
+
     // We'll advance gdQ and gdQaccum before the 1st read/write.
     tdQgdQ.data() = tdQgdQ.data() + kBlockM * params.dq_row_stride;
     tdQgdQaccum.data() = tdQgdQaccum.data() + kBlockM * params.h * params.d_rounded;
 
     int m_block = m_block_max - 1;
     int m_block_min = (!Is_causal)
-                    ? 0
-                    : std::max(0, (n_block * kBlockN + binfo.actual_seqlen_q - binfo.actual_seqlen_k) / kBlockM);
+        ? 0
+        : std::max(0, (n_block * kBlockN + binfo.actual_seqlen_q - binfo.actual_seqlen_k) / kBlockM);
     // If not local, we're guaranteed that m_block_min <= m_block:
     // We checked earlier that n_block * kBlockN < actual_seqlen_k, so in the causal case,
     // n_block * kBlockN + binfo.actual_seqlen_q - binfo.actual_seqlen_k < actual_seqlen_q.
@@ -807,6 +811,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         }
 
     }
+
 
     // Epilogue
 
