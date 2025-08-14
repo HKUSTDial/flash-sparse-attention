@@ -45,7 +45,7 @@ __forceinline__ __device__ void apply_mask(
                         tensor(coord) = -INFINITY;
                     } else {
                         // Apply scaling
-                        tensor(coord) = tensor(coord); // * scale_softmax;
+                        tensor(coord) = tensor(coord) * scale_softmax;
                     }
                 }
             }
