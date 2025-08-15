@@ -40,13 +40,10 @@ __forceinline__ __device__ void apply_mask(
                     const int col_idx = col_idx_base + j;
                     // Without the "make_coord" we get wrong results
                     auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                    bool inactive = (col_idx >= col_idx_limit);
-                    if (inactive) {
-                        tensor(coord) = -INFINITY;
-                    } else {
-                        // Apply scaling
-                        tensor(coord) = tensor(coord) * scale_softmax;
-                    }
+                    // Apply scaling or masking
+                    tensor(coord) = (col_idx >= col_idx_limit)
+                        ? -INFINITY
+                        : tensor(coord) * scale_softmax;
                 }
             }
         }
@@ -86,13 +83,10 @@ __forceinline__ __device__ void apply_mask(
 //                     const int col_idx = col_idx_base + j;
 //                     // Without the "make_coord" we get wrong results
 //                     auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-//                     bool inactive = (col_idx >= col_idx_limit) || (Mask(coord) == 0.0f);
-//                     if (inactive) {
-//                         tensor(coord) = -INFINITY;
-//                     } else {
-//                         // Apply scaling and bias
-//                         tensor(coord) = tensor(coord) * scale_softmax + Bias(coord);
-//                     }
+//                     // Apply scaling and bias or masking
+//                     tensor(coord) = (col_idx >= col_idx_limit) || (Mask(coord) == 0.0f)
+//                         ? -INFINITY
+//                         : tensor(coord) * scale_softmax + Bias(coord);
 //                 }
 //             }
 //         }
@@ -147,13 +141,10 @@ struct Mask {
                     for (int j = 0; j < size<1, 0>(tensor); ++j) {
                         const int col_idx = col_idx_base + j;
                         auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                        bool inactive = (col_idx >= col_idx_limit) || (mask(coord) == 0.0f);
-                        if (inactive) {
-                            tensor(coord) = -INFINITY;
-                        } else {
-                            // Apply scaling and bias
-                            tensor(coord) = tensor(coord) * scale_softmax + bias(coord);
-                        }
+                        // Apply scaling and bias or masking
+                        tensor(coord) = (col_idx >= col_idx_limit) || (mask(coord) == 0.0f)
+                            ? -INFINITY
+                            : tensor(coord) * scale_softmax + bias(coord);
                     }
                 }
             }
