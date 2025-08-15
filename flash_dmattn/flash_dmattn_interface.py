@@ -78,7 +78,7 @@ def _flash_dmattn_forward(
     softcap: float,
     return_softmax: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
     out, softmax_lse, S_dmask = flash_dmattn_gpu.fwd(
         q,
         k,
@@ -106,7 +106,7 @@ def _flash_dmattn_forward_fake(
     softcap: float,
     return_softmax: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
     batch_size, seqlen_q, num_heads, head_size = q.shape
     seqlen_k = k.shape[1]
     out = torch.empty_like(q)
@@ -141,7 +141,7 @@ def _flash_dmattn_varlen_forward(
     seqused_k: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
     out, softmax_lse, S_dmask = flash_dmattn_gpu.varlen_fwd(
         q,
         k,
@@ -187,7 +187,7 @@ def _flash_dmattn_varlen_forward_fake(
     seqused_k: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
     paged_kv = block_table is not None
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
@@ -224,8 +224,7 @@ def _flash_dmattn_backward(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    # dq, dk, dv, dbias are allocated by us so they should already be contiguous
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, dbias, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, dbias, q, k, v, mask, bias, out)]
     (
         dq,
         dk,
@@ -249,7 +248,6 @@ def _flash_dmattn_backward(
         is_causal,
         softcap,
         deterministic,
-        None,
     )
     return softmax_d
 
@@ -273,7 +271,7 @@ def _flash_dmattn_backward_fake(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, dbias, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, dbias, q, k, v, mask, bias, out)]
     if dq is None:
         dq = torch.empty_like(q)
     if dk is None:
@@ -315,8 +313,7 @@ def _flash_dmattn_varlen_backward(
     deterministic: bool,
     zero_tensors: bool = False,
 ) -> torch.Tensor:
-    # dq, dk, dv are allocated by us so they should already be contiguous
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, dbias, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, dbias, q, k, v, mask, bias, out)]
     (
         dq,
         dk,
@@ -345,7 +342,6 @@ def _flash_dmattn_varlen_backward(
         is_causal,
         softcap,
         deterministic,
-        None,
     )
     # if dk.isnan().any() or dk.isnan().any() or dv.isnan().any() or softmax_d.isnan().any():
     #     breakpoint()
@@ -376,7 +372,7 @@ def _flash_dmattn_varlen_backward_fake(
     deterministic: bool,
     zero_tensors: bool = False,
 ) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, dbias, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, dbias, q, k, v, mask, bias, out)]
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
 
