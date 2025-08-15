@@ -59,7 +59,7 @@ class Kernel:
     def template(self) -> str:
         template_funcs = {
             "fwd": get_fwd_template,
-            # "bwd": get_bwd_template,
+            "bwd": get_bwd_template,
             "fwd_split": get_fwd_split_template
         }
         template_func = template_funcs[self.direction]
@@ -74,8 +74,7 @@ class Kernel:
         return f"flash_{self.direction}_hdim{self.head_dim}_{self.dtype}_{'causal_' if self.is_causal == 'true' else ''}sm{self.sm}.cu"
 
 def get_all_kernels() -> Generator[Kernel, None, None]:
-    # for direction in ["fwd", "fwd_split", "bwd"]:
-    for direction in ["fwd", "fwd_split"]:
+    for direction in ["fwd", "fwd_split", "bwd"]:
         for dtype, head_dim, is_causal, sm in itertools.product(DTYPE_MAP.keys(), HEAD_DIMENSIONS, IS_CAUSAL, SM):
             yield Kernel(sm=sm, dtype=dtype, head_dim=head_dim, is_causal=is_causal, direction=direction)
 
