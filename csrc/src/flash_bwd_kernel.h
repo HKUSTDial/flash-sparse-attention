@@ -387,7 +387,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // Otherwise we get wrong result for the case where we don't enter the for loop.
     // And we might read OOB elements from gQ and gdO.
     // This also covers the case where actual_seqlen_q == 0
-    if ((!Is_even_MN) && m_block < m_block_min) {
+    if (!Is_even_MN && m_block < m_block_min) {
         const index_t row_offset_dk = binfo.k_offset(params.dk_batch_stride, params.dk_row_stride, bidb)
           + n_block * kBlockN * params.dk_row_stride + bidh * params.dk_head_stride;
         const index_t row_offset_dv = binfo.k_offset(params.dv_batch_stride, params.dv_row_stride, bidb)
@@ -561,7 +561,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             smem_tiled_copy_QdO, smem_tiled_copy_KV,
             smem_thr_copy_QdO, smem_thr_copy_KV
         );
-
         if constexpr (Is_softcap) {
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
@@ -594,6 +593,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
         // if (cute::thread(32, 0)) { print(scores); }
         // Compute the exponential value.
+        // FLASH_NAMESPACE::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
         FLASH_NAMESPACE::scale_apply_exp2</*scale_max=*/false>(scores, lse, float(M_LOG2E));
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
@@ -634,7 +634,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // Reshape acc_dp from (MMA=4, MMA_N, MMA_N) to (row=(2, MMA_N), col=(2, MMA_N))
         Tensor dS = make_tensor(acc_dp.data(), scores.layout());
         auto pointwise_mult = [](float p, float dp, float d) {
-            return p * (dp - d);
+            return p * (p >= 0 ? dp - d : d);
         };
         #pragma unroll
         for (int mi = 0; mi < size<0>(dS); ++mi) {
@@ -679,7 +679,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // Convert dS from fp32 to fp16
         Tensor tdSrdS = FLASH_NAMESPACE::convert_type<Element>(dS_reshaped);
         // if (cute::thread0()) { print(tPrP); }
-        Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);                                         // ((Atom,AtomNum), MMA_N, MMA_N)
+        Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_N, MMA_N)
         cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
         __syncthreads();
 
@@ -760,7 +760,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             for (int i = 0; i < size(acc_dq); ++i) { acc_dq(i) *= params.scale_softmax; }
             // Convert acc_dq from fp32 to fp16
             Tensor rdQ = FLASH_NAMESPACE::convert_type<Element>(acc_dq);
-            Tensor taccdQrdQ = smem_thr_copy_dQ.retile_S(rdQ);  // ((Atom,AtomNum), MMA_N, MMA_N)
+            Tensor taccdQrdQ = smem_thr_copy_dQ.retile_S(rdQ);  // ((Atom, AtomNum), MMA_N, MMA_N)
             cute::copy(smem_tiled_copy_dQ, taccdQrdQ, taccdQsdQ);
         }
 
@@ -828,10 +828,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // Partition sdV and sdK to match the accumulator partitioning
     auto smem_tiled_copy_dKV = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomdKV{}, tiled_mma_dkv);
     auto smem_thr_copy_dKV = smem_tiled_copy_dKV.get_thread_slice(tidx);
-    Tensor taccdKrdK = smem_thr_copy_dKV.retile_S(rdK);         // ((Atom,AtomNum), MMA_N, MMA_N)
-    Tensor taccdKsdK = smem_thr_copy_dKV.partition_D(sdK);      // ((Atom,AtomNum),PIPE_M,PIPE_N)
-    Tensor taccdVrdV = smem_thr_copy_dKV.retile_S(rdV);         // ((Atom,AtomNum), MMA_N, MMA_N)
-    Tensor taccdVsdV = smem_thr_copy_dKV.partition_D(sdV);      // ((Atom,AtomNum),PIPE_M,PIPE_N)
+    Tensor taccdKrdK = smem_thr_copy_dKV.retile_S(rdK);         // ((Atom, AtomNum), MMA_N, MMA_N)
+    Tensor taccdKsdK = smem_thr_copy_dKV.partition_D(sdK);      // ((Atom, AtomNum), PIPE_M, PIPE_N)
+    Tensor taccdVrdV = smem_thr_copy_dKV.retile_S(rdV);         // ((Atom, AtomNum), MMA_N, MMA_N)
+    Tensor taccdVsdV = smem_thr_copy_dKV.partition_D(sdV);      // ((Atom, AtomNum), PIPE_M, PIPE_N)
 
     // We need syncthreads here since we're writing to the same location as sK and sV.
     // Without syncthreads, some thread might modify the location of sK while another thread
@@ -869,7 +869,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     cute::copy(gmem_tiled_copy_dKV, tdKsdK, tdKrdK);
     Tensor tdVrdV = make_tensor<Element>(shape(tdVgdV));
     cute::copy(gmem_tiled_copy_dKV, tdVsdV, tdVrdV);
-    Tensor cdKV = make_identity_tensor(make_shape(size<0>(sdK), size<1>(sdK)));     // (BLK_N,BLK_K) -> (blk_n,blk_k)
+    Tensor cdKV = make_identity_tensor(make_shape(size<0>(sdK), size<1>(sdK)));     // (BLK_N, BLK_K) -> (blk_n, blk_k)
     Tensor tdKVcdKV = gmem_thr_copy_dKV.partition_D(cdKV);
     Tensor tdKVpdKV = make_tensor<bool>(make_shape(size<2>(tdKgdK)));
     #pragma unroll
