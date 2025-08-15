@@ -249,7 +249,7 @@ def dynamic_mask_attention_cuda(
     key_states = key_states.transpose(1, 2)         # [batch, key_len, num_kv_heads, head_dim]
     value_states = value_states.transpose(1, 2)     # [batch, key_len, num_kv_heads, head_dim]
 
-    # Call the new flash_dmattn_func interface
+    # Call the flash_dmattn_func interface
     attn_outputs = flash_dmattn_func(
         query_states,               # [batch, query_len, num_heads, head_dim]
         key_states,                 # [batch, key_len, num_kv_heads, head_dim]
