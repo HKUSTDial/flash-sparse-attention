@@ -354,6 +354,20 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // if (cute::thread(0, 0) && n_block == 0) { print(tSsK.layout()); printf("\n"); }
     Tensor tdPsV = smem_thr_copy_KV.partition_S(sV);
 
+    // auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
+    // auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
+    // Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
+    // auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
+    // auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
+    // Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
+
+    auto smem_tiled_copy_Mask = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
+    auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
+    Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
+    auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
+    Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
+
     // Partition sP and sdS to match the accumulator partitioning
     // This has to be tiled_mma_sdp, not tiled_mma_dkv
     // auto smem_thr_copy_PdS = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp).get_thread_slice(tidx);
