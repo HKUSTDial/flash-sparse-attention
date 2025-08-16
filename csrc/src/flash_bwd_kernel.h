@@ -300,6 +300,12 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
+    Tensor tMaskgMask = gmem_thr_copy_Mask.partition_S(gMask);      // (MaskCPY, MaskCPY_M, MaskCPY_N)
+    Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
+    Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N)
+    Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
+    
+   
     Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);              // ((Atom, AtomNum), ATOM_M, ATOM_N)
     Tensor tdQgdQ = gmem_thr_copy_dQ.partition_D(gdQ);
     Tensor tdQgdQaccum = gmem_thr_copy_dQaccum.partition_D(gdQaccum);
