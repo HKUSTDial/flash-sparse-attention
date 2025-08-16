@@ -671,7 +671,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
         // So we need to mask out the elements beyond actual_seqlen_k.
         FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal>(
-            scores, params.scale_softmax,
+            scores, mask, bias, params.scale_softmax,
             n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
             binfo.actual_seqlen_k,
             m_block * kBlockM + get<0>(taccScS_row(0)),
