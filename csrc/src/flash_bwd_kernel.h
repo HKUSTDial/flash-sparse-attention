@@ -753,12 +753,26 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             const int sQ_offset = m_block % 2 == 0 ? size(sQ) : -size(sQ);
             tQsQ.data() = tQsQ.data() + sQ_offset;
             tSsQ.data() = tSsQ.data() + sQ_offset;
-            // Advance gQ
+            // Advance gQ, gMask, gBias
             tQgQ.data() = tQgQ.data() + (-int(kBlockM * params.q_row_stride));
+            tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
+            tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
             FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
                 gmem_tiled_copy_QKV,
                 tQgQ, tQsQ,
                 tQcQ, tQpQ
+            );
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                gmem_tiled_copy_Mask,
+                tMaskgMask, tMasksMask,
+                tMaskcMask,
+                binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+            );
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                gmem_tiled_copy_Bias,
+                tBiasgBias, tBiassBias,
+                tBiascBias,
+                binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
             );
             FLASH_NAMESPACE::cp_async_fence();
         }
