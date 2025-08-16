@@ -409,8 +409,14 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));             // (BLK_M, BLK_K) -> (blk_m, blk_k)
     Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));            // (BLK_N, BLK_K) -> (blk_n, blk_k)
-    Tensor tQcQ = gmem_thr_copy_QKV.partition_D(cQ);
-    Tensor tKVcKV = gmem_thr_copy_QKV.partition_D(cKV);
+    Tensor cMask = make_identity_tensor(make_shape(size<0>(sMask), size<1>(sMask)));    // (BLK_M, BLK_N) -> (blk_m, blk_n)
+    Tensor cBias = make_identity_tensor(make_shape(size<0>(sBias), size<1>(sBias)));    // (BLK_M, BLK_N) -> (blk_m, blk_n)
+
+    // Repeat the partitioning with identity layouts
+    Tensor tQcQ = gmem_thr_copy_QKV.partition_D(cQ);                                    // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
+    Tensor tKVcKV = gmem_thr_copy_QKV.partition_D(cKV);                                 // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
+    Tensor tMaskcMask = gmem_thr_copy_Mask.partition_D(cMask);                          // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
+    Tensor tBiascBias = gmem_thr_copy_Bias.partition_D(cBias);                          // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
 
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
