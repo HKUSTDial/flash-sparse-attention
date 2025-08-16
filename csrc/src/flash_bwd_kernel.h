@@ -274,6 +274,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
+    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
+    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
     using GmemTiledCopydO = std::conditional_t<Is_first, typename Kernel_traits::GmemTiledCopydO, typename Kernel_traits::GmemTiledCopyQKV>;
     GmemTiledCopydO gmem_tiled_copy_dO;
     auto gmem_thr_copy_dO = gmem_tiled_copy_dO.get_thread_slice(tidx);
