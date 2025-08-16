@@ -143,6 +143,21 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         Shape<Int<kBlockN>, Int<kHeadDim>>{},
         make_stride(params.v_row_stride, _1{})
     );
+    Tensor gMask = make_tensor(
+        make_gmem_ptr(reinterpret_cast<Element *>(params.mask_ptr) + row_offset_mask),
+        Shape<Int<kBlockM>, Int<kBlockN>>{},
+        make_stride(params.mask_row_stride, _1{})
+    );
+    Tensor gBias = make_tensor(
+        make_gmem_ptr(reinterpret_cast<Element *>(params.bias_ptr) + row_offset_bias),
+        Shape<Int<kBlockM>, Int<kBlockN>>{},
+        make_stride(params.bias_row_stride, _1{})
+    );
+    Tensor gdBias = make_tensor(
+        make_gmem_ptr(reinterpret_cast<Element *>(params.dbias_ptr) + row_offset_dbias),
+        Shape<Int<kBlockM>, Int<kBlockN>>{},
+        make_stride(params.dbias_row_stride, _1{})
+    );
     Tensor gdO = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element *>(params.do_ptr) + row_offset_do),
         Shape<Int<kBlockM>, Int<kHeadDim>>{},
