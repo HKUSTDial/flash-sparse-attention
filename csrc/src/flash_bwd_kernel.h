@@ -322,6 +322,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tSrK = thr_mma_sdp.partition_fragment_B(sK);                                         // (MMA, MMA_N, MMA_K)
     Tensor tdPrdO = thr_mma_sdp.partition_fragment_A(sdO);                                      // (MMA, MMA_N, MMA_K)
     Tensor tdPrV = thr_mma_sdp.partition_fragment_B(sV);                                        // (MMA, MMA_N, MMA_K)
+    // Tensor tSrMask = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
+    // Tensor tSrBias = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
 
     typename Kernel_traits::TiledMmadKV tiled_mma_dkv;
     auto thr_mma_dkv = tiled_mma_dkv.get_thread_slice(tidx);
