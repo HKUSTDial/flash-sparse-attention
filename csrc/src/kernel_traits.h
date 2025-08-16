@@ -76,7 +76,7 @@ struct Flash_fwd_kernel_traits : public Base {
 
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
+        Layout<Shape<Int<kNWarps>, _1, _1>>,  // 4x1x1 or 8x1x1 thread group
         Tile<Int<16 * kNWarps>, _16, _16>
     >;
 
