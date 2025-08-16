@@ -225,12 +225,24 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         sK.data(),
         typename Kernel_traits::SmemLayoutKtransposedNoSwizzle{}
     );
-    Tensor sV = make_tensor(
+    Tensor sMask = make_tensor(
         sK.data() + size(sK),
+        typename Kernel_traits::SmemLayoutMask{}
+    );
+    Tensor sBias = make_tensor(
+        sMask.data() + size(sMask),
+        typename Kernel_traits::SmemLayoutBias{}
+    );
+    Tensor sdBias = make_tensor(
+        sBias.data(),
+        typename Kernel_traits::SmemLayoutBias{}
+    );
+    Tensor sV = make_tensor(
+        sBias.data() + size(sBias),
         typename Kernel_traits::SmemLayoutKV{}
     );
     Tensor sdS = make_tensor(
-        !Kernel_traits::Is_V_in_regs ? sV.data() + size(sV) : sK.data() + size(sK),
+        !Kernel_traits::Is_V_in_regs ? sV.data() + size(sV) : sBias.data() + size(sBias),
         typename Kernel_traits::SmemLayoutPdS{}
     );
     Tensor sdSt = make_tensor(
