@@ -250,8 +250,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tSrQ = thr_mma.partition_fragment_A(sQ);                                         // (MMA, MMA_M, MMA_K)
     Tensor tSrK = thr_mma.partition_fragment_B(sK);                                         // (MMA, MMA_N, MMA_K)
     Tensor tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);                              // (MMA, MMA_K, MMA_N)
-    Tensor tSrMask = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
-    Tensor tSrBias = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
+    // Tensor tSrMask = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
+    // Tensor tSrBias = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
     Tensor tSgS  = thr_mma.partition_C(gP);
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // (MMA, MMA_M, MMA_K)
 
@@ -405,6 +405,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         __syncthreads();
 
         // Copy Mask and Bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
         cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
         Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
@@ -515,6 +517,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         __syncthreads();
 
         // Copy Mask and Bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
         cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
         Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
@@ -873,8 +877,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor tSrQ = thr_mma.partition_fragment_A(sQ);                                         // (MMA, MMA_M, MMA_K)
     Tensor tSrK = thr_mma.partition_fragment_B(sK);                                         // (MMA, MMA_N, MMA_K)
     Tensor tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);                              // (MMA, MMA_K, MMA_N)
-    Tensor tSrMask = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
-    Tensor tSrBias = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
+    // Tensor tSrMask = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
+    // Tensor tSrBias = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA, MMA_M, MMA_N)
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // (MMA, MMA_M, MMA_K)
 
     // Copy Atom retiling
@@ -989,6 +993,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         __syncthreads();
 
         // Copy Mask and Bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
         cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
         Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
@@ -1119,6 +1125,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         __syncthreads();
 
         // Copy Mask and Bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
         cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
         Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
