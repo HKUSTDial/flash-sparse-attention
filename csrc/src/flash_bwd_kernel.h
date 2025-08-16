@@ -573,6 +573,18 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         tKVcKV, tKVpKV,
         binfo.actual_seqlen_k - n_block * kBlockN
     );
+    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+        gmem_tiled_copy_Mask,
+        tMaskgMask, tMasksMask,
+        tMaskcMask,
+        binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+    );
+    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+        gmem_tiled_copy_Bias,
+        tBiasgBias, tBiassBias,
+        tBiascBias,
+        binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+    );
     if (!Kernel_traits::Is_V_in_regs) {
         FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
             gmem_tiled_copy_QKV,
