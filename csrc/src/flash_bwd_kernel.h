@@ -382,6 +382,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tdSsdS = smem_thr_copy_PdS.partition_D(sdS);     // ((Atom, AtomNum), PIPE_M, PIPE_N)
 
     auto smem_tiled_copy_PdSt = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma_dkv);
+    // auto smem_tiled_copy_PdSt = make_tiled_copy_A_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma_dkv);
     auto smem_thr_copy_PdSt = smem_tiled_copy_PdSt.get_thread_slice(tidx);
     Tensor tdVsPt = smem_thr_copy_PdSt.partition_S(sPt);
     Tensor tdKsdSt = smem_thr_copy_PdSt.partition_S(sdSt);
