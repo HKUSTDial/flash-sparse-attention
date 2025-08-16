@@ -621,6 +621,14 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         cute::cp_async_wait<0>();
         __syncthreads();
 
+        // Copy mask and bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+        Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
+        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
+        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+
         Tensor dP_sum = make_fragment_like(lse);
         #pragma unroll
         for (int mi = 0; mi < size(lse); ++mi) { dP_sum(mi) = gdPsum(get<0>(taccScS_row(mi))); }
