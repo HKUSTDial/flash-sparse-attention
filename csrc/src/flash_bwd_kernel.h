@@ -370,7 +370,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     // Partition sP and sdS to match the accumulator partitioning
     // This has to be tiled_mma_sdp, not tiled_mma_dkv
-    // auto smem_thr_copy_PdS = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp).get_thread_slice(tidx);
+    // auto smem_tiled_copy_PdS = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp);
     auto smem_tiled_copy_PdS = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp);
     auto smem_thr_copy_PdS = smem_tiled_copy_PdS.get_thread_slice(tidx);
     Tensor tPsP = smem_thr_copy_PdS.partition_D(sP);        // ((Atom, AtomNum), PIPE_M, PIPE_N)
