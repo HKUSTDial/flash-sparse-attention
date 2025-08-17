@@ -490,7 +490,7 @@ class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
         )
 
         dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
-        return dqkv, None, None, None, None, None, None, None, None, None
+        return dqkv, None, dbias, None, None, None, None, None, None, None
 
 
 class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
@@ -604,7 +604,7 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
         )
 
         dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
-        return dqkv, None, None, None, None, None, None, None, None, None, None, None
+        return dqkv, None, dbias, None, None, None, None, None, None, None, None, None
 
 
 class FlashDMAttnKVPackedFunc(torch.autograd.Function):
@@ -712,7 +712,7 @@ class FlashDMAttnKVPackedFunc(torch.autograd.Function):
 
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dkv = dkv[..., : dout.shape[-1]]
-        return dq, dkv, None, None, None, None, None, None, None, None, None
+        return dq, dkv, None, dbias, None, None, None, None, None, None, None
 
 
 class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
@@ -837,7 +837,7 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
 
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dkv = dkv[..., : dout.shape[-1]]
-        return dq, dkv, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dkv, None, dbias, None, None, None, None, None, None, None, None, None, None, None
 
 
 class FlashDMAttnFunc(torch.autograd.Function):
@@ -941,7 +941,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, dbias, None, None, None, None, None, None, None
 
 
 class FlashDMAttnVarlenFunc(torch.autograd.Function):
@@ -1063,7 +1063,7 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, dbias, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 def flash_dmattn_qkvpacked_func(
