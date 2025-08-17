@@ -14,8 +14,8 @@ using namespace cute;
 template <bool Causal_mask=false, typename TensorType, typename MaskType, typename BiasType>
 __forceinline__ __device__ void apply_mask(
     TensorType &tensor,
-    MaskType &Mask,
-    BiasType &Bias,
+    MaskType &mask,
+    BiasType &bias,
     const float scale_softmax,
     const int col_idx_offset_,
     const int max_seqlen_k,
@@ -44,13 +44,10 @@ __forceinline__ __device__ void apply_mask(
                     const int col_idx = col_idx_base + j;
                     // Without the "make_coord" we get wrong results
                     auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                    bool inactive = (col_idx >= col_idx_limit) || (Mask(coord) == 0.0f);
-                    if (inactive) {
-                        tensor(coord) = -INFINITY;
-                    } else {
-                        // Apply scaling and bias
-                        tensor(coord) = tensor(coord) * scale_softmax + Bias(coord);
-                    }
+                    // Apply scaling and bias or masking
+                    tensor(coord) = (col_idx >= col_idx_limit) || (mask(coord) <= 0.0f)
+                        ? -INFINITY
+                        : tensor(coord) * scale_softmax + bias(coord);
                 }
             }
         }
@@ -72,8 +69,8 @@ struct Mask {
     template <bool Causal_mask=false, bool Is_even_MN=true, typename TensorType, typename MaskType, typename BiasType>
     __forceinline__ __device__ void apply_mask(
         TensorType &tensor_,                        // acc_s (attention scores, MMA=4, MMA_M, MMA_N)
-        MaskType &Mask,                             // Attention Mask (MMA=4, MMA_M, MMA_N)
-        BiasType &Bias,                             // Attention Bias (MMA=4, MMA_M, MMA_N)
+        MaskType &tSrMask,                          // Attention Mask (MMA=4, MMA_M, MMA_N)
+        BiasType &tSrBias,                          // Attention Bias (MMA=4, MMA_M, MMA_N)
         const float scale_softmax,                  // Scale for softmax
         const int col_idx_offset_,                  // Column index offset
         const int row_idx_offset,                   // Row index offset
@@ -86,8 +83,8 @@ struct Mask {
 
         // Reshape tensors from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor tensor = make_tensor(tensor_.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tensor_.layout()));
-        Tensor mask = make_tensor(Mask.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(Mask.layout()));
-        Tensor bias = make_tensor(Bias.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(Bias.layout()));
+        Tensor mask = make_tensor(tSrMask.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrMask.layout()));
+        Tensor bias = make_tensor(tSrBias.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrBias.layout()));
 
         const int lane_id = threadIdx.x % 32;
         const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
@@ -105,13 +102,10 @@ struct Mask {
                     for (int j = 0; j < size<1, 0>(tensor); ++j) {
                         const int col_idx = col_idx_base + j;
                         auto coord = make_coord(make_coord(i, mi), make_coord(j, nj));
-                        bool inactive = (col_idx >= col_idx_limit) || (mask(coord) == 0.0f);
-                        if (inactive) {
-                            tensor(coord) = -INFINITY;
-                        } else {
-                            // Apply scaling and bias
-                            tensor(coord) = tensor(coord) * scale_softmax + bias(coord);
-                        }
+                        // Apply scaling and bias or masking
+                        tensor(coord) = (col_idx >= col_idx_limit) || (mask(coord) <= 0.0f)
+                            ? -INFINITY
+                            : tensor(coord) * scale_softmax + bias(coord);
                     }
                 }
             }

@@ -15,7 +15,8 @@ IS_CAUSAL = ["false", "true"]
 NAMESPACE_INCLUDE = '#include "namespace_config.h"\n'
 
 def get_fwd_template() -> str:
-    return NAMESPACE_INCLUDE + """#include "flash_fwd_launch_template.h"
+    return NAMESPACE_INCLUDE + """
+#include "flash_fwd_launch_template.h"
 
 namespace FLASH_NAMESPACE {{
 
@@ -24,19 +25,23 @@ void run_mha_fwd_<{DTYPE}, {HEAD_DIM}, {IS_CAUSAL}>(Flash_fwd_params &params, cu
     run_mha_fwd_hdim{HEAD_DIM}<{DTYPE}, {IS_CAUSAL}>(params, stream);
 }}
 
-}} // namespace FLASH_NAMESPACE"""
+}} // namespace FLASH_NAMESPACE
+""".strip()
 
 def get_fwd_split_template() -> str:
-    return NAMESPACE_INCLUDE + """#include "flash_fwd_launch_template.h"
+    return NAMESPACE_INCLUDE + """
+#include "flash_fwd_launch_template.h"
 
 namespace FLASH_NAMESPACE {{
 
 template void run_mha_fwd_splitkv_dispatch<{DTYPE}, {HEAD_DIM}, {IS_CAUSAL}>(Flash_fwd_params &params, cudaStream_t stream);
 
-}} // namespace FLASH_NAMESPACE"""
+}} // namespace FLASH_NAMESPACE
+""".strip()
 
 def get_bwd_template() -> str:
-    return NAMESPACE_INCLUDE + """#include "flash_bwd_launch_template.h"
+    return NAMESPACE_INCLUDE + """
+#include "flash_bwd_launch_template.h"
 
 namespace FLASH_NAMESPACE {{
 
@@ -45,7 +50,8 @@ void run_mha_bwd_<{DTYPE}, {HEAD_DIM}, {IS_CAUSAL}>(Flash_bwd_params &params, cu
     run_mha_bwd_hdim{HEAD_DIM}<{DTYPE}, {IS_CAUSAL}>(params, stream);
 }}
 
-}} // namespace FLASH_NAMESPACE"""
+}} // namespace FLASH_NAMESPACE
+""".strip()
 
 @dataclass
 class Kernel:
@@ -59,7 +65,7 @@ class Kernel:
     def template(self) -> str:
         template_funcs = {
             "fwd": get_fwd_template,
-            # "bwd": get_bwd_template,
+            "bwd": get_bwd_template,
             "fwd_split": get_fwd_split_template
         }
         template_func = template_funcs[self.direction]
@@ -74,15 +80,16 @@ class Kernel:
         return f"flash_{self.direction}_hdim{self.head_dim}_{self.dtype}_{'causal_' if self.is_causal == 'true' else ''}sm{self.sm}.cu"
 
 def get_all_kernels() -> Generator[Kernel, None, None]:
-    # for direction in ["fwd", "fwd_split", "bwd"]:
-    for direction in ["fwd", "fwd_split"]:
+    for direction in ["fwd", "fwd_split", "bwd"]:
         for dtype, head_dim, is_causal, sm in itertools.product(DTYPE_MAP.keys(), HEAD_DIMENSIONS, IS_CAUSAL, SM):
             yield Kernel(sm=sm, dtype=dtype, head_dim=head_dim, is_causal=is_causal, direction=direction)
 
 def write_kernel(kernel: Kernel, autogen_dir: Path) -> None:
-    prelude = """// Copyright (c) 2025, Jingze Shi and Tri Dao.
+    prelude = """
+// Copyright (c) 2025, Jingze Shi and Tri Dao.
 // Splitting the different head dimensions to different files to speed up compilation.
-// This file is auto-generated. See "generate_kernels.py"\n"""
+// This file is auto-generated. See "generate_kernels.py"\n
+""".strip()
     content = prelude + kernel.template
     (autogen_dir / kernel.filename).write_text(content)
 

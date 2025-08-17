@@ -226,6 +226,32 @@ if not SKIP_CUDA_BUILD:
                 "csrc/src/instantiations/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
                 "csrc/src/instantiations/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
                 "csrc/src/instantiations/flash_fwd_split_hdim256_bf16_causal_sm80.cu",
+                # Backward kernels - regular
+                "csrc/src/instantiations/flash_bwd_hdim32_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim32_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim64_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim64_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim96_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim96_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim128_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim128_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim192_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim192_bf16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim256_fp16_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim256_bf16_sm80.cu",
+                # Backward kernels - causal
+                "csrc/src/instantiations/flash_bwd_hdim32_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim32_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim64_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim64_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim96_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim96_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim128_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim128_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim192_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim192_bf16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim256_fp16_causal_sm80.cu",
+                "csrc/src/instantiations/flash_bwd_hdim256_bf16_causal_sm80.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
@@ -243,9 +269,9 @@ if not SKIP_CUDA_BUILD:
                         # "--ptxas-options=-v",
                         # "--ptxas-options=-O2",
                         # "-lineinfo",
-                        "-DFLASHATTENTION_DISABLE_BACKWARD",  # Only forward pass
-                        # "-DFLASHATTENTION_DISABLE_SOFTCAP",
-                        # "-DFLASHATTENTION_DISABLE_UNEVEN_K",
+                        # "-DFLASHATTENTION_DISABLE_BACKWARD",  # Only forward pass
+                        "-DFLASHATTENTION_DISABLE_SOFTCAP",
+                        "-DFLASHATTENTION_DISABLE_UNEVEN_K",
                     ]
                     + cc_flag
                 ),

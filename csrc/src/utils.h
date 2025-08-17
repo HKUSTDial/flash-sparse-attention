@@ -132,13 +132,19 @@ static __device__ __forceinline__ T run(T x, Operator &op) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool A_in_regs=false, bool B_in_regs=false,
-          typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
-          typename TiledMma, typename TiledCopyA, typename TiledCopyB,
-          typename ThrCopyA, typename ThrCopyB>
+template <
+    bool A_in_regs=false, bool B_in_regs=false,
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
+    typename TiledMma,
+    typename TiledCopyA, typename TiledCopyB,
+    typename ThrCopyA, typename ThrCopyB
+>
 __forceinline__ __device__ void gemm(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB,
-    TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB,
+    TiledMma tiled_mma,
+    TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
@@ -162,13 +168,19 @@ __forceinline__ __device__ void gemm(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool A_in_regs=false, bool B_in_regs=false,
-          typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4, typename Tensor5,
-          typename TiledMma, typename TiledCopyA, typename TiledCopyB,
-          typename ThrCopyA, typename ThrCopyB>
+template <
+    bool A_in_regs=false, bool B_in_regs=false,
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4, typename Tensor5,
+    typename TiledMma,
+    typename TiledCopyA, typename TiledCopyB,
+    typename ThrCopyA, typename ThrCopyB
+>
 __forceinline__ __device__ void sparse_gemm(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &tCrM,
-    TiledMma tiled_mma, TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsA, Tensor4 const& tCsB, Tensor5 const &tCrM,
+    TiledMma tiled_mma,
+    TiledCopyA smem_tiled_copy_A, TiledCopyB smem_tiled_copy_B,
     ThrCopyA smem_thr_copy_A, ThrCopyB smem_thr_copy_B
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
@@ -229,12 +241,18 @@ __forceinline__ __device__ void sparse_gemm(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
-          typename TiledMma, typename TiledCopy,
-          typename ThrCopy>
+template <
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3,
+    typename TiledMma,
+    typename TiledCopy,
+    typename ThrCopy
+>
 __forceinline__ __device__ void gemm_rs(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
-    TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
+    TiledMma tiled_mma,
+    TiledCopy smem_tiled_copy_B,
     ThrCopy smem_thr_copy_B
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
@@ -254,12 +272,18 @@ __forceinline__ __device__ void gemm_rs(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
-          typename TiledMma, typename TiledCopy,
-          typename ThrCopy>
+template <
+    typename Tensor0,
+    typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4,
+    typename TiledMma,
+    typename TiledCopy,
+    typename ThrCopy
+>
 __forceinline__ __device__ void sparse_gemm_rs(
-    Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB, Tensor4 const &tCrM,
-    TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
+    Tensor0 &acc,
+    Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB, Tensor4 const &tCrM,
+    TiledMma tiled_mma,
+    TiledCopy smem_tiled_copy_B,
     ThrCopy smem_thr_copy_B
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
@@ -421,9 +445,12 @@ void cp_async_wait() {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool Is_even_MN=true, bool Is_even_K=true, bool Clear_OOB_MN=false, bool Clear_OOB_K=true,
-          typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
-          typename Engine2, typename Layout2, typename Engine3, typename Layout3>
+template <
+    bool Is_even_MN=true, bool Is_even_K=true, bool Clear_OOB_MN=false, bool Clear_OOB_K=true,
+    typename TiledCopy,
+    typename Engine0, typename Layout0, typename Engine1, typename Layout1,
+    typename Engine2, typename Layout2, typename Engine3, typename Layout3
+>
 __forceinline__ __device__ void copy(
     TiledCopy tiled_copy,
     Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D, 
@@ -493,9 +520,11 @@ __forceinline__ __device__ void copy(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool Is_even_MN=true, bool Clear_OOB_MN=true,
-          typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
-          typename Engine2, typename Layout2>
+template <
+    bool Is_even_MN=true, bool Clear_OOB_MN=true,
+    typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
+    typename Engine2, typename Layout2
+>
 __forceinline__ __device__ void copy_MN(
     TiledCopy tiled_copy,
     Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D,
@@ -527,13 +556,16 @@ __forceinline__ __device__ void copy_MN(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool Is_even_K=true,
-          typename Engine0, typename Layout0, typename Engine1, typename Layout1,
-          typename Engine2, typename Layout2, typename Engine3, typename Layout3>
-__forceinline__ __device__ void copy_w_min_idx(Tensor<Engine0, Layout0> const &S,
-                                      Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
-                                      Tensor<Engine3, Layout3> const &predicate_K,
-                                      const int max_MN=0, const int min_MN=0) {
+template <
+    bool Is_even_K=true,
+    typename Engine0, typename Layout0, typename Engine1, typename Layout1,
+    typename Engine2, typename Layout2, typename Engine3, typename Layout3
+>
+__forceinline__ __device__ void copy_w_min_idx(
+    Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D,
+    Tensor<Engine2, Layout2> const &identity_MN, Tensor<Engine3, Layout3> const &predicate_K,
+    const int max_MN=0, const int min_MN=0
+) {
     CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
     CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
     CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));                     // MMA

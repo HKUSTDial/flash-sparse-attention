@@ -137,11 +137,18 @@ void run_mha_bwd_hdim32(Flash_bwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-        if (max_smem_per_block >= 2 * ((3 * 128 + 2 * 128) * Headdim + 2 * 128 * 128)) { // 104 KB
+        // 2 * (...) - Double buffering factor
+        // (3 * kBlockM + 2 * kBlockN) * Headdim - Vector tiles in shared memory
+        //   - 3 * kBlockM * Headdim: Q tile, dQ tile, dOut tile
+        //   - 2 * kBlockN * Headdim: K tile, V tile
+        // 4 * kBlockM * kBlockN - Matrix tiles in shared memory
+        //   - 2 * kBlockM * kBlockN: S tile, P tile
+        //   - 2 * kBlockM * kBlockN: Mask tile, Bias tile
+        if (max_smem_per_block >= 2 * ((3 * 64 + 2 * 128) * Headdim + 4 * 64 * 128)) { // 94 KB
             // We can afford more registers to keep V in registers
-            run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
+            run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
         } else {  // 96 KB
-            run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
+            run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
         }
 }
 

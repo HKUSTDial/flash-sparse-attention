@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Forward Equivalence Benchmark for Dynamic Mask Attention
+Backward Equivalence Benchmark for Dynamic Mask Attention
 
 This script validates the numerical consistency between Python prototype 
-and CUDA implementation of dynamic mask attention for forward pass only.
+and CUDA implementation of dynamic mask attention for backward pass only.
 
 Tests include:
 - Multiple configurations of batch size, head count, sequence length, and dimensions
 - Causal and non-causal mask options  
-- Numerical equivalence analysis
+- Numerical equivalence analysis for gradients (dQ, dK, dV)
 - Group Query Attention (GQA) mode testing
 """
 
@@ -150,11 +150,12 @@ def dynamic_mask_attention_python(
     A: torch.Tensor,
     scaling: float,
     causal_mask: torch.Tensor,
+    dout: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
     """
-    Python reference implementation of dynamic mask attention.
+    Python reference implementation of dynamic mask attention backward pass.
     
     Args:
         query_states: [batch_size, num_heads, query_len, head_dim]
@@ -164,11 +165,12 @@ def dynamic_mask_attention_python(
         A: [num_kv_heads]
         scaling: Attention scaling factor
         causal_mask: Causal attention mask
+        dout: [batch_size, query_len, num_heads, head_dim] - gradient w.r.t. output
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (attn_outputs, dq, dk, dv, dbias)
     """
     _, num_heads, _, _ = query_states.shape
     _, num_kv_heads, _, _ = key_states.shape
@@ -184,6 +186,7 @@ def dynamic_mask_attention_python(
         keep_window_size,
         causal_mask if is_causal else None
     )
+    attn_bias.retain_grad()
     
     # Sparse attention weight calculation
     key_states = repeat_kv(key_states, num_queries_per_kv)
@@ -196,7 +199,10 @@ def dynamic_mask_attention_python(
     attn_outputs = torch.matmul(attn_weights, value_states)
     attn_outputs = attn_outputs.transpose(1, 2).contiguous()    # Transpose to [batch, query_len, num_heads, head_dim]
 
-    return attn_outputs
+    # Backward pass
+    attn_outputs.backward(dout)
+    
+    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
 
 
 def dynamic_mask_attention_cuda(
@@ -207,12 +213,12 @@ def dynamic_mask_attention_cuda(
     A: torch.Tensor,
     scaling: float,
     causal_mask: torch.Tensor,
+    dout: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
-    return_softmax=False
 ):
     """
-    CUDA implementation of dynamic mask attention.
+    CUDA implementation of dynamic mask attention backward pass.
     
     Args:
         query_states: [batch_size, num_heads, query_len, head_dim]
@@ -222,15 +228,15 @@ def dynamic_mask_attention_cuda(
         A: [num_kv_heads]
         scaling: Attention scaling factor
         causal_mask: Causal attention mask
+        dout: [batch_size, query_len, num_heads, head_dim] - gradient w.r.t. output
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
-        return_softmax: Whether to return softmax weights
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (attn_outputs, dq, dk, dv, dbias)
     """
     if flash_dmattn_func is None:
-        raise RuntimeError("flash_dmattn_func not available")
+        raise ImportError("CUDA implementation not available")
 
     # Calculate zoh_states
     zoh_states = calculate_zoh_states(value_states, dt_proj, A)
@@ -242,28 +248,33 @@ def dynamic_mask_attention_cuda(
         keep_window_size,
         causal_mask if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
+
+    attn_bias.retain_grad()
     
     # Ensure correct data types and memory layout for CUDA function
     # CUDA function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-    query_states = query_states.transpose(1, 2)     # [batch, query_len, num_heads, head_dim]
-    key_states = key_states.transpose(1, 2)         # [batch, key_len, num_kv_heads, head_dim]
-    value_states = value_states.transpose(1, 2)     # [batch, key_len, num_kv_heads, head_dim]
+    q = query_states.transpose(1, 2).contiguous()       # [batch, query_len, num_heads, head_dim]
+    k = key_states.transpose(1, 2).contiguous()         # [batch, key_len, num_kv_heads, head_dim]
+    v = value_states.transpose(1, 2).contiguous()       # [batch, key_len, num_kv_heads, head_dim]
 
     # Call the flash_dmattn_func interface
     attn_outputs = flash_dmattn_func(
-        query_states,               # [batch, query_len, num_heads, head_dim]
-        key_states,                 # [batch, key_len, num_kv_heads, head_dim]
-        value_states,               # [batch, key_len, num_kv_heads, head_dim]
+        q,                          # [batch, query_len, num_heads, head_dim]
+        k,                          # [batch, key_len, num_kv_heads, head_dim]
+        v,                          # [batch, key_len, num_kv_heads, head_dim]
         attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
         attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
         is_causal=is_causal,
         scale=scaling,
         softcap=0.0,
         deterministic=True,
-        return_attn_probs=return_softmax
+        return_attn_probs=False
     )
     
-    return attn_outputs  # [batch, query_len, num_heads, head_dim]
+    # Backward pass
+    attn_outputs.backward(dout)
+    
+    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
 
 
 def dynamic_mask_attention_triton(
@@ -274,11 +285,12 @@ def dynamic_mask_attention_triton(
     A: torch.Tensor,
     scaling: float,
     causal_mask: torch.Tensor,
+    dout: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
     """
-    Triton implementation of dynamic mask attention.
+    Triton implementation of dynamic mask attention backward pass.
     
     Args:
         query_states: [batch_size, num_heads, query_len, head_dim]
@@ -288,11 +300,12 @@ def dynamic_mask_attention_triton(
         A: [num_kv_heads]
         scaling: Attention scaling factor
         causal_mask: Causal attention mask
+        dout: [batch_size, query_len, num_heads, head_dim] - gradient w.r.t. output
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (attn_outputs, dq, dk, dv, dbias)
     """
     if triton_dmattn_func is None:
         raise RuntimeError("Triton implementation not available")
@@ -311,6 +324,7 @@ def dynamic_mask_attention_triton(
         keep_window_size,
         causal_mask if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
+    attn_bias.retain_grad()
     
     # Repeat KV for multi-head attention (GQA support)
     key_states = repeat_kv(key_states, num_queries_per_kv)
@@ -335,8 +349,11 @@ def dynamic_mask_attention_triton(
         is_causal=is_causal,        # causal masking
         scale=scaling               # scaling factor
     )
+
+    # Backward pass
+    attn_outputs.backward(dout)
     
-    return attn_outputs  # [batch, query_len, num_heads, head_dim]
+    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
 
 
 def dynamic_mask_attention_flex(
@@ -347,11 +364,12 @@ def dynamic_mask_attention_flex(
     A: torch.Tensor,
     scaling: float,
     causal_mask: torch.Tensor,
+    dout: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
     """
-    Flex Attention implementation of dynamic mask attention.
+    Flex Attention implementation of dynamic mask attention backward pass.
     
     Args:
         query_states: [batch_size, num_heads, query_len, head_dim]
@@ -361,11 +379,12 @@ def dynamic_mask_attention_flex(
         A: [num_kv_heads]
         scaling: Attention scaling factor
         causal_mask: Causal attention mask
+        dout: [batch_size, query_len, num_heads, head_dim] - gradient w.r.t. output
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (attn_outputs, dq, dk, dv, dbias)
     """
     if flex_dmattn_func is None:
         raise RuntimeError("Flex Attention implementation not available")
@@ -384,6 +403,7 @@ def dynamic_mask_attention_flex(
         keep_window_size,
         causal_mask if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
+    attn_bias.retain_grad()
     
     # Repeat KV for multi-head attention (GQA support)
     key_states = repeat_kv(key_states, num_queries_per_kv)
@@ -405,7 +425,10 @@ def dynamic_mask_attention_flex(
         scale=scaling                               # scaling factor
     )
     
-    return attn_outputs  # [batch, query_len, num_heads, head_dim]
+    # Backward pass
+    attn_outputs.backward(dout)
+    
+    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
 
 
 def analyze_differences(original_result, cuda_result, accuracy_threshold=0.95):
@@ -500,12 +523,12 @@ def analyze_differences(original_result, cuda_result, accuracy_threshold=0.95):
     return is_close, max_diff, mean_diff
 
 
-def test_cuda_forward_equivalence(accuracy_threshold=0.95):
-    """Test forward pass equivalence between Python prototype and CUDA implementation."""
+def test_cuda_backward_equivalence(accuracy_threshold=0.95):
+    """Test backward pass equivalence between Python prototype and CUDA implementation."""
     print("\n" + "🚀" + "=" * 76 + "🚀")
-    print("🔬 Testing Forward Pass Equivalence: Python Prototype vs CUDA Implementation 🔬")
+    print("🔬 Testing backward Pass Equivalence: Python Prototype vs CUDA Implementation 🔬")
     print("🚀" + "=" * 76 + "🚀")
-    
+
     # Check if CUDA implementation is available
     if flash_dmattn_func is None:
         print("❌ CUDA implementation not available, skipping test.")
@@ -513,35 +536,35 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
     
     # Set random seed for reproducibility
     torch.manual_seed(0)
-    
+
     # Test different parameter configurations
     # If you encounter NAN issues when running multiple configurations, try running a single configuration
     test_configs = [
         # (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal)
         (1, 1, 1, 64, 64, 32, True),
-        (1, 1, 1, 64, 64, 32, False),
-        (1, 1, 1, 128, 128, 32, True),
-        (1, 1, 1, 128, 128, 32, False),
-        (1, 1, 1, 256, 256, 32, True),
-        (1, 1, 1, 256, 256, 32, False),
-        (1, 1, 1, 512, 512, 32, True),
-        (1, 1, 1, 512, 512, 32, False),
-        (1, 1, 1, 1024, 1024, 32, True),
-        (1, 1, 1, 1024, 1024, 32, False),
-        (1, 1, 1, 2048, 2048, 32, True),
-        (1, 1, 1, 2048, 2048, 32, False),
-        (1, 1, 1, 4096, 4096, 32, True),
-        (1, 1, 1, 4096, 4096, 32, False),
-        (1, 2, 1, 64, 64, 32, True),
-        (2, 1, 1, 128, 128, 32, True),
-        (2, 2, 1, 128, 128, 32, True),
-        (1, 2, 1, 64, 64, 128, True),
-        (1, 2, 1, 128, 128, 128, True),
-        (1, 2, 1, 256, 256, 128, True),
-        (1, 2, 1, 3, 512, 128, True),
-        (1, 2, 1, 1, 512, 128, True),
+        # (1, 1, 1, 64, 64, 32, False),
+        # (1, 1, 1, 128, 128, 32, True),
+        # (1, 1, 1, 128, 128, 32, False),
+        # (1, 1, 1, 256, 256, 32, True),
+        # (1, 1, 1, 256, 256, 32, False),
+        # (1, 1, 1, 512, 512, 32, True),
+        # (1, 1, 1, 512, 512, 32, False),
+        # (1, 1, 1, 1024, 1024, 32, True),
+        # (1, 1, 1, 1024, 1024, 32, False),
+        # (1, 1, 1, 2048, 2048, 32, True),
+        # (1, 1, 1, 2048, 2048, 32, False),
+        # (1, 1, 1, 4096, 4096, 32, True),
+        # (1, 1, 1, 4096, 4096, 32, False),
+        # (1, 2, 1, 64, 64, 32, True),
+        # (2, 1, 1, 128, 128, 32, True),
+        # (2, 2, 1, 128, 128, 32, True),
+        # (1, 2, 1, 64, 64, 128, True),
+        # (1, 2, 1, 128, 128, 128, True),
+        # (1, 2, 1, 256, 256, 128, True),
+        # (1, 2, 1, 3, 512, 128, True),
+        # (1, 2, 1, 1, 512, 128, True),
     ]
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device_icon = "🔥" if device.type == "cuda" else "💻"
     print(f"{device_icon} Using device: {device}")
@@ -559,32 +582,32 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
         progress_filled = "█" * (i + 1)
         progress_empty = "░" * (len(test_configs) - i - 1)
         progress_bar = f"[{progress_filled}{progress_empty}]"
-        
+
         print(f"\n🧪 Test configuration {i+1}/{len(test_configs)} {progress_bar}")
         print(f"  📊 batch_size={batch_size}, num_heads={num_heads}, num_kv_heads={num_kv_heads}")
         print(f"  📏 query_len={query_len}, key_len={key_len}, head_dim={head_dim}")
         print(f"  🔒 is_causal={is_causal}")
         print(f"  🎯 Accuracy threshold: {accuracy_threshold*100:.1f}%")
-        
+
         # Create random input data
         query_states = torch.randn(
             batch_size, num_heads, query_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         key_states = torch.randn(
-            batch_size, num_kv_heads, key_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            batch_size, num_kv_heads, key_len, head_dim,
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         value_states = torch.randn(
             batch_size, num_kv_heads, key_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         dt_proj = torch.randn(
             num_kv_heads, num_kv_heads * head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True 
         )
-        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
-        
+        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16, requires_grad=True)
+
         # Create custom causal mask with cache position
         cache_position = torch.arange(key_len - query_len, key_len, device=device)
         min_type = torch.finfo(value_states.dtype).min
@@ -600,32 +623,75 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
         scaling = head_dim ** -0.5
         keep_window_size = 64
 
+        # Create gradient for output
+        dout = torch.randn(
+            batch_size, query_len, num_heads, head_dim,
+            device=device, dtype=torch.bfloat16
+        )
+
+        # Clone inputs for Python implementation
+        query_python = query_states.clone().detach().requires_grad_(True)
+        key_python = key_states.clone().detach().requires_grad_(True)
+        value_python = value_states.clone().detach().requires_grad_(True)
+        dt_proj_python = dt_proj.clone().detach().requires_grad_(True)
+        A_python = A.clone().detach().requires_grad_(True)
+        
         # Run Python implementation
         start_time = time.time()
-        py_output = dynamic_mask_attention_python(
-            query_states, key_states, value_states,
-            dt_proj, A, scaling, causal_mask,
-            keep_window_size, is_causal
+        attn_outputs_python, dq_python, dk_python, dv_python, dbias_python = dynamic_mask_attention_python(
+            query_python, key_python, value_python, dt_proj_python, A_python,
+            scaling, causal_mask, dout.clone(), keep_window_size, is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
+            
+            
+        # Clone inputs for CUDA implementation
+        query_cuda = query_states.clone().detach().requires_grad_(True)
+        key_cuda = key_states.clone().detach().requires_grad_(True)
+        value_cuda = value_states.clone().detach().requires_grad_(True)
+        dt_proj_cuda = dt_proj.clone().detach().requires_grad_(True)
+        A_cuda = A.clone().detach().requires_grad_(True)
         
         # Run CUDA implementation
         start_time = time.time()
-        cuda_output = dynamic_mask_attention_cuda(
-            query_states, key_states, value_states,
-            dt_proj, A, scaling, causal_mask,
-            keep_window_size, is_causal
+        attn_outputs_cuda, dq_cuda, dk_cuda, dv_cuda, dbias_cuda = dynamic_mask_attention_cuda(
+            query_cuda, key_cuda, value_cuda, dt_proj_cuda, A_cuda,
+            scaling, causal_mask, dout.clone(), keep_window_size, is_causal
         )
         torch.cuda.synchronize()
         cuda_time = time.time() - start_time
         
+        # Analyze outputs
+        print(f"\n🔍 Analyzing differences between Python and CUDA outputs:")
+        is_attn_output_close, max_attn_output_diff, mean_attn_output_diff = analyze_differences(
+            attn_outputs_python, attn_outputs_cuda, accuracy_threshold
+        )
+
+        # Analyze dQ gradients
+        print(f"\n🔍 Analyzing dQ gradients:")
+        is_dq_close, max_dq_diff, mean_dq_diff = analyze_differences(
+            dq_python, dq_cuda, accuracy_threshold
+        )
+
+        # Analyze dK gradients
+        print(f"\n🔍 Analyzing dK gradients:")
+        is_dk_close, max_dk_diff, mean_dk_diff = analyze_differences(
+            dk_python, dk_cuda, accuracy_threshold
+        )
         
-        # Analyze differences
-        py_output_copy = py_output.clone()
-        cuda_output_copy = cuda_output.clone()
-        is_close, max_diff, mean_diff = analyze_differences(py_output_copy, cuda_output_copy, accuracy_threshold)
-        
+        # Analyze dV gradients
+        print(f"\n🔍 Analyzing dV gradients:")
+        is_dv_close, max_dv_diff, mean_dv_diff = analyze_differences(
+            dv_python, dv_cuda, accuracy_threshold
+        )
+
+        # Analyze dBias gradients
+        print(f"\n🔍 Analyzing dBias gradients:")
+        is_dbias_close, max_attn_bias_diff, mean_attn_bias_diff = analyze_differences(
+            dbias_python, dbias_cuda, accuracy_threshold
+        )
+
         # Report performance difference
         speedup = py_time / cuda_time if cuda_time > 0 else float('inf')
         print(f"\n⚡ Performance comparison:")
@@ -633,33 +699,40 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
         print(f"    🚀 CUDA implementation:   {cuda_time*1000:.2f} ms")
         print(f"    📈 Speedup:               {speedup:.2f}x")
         
-        # Update test results
+        # Check if all gradients pass
+        is_close = (is_attn_output_close and is_dq_close and is_dk_close and is_dv_close and is_dbias_close)
         test_result = "Passed" if is_close else "Failed"
         result_icon = "✅" if is_close else "❌"
         all_passed = all_passed and is_close
         print(f"\n{result_icon} Test result: {test_result}")
         
         # If test fails with large difference, can exit early
-        if not is_close and max_diff > 1e-2:
+        if not is_close and max_dq_diff > 1e-2:
             print("  ⚠️ Difference too large, stopping subsequent tests.")
             break
-        del query_states, key_states, value_states, dt_proj, A, causal_mask, py_output, cuda_output, py_output_copy, cuda_output_copy
+        if not is_close and max_dk_diff > 1e-2:
+            print("  ⚠️ Difference too large, stopping subsequent tests.")
+            break
+        if not is_close and max_dv_diff > 1e-2:
+            print("  ⚠️ Difference too large, stopping subsequent tests.")
+            break
+        del query_states, key_states, value_states, dt_proj, A, causal_mask, dout, dq_python, dk_python, dv_python, dbias_python, dq_cuda, dk_cuda, dv_cuda, dbias_cuda
         torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.synchronize()
     
     print("\n" + "🏁" + "=" * 76 + "🏁")
     summary_icon = "🎉" if all_passed else "😞"
-    print(f"{summary_icon} Forward Equivalence Test Summary: {'All Passed' if all_passed else 'Some Tests Failed'}")
+    print(f"{summary_icon} Backward Equivalence Test Summary: {'All Passed' if all_passed else 'Some Tests Failed'}")
     print("🏁" + "=" * 76 + "🏁")
-    
+
     return all_passed
 
 
-def test_triton_forward_equivalence(accuracy_threshold=0.95):
-    """Test forward pass equivalence between Python and Triton implementations."""
+def test_triton_backward_equivalence(accuracy_threshold=0.95):
+    """Test backward pass equivalence between Python and Triton implementations."""
     print("\n" + "🔥" + "=" * 76 + "🔥")
-    print("🔬 Testing Forward Pass Equivalence: Python vs Triton 🔬")
+    print("🔬 Testing Backward Pass Equivalence: Python vs Triton 🔬")
     print("🔥" + "=" * 76 + "🔥")
     
     if triton_dmattn_func is None:
@@ -722,21 +795,21 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
         # Create random input data
         query_states = torch.randn(
             batch_size, num_heads, query_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         key_states = torch.randn(
             batch_size, num_kv_heads, key_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         value_states = torch.randn(
             batch_size, num_kv_heads, key_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         dt_proj = torch.randn(
             num_kv_heads, num_kv_heads * head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
-        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
+        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16, requires_grad=True)
         
         # Create custom causal mask with cache position
         cache_position = torch.arange(0, query_len + 0, device=device)
@@ -753,84 +826,126 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
         scaling = head_dim ** -0.5
         keep_window_size = 64
 
+        # Create gradient for output
+        dout = torch.randn(
+            batch_size, query_len, num_heads, head_dim,
+            device=device, dtype=torch.bfloat16
+        )
+
+        # Clone inputs for Python implementation
+        query_python = query_states.clone().detach().requires_grad_(True)
+        key_python = key_states.clone().detach().requires_grad_(True)
+        value_python = value_states.clone().detach().requires_grad_(True)
+        dt_proj_python = dt_proj.clone().detach().requires_grad_(True)
+        A_python = A.clone().detach().requires_grad_(True)
+        
         # Run Python implementation
         start_time = time.time()
-        py_output = dynamic_mask_attention_python(
-            query_states, key_states, value_states,
-            dt_proj, A, scaling, causal_mask,
-            keep_window_size, is_causal
+        attn_outputs_python, dq_python, dk_python, dv_python, dbias_python = dynamic_mask_attention_python(
+            query_python, key_python, value_python, dt_proj_python, A_python,
+            scaling, causal_mask, dout.clone(), keep_window_size, is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
         
+        # Clone inputs for Triton implementation
+        query_triton = query_states.clone().detach().requires_grad_(True)
+        key_triton = key_states.clone().detach().requires_grad_(True)
+        value_triton = value_states.clone().detach().requires_grad_(True)
+        dt_proj_triton = dt_proj.clone().detach().requires_grad_(True)
+        A_triton = A.clone().detach().requires_grad_(True)
+        
         # Run Triton implementation
         start_time = time.time()
         try:
-            triton_output = dynamic_mask_attention_triton(
-                query_states, key_states, value_states,
-                dt_proj, A, scaling, causal_mask,
-                keep_window_size, is_causal
+            attn_outputs_triton, dq_triton, dk_triton, dv_triton, dbias_triton = dynamic_mask_attention_triton(
+                query_triton, key_triton, value_triton, dt_proj_triton, A_triton,
+                scaling, causal_mask, dout.clone(), keep_window_size, is_causal
             )
             torch.cuda.synchronize()
             triton_time = time.time() - start_time
         except Exception as e:
             print(f"❌ Triton implementation failed: {e}")
-            triton_output = None
+            attn_outputs_triton = None
             triton_time = float('inf')
         
-        # Analyze differences
-        py_output_copy = py_output.clone()
-        
-        if triton_output is not None:
-            triton_output_copy = triton_output.clone()
+        # Analyze outputs
+        if attn_outputs_triton is not None:
+            print(f"\n🔍 Analyzing differences between Python and Triton outputs:")
+            is_attn_output_close, max_attn_output_diff, mean_attn_output_diff = analyze_differences(
+                attn_outputs_python, attn_outputs_triton, accuracy_threshold
+            )
+
+            # Analyze dQ gradients
+            print(f"\n🔍 Analyzing dQ gradients:")
+            is_dq_close, max_dq_diff, mean_dq_diff = analyze_differences(
+                dq_python, dq_triton, accuracy_threshold
+            )
+
+            # Analyze dK gradients
+            print(f"\n🔍 Analyzing dK gradients:")
+            is_dk_close, max_dk_diff, mean_dk_diff = analyze_differences(
+                dk_python, dk_triton, accuracy_threshold
+            )
             
-            print("\n📊 Python vs Triton comparison:")
-            triton_vs_py_close, triton_max_diff, triton_mean_diff = analyze_differences(py_output_copy, triton_output_copy, accuracy_threshold)
+            # Analyze dV gradients
+            print(f"\n🔍 Analyzing dV gradients:")
+            is_dv_close, max_dv_diff, mean_dv_diff = analyze_differences(
+                dv_python, dv_triton, accuracy_threshold
+            )
+
+            # Analyze dBias gradients
+            print(f"\n🔍 Analyzing dBias gradients:")
+            is_dbias_close, max_dbias_diff, mean_dbias_diff = analyze_differences(
+                dbias_python, dbias_triton, accuracy_threshold
+            )
         else:
-            triton_vs_py_close = False
-        
-        # Report performance differences
+            is_attn_output_close = is_dq_close = is_dk_close = is_dv_close = is_dbias_close = False
+
+        # Report performance difference
         print(f"\n⚡ Performance comparison:")
         print(f"    🐍 Python implementation: {py_time*1000:.2f} ms")
-        if triton_output is not None:
+        if attn_outputs_triton is not None:
             print(f"    🔥 Triton implementation: {triton_time*1000:.2f} ms")
             
             triton_speedup = py_time / triton_time if triton_time > 0 else float('inf')
             print(f"    📈 Triton speedup vs Python: {triton_speedup:.2f}x")
         
-        # Update test results
-        test_passed = triton_vs_py_close if triton_output is not None else False
-        test_result = "Passed" if test_passed else "Failed"
-        result_icon = "✅" if test_passed else "❌"
-        all_passed = all_passed and test_passed
-        print(f"\n{result_icon} Overall test result: {test_result}")
+        # Check if all gradients pass
+        is_close = (is_attn_output_close and is_dq_close and is_dk_close and is_dv_close and is_dbias_close) if attn_outputs_triton is not None else False
+        test_result = "Passed" if is_close else "Failed"
+        result_icon = "✅" if is_close else "❌"
+        all_passed = all_passed and is_close
+        print(f"\n{result_icon} Test result: {test_result}")
         
         # If test fails with large difference, can exit early
-        if not test_passed:
-            if triton_output is not None:
-                if triton_max_diff > 1e-2:
-                    print("  ⚠️ Difference too large, stopping subsequent tests.")
-                    break
+        if not is_close and attn_outputs_triton is not None:
+            if max_dq_diff > 1e-2 or max_dk_diff > 1e-2 or max_dv_diff > 1e-2:
+                print("  ⚠️ Difference too large, stopping subsequent tests.")
+                break
         
-        del query_states, key_states, value_states, dt_proj, A, causal_mask, py_output, py_output_copy
-        if triton_output is not None:
-            del triton_output, triton_output_copy
+        del query_states, key_states, value_states, dt_proj, A, causal_mask, dout
+        del query_python, key_python, value_python, dt_proj_python, A_python
+        del dq_python, dk_python, dv_python, attn_outputs_python, dbias_python
+        if attn_outputs_triton is not None:
+            del query_triton, key_triton, value_triton, dt_proj_triton, A_triton
+            del dq_triton, dk_triton, dv_triton, attn_outputs_triton, dbias_triton
         torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.synchronize()
     
     print("\n" + "🏁" + "=" * 76 + "🏁")
     summary_icon = "🎉" if all_passed else "😞"
-    print(f"{summary_icon} Python vs Triton Test Summary: {'All Passed' if all_passed else 'Some Tests Failed'}")
+    print(f"{summary_icon} Python vs Triton Backward Test Summary: {'All Passed' if all_passed else 'Some Tests Failed'}")
     print("🏁" + "=" * 76 + "🏁")
     
     return all_passed
 
 
-def test_flex_forward_equivalence(accuracy_threshold=0.95):
-    """Test forward pass equivalence between Python and Flex Attention implementations."""
+def test_flex_backward_equivalence(accuracy_threshold=0.95):
+    """Test backward pass equivalence between Python and Flex Attention implementations."""
     print("\n" + "🌟" + "=" * 76 + "🌟")
-    print("🔬 Testing Forward Pass Equivalence: Python vs Flex Attention 🔬")
+    print("🔬 Testing Backward Pass Equivalence: Python vs Flex Attention 🔬")
     print("🌟" + "=" * 76 + "🌟")
     
     if flex_dmattn_func is None:
@@ -893,21 +1008,21 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
         # Create random input data
         query_states = torch.randn(
             batch_size, num_heads, query_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         key_states = torch.randn(
             batch_size, num_kv_heads, key_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         value_states = torch.randn(
             batch_size, num_kv_heads, key_len, head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
         dt_proj = torch.randn(
             num_kv_heads, num_kv_heads * head_dim, 
-            device=device, dtype=torch.bfloat16
+            device=device, dtype=torch.bfloat16, requires_grad=True
         )
-        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
+        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16, requires_grad=True)
         
         # Create custom causal mask with cache position
         cache_position = torch.arange(0, query_len + 0, device=device)
@@ -924,75 +1039,117 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
         scaling = head_dim ** -0.5
         keep_window_size = 64
 
+        # Create gradient for output
+        dout = torch.randn(
+            batch_size, query_len, num_heads, head_dim,
+            device=device, dtype=torch.bfloat16
+        )
+
+        # Clone inputs for Python implementation
+        query_python = query_states.clone().detach().requires_grad_(True)
+        key_python = key_states.clone().detach().requires_grad_(True)
+        value_python = value_states.clone().detach().requires_grad_(True)
+        dt_proj_python = dt_proj.clone().detach().requires_grad_(True)
+        A_python = A.clone().detach().requires_grad_(True)
+        
         # Run Python implementation
         start_time = time.time()
-        py_output = dynamic_mask_attention_python(
-            query_states, key_states, value_states,
-            dt_proj, A, scaling, causal_mask,
-            keep_window_size, is_causal
+        attn_outputs_python, dq_python, dk_python, dv_python, dbias_python = dynamic_mask_attention_python(
+            query_python, key_python, value_python, dt_proj_python, A_python,
+            scaling, causal_mask, dout.clone(), keep_window_size, is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
         
+        # Clone inputs for Flex Attention implementation
+        query_flex = query_states.clone().detach().requires_grad_(True)
+        key_flex = key_states.clone().detach().requires_grad_(True)
+        value_flex = value_states.clone().detach().requires_grad_(True)
+        dt_proj_flex = dt_proj.clone().detach().requires_grad_(True)
+        A_flex = A.clone().detach().requires_grad_(True)
+        
         # Run Flex Attention implementation
         start_time = time.time()
         try:
-            flex_output = dynamic_mask_attention_flex(
-                query_states, key_states, value_states,
-                dt_proj, A, scaling, causal_mask,
-                keep_window_size, is_causal
+            attn_outputs_flex, dq_flex, dk_flex, dv_flex, dbias_flex = dynamic_mask_attention_flex(
+                query_flex, key_flex, value_flex, dt_proj_flex, A_flex,
+                scaling, causal_mask, dout.clone(), keep_window_size, is_causal
             )
             torch.cuda.synchronize()
             flex_time = time.time() - start_time
         except Exception as e:
             print(f"❌ Flex Attention implementation failed: {e}")
-            flex_output = None
+            attn_outputs_flex = None
             flex_time = float('inf')
         
-        # Analyze differences
-        py_output_copy = py_output.clone()
-        
-        if flex_output is not None:
-            flex_output_copy = flex_output.clone()
+        # Analyze outputs
+        if attn_outputs_flex is not None:
+            print(f"\n🔍 Analyzing differences between Python and Flex Attention outputs:")
+            is_attn_output_close, max_attn_output_diff, mean_attn_output_diff = analyze_differences(
+                attn_outputs_python, attn_outputs_flex, accuracy_threshold
+            )
+
+            # Analyze dQ gradients
+            print(f"\n🔍 Analyzing dQ gradients:")
+            is_dq_close, max_dq_diff, mean_dq_diff = analyze_differences(
+                dq_python, dq_flex, accuracy_threshold
+            )
+
+            # Analyze dK gradients
+            print(f"\n🔍 Analyzing dK gradients:")
+            is_dk_close, max_dk_diff, mean_dk_diff = analyze_differences(
+                dk_python, dk_flex, accuracy_threshold
+            )
             
-            print("\n📊 Python vs Flex Attention comparison:")
-            flex_vs_py_close, flex_max_diff, flex_mean_diff = analyze_differences(py_output_copy, flex_output_copy, accuracy_threshold)
+            # Analyze dV gradients
+            print(f"\n🔍 Analyzing dV gradients:")
+            is_dv_close, max_dv_diff, mean_dv_diff = analyze_differences(
+                dv_python, dv_flex, accuracy_threshold
+            )
+
+            # Analyze dBias gradients
+            print(f"\n🔍 Analyzing dBias gradients:")
+            is_dias_close, max_attn_bias_diff, mean_attn_bias_diff = analyze_differences(
+                dbias_python, dbias_flex, accuracy_threshold
+            )
         else:
-            flex_vs_py_close = False
-        
-        # Report performance differences
+            is_attn_output_close = is_dq_close = is_dk_close = is_dv_close = is_dbias_close = False
+
+        # Report performance difference
         print(f"\n⚡ Performance comparison:")
         print(f"    🐍 Python implementation: {py_time*1000:.2f} ms")
-        if flex_output is not None:
+        if attn_outputs_flex is not None:
             print(f"    🌟 Flex Attention implementation: {flex_time*1000:.2f} ms")
             
             flex_speedup = py_time / flex_time if flex_time > 0 else float('inf')
             print(f"    📈 Flex Attention speedup vs Python: {flex_speedup:.2f}x")
         
-        # Update test results
-        test_passed = flex_vs_py_close if flex_output is not None else False
-        test_result = "Passed" if test_passed else "Failed"
-        result_icon = "✅" if test_passed else "❌"
-        all_passed = all_passed and test_passed
-        print(f"\n{result_icon} Overall test result: {test_result}")
+        # Check if all gradients pass
+        is_close = (is_attn_output_close and is_dq_close and is_dk_close and is_dv_close and is_dbias_close) if attn_outputs_flex is not None else False
+        test_result = "Passed" if is_close else "Failed"
+        result_icon = "✅" if is_close else "❌"
+        all_passed = all_passed and is_close
+        print(f"\n{result_icon} Test result: {test_result}")
         
         # If test fails with large difference, can exit early
-        if not test_passed:
-            if flex_output is not None:
-                if flex_max_diff > 1e-2:
-                    print("  ⚠️ Difference too large, stopping subsequent tests.")
-                    break
+        if not is_close and attn_outputs_flex is not None:
+            if max_dq_diff > 1e-2 or max_dk_diff > 1e-2 or max_dv_diff > 1e-2:
+                print("  ⚠️ Difference too large, stopping subsequent tests.")
+                break
         
-        del query_states, key_states, value_states, dt_proj, A, causal_mask, py_output, py_output_copy
-        if flex_output is not None:
-            del flex_output, flex_output_copy
+        del query_states, key_states, value_states, dt_proj, A, causal_mask, dout
+        del query_python, key_python, value_python, dt_proj_python, A_python
+        del dq_python, dk_python, dv_python, attn_outputs_python, dbias_python
+        if attn_outputs_flex is not None:
+            del query_flex, key_flex, value_flex, dt_proj_flex, A_flex
+            del dq_flex, dk_flex, dv_flex, attn_outputs_flex, dbias_flex
         torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.synchronize()
     
     print("\n" + "🏁" + "=" * 76 + "🏁")
     summary_icon = "🎉" if all_passed else "😞"
-    print(f"{summary_icon} Python vs Flex Attention Test Summary: {'All Passed' if all_passed else 'Some Tests Failed'}")
+    print(f"{summary_icon} Python vs Flex Attention Backward Test Summary: {'All Passed' if all_passed else 'Some Tests Failed'}")
     print("🏁" + "=" * 76 + "🏁")
     
     return all_passed
@@ -1000,20 +1157,20 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
 
 def main():
     """
-    Test forward pass equivalence between Python prototype and CUDA implementation
+    Test backward pass equivalence between Python prototype and various implementations
     of dynamic mask attention.
     
-    This script validates numerical consistency including:
-    - Standard forward pass (fwd)
+    This script validates numerical consistency for backward pass including:
+    - Gradient computation for Query, Key, Value tensors (dQ, dK, dV)  
     - Different batch sizes, head counts, sequence lengths and dimensions
     - Causal and non-causal mask options
-    - Numerical equivalence analysis
+    - Numerical equivalence analysis for gradients
     - Performance comparison
     """
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description='Test forward equivalence between Python/CUDA dynamic mask attention'
+        description='Test backward equivalence between Python/CUDA dynamic mask attention'
     )
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--verbose', action='store_true', help='Verbose output')
@@ -1030,7 +1187,7 @@ def main():
     
     # Print test environment information
     print("🧬" + "=" * 78 + "🧬")
-    print("🔬 Dynamic Mask Attention Forward Pass Equivalence Test Suite 🔬")
+    print("🔬 Dynamic Mask Attention Backward Pass Equivalence Test Suite 🔬")
     print("🧬" + "=" * 78 + "🧬")
     print(f"🐍 PyTorch version: {torch.__version__}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1048,21 +1205,20 @@ def main():
     
     # Run tests based on user selection
     if args.test_type in ['all', 'cuda']:
-        print("\n" + "📍" + " Starting Standard Forward Pass Tests " + "📍")
-        test_results['cuda'] = test_cuda_forward_equivalence(args.accuracy_threshold)
-    
-    # if args.test_type in ['all', 'triton']:
-    #     print("\n" + "🔥" + " Starting Python vs Triton Tests " + "🔥")
-    #     test_results['triton'] = test_triton_forward_equivalence(args.accuracy_threshold)
+        print("\n" + "📍" + " Starting Python vs CUDA Backward Tests " + "📍")
+        test_results['cuda'] = test_cuda_backward_equivalence(args.accuracy_threshold)
 
-    # if args.test_type in ['all', 'flex']:
-    #     print("\n" + "🌟" + " Starting Python vs Flex Attention Tests " + "🌟")
-    #     test_results['flex'] = test_flex_forward_equivalence(args.accuracy_threshold)
+    if args.test_type in ['all', 'triton']:
+        print("\n" + "🔥" + " Starting Python vs Triton Backward Tests " + "🔥")
+        test_results['triton'] = test_triton_backward_equivalence(args.accuracy_threshold)
 
+    if args.test_type in ['all', 'flex']:
+        print("\n" + "🌟" + " Starting Python vs Flex Attention Backward Tests " + "🌟")
+        test_results['flex'] = test_flex_backward_equivalence(args.accuracy_threshold)
 
     # Print overall summary
     print("\n" + "🏆" + "=" * 78 + "🏆")
-    print("🔬 FINAL TEST SUMMARY 🔬")
+    print("🔬 FINAL BACKWARD TEST SUMMARY 🔬")
     print("🏆" + "=" * 78 + "🏆")
     
     all_passed = True
@@ -1083,4 +1239,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+
+
+

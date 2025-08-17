@@ -153,7 +153,6 @@ struct Flash_bwd_params : public Flash_fwd_params {
     void *__restrict__ dq_accum_ptr;
     void *__restrict__ dk_accum_ptr;
     void *__restrict__ dv_accum_ptr;
-    void *__restrict__ dbias_accum_ptr;
 
     // // To accumulate dK and dV in case we're splitting the bwd along seqlen_q
     // dimension void *__restrict__ dk_accum_ptr; void *__restrict__
