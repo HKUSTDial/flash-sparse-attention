@@ -665,12 +665,12 @@ def init_to_zero(names):
             num_stages=1,
             pre_hook=init_to_zero(["DQ", "DBias"]),
         ),
-        triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 128, "SEQUENCE_PARALLEL": True},
-            num_warps=8,
-            num_stages=1,
-            pre_hook=init_to_zero(["DQ", "DBias"]),
-        ),
+        # triton.Config(
+        #     {"BLOCK_M": 64, "BLOCK_N": 128, "SEQUENCE_PARALLEL": True},
+        #     num_warps=8,
+        #     num_stages=1,
+        #     pre_hook=init_to_zero(["DQ", "DBias"]),
+        # ),
         # Other configs seem to give wrong results when seqlen_q % 128 != 0, disabling them for now
         # # Kernel is buggy (give wrong result) if we set BLOCK_m=128, BLOCK_n=64, num_warps=*4*
         # triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "SEQUENCE_PARALLEL": False}, num_warps=8, num_stages=1, pre_hook=init_to_zero(['DQ', 'DBias'])),
@@ -930,7 +930,7 @@ def _flash_attn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=False
 
 
 def _flash_attn_backward(
-    do, q, k, v, mask, bias, o, lse, dq, dk, dv, dbias, softmax_scale=None, is_causal=False
+    do, q, k, v, mask, bias, o, lse, softmax_scale=None, is_causal=False
 ):
     # Make sure that the last dimension is contiguous
     if do.stride(-1) != 1:
@@ -941,8 +941,6 @@ def _flash_attn_backward(
     assert d <= 128
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     assert lse.shape == (batch, nheads, seqlen_q_rounded)
-    assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
-    assert dq.stride(-1) == dk.stride(-1) == dv.stride(-1) == 1
 
     assert mask.dtype in [q.dtype, torch.float]
     assert mask.is_cuda
@@ -959,6 +957,9 @@ def _flash_attn_backward(
     dq_accum = torch.empty_like(q, dtype=torch.float32)
     delta = torch.empty_like(lse)
     # delta = torch.zeros_like(lse)
+    dk = torch.empty_like(k)
+    dv = torch.empty_like(v)
+    dbias = torch.empty_like(bias)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
     grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads)
@@ -1047,7 +1048,8 @@ def _flash_attn_backward(
         # num_warps=num_warps,
         # num_stages=1,
     )
-    dq.copy_(dq_accum)
+    dq = dq_accum.to(q.dtype)
+    return dq, dk, dv, dbias
 
 
 class FlashDMAttnFunc(torch.autograd.Function):
@@ -1075,7 +1077,13 @@ class FlashDMAttnFunc(torch.autograd.Function):
         # Make sure that the last dimension is contiguous
         query, key, value, attn_mask, attn_bias = [x if x.stride(-1) == 1 else x.contiguous() for x in [query, key, value, attn_mask, attn_bias]]
         o, lse, ctx.softmax_scale = _flash_attn_forward(
-            query, key, value, attn_mask, attn_bias, softmax_scale=softmax_scale, is_causal=is_causal
+            query,
+            key,
+            value,
+            attn_mask,
+            attn_bias,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal
         )
         ctx.save_for_backward(query, key, value, o, lse, attn_mask, attn_bias)
         ctx.is_causal = is_causal
@@ -1085,29 +1093,18 @@ class FlashDMAttnFunc(torch.autograd.Function):
     def backward(ctx, do):
         query, key, value, o, lse, attn_mask, attn_bias = ctx.saved_tensors
         assert not ctx.needs_input_grad[3], "FlashDMAttn does not support mask gradient yet"
-        # Triton's autotune causes the Tensor._version to change, and so Pytorch autograd
-        # does a memcpy. To avoid this we run in inference_mode, which doesn't track the version.
-        with torch.inference_mode():
-            dq = torch.empty_like(query)
-            dk = torch.empty_like(key)
-            dv = torch.empty_like(value)
-            dbias = torch.empty_like(attn_bias)
-            _flash_attn_backward(
-                do,
-                query,
-                key,
-                value,
-                attn_mask,
-                attn_bias,
-                o,
-                lse,
-                dq,
-                dk,
-                dv,
-                dbias,
-                softmax_scale=ctx.softmax_scale,
-                is_causal=ctx.is_causal,
-            )
+        dq, dk, dv, dbias = _flash_attn_backward(
+            do,
+            query,
+            key,
+            value,
+            attn_mask,
+            attn_bias,
+            o,
+            lse,
+            softmax_scale=ctx.softmax_scale,
+            is_causal=ctx.is_causal,
+        )
         return dq, dk, dv, None, dbias, None, None
 
 
