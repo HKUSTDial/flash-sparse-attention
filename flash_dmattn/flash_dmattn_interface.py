@@ -511,12 +511,12 @@ class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
     ):
         # qkv is expected to be of shape (total 3, num_heads, head_size)
         batch_size = cu_seqlens.numel() - 1
-        _, num_heads, _ = qkv.shape
+        total_tokens, num_heads, _ = qkv.shape
         is_grad = is_grad_enabled and qkv.requires_grad
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, max_seqlen, max_seqlen), dtype=qkv.dtype, device=qkv.device)
+            mask = torch.ones((total_tokens, num_heads, max_seqlen), dtype=qkv.dtype, device=qkv.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, max_seqlen, max_seqlen), dtype=qkv.dtype, device=qkv.device)
+            bias = torch.zeros((total_tokens, num_heads, max_seqlen), dtype=qkv.dtype, device=qkv.device)
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -737,14 +737,15 @@ class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
         # q is expected to be of shape (total, num_heads, head_size)
         # kv is expected to be of shape (total, 2, num_heads, head_size)
         batch_size = cu_seqlens_q.numel() - 1
-        _, num_heads, _ = q.shape
+        total_q, num_heads, _ = q.shape
+        _, _, num_heads_k, _ = kv.shape
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, kv]
         )
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
+            mask = torch.ones((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
+            bias = torch.zeros((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -967,14 +968,15 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
     ):
         # q, k, v are expected to be of shape (total, num_heads, head_size)
         batch_size = cu_seqlens_q.numel() - 1
-        _, num_heads, _ = q.shape
+        total_q, num_heads, _ = q.shape
+        _, num_heads_k, _ = k.shape
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
         )
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
+            mask = torch.ones((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, max_seqlen_q, max_seqlen_k), dtype=q.dtype, device=q.device)
+            bias = torch.zeros((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -1279,9 +1281,9 @@ def flash_dmattn_varlen_qkvpacked_func(
 
     Arguments:
         qkv: (total, 3, nheads, headdim), where total = total number of tokens in the batch.
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (total, nheads, max_seqlen). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (total, nheads, max_seqlen). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         cu_seqlens: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
            of the sequences in the batch, used to index into qkv.
@@ -1357,9 +1359,9 @@ def flash_dmattn_varlen_kvpacked_func(
     Arguments:
         q: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
         kv: (total_k, 2, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (total_q, nheads_k, max_seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (total_q, nheads_k, max_seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         cu_seqlens_q: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
            of the sequences in the batch, used to index into q.
@@ -1441,9 +1443,9 @@ def flash_dmattn_varlen_func(
         query: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
         key: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
         value: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (total_q, nheads_k, max_seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (total_q, nheads_k, max_seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         cu_seqlens_q: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
            of the sequences in the batch, used to index into q.
