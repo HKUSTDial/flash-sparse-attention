@@ -174,8 +174,11 @@ def dynamic_mask_attention_python(
     """
     _, num_heads, _, _ = query_states.shape
     _, num_kv_heads, _, _ = key_states.shape
-
     num_queries_per_kv = num_heads // num_kv_heads
+
+    query_states_leaf = query_states
+    key_states_leaf = key_states
+    value_states_leaf = value_states
 
     zoh_states = calculate_zoh_states(value_states, dt_proj, A)
 
@@ -186,23 +189,26 @@ def dynamic_mask_attention_python(
         keep_window_size,
         causal_mask if is_causal else None
     )
-    attn_bias.retain_grad()
+    attn_bias_leaf = attn_bias
+    attn_bias_leaf.retain_grad()
     
     # Sparse attention weight calculation
     key_states = repeat_kv(key_states, num_queries_per_kv)
     value_states = repeat_kv(value_states, num_queries_per_kv)
-    attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
+    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+    attn_bias = repeat_kv(attn_bias_leaf, num_queries_per_kv)
     
     attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1))
     attn_weights = attn_weights * scaling + attn_bias           # Apply scaling and zoh
+    softmax_lse = torch.logsumexp(attn_weights, dim=-1)
     attn_weights = F.softmax(attn_weights, dim=-1)              # Softmax normalization
     attn_outputs = torch.matmul(attn_weights, value_states)
     attn_outputs = attn_outputs.transpose(1, 2).contiguous()    # Transpose to [batch, query_len, num_heads, head_dim]
 
     # Backward pass
     attn_outputs.backward(dout)
-    
-    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
+
+    return attn_outputs, softmax_lse, query_states_leaf.grad, key_states_leaf.grad, value_states_leaf.grad, attn_bias_leaf.grad
 
 
 def dynamic_mask_attention_cuda(
@@ -238,6 +244,10 @@ def dynamic_mask_attention_cuda(
     if flash_dmattn_func is None:
         raise ImportError("CUDA implementation not available")
 
+    query_states_leaf = query_states
+    key_states_leaf = key_states
+    value_states_leaf = value_states
+
     # Calculate zoh_states
     zoh_states = calculate_zoh_states(value_states, dt_proj, A)
 
@@ -248,33 +258,33 @@ def dynamic_mask_attention_cuda(
         keep_window_size,
         causal_mask if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
-
-    attn_bias.retain_grad()
+    attn_bias_leaf = attn_bias
+    attn_bias_leaf.retain_grad()
     
     # Ensure correct data types and memory layout for CUDA function
     # CUDA function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-    q = query_states.transpose(1, 2).contiguous()       # [batch, query_len, num_heads, head_dim]
-    k = key_states.transpose(1, 2).contiguous()         # [batch, key_len, num_kv_heads, head_dim]
-    v = value_states.transpose(1, 2).contiguous()       # [batch, key_len, num_kv_heads, head_dim]
+    query_states = query_states.transpose(1, 2).contiguous()        # [batch, query_len, num_heads, head_dim]
+    key_states = key_states.transpose(1, 2).contiguous()            # [batch, key_len, num_kv_heads, head_dim]
+    value_states = value_states.transpose(1, 2).contiguous()        # [batch, key_len, num_kv_heads, head_dim]
 
     # Call the flash_dmattn_func interface
-    attn_outputs = flash_dmattn_func(
-        q,                          # [batch, query_len, num_heads, head_dim]
-        k,                          # [batch, key_len, num_kv_heads, head_dim]
-        v,                          # [batch, key_len, num_kv_heads, head_dim]
-        attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
-        attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
-        is_causal=is_causal,
-        scale=scaling,
+    attn_outputs, softmax_lse, S_dmask = flash_dmattn_func(
+        query=query_states,                                         # q: [batch, query_len, num_heads, head_dim]
+        key=key_states,                                             # k: [batch, key_len, num_kv_heads, head_dim]
+        value=value_states,                                         # v: [batch, key_len, num_kv_heads, head_dim]
+        attn_mask=attn_mask,                                        # mask: [batch, num_kv_heads, query_len, key_len]
+        attn_bias=attn_bias,                                        # bias: [batch, num_kv_heads, query_len, key_len]
+        is_causal=is_causal,                                        # causal masking
+        scale=scaling,                                              # scaling factor
         softcap=0.0,
         deterministic=True,
-        return_attn_probs=False
+        return_attn_probs=True
     )
     
     # Backward pass
     attn_outputs.backward(dout)
-    
-    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
+
+    return attn_outputs, softmax_lse, query_states_leaf.grad, key_states_leaf.grad, value_states_leaf.grad, attn_bias_leaf.grad
 
 
 def dynamic_mask_attention_triton(
@@ -314,6 +324,10 @@ def dynamic_mask_attention_triton(
     _, num_kv_heads, _, _ = key_states.shape
     num_queries_per_kv = num_heads // num_kv_heads
 
+    query_states_leaf = query_states
+    key_states_leaf = key_states
+    value_states_leaf = value_states
+
     # Calculate zoh_states
     zoh_states = calculate_zoh_states(value_states, dt_proj, A)
 
@@ -324,36 +338,37 @@ def dynamic_mask_attention_triton(
         keep_window_size,
         causal_mask if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
-    attn_bias.retain_grad()
+    attn_bias_leaf = attn_bias
+    attn_bias_leaf.retain_grad()
     
     # Repeat KV for multi-head attention (GQA support)
     key_states = repeat_kv(key_states, num_queries_per_kv)
     value_states = repeat_kv(value_states, num_queries_per_kv)
     attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
-    attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
+    attn_bias = repeat_kv(attn_bias_leaf, num_queries_per_kv)
     
     # Triton function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-    query_states = query_states.transpose(1, 2).contiguous()    # [batch, query_len, num_heads, head_dim]
-    key_states = key_states.transpose(1, 2).contiguous()        # [batch, key_len, num_heads, head_dim]
-    value_states = value_states.transpose(1, 2).contiguous()    # [batch, key_len, num_heads, head_dim]
-    attn_mask = attn_mask.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
-    attn_bias = attn_bias.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
-    
+    query_states = query_states.transpose(1, 2).contiguous()        # [batch, num_heads, query_len, head_dim]
+    key_states = key_states.transpose(1, 2).contiguous()            # [batch, num_heads, key_len, head_dim]
+    value_states = value_states.transpose(1, 2).contiguous()        # [batch, num_heads, key_len, head_dim]
+    attn_mask = attn_mask.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
+    attn_bias = attn_bias.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
+
     # Call the Triton implementation
     attn_outputs = triton_dmattn_func(
-        query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
-        key_states,                 # k: [batch, seqlen_k, num_heads, head_dim]
-        value_states,               # v: [batch, seqlen_k, num_heads, head_dim]
-        attn_mask=attn_mask,        # mask: [batch, num_heads, seqlen_q, seqlen_k]
-        attn_bias=attn_bias,        # bias: [batch, num_heads, seqlen_q, seqlen_k]
-        is_causal=is_causal,        # causal masking
-        scale=scaling               # scaling factor
+        query=query_states,                                         # q: [batch, seqlen_q, num_heads, head_dim]
+        key=key_states,                                             # k: [batch, seqlen_k, num_heads, head_dim]
+        value=value_states,                                         # v: [batch, seqlen_k, num_heads, head_dim]
+        attn_mask=attn_mask,                                        # mask: [batch, num_heads, seqlen_q, seqlen_k]
+        attn_bias=attn_bias,                                        # bias: [batch, num_heads, seqlen_q, seqlen_k]
+        is_causal=is_causal,                                        # causal masking
+        scale=scaling                                               # scaling factor
     )
 
     # Backward pass
     attn_outputs.backward(dout)
     
-    return attn_outputs, query_states.grad, key_states.grad, value_states.grad, attn_bias.grad
+    return attn_outputs, query_states_leaf.grad, key_states_leaf.grad, value_states_leaf.grad, attn_bias_leaf.grad
 
 
 def dynamic_mask_attention_flex(
