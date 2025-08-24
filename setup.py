@@ -77,7 +77,7 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
     # return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100;120").split(";")
-    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80").split(";")
+    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90").split(";")
 
 
 def get_platform():
@@ -168,7 +168,31 @@ if not SKIP_CUDA_BUILD:
     # https://github.com/pytorch/pytorch/blob/8472c24e3b5b60150096486616d98b7bea01500b/torch/utils/cpp_extension.py#L920
     if FORCE_CXX11_ABI:
         torch._C._GLIBCXX_USE_CXX11_ABI = True
-    
+
+    nvcc_flags = [
+    "-O3",
+    "-std=c++17",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_HALF2_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "--expt-relaxed-constexpr",
+    "--expt-extended-lambda",
+    "--use_fast_math",
+    # "--ptxas-options=-v",
+    # "--ptxas-options=-O2",
+    # "-lineinfo",
+    "-DFLASHATTENTION_DISABLE_BACKWARD",
+    # "-DFLASHATTENTION_DISABLE_SOFTCAP",
+    # "-DFLASHATTENTION_DISABLE_UNEVEN_K",
+    ]
+
+    compiler_c17_flag=["-O3", "-std=c++17"]
+    # Add Windows-specific flags
+    if sys.platform == "win32" and os.getenv('DISTUTILS_USE_SDK') == '1':
+        nvcc_flags.extend(["-Xcompiler", "/Zc:__cplusplus"])
+        compiler_c17_flag=["-O2", "/std:c++17", "/Zc:__cplusplus"]
+
     ext_modules.append(
         CUDAExtension(
             name="flash_dmattn_cuda",
@@ -254,28 +278,8 @@ if not SKIP_CUDA_BUILD:
                 "csrc/src/instantiations/flash_bwd_hdim256_bf16_causal_sm80.cu",
             ],
             extra_compile_args={
-                "cxx": ["-O3", "-std=c++17"],
-                "nvcc": append_nvcc_threads(
-                    [
-                        "-O3",
-                        "-std=c++17",
-                        "-U__CUDA_NO_HALF_OPERATORS__",
-                        "-U__CUDA_NO_HALF_CONVERSIONS__",
-                        "-U__CUDA_NO_HALF2_OPERATORS__",
-                        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-                        "--expt-relaxed-constexpr",
-                        "--expt-extended-lambda",
-                        "--use_fast_math",
-                        # "--ptxas-options=-v",
-                        # "--ptxas-options=-O2",
-                        # "-lineinfo",
-                        # Disable backward for now, we need to debug the launch templates.
-                        "-DFLASHATTENTION_DISABLE_BACKWARD",  # Only forward pass
-                        "-DFLASHATTENTION_DISABLE_SOFTCAP",
-                        "-DFLASHATTENTION_DISABLE_UNEVEN_K",
-                    ]
-                    + cc_flag
-                ),
+                "cxx": compiler_c17_flag,
+                "nvcc": append_nvcc_threads(nvcc_flags + cc_flag),
             },
             include_dirs=[
                 Path(this_dir) / "csrc",
@@ -287,7 +291,14 @@ if not SKIP_CUDA_BUILD:
 
 
 def get_package_version():
-    return "0.1.0"
+    with open(Path(this_dir) / "flash_dmattn" / "__init__.py", "r") as f:
+        version_match = re.search(r"^__version__\s*=\s*(.*)$", f.read(), re.MULTILINE)
+    public_version = ast.literal_eval(version_match.group(1))
+    local_version = os.environ.get("FLASH_DMATTN_LOCAL_VERSION")
+    if local_version:
+        return f"{public_version}+{local_version}"
+    else:
+        return str(public_version)
 
 
 class NinjaBuildExtension(BuildExtension):
