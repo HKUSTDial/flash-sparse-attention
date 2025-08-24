@@ -1085,9 +1085,6 @@ def flash_dmattn_qkvpacked_func(
     For multi-query and grouped-query attention (MQA/GQA), please see
     flash_dmattn_kvpacked_func and flash_dmattn_func.
 
-    If window_size != (-1, -1), implements sliding window local attention. Query at position i
-    will only attend to keys between [i - window_size[0], i + window_size[1]] inclusive.
-
     Arguments:
         qkv: (batch_size, seqlen, 3, nheads, headdim)
         attn_mask: (batch_size, nheads, seqlen, seqlen). Attention mask to apply to the attention scores.
@@ -1159,9 +1156,9 @@ def flash_dmattn_kvpacked_func(
     Arguments:
         q: (batch_size, seqlen, nheads, headdim)
         kv: (batch_size, seqlen, 2, nheads_k, headdim)
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
@@ -1228,9 +1225,9 @@ def flash_dmattn_func(
         query: (batch_size, seqlen, nheads, headdim)
         key: (batch_size, seqlen, nheads_k, headdim)
         value: (batch_size, seqlen, nheads_k, headdim)
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
