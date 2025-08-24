@@ -348,9 +348,9 @@ def dynamic_mask_attention_triton(
     attn_bias = repeat_kv(attn_bias_leaf, num_queries_per_kv)
     
     # Triton function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-    query_states = query_states.transpose(1, 2).contiguous()        # [batch, num_heads, query_len, head_dim]
-    key_states = key_states.transpose(1, 2).contiguous()            # [batch, num_heads, key_len, head_dim]
-    value_states = value_states.transpose(1, 2).contiguous()        # [batch, num_heads, key_len, head_dim]
+    query_states = query_states.transpose(1, 2).contiguous()        # [batch, query_len, num_heads, head_dim]  
+    key_states = key_states.transpose(1, 2).contiguous()            # [batch, key_len, num_heads, head_dim]  
+    value_states = value_states.transpose(1, 2).contiguous()        # [batch, key_len, num_heads, head_dim]  
     attn_mask = attn_mask.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
     attn_bias = attn_bias.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
 
