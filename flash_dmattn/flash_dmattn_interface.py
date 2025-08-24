@@ -1083,9 +1083,6 @@ def flash_dmattn_qkvpacked_func(
     For multi-query and grouped-query attention (MQA/GQA), please see
     flash_dmattn_kvpacked_func and flash_dmattn_func.
 
-    If window_size != (-1, -1), implements sliding window local attention. Query at position i
-    will only attend to keys between [i - window_size[0], i + window_size[1]] inclusive.
-
     Arguments:
         qkv: (batch_size, seqlen, 3, nheads, headdim)
         attn_mask: (batch_size, nheads, seqlen, seqlen). Attention mask to apply to the attention scores.
@@ -1157,9 +1154,9 @@ def flash_dmattn_kvpacked_func(
     Arguments:
         q: (batch_size, seqlen, nheads, headdim)
         kv: (batch_size, seqlen, 2, nheads_k, headdim)
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
@@ -1226,9 +1223,9 @@ def flash_dmattn_func(
         query: (batch_size, seqlen, nheads, headdim)
         key: (batch_size, seqlen, nheads_k, headdim)
         value: (batch_size, seqlen, nheads_k, headdim)
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
@@ -1360,9 +1357,9 @@ def flash_dmattn_varlen_kvpacked_func(
     Arguments:
         q: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
         kv: (total_k, 2, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         cu_seqlens_q: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
            of the sequences in the batch, used to index into q.
@@ -1444,9 +1441,9 @@ def flash_dmattn_varlen_func(
         query: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
         key: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
         value: (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        attn_mask: (batch_size, nheads, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
+        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
             If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
+        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
             If None, no bias is applied.
         cu_seqlens_q: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
            of the sequences in the batch, used to index into q.
