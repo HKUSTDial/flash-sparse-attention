@@ -112,7 +112,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     const index_t row_offset_bias = binfo.bias_offset(params.bias_batch_stride, params.bias_row_stride, bidb)
         + (bidh / params.h_h_k_ratio) * params.bias_head_stride + (m_block_max - 1) * kBlockM * params.bias_row_stride + n_block * kBlockN;
     const index_t row_offset_dbias = binfo.bias_offset(params.dbias_batch_stride, params.dbias_row_stride, bidb)
-        + (bidh / params.h_h_k_ratio) * params.dbias_head_stride + (m_block_max - 1) * kBlockM * params.dbias_row_stride + n_block * kBlockN;
+        + bidh * params.dbias_head_stride + (m_block_max - 1) * kBlockM * params.dbias_row_stride + n_block * kBlockN;
     const index_t row_offset_do = binfo.q_offset(params.do_batch_stride, params.do_row_stride, bidb)
         + (m_block_max - 1) * kBlockM * params.do_row_stride + bidh * params.do_head_stride;
     const index_t row_offset_o = binfo.q_offset(params.o_batch_stride, params.o_row_stride, bidb)
@@ -766,11 +766,12 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         Tensor dS_reshaped = make_tensor(dS.data(), acc_dp.layout());
         // Convert dS from fp32 to fp16
         Tensor tdSrdS = FLASH_NAMESPACE::convert_type<Element>(dS_reshaped);
-
-        // Write tdSrdS to gdBias
-        Tensor tdBiasrdS = smem_thr_copy_Bias.retile_S(tdSrdS);
-        cute::copy(smem_tiled_copy_Bias, tdBiasrdS, tSsBias);
+        Tensor tdBiasadS = smem_thr_copy_Bias.retile_S(tdSrdS); // ((Atom, AtomNum), MMA_N, MMA_N)
+        cute::copy(smem_tiled_copy_Bias, tdBiasadS, tSsBias);
+        Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_N, MMA_N)
+        cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
         __syncthreads();
+        // Write sdBias to gdBias
         FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
             gmem_tiled_copy_Bias,
             tBiassBias, tdBiasgdBias,
@@ -780,10 +781,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         );
 
         // if (cute::thread0()) { print(tPrP); }
-        Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_N, MMA_N)
-        cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
-        __syncthreads();
-
         // Layout p_l = tPrP.layout();
         // Tensor tdVrPt = make_tensor(tPrP.data(), make_layout(get<0>(p_l), get<2>(p_l), get<1>(p_l)));
         // FLASH_NAMESPACE::gemm_rs(acc_dv, tdVrPt, tdVrdO, tdVsdOt, tiled_mma_dkv, smem_thr_copy_QdOt);
