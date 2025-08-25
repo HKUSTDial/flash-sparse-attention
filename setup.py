@@ -76,8 +76,7 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
-    # return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100;120").split(";")
-    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90").split(";")
+    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100;120").split(";")
 
 
 def get_platform():
@@ -182,7 +181,7 @@ if not SKIP_CUDA_BUILD:
     # "--ptxas-options=-v",
     # "--ptxas-options=-O2",
     # "-lineinfo",
-    "-DFLASHATTENTION_DISABLE_BACKWARD",
+    # "-DFLASHATTENTION_DISABLE_BACKWARD",
     # "-DFLASHATTENTION_DISABLE_SOFTCAP",
     # "-DFLASHATTENTION_DISABLE_UNEVEN_K",
     ]
