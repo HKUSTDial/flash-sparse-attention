@@ -1,10 +1,8 @@
 # Copyright (c) 2025, Jingze Shi.
 
-from typing import Optional, Sequence, Tuple, Union, Any
+from typing import Optional, Tuple, Any
 from packaging import version
 import torch
-import torch.nn as nn
-import os
 
 import flash_dmattn_cuda as flash_dmattn_gpu # type: ignore
 
