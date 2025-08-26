@@ -88,11 +88,12 @@ def prepare_dynamic_mask(
         )
     
     if attn_bias.shape[-1] > keep_window_size:
-        topk_indices = torch.topk(
+        topk_values, topk_indices = torch.topk(
             attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
-        ).indices
+        )
+        valid_topk = topk_values != min_dtype
         attn_mask = torch.zeros_like(attn_bias, dtype=dtype, device=attn_bias.device)
-        attn_mask = attn_mask.scatter(-1, topk_indices, 1.0)
+        attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk.to(dtype))
         attn_bias = attn_bias.masked_fill(attn_mask == 0.0, min_dtype)
     else:
         attn_mask = torch.ones_like(attn_bias, dtype=dtype, device=attn_bias.device)
@@ -561,19 +562,19 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 256, 256, 32, False),
         (1, 2, 1, 512, 512, 32, True),
         (1, 2, 1, 512, 512, 32, False),
-        (1, 2, 1, 1024, 1024, 32, True),            # some -Inf and Inf in dbias, Idk why
+        (1, 2, 1, 1024, 1024, 32, True),
         (1, 2, 1, 1024, 1024, 32, False),
         (1, 2, 1, 2048, 2048, 32, True),
         (1, 2, 1, 2048, 2048, 32, False),
-        (1, 2, 1, 4096, 4096, 32, True),            # some NAN in dbias, Idk why
+        (1, 2, 1, 4096, 4096, 32, True),
         (1, 2, 1, 4096, 4096, 32, False),
         (1, 2, 1, 128, 128, 64, True),
         (1, 2, 1, 128, 128, 64, False),
-        (1, 2, 1, 256, 256, 64, True),              # some NAN in dbias, Idk why
+        (1, 2, 1, 256, 256, 64, True),
         (1, 2, 1, 256, 256, 64, False),
         (1, 2, 1, 512, 512, 64, True),
         (1, 2, 1, 512, 512, 64, False),
-        (1, 2, 1, 1024, 1024, 64, True),            # some NAN in dbias, Idk why
+        (1, 2, 1, 1024, 1024, 64, True),            # some INF in dbias, Idk why
         (1, 2, 1, 1024, 1024, 64, False),
         (1, 2, 1, 2048, 2048, 64, True),
         (1, 2, 1, 2048, 2048, 64, False),
@@ -585,26 +586,26 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 256, 256, 96, False),
         (1, 2, 1, 512, 512, 96, True),
         (1, 2, 1, 512, 512, 96, False),
-        (1, 2, 1, 1024, 1024, 96, True),            # some NAN in dbias, Idk why
+        (1, 2, 1, 1024, 1024, 96, True),            # some INF in dbias, Idk why
         (1, 2, 1, 1024, 1024, 96, False),
         (1, 2, 1, 2048, 2048, 96, True),
         (1, 2, 1, 2048, 2048, 96, False),
         (1, 2, 1, 4096, 4096, 96, True),
         (1, 2, 1, 4096, 4096, 96, False),
-        (1, 2, 1, 128, 128, 128, True),             # some NAN in dbias, Idk why
+        (1, 2, 1, 128, 128, 128, True),
         (1, 2, 1, 128, 128, 128, True),
         (1, 2, 1, 256, 256, 128, True),
         (1, 2, 1, 256, 256, 128, False),
         (1, 2, 1, 512, 512, 128, True),
         (1, 2, 1, 512, 512, 128, False),
-        (1, 2, 1, 1024, 1024, 128, True),           # some NAN in dbias, Idk why
+        (1, 2, 1, 1024, 1024, 128, True),           # some INF in dbias, Idk why
         (1, 2, 1, 1024, 1024, 128, False),
         (1, 2, 1, 2048, 2048, 128, True),
         (1, 2, 1, 2048, 2048, 128, False),
         (1, 2, 1, 4096, 4096, 128, True),
         (1, 2, 1, 4096, 4096, 128, False),
 
-        # Not support head_dim > 128 yet in sm 80
+        # Not support head_dim > 128 in sm80 yet
         # (1, 2, 1, 128, 128, 256, True),
         # (1, 2, 1, 128, 128, 128, False),
         # (1, 2, 1, 256, 256, 256, True),

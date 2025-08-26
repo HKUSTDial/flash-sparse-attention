@@ -110,11 +110,12 @@ def prepare_dynamic_mask(
         )
     
     if attn_bias.shape[-1] > keep_window_size:
-        topk_indices = torch.topk(
+        topk_values, topk_indices = torch.topk(
             attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
-        ).indices
+        )
+        valid_topk = topk_values != min_dtype
         attn_mask = torch.zeros_like(attn_bias, dtype=dtype, device=attn_bias.device)
-        attn_mask = attn_mask.scatter(-1, topk_indices, 1.0)
+        attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk.to(dtype))
         attn_bias = attn_bias.masked_fill(attn_mask == 0.0, min_dtype)
     else:
         attn_mask = torch.ones_like(attn_bias, dtype=dtype, device=attn_bias.device)

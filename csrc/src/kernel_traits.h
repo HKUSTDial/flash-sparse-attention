@@ -73,6 +73,7 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : 32;
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;
+    static constexpr int kSwizzlePS = 3;
 
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
@@ -89,18 +90,11 @@ struct Flash_fwd_kernel_traits : public Base {
             Stride<Int<kBlockKSmem>, _1>>{}
         )
     );
-    using SmemLayoutAtomMask = decltype(
+    using SmemLayoutAtomPS = decltype(
         composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, _8>,
-            Stride<_8, _1>>{}
-        )
-    );
-    using SmemLayoutAtomBias = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, _8>,
-            Stride<_8, _1>>{}
+            Swizzle<kSwizzlePS, 3, 3>{},
+            Layout<Shape<Int<kBlockM>, Int<kBlockN>>,
+            Stride<Int<kBlockN>, _1>>{}
         )
     );
 
@@ -127,20 +121,13 @@ struct Flash_fwd_kernel_traits : public Base {
     );
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
-    using SmemLayoutMask = decltype(
+    using SmemLayoutPS = decltype(
         tile_to_shape(
-            SmemLayoutAtomMask{},
+            SmemLayoutAtomPS{},
             Shape<Int<kBlockM>, Int<kBlockN>>{}
         )
     );
-    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
-    using SmemLayoutBias = decltype(
-        tile_to_shape(
-            SmemLayoutAtomBias{},
-            Shape<Int<kBlockM>, Int<kBlockN>>{}
-        )
-    );
-    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
+    using SmemCopyAtomPS = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
 
     // Shared memory layout for output
     using SmemLayoutAtomO = decltype(
@@ -162,8 +149,8 @@ struct Flash_fwd_kernel_traits : public Base {
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemMaskSize = size(SmemLayoutMask{}) * sizeof(Element);
-    static constexpr int kSmemBiasSize = size(SmemLayoutBias{}) * sizeof(Element);
+    static constexpr int kSmemMaskSize = size(SmemLayoutPS{}) * sizeof(Element);
+    static constexpr int kSmemBiasSize = size(SmemLayoutPS{}) * sizeof(Element);
 
     // Shared memory size with QKV matrices and mask/bias matrices
     static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + kSmemMaskSize + kSmemBiasSize;
@@ -196,20 +183,13 @@ struct Flash_fwd_kernel_traits : public Base {
             Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per read
-    using GmemTiledCopyMask = decltype(
+    using GmemTiledCopyMaskBias = decltype(
         make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, Element>{},
+            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
             GmemLayoutAtom{},
-            Layout<Shape<_1, _4>>{}
+            Layout<Shape<_1, _8>>{}
         )
-    );      // Val layout, 4 vals per read
-    using GmemTiledCopyBias = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, Element>{},
-            GmemLayoutAtom{},
-            Layout<Shape<_1, _4>>{}
-        )
-    );      // Val layout, 4 vals per read
+    );      // Val layout, 8 vals per read
     using GmemTiledCopyO = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
