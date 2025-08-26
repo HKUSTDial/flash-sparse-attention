@@ -137,15 +137,12 @@ void run_mha_bwd_hdim32(Flash_bwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 168 * 1024) {             // H100
-        // 168KB
+    if (max_smem_per_block >= 136 * 1024) {             // H100 and A100
+        // 136KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, false, false, T>, Is_causal>(params, stream);
-    } else if (max_smem_per_block >= 160 * 1024) {      // A100
-        // 160KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 84KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
+        // 76KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 4, 4, false, false, T>, Is_causal>(params, stream);
     }
 }
 
@@ -163,17 +160,17 @@ void run_mha_bwd_hdim64(Flash_bwd_params &params, cudaStream_t stream) {
     // printf("max_smem_per_block = %d\n", max_smem_per_block);
     // Changing AtomLayoutMdQ from 2 to 4 takes the same time
     // This is slightly faster. We want to split M more so we need fewer registers to store LSE.
-    if (max_smem_per_block >= 208 * 1024) {             // H100
-        // 208KB
+    if (max_smem_per_block >= 176 * 1024) {             // H100
+        // 176KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, false, false, T>, Is_causal>(params, stream);
         // This has a lot of register spilling
         // run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 4, 4, true, false, T>>(params, stream);
-    } else if (max_smem_per_block >= 120 * 1024) {      // A100
-        // 120KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 4, 4, false, false, T>, Is_causal>(params, stream);
+    } else if (max_smem_per_block >= 160 * 1024) {      // A100
+        // 160KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 96KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, true, true, T>, Is_causal>(params, stream);
+        // 88KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, true, false, T>, Is_causal>(params, stream);
     }
     // M=128, N=64 is quite slow, I think because we need to read/write dQaccum twice as many times
 }
@@ -190,12 +187,12 @@ void run_mha_bwd_hdim96(Flash_bwd_params &params, cudaStream_t stream) {
       C10_CUDA_CHECK(status_);
     }
     // printf("max_smem_per_block = %d\n", max_smem_per_block);
-    if (max_smem_per_block >= 124 * 1024) {            // A100
-        // 124KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, true, false, T>, Is_causal>(params, stream);
+    if (max_smem_per_block >= 132 * 1024) {             // H100 and A100
+        // 132KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 84KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 2, 4, 4, true, false, T>, Is_causal>(params, stream);
+        // 88KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 2, 4, 4, false, false, T>, Is_causal>(params, stream);
     }
 }
 
@@ -215,15 +212,15 @@ void run_mha_bwd_hdim128(Flash_bwd_params &params, cudaStream_t stream) {
     // This is faster, in the case of sequence-parallel bwd (where we need fewer registers).
     // Out of these three, the 2nd one is slightly faster (2% faster than the first). Idk why.
     // run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 2, 2, 2, false, false, T>>(params, stream);
-    if (max_smem_per_block >= 176 * 1024) {             // H100
-        // 176KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 2, false, false, T>, Is_causal>(params, stream);
+    if (max_smem_per_block >= 224 * 1024) {             // H100
+        // 224KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 2, 4, 2, true, false, T>, Is_causal>(params, stream);
     } else if (max_smem_per_block >= 144 * 1024) {      // A100
         // 144KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 2, true, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 88KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, true, true, T>, Is_causal>(params, stream);
+        // 96KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, true, false, T>, Is_causal>(params, stream);
     }
 }
 
@@ -238,15 +235,15 @@ void run_mha_bwd_hdim192(Flash_bwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 240 * 1024) {             // H100
-        // 240KB
+    if (max_smem_per_block >= 224 * 1024) {             // H100
+        // 224KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 4, 2, 2, false, false, T>, Is_causal>(params, stream);
-    } else if (max_smem_per_block >= 144 * 1024) {      // A100
-        // 144KB
+    } else if (max_smem_per_block >= 136 * 1024) {      // A100
+        // 136KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, true, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 80KB
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 32, 64, 8, 4, 2, 2, true, true, T>, Is_causal>(params, stream);
+        // 92KB
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 32, 64, 8, 4, 2, 2, true, false, T>, Is_causal>(params, stream);
     }
 }
 
@@ -261,14 +258,14 @@ void run_mha_bwd_hdim256(Flash_bwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 216 * 1024) {             // H100
-        // 216KB
+    if (max_smem_per_block >= 208 * 1024) {             // H100
+        // 208KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, false, false, T>, Is_causal>(params, stream);
-    } else if (max_smem_per_block >= 152 * 1024) {      // A100
-        // 152KB
+    } else if (max_smem_per_block >= 144 * 1024) {      // A100
+        // 144KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, true, true, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 86KB
+        // 84KB
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 32, 32, 8, 4, 1, 2, true, false, T>, Is_causal>(params, stream);
     }
 }
