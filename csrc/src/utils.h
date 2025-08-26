@@ -202,7 +202,7 @@ __forceinline__ __device__ void sparse_gemm(
             #pragma unroll
             for (int n = 0; n < size<2>(tCrM) && !local_any_active; ++n) {
                 // Use direct comparison to avoid potential branching
-                local_any_active |= (tCrM(mma, m, n) > 0);
+                local_any_active |= (tCrM(mma, m, n) != 0.0f);
             }
         }
     }
@@ -302,7 +302,7 @@ __forceinline__ __device__ void sparse_gemm_rs(
             #pragma unroll
             for (int n = 0; n < size<2>(tCrM) && !local_any_active; ++n) {
                 // Use direct comparison to avoid potential branching
-                local_any_active |= (tCrM(mma, m, n) > 0);
+                local_any_active |= (tCrM(mma, m, n) != 0.0f);
             }
         }
     }
