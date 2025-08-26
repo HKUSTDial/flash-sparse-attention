@@ -433,9 +433,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     // Prologue
 
-    // We'll advance gdQ and gdQaccum before the 1st read/write.
+    // We'll advance gdQ, gdQaccum and gdBias before the 1st read/write.
     tdQgdQ.data() = tdQgdQ.data() + kBlockM * params.dq_row_stride;
     tdQgdQaccum.data() = tdQgdQaccum.data() + kBlockM * params.h * params.d_rounded;
+    tdBiasgdBias.data() = tdBiasgdBias.data() + kBlockM * params.dbias_row_stride;
 
     int m_block = m_block_max - 1;
     int m_block_min = (!Is_causal)
@@ -772,7 +773,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
         __syncthreads();
         // Write sdBias to gdBias
-        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
+        tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
+        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
             gmem_tiled_copy_Bias,
             tBiassBias, tdBiasgdBias,
             tBiascBias,
@@ -836,7 +838,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             gLSE.data() = gLSE.data() + (-int(kBlockM));
             tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
             tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
-            tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
             #pragma unroll
             for (int mi = 0; mi < size(lse); ++mi) { lse(mi) = gLSE(get<0>(taccScS_row(mi))); }
             gdPsum.data() = gdPsum.data() + (-int(kBlockM));
