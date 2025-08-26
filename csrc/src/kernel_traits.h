@@ -325,36 +325,6 @@ struct Flash_bwd_kernel_traits : public Base {
     );
     using SmemLayoutKtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutKtransposed{}));
 
-    using SmemLayoutAtomMask = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, _8>,
-            Stride<_8, _1>>{}
-        )
-    );
-    using SmemLayoutMask = decltype(
-        tile_to_shape(
-            SmemLayoutAtomMask{},
-            make_shape(Int<kBlockM>{}, Int<kBlockN>{})
-        )
-    );
-    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
-
-    using SmemLayoutAtomBias = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, _8>,
-            Stride<_8, _1>>{}
-        )
-    );
-    using SmemLayoutBias = decltype(
-        tile_to_shape(
-            SmemLayoutAtomBias{},
-            make_shape(Int<kBlockM>{}, Int<kBlockN>{})
-        )
-    );
-    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
-
     // TODO: generalize to other values of kBlockN
     // TODO: what should be the Swizzle here? 3 is faster than 1, and 1 is faster than 2
     // static constexpr int kPBlockN = kBlockN;
@@ -433,8 +403,8 @@ struct Flash_bwd_kernel_traits : public Base {
     static constexpr int kSmemdSSize = size(SmemLayoutPdS{}) * sizeof(Element);
     static constexpr int kSmemPSize = size(SmemLayoutPdS{}) * sizeof(Element);
     static constexpr int kSmemdQSize = size(SmemLayoutdQ{}) * sizeof(Element);
-    static constexpr int kSmemMaskSize = size(SmemLayoutMask{}) * sizeof(Element);
-    static constexpr int kSmemBiasSize = size(SmemLayoutBias{}) * sizeof(Element);
+    static constexpr int kSmemMaskSize = size(SmemLayoutPdS{}) * sizeof(Element);
+    static constexpr int kSmemBiasSize = size(SmemLayoutPdS{}) * sizeof(Element);
     static constexpr int kSmemSize = kSmemQdOSize + kSmemMaskSize + kSmemBiasSize
         + (
             !Is_V_in_regs
