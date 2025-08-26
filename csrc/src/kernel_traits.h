@@ -400,22 +400,22 @@ struct Flash_bwd_kernel_traits : public Base {
     // Double buffer for sQ
     static constexpr int kSmemQdOSize = size(SmemLayoutQdO{}) * (No_double_buffer ? 2 : 3) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemdSSize = size(SmemLayoutPdS{}) * sizeof(Element);
-    static constexpr int kSmemPSize = size(SmemLayoutPdS{}) * sizeof(Element);
-    static constexpr int kSmemdQSize = size(SmemLayoutdQ{}) * sizeof(Element);
     static constexpr int kSmemMaskSize = size(SmemLayoutPdS{}) * sizeof(Element);
     static constexpr int kSmemBiasSize = size(SmemLayoutPdS{}) * sizeof(Element);
+    // static constexpr int kSmemdSSize = size(SmemLayoutPdS{}) * sizeof(Element);
+    static constexpr int kSmemPSize = size(SmemLayoutPdS{}) * sizeof(Element);
+    static constexpr int kSmemdQSize = size(SmemLayoutdQ{}) * sizeof(Element);
     static constexpr int kSmemSize = kSmemQdOSize + kSmemMaskSize + kSmemBiasSize
         + (
             !Is_V_in_regs
-            ? kSmemKVSize + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize)
-            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize))
+            ? kSmemKVSize + std::max(kSmemPSize, kSmemdQSize)
+            : std::max(kSmemKVSize, kSmemKVSize / 2 + std::max(kSmemPSize, kSmemdQSize))
         );
     static constexpr int kSmemSize1colblock = kSmemQdOSize + kSmemMaskSize + kSmemBiasSize
         + (
             !Is_V_in_regs
-            ? kSmemKVSize + kSmemdSSize + kSmemPSize
-            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemdSSize + kSmemPSize)
+            ? kSmemKVSize + kSmemPSize
+            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemPSize)
         );
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
