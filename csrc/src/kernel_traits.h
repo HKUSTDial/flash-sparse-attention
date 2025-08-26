@@ -494,20 +494,13 @@ struct Flash_bwd_kernel_traits : public Base {
             Layout<Shape < _1, _8>>{}
         )
     );      // Val layout, 8 vals per store
-    using GmemTiledCopyMask = decltype(
+    using GmemTiledCopyMaskBias = decltype(
         make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, elem_type>{},
+            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
             GmemLayoutAtom{},
-            Layout<Shape<_1, _4>>{}
+            Layout<Shape<_1, _8>>{}
         )
-    );      // Val layout, 4 vals per read
-    using GmemTiledCopyBias = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<64>, elem_type>{},
-            GmemLayoutAtom{},
-            Layout<Shape<_1, _4>>{}
-        )
-    );      // Val layout, 4 vals per read
+    );      // Val layout, 8 vals per read
     using GmemLayoutAtomdQaccum = std::conditional_t<
         kBlockKSmem == 32,
         Layout<Shape <_32, _8>, Stride< _8, _1>>,       // Thread layout, 8 threads per row
