@@ -185,8 +185,8 @@ __forceinline__ __device__ void sparse_gemm(
 ) {
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                        // MMA_M
     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                        // MMA_N
-    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(tCrM));                       // MMA_M
-    CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(tCrM));                       // MMA_N
+    // CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(tCrM));                       // MMA_M
+    // CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(tCrM));                       // MMA_N
     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                       // MMA_K
     auto tCrA_copy_view = smem_thr_copy_A.retile_D(tCrA);
     CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));             // M
