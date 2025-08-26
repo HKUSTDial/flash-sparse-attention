@@ -218,31 +218,29 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     );
     Tensor sMask = make_tensor(
         sV.data() + size(sV),
-        typename Kernel_traits::SmemLayoutMask{}
+        typename Kernel_traits::SmemLayoutAtomPS{}
     );
     Tensor sBias = make_tensor(
         sMask.data() + size(sMask),
-        typename Kernel_traits::SmemLayoutBias{}
+        typename Kernel_traits::SmemLayoutAtomPS{}
     );
 
     // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
-    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
-    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMaskBias gmem_tiled_copy_MaskBias;
+    auto gmem_thr_copy_MaskBias = gmem_tiled_copy_MaskBias.get_thread_slice(tidx);
 
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);            // (KCPY, KCPY_N, KCPY_K, nblocksN)
+    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);                // (KCPY, KCPY_N, KCPY_K, nblocksN)
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);            // (VCPY, VCPY_N, VCPY_K, nblocksN)
+    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                // (VCPY, VCPY_N, VCPY_K, nblocksN)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tMaskgMask = gmem_thr_copy_Mask.partition_S(gMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N, nblocksN)
-    Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
-    Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N, nblocksN)
-    Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
+    Tensor tMaskgMask = gmem_thr_copy_MaskBias.partition_S(gMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N, nblocksN)
+    Tensor tMasksMask = gmem_thr_copy_MaskBias.partition_D(sMask);
+    Tensor tBiasgBias = gmem_thr_copy_MaskBias.partition_S(gBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N, nblocksN)
+    Tensor tBiassBias = gmem_thr_copy_MaskBias.partition_D(sBias);
 
     // Matrix Multiply Accumulate
     typename Kernel_traits::TiledMma tiled_mma;
@@ -267,10 +265,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
-    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma);
+    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPS{}, tiled_mma);
     auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
     Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPS{}, tiled_mma);
     auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
@@ -298,10 +296,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     //     printf("\n");
     // }
     // Repeat the partitioning with identity layouts
-    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);                // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
-    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);             // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
-    Tensor tMaskcMask = gmem_thr_copy_Mask.partition_S(cMask);      // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
-    Tensor tBiascBias = gmem_thr_copy_Bias.partition_S(cBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
+    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);                    // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
+    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);                 // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
+    Tensor tMaskcMask = gmem_thr_copy_MaskBias.partition_S(cMask);      // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
+    Tensor tBiascBias = gmem_thr_copy_MaskBias.partition_S(cBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
 
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
@@ -354,13 +352,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         binfo.actual_seqlen_k - n_block * kBlockN
     );
     FLASH_NAMESPACE::copy_MN<Is_even_MN>(
-        gmem_tiled_copy_Mask,
+        gmem_tiled_copy_MaskBias,
         tMaskgMask(_, _, _, n_block), tMasksMask,
         tMaskcMask,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
     );
     FLASH_NAMESPACE::copy_MN<Is_even_MN>(
-        gmem_tiled_copy_Bias,
+        gmem_tiled_copy_MaskBias,
         tBiasgBias(_, _, _, n_block), tBiassBias,
         tBiascBias,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
@@ -460,13 +458,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
             // isn't right and we get race conditions.
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Mask,
+                gmem_tiled_copy_MaskBias,
                 tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Bias,
+                gmem_tiled_copy_MaskBias,
                 tBiasgBias(_, _, _, n_block - 1), tBiassBias,
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
@@ -558,13 +556,13 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 tKVcKV, tKVpKV
             );
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Mask,
+                gmem_tiled_copy_MaskBias,
                 tMaskgMask(_, _, _, n_block - 1), tMasksMask,
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Bias,
+                gmem_tiled_copy_MaskBias,
                 tBiasgBias(_, _, _, n_block - 1), tBiassBias,
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
@@ -845,31 +843,29 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     );
     Tensor sMask = make_tensor(
         sV.data() + size(sV),
-        typename Kernel_traits::SmemLayoutMask{}
+        typename Kernel_traits::SmemLayoutAtomPS{}
     );
     Tensor sBias = make_tensor(
         sMask.data() + size(sMask),
-        typename Kernel_traits::SmemLayoutBias{}
+        typename Kernel_traits::SmemLayoutAtomPS{}
     );
 
     // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
-    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
-    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMaskBias gmem_tiled_copy_MaskBias;
+    auto gmem_thr_copy_MaskBias = gmem_tiled_copy_MaskBias.get_thread_slice(tidx);
 
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);                    // (KCPY, KCPY_N, KCPY_K)
+    Tensor tKgK = gmem_thr_copy_QKV.partition_S(gK);                        // (KCPY, KCPY_N, KCPY_K)
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
-    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                    // (VCPY, VCPY_N, VCPY_K)
+    Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                        // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tMaskgMask = gmem_thr_copy_Mask.partition_S(gMask);          // (MaskCPY, MaskCPY_M, MaskCPY_N)
-    Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
-    Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);          // (BiasCPY, BiasCPY_M, BiasCPY_N)
-    Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
+    Tensor tMaskgMask = gmem_thr_copy_MaskBias.partition_S(gMask);          // (MaskCPY, MaskCPY_M, MaskCPY_N)
+    Tensor tMasksMask = gmem_thr_copy_MaskBias.partition_D(sMask);
+    Tensor tBiasgBias = gmem_thr_copy_MaskBias.partition_S(gBias);          // (BiasCPY, BiasCPY_M, BiasCPY_N)
+    Tensor tBiassBias = gmem_thr_copy_MaskBias.partition_D(sBias);
 
     // Matrix Multiply Accumulate
     typename Kernel_traits::TiledMma tiled_mma;
@@ -891,10 +887,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     auto smem_tiled_copy_V = make_tiled_copy_B(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
-    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma);
+    auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPS{}, tiled_mma);
     auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
     Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPS{}, tiled_mma);
     auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
@@ -907,10 +903,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor cMask = make_identity_tensor(make_shape(size<0>(sMask), size<1>(sMask)));            // (BLK_M, BLK_N) -> (blk_m, blk_n)
     Tensor cBias = make_identity_tensor(make_shape(size<0>(sBias), size<1>(sBias)));            // (BLK_M, BLK_N) -> (blk_m, blk_n)
     // Repeat the partitioning with identity layouts
-    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);            // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
-    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);         // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
-    Tensor tMaskcMask = gmem_thr_copy_Mask.partition_S(cMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
-    Tensor tBiascBias = gmem_thr_copy_Bias.partition_S(cBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
+    Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);                // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
+    Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);             // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
+    Tensor tMaskcMask = gmem_thr_copy_MaskBias.partition_S(cMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
+    Tensor tBiascBias = gmem_thr_copy_MaskBias.partition_S(cBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
     Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
@@ -947,13 +943,13 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         binfo.actual_seqlen_k - n_block * kBlockN
     );
     FLASH_NAMESPACE::copy_MN<Is_even_MN>(
-        gmem_tiled_copy_Mask,
+        gmem_tiled_copy_MaskBias,
         tMaskgMask, tMasksMask,
         tMaskcMask,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
     );
     FLASH_NAMESPACE::copy_MN<Is_even_MN>(
-        gmem_tiled_copy_Bias,
+        gmem_tiled_copy_MaskBias,
         tBiasgBias, tBiassBias,
         tBiascBias,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
@@ -1074,13 +1070,13 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
             // isn't right and we get race conditions.
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Mask,
+                gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask, 
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Bias,
+                gmem_tiled_copy_MaskBias,
                 tBiasgBias, tBiassBias, 
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
@@ -1190,13 +1186,13 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tKVcKV, tKVpKV
             );
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Mask,
+                gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask,
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                gmem_tiled_copy_Bias,
+                gmem_tiled_copy_MaskBias,
                 tBiasgBias, tBiassBias, 
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
