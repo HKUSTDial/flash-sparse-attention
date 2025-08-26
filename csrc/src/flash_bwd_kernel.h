@@ -227,34 +227,30 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     );
     Tensor sMask = make_tensor(
         sK.data() + size(sK),
-        typename Kernel_traits::SmemLayoutMask{}
+        typename Kernel_traits::SmemLayoutPdS{}
     );
     Tensor sBias = make_tensor(
         sMask.data() + size(sMask),
-        typename Kernel_traits::SmemLayoutBias{}
-    );
-    Tensor sdBias = make_tensor(
-        sBias.data(),
-        typename Kernel_traits::SmemLayoutBias{}
+        typename Kernel_traits::SmemLayoutPdS{}
     );
     Tensor sV = make_tensor(
         sBias.data() + size(sBias),
         typename Kernel_traits::SmemLayoutKV{}
     );
     Tensor sdS = make_tensor(
-        !Kernel_traits::Is_V_in_regs ? sV.data() + size(sV) : sBias.data() + size(sBias),
+        sBias.data(),
         typename Kernel_traits::SmemLayoutPdS{}
     );
     Tensor sdSt = make_tensor(
-        sdS.data(),
+        sBias.data(),
         typename Kernel_traits::SmemLayoutPdStransposed{}
     );
     Tensor sdStNoSwizzle = make_tensor(
-        sdS.data(),
+        sBias.data(),
         typename Kernel_traits::SmemLayoutPdStransposedNoSwizzle{}
     );
     Tensor sP = make_tensor(
-        sdS.data() + size(sdS),
+        !Kernel_traits::Is_V_in_regs ? sV.data() + size(sV) : sBias.data() + size(sBias),
         typename Kernel_traits::SmemLayoutPdS{}
     );
     Tensor sPt = make_tensor(
@@ -274,10 +270,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
-    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
-    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMaskBias gmem_tiled_copy_MaskBias;
+    auto gmem_thr_copy_Mask = gmem_tiled_copy_MaskBias.get_thread_slice(tidx);
+    auto gmem_thr_copy_Bias = gmem_tiled_copy_MaskBias.get_thread_slice(tidx);
     using GmemTiledCopydO = std::conditional_t<Is_first, typename Kernel_traits::GmemTiledCopydO, typename Kernel_traits::GmemTiledCopyQKV>;
     GmemTiledCopydO gmem_tiled_copy_dO;
     auto gmem_thr_copy_dO = gmem_tiled_copy_dO.get_thread_slice(tidx);
@@ -354,31 +349,21 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // if (cute::thread(0, 0) && n_block == 0) { print(tSsK.layout()); printf("\n"); }
     Tensor tdPsV = smem_thr_copy_KV.partition_S(sV);
 
-    // auto smem_tiled_copy_Mask = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
+    // auto smem_tiled_copy_Mask = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
     // auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
     // Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    // auto smem_tiled_copy_Bias = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
+    // auto smem_tiled_copy_Bias = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
     // auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
     // Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
-
-    auto smem_tiled_copy_Mask = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
-    auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
-    Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    auto smem_tiled_copy_Bias = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
-    auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
-    Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
 
     // Partition sP and sdS to match the accumulator partitioning
     // This has to be tiled_mma_sdp, not tiled_mma_dkv
     // auto smem_tiled_copy_PdS = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp);
     auto smem_tiled_copy_PdS = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp);
     auto smem_thr_copy_PdS = smem_tiled_copy_PdS.get_thread_slice(tidx);
+    Tensor tSsMask = smem_thr_copy_PdS.partition_S(sMask);
+    Tensor tSsBias = smem_thr_copy_PdS.partition_S(sBias);
     Tensor tPsP = smem_thr_copy_PdS.partition_D(sP);        // ((Atom, AtomNum), PIPE_M, PIPE_N)
-    // if (cute::thread(0, 0) && n_block == 0) { printf("sP layout: "); print(sP.layout()); printf("\n"); }
-    // if (cute::thread(0, 0) && n_block == 0) { print(tPsP.layout()); printf("\n"); }
-    // if (n_block == 0 && blockIdx.x == 0 && blockIdx.y == 0 && tidx < 64) {
-    //     printf("tidx=%d, tPsP = 0x%p\n", tidx, tPsP.data());
-    // }
     Tensor tdSsdS = smem_thr_copy_PdS.partition_D(sdS);     // ((Atom, AtomNum), PIPE_M, PIPE_N)
 
     auto smem_tiled_copy_PdSt = make_tiled_copy_A(typename Kernel_traits::SmemCopyAtomTransposed{}, tiled_mma_dkv);
@@ -433,9 +418,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     // Prologue
 
-    // We'll advance gdQ and gdQaccum before the 1st read/write.
+    // We'll advance gdQ, gdQaccum and gdBias before the 1st read/write.
     tdQgdQ.data() = tdQgdQ.data() + kBlockM * params.dq_row_stride;
     tdQgdQaccum.data() = tdQgdQaccum.data() + kBlockM * params.h * params.d_rounded;
+    tdBiasgdBias.data() = tdBiasgdBias.data() + kBlockM * params.dbias_row_stride;
 
     int m_block = m_block_max - 1;
     int m_block_min = (!Is_causal)
@@ -574,13 +560,13 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         binfo.actual_seqlen_k - n_block * kBlockN
     );
     FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-        gmem_tiled_copy_Mask,
+        gmem_tiled_copy_MaskBias,
         tMaskgMask, tMasksMask,
         tMaskcMask,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
     );
     FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-        gmem_tiled_copy_Bias,
+        gmem_tiled_copy_MaskBias,
         tBiasgBias, tBiassBias,
         tBiascBias,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
@@ -621,13 +607,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         cute::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy mask and bias from smem to registers
+        // Copy mask from smem to registers
         Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
-        Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+        Tensor tSrMask_copy_view = smem_thr_copy_PdS.retile_D(tSrMask);
+        cute::copy(smem_tiled_copy_PdS, tSsMask, tSrMask_copy_view);
 
         Tensor dP_sum = make_fragment_like(lse);
         #pragma unroll
@@ -650,6 +633,11 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         if constexpr (Is_softcap) {
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+
+        // Copy bias from smem to registers
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias_copy_view = smem_thr_copy_PdS.retile_D(tSrBias);
+        cute::copy(smem_tiled_copy_PdS, tSsBias, tSrBias_copy_view);
 
         // Reshape acc_s, mask, bias from (MMA=4, MMA_N, MMA_N) to (row=(2, MMA_N), col=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(acc_s.layout()));
@@ -766,15 +754,15 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         Tensor dS_reshaped = make_tensor(dS.data(), acc_dp.layout());
         // Convert dS from fp32 to fp16
         Tensor tdSrdS = FLASH_NAMESPACE::convert_type<Element>(dS_reshaped);
-        Tensor tdBiasadS = smem_thr_copy_Bias.retile_S(tdSrdS); // ((Atom, AtomNum), MMA_N, MMA_N)
-        cute::copy(smem_tiled_copy_Bias, tdBiasadS, tSsBias);
         Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_N, MMA_N)
         cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
         __syncthreads();
-        // Write sdBias to gdBias
-        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
-            gmem_tiled_copy_Bias,
-            tBiassBias, tdBiasgdBias,
+        // Write dS to dBias
+        tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
+        Tensor tdBiassdBias = make_tensor(sdS.data(), tBiassBias.layout());
+        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            gmem_tiled_copy_MaskBias,
+            tdBiassdBias, tdBiasgdBias,
             tBiascBias,
             binfo.actual_seqlen_q - m_block * kBlockM,
             binfo.actual_seqlen_k - n_block * kBlockN
@@ -836,19 +824,18 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             gLSE.data() = gLSE.data() + (-int(kBlockM));
             tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
             tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
-            tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
             #pragma unroll
             for (int mi = 0; mi < size(lse); ++mi) { lse(mi) = gLSE(get<0>(taccScS_row(mi))); }
             gdPsum.data() = gdPsum.data() + (-int(kBlockM));
             // Advance gMask, gBias
             FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_Mask,
+                gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask,
                 tMaskcMask,
                 binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
             );
             FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_Bias,
+                gmem_tiled_copy_MaskBias,
                 tBiasgBias, tBiassBias,
                 tBiascBias,
                 binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
