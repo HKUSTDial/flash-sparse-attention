@@ -1057,7 +1057,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
                 const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
                 const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
-                const int block_table_offset_next =(n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+                const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
                 tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
                 tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
@@ -1166,7 +1166,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
         if (n_block > n_block_min) {
-            // Advance gK
+            // Advance gK, gMask, gBias
             if (block_table == nullptr) {
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
                 tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN));
