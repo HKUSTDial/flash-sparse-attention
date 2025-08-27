@@ -1067,8 +1067,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tKgK, tKsK,
                 tKVcKV, tKVpKV
             );
-            // This cp_async_fence needs to be in the if block, otherwise the synchronization
-            // isn't right and we get race conditions.
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask, 
@@ -1081,6 +1079,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
+            // This cp_async_fence needs to be in the if block, otherwise the synchronization
+            // isn't right and we get race conditions.
             cute::cp_async_fence();
         }
 
