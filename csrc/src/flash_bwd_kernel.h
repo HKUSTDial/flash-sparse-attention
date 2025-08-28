@@ -822,10 +822,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
         if (m_block > m_block_min) {
             gLSE.data() = gLSE.data() + (-int(kBlockM));
-            tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
-            tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
             #pragma unroll
             for (int mi = 0; mi < size(lse); ++mi) { lse(mi) = gLSE(get<0>(taccScS_row(mi))); }
+            tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
+            tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
             gdPsum.data() = gdPsum.data() + (-int(kBlockM));
             // Advance gMask, gBias
             FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
