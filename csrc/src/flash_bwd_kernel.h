@@ -763,8 +763,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         Tensor tdSrdS = FLASH_NAMESPACE::convert_type<Element>(dS_reshaped);
         Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_M, MMA_N)
         cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
-        Tensor tdBiasadS = smem_thr_copy_PdS.retile_S(tdSrdS);  // ((Atom, AtomNum), MMA_N, MMA_N)
-        cute::copy(smem_tiled_copy_PdS, tdBiasadS, tSsBias);
         __syncthreads();
         // Write dS to dBias
         FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
