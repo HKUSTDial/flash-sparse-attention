@@ -1,0 +1,89 @@
+[build-system]
+requires = [
+  "setuptools>=64",
+  "wheel",
+  "packaging",
+  "psutil",
+  "ninja"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flash-dmattn"
+dynamic = ["version"]
+description = "Flash Dynamic Mask Attention: Fast and Memory-Efficient Trainable Dynamic Mask Sparse Attention"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Jingze Shi", email = "losercheems@gmail.com" },
+  { name = "Yifan Wu", email = "ywu012@connect.hkust-gz.edu.cn" },
+  { name = "Bingheng Wu", email = "wubingheng52136@gmail.com" },
+  { name = "Yiran Peng", email = "amagipeng@gmail.com" },
+  { name = "Liangdong Wang", email = "wangliangdong@baai.ac.cn" },
+  { name = "Guang Li", email = "liuguang@baai.ac.cn" },
+  { name = "Yuyu Luo", email = "yuyuluo@hkust-gz.edu.cn" }
+]
+maintainers = [
+  { name = "Jingze Shi", email = "losercheems@gmail.com" }
+]
+requires-python = ">=3.9"
+dependencies = [
+  "torch",
+  "einops"
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: Unix"
+]
+
+[project.urls]
+Homepage = "https://github.com/SmallDoge/flash-dmattn"
+Source = "https://github.com/SmallDoge/flash-dmattn"
+Issues = "https://github.com/SmallDoge/flash-dmattn/issues"
+
+[project.optional-dependencies]
+triton = [
+  "triton>=2.0.0"
+]
+flex = [
+  "transformers>=4.38.0"
+]
+all = [
+  "triton>=2.0.0",
+  "transformers>=4.38.0"
+]
+test = [
+  "pytest>=6.0",
+  "pytest-benchmark",
+  "numpy"
+]
+dev = [
+  "triton>=2.0.0",
+  "transformers>=4.38.0",
+  "pytest>=6.0",
+  "pytest-benchmark",
+  "numpy"
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "flash_dmattn.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["flash_dmattn*"]
+exclude = [
+  "build",
+  "csrc",
+  "include",
+  "tests",
+  "dist",
+  "docs",
+  "benchmarks",
+  "flash_dmattn.egg-info"
+]
+
+[tool.setuptools.package-data]
+flash_dmattn = ["*.py"]
+
+[tool.setuptools]
