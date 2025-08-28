@@ -76,7 +76,7 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
-    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100;120").split(";")
+    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;86,89,90;100;120").split(";")
 
 
 def get_platform():
@@ -152,6 +152,12 @@ if not SKIP_CUDA_BUILD:
         cc_flag.append("-gencode")
         cc_flag.append("arch=compute_80,code=sm_80")
     if CUDA_HOME is not None:
+        if bare_metal_version >= Version("11.8") and "86" in cuda_archs():
+            cc_flag.append("-gencode")
+            cc_flag.append("arch=compute_86,code=sm_86")
+        if bare_metal_version >= Version("11.8") and "89" in cuda_archs():
+            cc_flag.append("-gencode")
+            cc_flag.append("arch=compute_89,code=sm_89")
         if bare_metal_version >= Version("11.8") and "90" in cuda_archs():
             cc_flag.append("-gencode")
             cc_flag.append("arch=compute_90,code=sm_90")
@@ -321,81 +327,8 @@ class NinjaBuildExtension(BuildExtension):
 
 
 setup(
-    name=PACKAGE_NAME,
-    version=get_package_version(),
-    packages=find_packages(
-        exclude=(
-            "build",
-            "csrc",
-            "include",
-            "tests",
-            "dist",
-            "docs",
-            "benchmarks",
-            "flash_dmattn.egg-info",
-        )
-    ),
-    author="Jingze Shi",
-    author_email="losercheems@gmail.com",
-    description="Flash Dynamic Mask Attention: Fast and Memory-Efficient Trainable Dynamic Mask Sparse Attention",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    url="https://github.com/SmallDoge/flash-dmattn",
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: BSD License",
-        "Operating System :: Unix",
-    ],
     ext_modules=ext_modules,
     cmdclass={"build_ext": NinjaBuildExtension}
     if ext_modules
     else {},
-    python_requires=">=3.9",
-    install_requires=[
-        "torch",
-        "einops",
-    ],
-    extras_require={
-        # Individual backend options - choose one or more
-        "triton": [
-            "triton>=2.0.0",
-        ],
-        "flex": [
-            "transformers>=4.38.0",
-        ],
-        
-        # Combined options
-        "all": [
-            "triton>=2.0.0",        # Triton backend
-            "transformers>=4.38.0", # Flex backend
-            # CUDA backend included by default compilation
-        ],
-        
-        # Development dependencies
-        "dev": [
-            "triton>=2.0.0",
-            "transformers>=4.38.0",
-            "pytest>=6.0",
-            "pytest-benchmark",
-            "numpy",
-        ],
-        
-        # Testing only
-        "test": [
-            "pytest>=6.0",
-            "pytest-benchmark",
-            "numpy",
-        ],
-    },
-    setup_requires=[
-        "packaging",
-        "psutil",
-        "ninja",
-    ],
-    # Include package data
-    package_data={
-        "flash_dmattn": ["*.py"],
-    },
-    # Ensure the package is properly included
-    include_package_data=True,
 )
