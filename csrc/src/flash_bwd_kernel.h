@@ -421,7 +421,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // We'll advance gdQ, gdQaccum and gdBias before the 1st read/write.
     tdQgdQ.data() = tdQgdQ.data() + kBlockM * params.dq_row_stride;
     tdQgdQaccum.data() = tdQgdQaccum.data() + kBlockM * params.h * params.d_rounded;
-    tdBiasgdBias.data() = tdBiasgdBias.data() + kBlockM * params.dbias_row_stride;
 
     int m_block = m_block_max - 1;
     int m_block_min = (!Is_causal)
@@ -756,13 +755,13 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         Tensor tdSrdS = FLASH_NAMESPACE::convert_type<Element>(dS_reshaped);
         Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_N, MMA_N)
         cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
+        Tensor tdBiasadS = smem_thr_copy_PdS.retile_S(tdSrdS);  // ((Atom, AtomNum), MMA_N, MMA_N)
+        cute::copy(smem_tiled_copy_PdS, tdBiasadS, tSsBias);
         __syncthreads();
         // Write dS to dBias
-        tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
-        Tensor tdBiassdBias = make_tensor(sdS.data(), tBiassBias.layout());
-        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
             gmem_tiled_copy_MaskBias,
-            tdBiassdBias, tdBiasgdBias,
+            tBiassBias, tdBiasgdBias,
             tBiascBias,
             binfo.actual_seqlen_q - m_block * kBlockM,
             binfo.actual_seqlen_k - n_block * kBlockN
