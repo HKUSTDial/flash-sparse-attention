@@ -823,8 +823,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 tMaskcMask,
                 binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
             );
-                FLASH_NAMESPACE::cp_async_fence();
-            }
+            FLASH_NAMESPACE::cp_async_fence();
+        }
 
         FLASH_NAMESPACE::gemm(
             acc_dq,
