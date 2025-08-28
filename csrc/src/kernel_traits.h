@@ -316,22 +316,22 @@ struct Flash_bwd_kernel_traits : public Base {
     static_assert(kPBlockN == 16 || kPBlockN == 32 || kPBlockN == 64);
     // static constexpr int kSwizzlePdS = kPBlockN == 16 ? 1 : (kPBlockN == 32 ? 2 : 3);
     static constexpr int kSwizzlePdS = 3;
-    using SmemLayoutAtomPdS = decltype(
+    using SmemLayoutAtomMaskBiasPdS = decltype(
         composition(
             Swizzle<kSwizzlePdS, 3, 3>{},
             Layout<Shape<Int<kBlockM>, Int<kPBlockN>>,
             Stride<Int<kPBlockN>, _1>>{}
         )
     );
-    using SmemLayoutPdS = decltype(
+    using SmemLayoutMaskBiasPdS = decltype(
         tile_to_shape(
-            SmemLayoutAtomPdS{},
+            SmemLayoutAtomMaskBiasPdS{},
             make_shape(Int<kBlockM>{}, Int<kBlockN>{})
         )
     );
     using SmemLayoutPdStransposed = decltype(
         composition(
-            SmemLayoutPdS{},
+            SmemLayoutMaskBiasPdS{},
             make_layout(Shape<Int<kBlockN>, Int<kBlockM>>{}, GenRowMajor{})
         )
     );
@@ -380,22 +380,20 @@ struct Flash_bwd_kernel_traits : public Base {
     // Double buffer for sQ
     static constexpr int kSmemQdOSize = size(SmemLayoutQdO{}) * (No_double_buffer ? 2 : 3) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemMaskSize = size(SmemLayoutPdS{}) * sizeof(Element);
-    static constexpr int kSmemBiasSize = size(SmemLayoutPdS{}) * sizeof(Element);
-    // static constexpr int kSmemdSSize = size(SmemLayoutPdS{}) * sizeof(Element);
-    static constexpr int kSmemPSize = size(SmemLayoutPdS{}) * sizeof(Element);
+    static constexpr int kSmemBiasdSSize = size(SmemLayoutMaskBiasPdS{}) * sizeof(Element);
+    static constexpr int kSmemPMaskSize = size(SmemLayoutMaskBiasPdS{}) * sizeof(Element);
     static constexpr int kSmemdQSize = size(SmemLayoutdQ{}) * sizeof(Element);
-    static constexpr int kSmemSize = kSmemQdOSize + kSmemMaskSize + kSmemBiasSize
+    static constexpr int kSmemSize = kSmemQdOSize
         + (
             !Is_V_in_regs
-            ? kSmemKVSize + std::max(kSmemPSize, kSmemdQSize)
-            : std::max(kSmemKVSize, kSmemKVSize / 2 + std::max(kSmemPSize, kSmemdQSize))
+            ? kSmemKVSize + kSmemBiasdSSize + std::max(kSmemPMaskSize, kSmemdQSize)
+            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemBiasdSSize + std::max(kSmemPMaskSize, kSmemdQSize))
         );
-    static constexpr int kSmemSize1colblock = kSmemQdOSize + kSmemMaskSize + kSmemBiasSize
+    static constexpr int kSmemSize1colblock = kSmemQdOSize
         + (
             !Is_V_in_regs
-            ? kSmemKVSize + kSmemPSize
-            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemPSize)
+            ? kSmemKVSize + kSmemBiasdSSize + kSmemPMaskSize
+            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemBiasdSSize + kSmemPMaskSize)
         );
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
