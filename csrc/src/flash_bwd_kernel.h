@@ -623,9 +623,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         //     cute::copy(smem_tiled_copy_KV, tSsK(_, _, k), tSrK_copy_view(_, _, k));
         // }
         // if (cute::thread0()) { print(tSrK); }
-        FLASH_NAMESPACE::sparse_gemm(
+        FLASH_NAMESPACE::gemm(
             acc_s,
-            tSrQ, tSrK, tSsQ, tSsK, tSrMask,
+            tSrQ, tSrK, tSsQ, tSsK,
             tiled_mma_sdp,
             smem_tiled_copy_QdO, smem_tiled_copy_KV,
             smem_thr_copy_QdO, smem_thr_copy_KV
@@ -699,9 +699,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
         // if (cute::thread0()) { print(dP_sum); }
 
-        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/false, /*B_in_regs=*/Kernel_traits::Is_V_in_regs>(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/false, /*B_in_regs=*/Kernel_traits::Is_V_in_regs>(
             acc_dp,
-            tdPrdO, tdPrV, tdPsdO, tdPsV, tSrMask,
+            tdPrdO, tdPrV, tdPsdO, tdPsV,
             tiled_mma_sdp,
             smem_tiled_copy_QdO, smem_tiled_copy_KV,
             smem_thr_copy_QdO, smem_thr_copy_KV
@@ -774,9 +774,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // FLASH_NAMESPACE::gemm_rs(acc_dv, tdVrPt, tdVrdO, tdVsdOt, tiled_mma_dkv, smem_thr_copy_QdOt);
         // Tensor tdKrdSt = make_tensor(tdSrdS.data(), tdVrPt.layout());
         // FLASH_NAMESPACE::gemm_rs(acc_dk, tdKrdSt, tdKrQt, tdKsQt, tiled_mma_dkv, smem_thr_copy_QdOt);
-        FLASH_NAMESPACE::sparse_gemm(
+        FLASH_NAMESPACE::gemm(
             acc_dv,
-            tdVrPt, tdVrdO, tdVsPt, tdVsdOt, tSrMask,
+            tdVrPt, tdVrdO, tdVsPt, tdVsdOt,
             tiled_mma_dkv,
             smem_tiled_copy_PdSt, smem_tiled_copy_QdOt,
             smem_thr_copy_PdSt, smem_thr_copy_QdOt
@@ -811,9 +811,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             }
         }
 
-        FLASH_NAMESPACE::sparse_gemm(
+        FLASH_NAMESPACE::gemm(
             acc_dq,
-            tdQrdS, tdQrKt, tdQsdS, tdQsKt, tSrMask,
+            tdQrdS, tdQrKt, tdQsdS, tdQsKt,
             tiled_mma_dq,
             smem_tiled_copy_dS, smem_tiled_copy_Kt,
             smem_thr_copy_dS, smem_thr_copy_Kt
@@ -866,9 +866,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             cute::copy(smem_tiled_copy_dQ, taccdQrdQ, taccdQsdQ);
         }
 
-        FLASH_NAMESPACE::sparse_gemm(
+        FLASH_NAMESPACE::gemm(
             acc_dk,
-            tdKrdSt, tdKrQt, tdKsdSt, tdKsQt, tSrMask,
+            tdKrdSt, tdKrQt, tdKsdSt, tdKsQt,
             tiled_mma_dkv,
             smem_tiled_copy_PdSt, smem_tiled_copy_QdOt,
             smem_thr_copy_PdSt, smem_thr_copy_QdOt
