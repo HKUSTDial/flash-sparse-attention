@@ -217,6 +217,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         sdO.data() + size(sdO),
         typename Kernel_traits::SmemLayoutKV{}
     );
+    Tensor sV = make_tensor(
+        sK.data() + size(sK),
+        typename Kernel_traits::SmemLayoutKV{}
+    );
     Tensor sKt = make_tensor(
         sK.data(),
         typename Kernel_traits::SmemLayoutKtransposed{}
@@ -225,21 +229,13 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         sK.data(),
         typename Kernel_traits::SmemLayoutKtransposedNoSwizzle{}
     );
-    Tensor sMask = make_tensor(
-        sK.data() + size(sK),
-        typename Kernel_traits::SmemLayoutPdS{}
-    );
     Tensor sBias = make_tensor(
-        sMask.data() + size(sMask),
-        typename Kernel_traits::SmemLayoutPdS{}
-    );
-    Tensor sV = make_tensor(
-        sBias.data() + size(sBias),
-        typename Kernel_traits::SmemLayoutKV{}
+        !Kernel_traits::Is_V_in_regs ? sV.data() + size(sV) : sK.data() + size(sK),
+        typename Kernel_traits::SmemLayoutMaskBiasPdS{}
     );
     Tensor sdS = make_tensor(
         sBias.data(),
-        typename Kernel_traits::SmemLayoutPdS{}
+        typename Kernel_traits::SmemLayoutMaskBiasPdS{}
     );
     Tensor sdSt = make_tensor(
         sBias.data(),
@@ -249,21 +245,25 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         sBias.data(),
         typename Kernel_traits::SmemLayoutPdStransposedNoSwizzle{}
     );
+    Tensor sMask = make_tensor(
+        sBias.data() + size(sBias),
+        typename Kernel_traits::SmemLayoutMaskBiasPdS{}
+    );
     Tensor sP = make_tensor(
-        !Kernel_traits::Is_V_in_regs ? sV.data() + size(sV) : sBias.data() + size(sBias),
-        typename Kernel_traits::SmemLayoutPdS{}
+        sMask.data(),
+        typename Kernel_traits::SmemLayoutMaskBiasPdS{}
     );
     Tensor sPt = make_tensor(
-        sP.data(),
+        sMask.data(),
         typename Kernel_traits::SmemLayoutPdStransposed{}
     );
     Tensor sPtNoSwizzle = make_tensor(
-        sP.data(),
+        sMask.data(),
         typename Kernel_traits::SmemLayoutPdStransposedNoSwizzle{}
     );
-    // sP and sdQ share the same memory so be careful
+    // sMask, sP and sdQ share the same memory so be careful
     Tensor sdQ = make_tensor(
-        sP.data(),
+        sMask.data(),
         typename Kernel_traits::SmemLayoutdQ{}
     );
 
@@ -606,10 +606,18 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         cute::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy mask from smem to registers
+        // Copy mask from smem to registers and do OR-reduce to see if any active threads
         Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrMask_copy_view = smem_thr_copy_PdS.retile_D(tSrMask);
-        cute::copy(smem_tiled_copy_PdS, tSsMask, tSrMask_copy_view);
+        Tensor tSrMask_view = smem_thr_copy_PdS.retile_D(tSrMask);
+        Tensor tSsMask_view = smem_thr_copy_PdS.retile_S(tSsMask);
+        bool any_active_local = false;
+        #pragma unroll
+        for (int i = 0; i < size(tSrMask_view); ++i) {
+            Element m = tSsMask_view(i);
+            any_active_local |= (m != Element(0));
+            tSrMask_view(i) = m;
+        }
+        bool any_active = __syncthreads_or(any_active_local);
 
         Tensor dP_sum = make_fragment_like(lse);
         #pragma unroll
@@ -806,9 +814,17 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                     tdOgdO, tdOsdO,
                     tQcQ, tQpQ
                 );
+            }
+            // Advance gMask
+            tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                gmem_tiled_copy_MaskBias,
+                tMaskgMask, tMasksMask,
+                tMaskcMask,
+                binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+            );
                 FLASH_NAMESPACE::cp_async_fence();
             }
-        }
 
         FLASH_NAMESPACE::gemm(
             acc_dq,
@@ -823,23 +839,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             gLSE.data() = gLSE.data() + (-int(kBlockM));
             #pragma unroll
             for (int mi = 0; mi < size(lse); ++mi) { lse(mi) = gLSE(get<0>(taccScS_row(mi))); }
-            tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
-            tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
             gdPsum.data() = gdPsum.data() + (-int(kBlockM));
-            // Advance gMask, gBias
-            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_MaskBias,
-                tMaskgMask, tMasksMask,
-                tMaskcMask,
-                binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
-            );
-            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_MaskBias,
-                tBiasgBias, tBiassBias,
-                tBiascBias,
-                binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
-            );
-            FLASH_NAMESPACE::cp_async_fence();
         }
 
         if (!Is_last) {
@@ -884,6 +884,21 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 gmem_tiled_copy_QKV,
                 tQgQ, tQsQ,
                 tQcQ, tQpQ
+            );
+            FLASH_NAMESPACE::cp_async_fence();
+        }
+
+        __syncthreads();    // Need syncthreads since we're using the sBias smem for accumulating acc_dk
+
+        if (m_block > m_block_min) {
+            // Advance gBias and gdBias
+            tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
+            tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                gmem_tiled_copy_MaskBias,
+                tBiasgBias, tBiassBias,
+                tBiascBias,
+                binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
             );
             FLASH_NAMESPACE::cp_async_fence();
         }
