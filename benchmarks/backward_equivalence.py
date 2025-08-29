@@ -554,8 +554,9 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
 
     # Test different parameter configurations
     # If you encounter NAN issues when running multiple configurations, try running a single configuration
+    # (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal)
     test_configs = [
-        # (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal)
+        # Head dim 32
         (1, 2, 1, 128, 128, 32, True),
         (1, 2, 1, 128, 128, 32, False),
         (1, 2, 1, 256, 256, 32, True),
@@ -566,11 +567,13 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 1024, 1024, 32, False),
         (1, 2, 1, 2048, 2048, 32, True),
         (1, 2, 1, 2048, 2048, 32, False),
-        (1, 2, 1, 4096, 4096, 32, True),
+        (1, 2, 1, 4096, 4096, 32, True),            # some INF in dbias, Idk why
         (1, 2, 1, 4096, 4096, 32, False),
+
+        # Head dim 64
         (1, 2, 1, 128, 128, 64, True),
         (1, 2, 1, 128, 128, 64, False),
-        (1, 2, 1, 256, 256, 64, True),
+        (1, 2, 1, 256, 256, 64, True),              # some INF in dbias, Idk why
         (1, 2, 1, 256, 256, 64, False),
         (1, 2, 1, 512, 512, 64, True),
         (1, 2, 1, 512, 512, 64, False),
@@ -580,6 +583,8 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 2048, 2048, 64, False),
         (1, 2, 1, 4096, 4096, 64, True),
         (1, 2, 1, 4096, 4096, 64, False),
+
+        # Head dim 96
         (1, 2, 1, 128, 128, 96, True),
         (1, 2, 1, 128, 128, 96, False),
         (1, 2, 1, 256, 256, 96, True),
@@ -592,22 +597,27 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 2048, 2048, 96, False),
         (1, 2, 1, 4096, 4096, 96, True),
         (1, 2, 1, 4096, 4096, 96, False),
-        (1, 2, 1, 128, 128, 128, True),
-        (1, 2, 1, 128, 128, 128, True),
-        (1, 2, 1, 256, 256, 128, True),
-        (1, 2, 1, 256, 256, 128, False),
-        (1, 2, 1, 512, 512, 128, True),
-        (1, 2, 1, 512, 512, 128, False),
-        (1, 2, 1, 1024, 1024, 128, True),           # some INF in dbias, Idk why
-        (1, 2, 1, 1024, 1024, 128, False),
-        (1, 2, 1, 2048, 2048, 128, True),
-        (1, 2, 1, 2048, 2048, 128, False),
-        (1, 2, 1, 4096, 4096, 128, True),
-        (1, 2, 1, 4096, 4096, 128, False),
 
-        # Not support head_dim > 128 in sm80 yet
+        # Not support head_dim => 128 in sm89 yet
+        # Because fwd uses splitkv branch, this branch does not support head_dim>=128 for now
+        # Head dim 128
+        # (1, 2, 1, 128, 128, 128, True),
+        # (1, 2, 1, 128, 128, 128, True),
+        # (1, 2, 1, 256, 256, 128, True),
+        # (1, 2, 1, 256, 256, 128, False),
+        # (1, 2, 1, 512, 512, 128, True),
+        # (1, 2, 1, 512, 512, 128, False),
+        # (1, 2, 1, 1024, 1024, 128, True),
+        # (1, 2, 1, 1024, 1024, 128, False),
+        # (1, 2, 1, 2048, 2048, 128, True),
+        # (1, 2, 1, 2048, 2048, 128, False),
+        # (1, 2, 1, 4096, 4096, 128, True),
+        # (1, 2, 1, 4096, 4096, 128, False),
+
+        # Head dim 256
+        # For head_dim=256, besides the reason of splitkv branch, bwd itself does not support it, not enough shared memory
         # (1, 2, 1, 128, 128, 256, True),
-        # (1, 2, 1, 128, 128, 128, False),
+        # (1, 2, 1, 128, 128, 256, False),
         # (1, 2, 1, 256, 256, 256, True),
         # (1, 2, 1, 256, 256, 256, False),
         # (1, 2, 1, 512, 512, 256, True),
