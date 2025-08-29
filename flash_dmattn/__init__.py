@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
 
 try:
     from .flash_dmattn_triton import triton_dmattn_func
