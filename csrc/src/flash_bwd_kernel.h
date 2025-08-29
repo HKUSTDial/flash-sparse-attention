@@ -619,6 +619,152 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         }
         bool any_active = __syncthreads_or(any_active_local);
 
+        // Early skip for fully masked blocks
+        if (!any_active) {
+
+            Tensor acc_dp = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});   // (MMA=4, MMA_M, MMA_N)
+            CUTE_STATIC_ASSERT_V(size<0>(acc_dp) == size<0>(acc_s));                                    // MMA
+            CUTE_STATIC_ASSERT_V(size<1>(acc_dp) == size<1>(acc_s));                                    // MMA
+            CUTE_STATIC_ASSERT_V(size<2>(acc_dp) == size<2>(acc_s));                                    // MMA
+
+            clear(acc_dp);
+
+            Tensor acc_dq = partition_fragment_C(tiled_mma_dq, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // MMA, MMA_M, MMA_K
+            tdQgdQaccum.data() = tdQgdQaccum.data() + (-int(kBlockM * params.h * params.d_rounded));
+            if (Is_first || Seq_parallel) {
+                clear(acc_dq);
+            } else {
+                Tensor acc_dq_reshaped_load = make_tensor(
+                    acc_dq.data(),
+                    make_layout(get<0>(acc_dq.layout()), get<2>(acc_dq.layout()), get<1>(acc_dq.layout()))
+                );
+                cute::copy(gmem_tiled_copy_dQaccum, tdQgdQaccum, acc_dq_reshaped_load);
+            }
+
+            if (Double_buffer && m_block > m_block_min) {
+                // Double buffer for sQ
+                const int sQ_offset = m_block % 2 == 0 ? size(sQ) : -size(sQ);
+                tQsQ.data() = tQsQ.data() + sQ_offset;
+                tSsQ.data() = tSsQ.data() + sQ_offset;
+                // Advance gQ
+                tQgQ.data() = tQgQ.data() + (-int(kBlockM * params.q_row_stride));
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                    gmem_tiled_copy_QKV,
+                    tQgQ, tQsQ,
+                    tQcQ, tQpQ
+                );
+                FLASH_NAMESPACE::cp_async_fence();
+            }
+
+            Tensor tdSrdS = make_tensor<Element>(shape(acc_dp));
+            clear(tdSrdS);
+            Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_M, MMA_N)
+            cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
+            __syncthreads();
+            // Write dS to dBias
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
+                gmem_tiled_copy_MaskBias,
+                tBiassBias, tdBiasgdBias,
+                tBiascBias,
+                binfo.actual_seqlen_q - m_block * kBlockM,
+                binfo.actual_seqlen_k - n_block * kBlockN
+            );
+
+            if (m_block > m_block_min) {
+                // Advance gdO
+                tdOgdO.data() = tdOgdO.data() + (-int(kBlockM * params.do_row_stride));
+                if (Is_first) {
+                    tdOgO.data() = tdOgO.data() + (-int(kBlockM * params.o_row_stride));
+                    FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                        gmem_tiled_copy_dO,
+                        tdOgdO, tdOrdO,
+                        tQcQ, tQpQ
+                    );
+                    FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                        gmem_tiled_copy_dO,
+                        tdOgO, tdOrO,
+                        tQcQ, tQpQ
+                    );
+                } else {
+                    FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                        gmem_tiled_copy_dO,
+                        tdOgdO, tdOsdO,
+                        tQcQ, tQpQ
+                    );
+                }
+                // Advance gMask
+                tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
+                FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tMaskgMask, tMasksMask,
+                    tMaskcMask,
+                    binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+                );
+                FLASH_NAMESPACE::cp_async_fence();
+            }
+
+            if (m_block > m_block_min) {
+                gLSE.data() = gLSE.data() + (-int(kBlockM));
+                #pragma unroll
+                for (int mi = 0; mi < size(lse); ++mi) { lse(mi) = gLSE(get<0>(taccScS_row(mi))); }
+                gdPsum.data() = gdPsum.data() + (-int(kBlockM));
+            }
+
+            if (Double_buffer) {  // Double buffer for sQ
+                tdKsQt.data() = tdKsQt.data() + (m_block % 2 == 0 ? size(sQ) : -size(sQ));
+            }
+            if (!Double_buffer && m_block > m_block_min) {
+                __syncthreads();
+                // Advance gQ
+                tQgQ.data() = tQgQ.data() + (-int(kBlockM * params.q_row_stride));
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                    gmem_tiled_copy_QKV,
+                    tQgQ, tQsQ,
+                    tQcQ, tQpQ
+                );
+                FLASH_NAMESPACE::cp_async_fence();
+            }
+
+            if (m_block > m_block_min) {
+                // Advance gBias and gdBias
+                tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
+                tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
+                FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tBiasgBias, tBiassBias,
+                    tBiascBias,
+                    binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+                );
+                FLASH_NAMESPACE::cp_async_fence();
+            }
+
+            if (Is_first && m_block > m_block_min) {
+                cute::copy(tdOrdO, tdOsdO);
+                dot_do_o<Kernel_traits::kGmemThreadsPerRow>(
+                    tdOrdO, tdOrO, gdPsum,
+                    Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow)
+                );
+            }
+
+            if (Is_last) {
+                __syncthreads();
+                Tensor tdQrdQ = make_tensor<Element>(shape(tdQgdQ));
+                clear(tdQrdQ);
+                cute::copy(gmem_tiled_copy_dQ, tdQsdQ, tdQrdQ);
+                tdQgdQ.data() = tdQgdQ.data() + (-int(kBlockM * params.dq_row_stride));
+                Tensor cdQ = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M, BLK_K) -> (blk_m, blk_k)
+                Tensor tdQcdQ = gmem_thr_copy_dQ.partition_D(cdQ);
+                #pragma unroll
+                for (int m = 0; m < size<1>(tdQgdQ); ++m) {
+                    if (Is_even_MN || get<0>(tdQcdQ(0, m, 0)) < binfo.actual_seqlen_q - m_block * kBlockM) {
+                        cute::copy(gmem_tiled_copy_dQ, tdQrdQ(_, m, _), tdQgdQ(_, m, _));
+                    }
+                }
+            }
+
+            continue;
+        }
+
         Tensor dP_sum = make_fragment_like(lse);
         #pragma unroll
         for (int mi = 0; mi < size(lse); ++mi) { dP_sum(mi) = gdPsum(get<0>(taccScS_row(mi))); }
