@@ -17,11 +17,12 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 
 ## Key Features
 
-- **Sparse Attention Computation**: Dynamically selects the most important keys for each query, reducing computation from $O(N^2)$ to $O(N \cdot w)$ where $w \ll N$.
-- **Memory Efficiency**: Maintains Flash Attention's $O(N)$ memory complexity without materializing the full attention matrix.
-- **CUDA-Accelerated**: Deep integration at the CUDA kernel level with custom sparse GEMM operations for maximum performance.
-- **Long Sequence Support**: Efficiently handles sequences of 128K+ tokens through dynamic masking when sequence length exceeds `keep_window_size`.
-- **Advanced Integration**: Complete integration from Python frontend to CUDA backend with optimized memory layouts and sparse computation strategies.
+- **Dynamic Sparse Attention**: Dynamically selects the most relevant keys for each query, reducing computational complexity from $O(N^2)$ to $O(N \cdot w)$ where $w \ll N$, supporting trainable sparse patterns.
+- **Memory Efficiency**: Maintains Flash Attention's $O(N)$ memory complexity without instantiating the full attention matrix.
+- **CUDA Deep Optimization**: Utilizes custom CUDA kernels with shared memory aliasing, pipelined prefetching, and block skipping for high throughput and low memory access overhead.
+- **Extremely Long Context Support**: Handles 128K+ token sequences efficiently through dynamic mask windowing while preserving accuracy.
+- **Learnable Bias**: Built-in learnable attention bias and its gradient path dbias, eliminating the need for additional external operators.
+- **Fusion-Friendly Training**: Both forward and backward passes support block-level zero-mask skipping, further reducing computation in sparse scenarios.
 
 
 ## Performance
@@ -129,7 +130,7 @@ The integration happens at the CUDA kernel level with several key components:
 
 - **ZOH States**: Pre-computed importance scores for key selection
 - **Active Masks**: Binary masks indicating which keys should be considered for each query
-- **Sparse Matrix Multiplication**: Custom CUDA kernels for efficient sparse attention computation
+- **Sparse Skipping**: Custom CUDA kernels for efficient sparse attention computation
 - **Block-Based Processing**: Maintains Flash Attention's block-based approach for memory efficiency
 
 This creates a hybrid attention mechanism that achieves both memory and computational efficiency for long sequences.
@@ -185,9 +186,21 @@ python benchmarks/forward_equivalence.py
 ```
 Validates numerical consistency between Python reference and CUDA implementation.
 
-### Performance Benchmarking  
+### Forward Pass Performance Benchmarking
 ```bash
 python benchmarks/forward_performance.py
+```
+Compares Flash-DMA against standard SDPA across various sequence lengths and batch sizes.
+
+### Backward Pass Equivalence
+```bash
+python benchmarks/backward_equivalence.py
+```
+Validates numerical consistency between Python reference and CUDA implementation.
+
+### Backward Pass Performance Benchmarking
+```bash
+python benchmarks/backward_performance.py
 ```
 Compares Flash-DMA against standard SDPA across various sequence lengths and batch sizes.
 
