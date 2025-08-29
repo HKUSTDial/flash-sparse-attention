@@ -269,7 +269,7 @@ def dynamic_mask_attention_cuda(
             is_causal=is_causal,
             scale=scaling,
             softcap=0.0,
-            deterministic=True,
+            deterministic=False,
             return_attn_probs=return_softmax
         )
         

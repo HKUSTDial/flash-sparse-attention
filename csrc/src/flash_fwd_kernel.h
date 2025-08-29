@@ -395,6 +395,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int n_masking_steps = (!Is_causal)
         ? 1
         : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
+    bool first_processed_block = true;
     #pragma unroll
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
@@ -402,13 +403,62 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy Mask and Bias from smem to registers
+        // Copy mask from smem to registers and do OR-reduce to see if any active threads
         Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+        Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
+        bool any_active_local = false;
+        #pragma unroll
+        for (int i = 0; i < size(tSrMask_copy_view); ++i) {
+            Element m = tSsMask_copy_view(i);
+            any_active_local |= (m != Element(0));
+            tSrMask_copy_view(i) = m;
+        }
+        bool any_active = __syncthreads_or(any_active_local);
+
+        // Early skip for fully masked blocks
+        if (!any_active) {      // Skip loading V and all computation
+
+            // Still need to load the next K/Mask/Bias if there are more blocks
+            if (n_block > n_block_min) {
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                    gmem_tiled_copy_QKV,
+                    tKgK(_, _, _, n_block - 1), tKsK,
+                    tKVcKV, tKVpKV
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
+                    tMaskcMask,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tBiasgBias(_, _, _, n_block - 1), tBiassBias,
+                    tBiascBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                // This cp_async_fence needs to be in the if block, otherwise the synchronization
+                // isn't right and we get race conditions.
+                cute::cp_async_fence();
+            }
+
+            if constexpr (Return_softmax){
+                // Even if the block is fully masked, we still need to write something to gS
+                // Convert acc_s from fp32 to fp16/bf16
+                Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+                cute::copy(rP, tSgS);
+                tSgS.data() = tSgS.data() + (-kBlockN);
+            }
+
+            // This check is at the end of the loop since we always have at least 1 iteration
+            if (n_masking_steps > 1 && n_block <= n_block_min) {
+                --n_block;
+                break;
+            }
+
+            continue;
+        }
 
         // Advance gV
         if (masking_step > 0) {
@@ -428,10 +478,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
         cute::cp_async_fence();
 
-        // Use sparse general matrix multiplication
-        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tSrQ, tSrK, tSsQ, tSsK,
             tiled_mma,
             smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -440,6 +489,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+
+        // Copy bias from smem to registers
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
 
         // Scale attention scores and apply mask/bias
         mask.template apply_mask<Is_causal, Is_even_MN>(
@@ -455,8 +509,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 tKgK(_, _, _, n_block - 1), tKsK,
                 tKVcKV, tKVpKV
             );
-            // This cp_async_fence needs to be in the if block, otherwise the synchronization
-            // isn't right and we get race conditions.
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
@@ -469,13 +521,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
+            // This cp_async_fence needs to be in the if block, otherwise the synchronization
+            // isn't right and we get race conditions.
             cute::cp_async_fence();
         }
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
-        masking_step == 0
+        first_processed_block == true
             ? softmax.template softmax</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o)
             : softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+        first_processed_block = false;
         // masking_step == 0
         //     ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2)
         //     : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
@@ -491,10 +546,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
         // if (cute::thread0()) { print(tOrP); }
-        // Use sparse general matrix multiplication with register accumulation for V as well
-        FLASH_NAMESPACE::sparse_gemm_rs(
+        FLASH_NAMESPACE::gemm_rs(
             acc_o,
-            tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
+            tOrP, tOrVt, tOsVt,
             tiled_mma,
             smem_tiled_copy_V, smem_thr_copy_V
         );
@@ -514,13 +568,54 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy Mask and Bias from smem to registers
+        // Copy mask from smem to registers and do OR-reduce to see if any active threads
         Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+        Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
+        bool any_active_local = false;
+        #pragma unroll
+        for (int i = 0; i < size(tSrMask_copy_view); ++i) {
+            Element m = tSsMask_copy_view(i);
+            any_active_local |= (m != Element(0));
+            tSrMask_copy_view(i) = m;
+        }
+        bool any_active = __syncthreads_or(any_active_local);
+
+        // Early skip for fully masked blocks
+        if (!any_active) {      // Skip loading V and all computation
+
+            // Still need to load the next K/Mask/Bias if there are more blocks
+            if (n_block > n_block_min) {
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                    gmem_tiled_copy_QKV,
+                    tKgK(_, _, _, n_block - 1), tKsK,
+                    tKVcKV, tKVpKV
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
+                    tMaskcMask,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tBiasgBias(_, _, _, n_block - 1), tBiassBias,
+                    tBiascBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                cute::cp_async_fence();
+            }
+
+            if constexpr (Return_softmax){
+                // Even if the block is fully masked, we still need to write something to gS
+                // Convert acc_s from fp32 to fp16/bf16
+                Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+                cute::copy(rP, tSgS);
+                tSgS.data() = tSgS.data() + (-kBlockN);
+            }
+
+            continue;
+        }
 
         FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
             gmem_tiled_copy_QKV,
@@ -529,10 +624,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         );
         cute::cp_async_fence();
 
-        // Use sparse general matrix multiplication
-        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tSrQ, tSrK, tSsQ, tSsK,
             tiled_mma,
             smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -540,6 +634,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+
+        // Copy bias from smem to registers
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
 
         // Scale attention scores and apply dynamic mask
         mask.template apply_mask</*Causal_mask=*/false>(
@@ -572,7 +671,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             cute::cp_async_fence();
         }
 
-        softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+        first_processed_block == true
+            ? softmax.template softmax</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o)
+            : softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+        first_processed_block = false;
         // softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
 
         // Convert acc_s from fp32 to fp16/bf16
@@ -586,10 +688,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        // Use sparse general matrix multiplication with register accumulation for V as well
-        FLASH_NAMESPACE::sparse_gemm_rs(
+        FLASH_NAMESPACE::gemm_rs(
             acc_o,
-            tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
+            tOrP, tOrVt, tOsVt,
             tiled_mma,
             smem_tiled_copy_V, smem_thr_copy_V
         );
@@ -981,6 +1082,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     constexpr int n_masking_steps = (!Is_causal)
         ? 1
         : ((Is_even_MN && Is_causal) ? cute::ceil_div(kBlockM, kBlockN) : cute::ceil_div(kBlockM, kBlockN) + 1);
+    bool first_processed_block = true;
     #pragma unroll
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
@@ -988,13 +1090,81 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy Mask and Bias from smem to registers
+        // Copy mask from smem to registers and do OR-reduce to see if any active threads
         Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+        Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
+        bool any_active_local = false;
+        #pragma unroll
+        for (int i = 0; i < size(tSrMask_copy_view); ++i) {
+            Element m = tSsMask_copy_view(i);
+            any_active_local |= (m != Element(0));
+            tSrMask_copy_view(i) = m;
+        }
+        bool any_active = __syncthreads_or(any_active_local);
+
+        // Early skip for fully masked blocks
+        if (!any_active) {      // Skip loading V and all computation
+
+            // Advance gV pointer
+            if (masking_step > 0) {
+                if (block_table == nullptr) {
+                    tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
+                } else {
+                    const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
+                    const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
+                    const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
+                    const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
+                    tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
+                }
+            }
+
+            // Still need to load the next K/Mask/Bias if there are more blocks
+            if (n_block > n_block_min) {
+                // Advance gK, gMask, gBias
+                if (block_table == nullptr) {
+                    tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
+                    tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN));
+                    tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockN));
+                } else {
+                    const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
+                    const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
+                    const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
+                    const int block_table_offset_next =(n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+                    tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
+                    tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
+                    tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
+                }
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                    gmem_tiled_copy_QKV,
+                    tKgK, tKsK,
+                    tKVcKV, tKVpKV
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tMaskgMask, tMasksMask, 
+                    tMaskcMask,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tBiasgBias, tBiassBias, 
+                    tBiascBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                // This cp_async_fence needs to be in the if block, otherwise the synchronization
+                // isn't right and we get race conditions.
+                cute::cp_async_fence();
+            }
+
+            // This check is at the end of the loop since we always have at least 1 iteration
+            if (n_masking_steps > 1 && n_block <= n_block_min) {
+                --n_block;
+                break;
+            }
+
+            continue;
+        }
 
         // Advance gV
         if (masking_step > 0) {
@@ -1023,10 +1193,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         }
         cute::cp_async_fence();
 
-        // Use sparse general matrix multiplication
-        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tSrQ, tSrK, tSsQ, tSsK,
             tiled_mma,
             smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -1035,6 +1204,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+
+        // Copy bias from smem to registers
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
 
         // Scale attention scores and apply dynamic mask
         mask.template apply_mask<Is_causal, Is_even_MN>(
@@ -1057,7 +1231,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
                 const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
                 const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
-                const int block_table_offset_next =(n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+                const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
                 tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
                 tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
@@ -1067,8 +1241,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tKgK, tKsK,
                 tKVcKV, tKVpKV
             );
-            // This cp_async_fence needs to be in the if block, otherwise the synchronization
-            // isn't right and we get race conditions.
             FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask, 
@@ -1081,13 +1253,16 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tBiascBias,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
+            // This cp_async_fence needs to be in the if block, otherwise the synchronization
+            // isn't right and we get race conditions.
             cute::cp_async_fence();
         }
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
-        masking_step == 0
+        first_processed_block == true
             ? softmax.template softmax</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o)
             : softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+        first_processed_block = false;
         // masking_step == 0
         //     ? softmax.template softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2)
         //     : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
@@ -1098,10 +1273,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        // Use sparse general matrix multiplication with register accumulation for V as well
-        FLASH_NAMESPACE::sparse_gemm_rs(
+        FLASH_NAMESPACE::gemm_rs(
             acc_o,
-            tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
+            tOrP, tOrVt, tOsVt,
             tiled_mma,
             smem_tiled_copy_V, smem_thr_copy_V
         );
@@ -1120,13 +1294,73 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy Mask and Bias from smem to registers
+        // Copy mask from smem to registers and do OR-reduce to see if any active threads
         Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+        Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
+        bool any_active_local = false;
+        #pragma unroll
+        for (int i = 0; i < size(tSrMask_copy_view); ++i) {
+            Element m = tSsMask_copy_view(i);
+            any_active_local |= (m != Element(0));
+            tSrMask_copy_view(i) = m;
+        }
+        bool any_active = __syncthreads_or(any_active_local);
+
+        // Early skip for fully masked blocks
+        if (!any_active) {      // Skip loading V and all computation
+
+            // Advance gV pointer
+            if (block_table == nullptr) {
+                tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
+            } else {
+                const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
+                const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
+                const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
+                const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
+                tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
+            }
+
+            // Still need to load the next K/Mask/Bias if there are more blocks
+            if (n_block > n_block_min) {
+                // Advance gK, gMask, gBias
+                if (block_table == nullptr) {
+                    tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
+                    tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN));
+                    tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockN));
+                } else {
+                    const int block_table_idx_cur = n_block * kBlockN / params.page_block_size;
+                    const int block_table_offset_cur = n_block * kBlockN - block_table_idx_cur * params.page_block_size;
+                    const int block_table_idx_next = (n_block - 1) * kBlockN / params.page_block_size;
+                    const int block_table_offset_next = (n_block - 1) * kBlockN - block_table_idx_next * params.page_block_size;
+                    tKgK.data() = tKgK.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.k_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.k_row_stride;
+                    tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
+                    tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
+                }
+                FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
+                    gmem_tiled_copy_QKV,
+                    tKgK, tKsK,
+                    tKVcKV, tKVpKV
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tMaskgMask, tMasksMask,
+                    tMaskcMask,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+                    gmem_tiled_copy_MaskBias,
+                    tBiasgBias, tBiassBias, 
+                    tBiascBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                );
+                // This cp_async_fence needs to be in the if block, otherwise the synchronization
+                // isn't right and we get race conditions.
+                cute::cp_async_fence();
+            }
+
+            continue;
+        }
 
         // Advance gV
         if (block_table == nullptr) {
@@ -1145,10 +1379,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         );
         cute::cp_async_fence();
 
-        // Use sparse general matrix multiplication
-        FLASH_NAMESPACE::sparse_gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
+        FLASH_NAMESPACE::gemm</*A_in_regs=*/Kernel_traits::Is_Q_in_regs>(
             acc_s,
-            tSrQ, tSrK, tSsQ, tSsK, tSrMask,        // Active key mask for sparse K matrix multiplication
+            tSrQ, tSrK, tSsQ, tSsK,
             tiled_mma,
             smem_tiled_copy_Q, smem_tiled_copy_K,
             smem_thr_copy_Q, smem_thr_copy_K
@@ -1156,6 +1389,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+
+        // Copy bias from smem to registers
+        Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+        Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+        cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
 
         // Scale attention scores and apply dynamic mask
         mask.template apply_mask</*Causal_mask=*/false>(
@@ -1166,7 +1404,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
         if (n_block > n_block_min) {
-            // Advance gK
+            // Advance gK, gMask, gBias
             if (block_table == nullptr) {
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
                 tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockN));
@@ -1202,7 +1440,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             cute::cp_async_fence();
         }
 
-        softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+        first_processed_block == true
+            ? softmax.template softmax</*Is_first=*/true,  /*Check_inf=*/true>(acc_s, acc_o)
+            : softmax.template softmax</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o);
+        first_processed_block = false;
         // softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(acc_s, acc_o, params.scale_softmax_log2);
 
         // Convert acc_s from fp32 to fp16/bf16
@@ -1212,10 +1453,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         // if using m16n8k16 or (4, MMA_M, MMA_N) if using m16n8k8.
         Tensor tOrP = make_tensor(rP.data(), FLASH_NAMESPACE::convert_layout_acc_Aregs<typename Kernel_traits::TiledMma>(rP.layout()));
 
-        // Use sparse general matrix multiplication with register accumulation for V as well
-        FLASH_NAMESPACE::sparse_gemm_rs(
+        FLASH_NAMESPACE::gemm_rs(
             acc_o,
-            tOrP, tOrVt, tOsVt, tSrMask,    // Apply the same mask for sparse V matrix multiplication
+            tOrP, tOrVt, tOsVt,
             tiled_mma,
             smem_tiled_copy_V, smem_thr_copy_V
         );
