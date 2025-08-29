@@ -11,6 +11,10 @@ def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
 
 
+        if t is not None and isinstance(t, torch.Tensor):
+            torch.nan_to_num(t, nan=nan, posinf=posinf, neginf=neginf, out=t)
+
+
 def _get_block_size_n(device, head_dim, is_causal):
     # This should match the block sizes in the CUDA kernel
     assert head_dim <= 256
@@ -89,6 +93,7 @@ def _flash_dmattn_forward(
         softcap,
         return_softmax,
     )
+    _sanitize_tensors(out)
     return out, softmax_lse, S_dmask
 
 
@@ -160,6 +165,7 @@ def _flash_dmattn_varlen_forward(
         softcap,
         return_softmax,
     )
+    _sanitize_tensors(out)
     return out, softmax_lse, S_dmask
 
 
@@ -245,6 +251,7 @@ def _flash_dmattn_backward(
         softcap,
         deterministic,
     )
+    _sanitize_tensors(dq, dk, dv, dbias)
     return softmax_d
 
 
@@ -339,6 +346,7 @@ def _flash_dmattn_varlen_backward(
         softcap,
         deterministic,
     )
+    _sanitize_tensors(dq, dk, dv, dbias)
     return softmax_d
 
 

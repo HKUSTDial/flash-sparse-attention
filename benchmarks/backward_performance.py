@@ -261,9 +261,9 @@ def dynamic_mask_attention_backward_cuda(
     
     # Ensure correct data types and memory layout for CUDA function
     # CUDA function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-    query_states = query_states.transpose(1, 2)     # [batch, query_len, num_heads, head_dim]
-    key_states = key_states.transpose(1, 2)         # [batch, key_len, num_kv_heads, head_dim]
-    value_states = value_states.transpose(1, 2)     # [batch, key_len, num_kv_heads, head_dim]
+    query_states = query_states.transpose(1, 2).contiguous()        # [batch, query_len, num_heads, head_dim]
+    key_states = key_states.transpose(1, 2).contiguous()            # [batch, key_len, num_kv_heads, head_dim]
+    value_states = value_states.transpose(1, 2).contiguous()        # [batch, key_len, num_kv_heads, head_dim]
 
     try:
         # Create gradient for output
@@ -816,7 +816,7 @@ def run_backward_performance_benchmark(test_type='all', num_runs=3, warmup_runs=
         (1, 2, 1, 512, 512, 64, 1024, True),
         (1, 2, 1, 1024, 1024, 64, 1024, True),
         (1, 2, 1, 2048, 2048, 64, 1024, True),
-        (1, 2, 1, 4096, 4096, 64, 4096, True),
+        (1, 2, 1, 4096, 4096, 64, 1024, True),
         (1, 2, 1, 8192, 8192, 64, 1024, True),
         (1, 2, 1, 16384, 16384, 64, 1024, True),
         
