@@ -304,7 +304,7 @@ class DogeAttention(nn.Module):
             attention_mask=attention_mask,
         )
 
-        attention_interface: Callable = flash_dmattn_func_auto(backend="flex")
+        attention_interface: Callable = flash_dmattn_func_auto(backend="cuda")
         query_states = query_states.transpose(1, 2).contiguous()    # [B, H, Q_LEN, D]
         key_states = key_states.transpose(1, 2).contiguous()        # [B, H, KV_LEN, D]
         value_states = value_states.transpose(1, 2).contiguous()    # [B, H, KV_LEN, D]
