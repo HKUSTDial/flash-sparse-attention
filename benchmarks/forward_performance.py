@@ -832,9 +832,11 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
                 speedup_strs[impl_key] = "N/A"
         
         # Format output with shorter config string
-        config_short = f" b{batch_size} h{num_heads} kv{num_kv_heads} q{query_len} k{key_len} d{head_dim} w{keep_window_size} "
+        config_short = f" B{batch_size} Hq{num_heads} Hkv{num_kv_heads} Q{query_len} K{key_len} D{head_dim} W{keep_window_size} "
         if not is_causal:
-            config_short += "nc"
+            config_short += "N"
+        else:
+            config_short += "C"
         
         # Add status icons
         icons = ""

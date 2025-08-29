@@ -864,7 +864,7 @@ def run_backward_performance_benchmark(test_type='all', num_runs=3, warmup_runs=
             
             # Format configuration string
             batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, keep_window_size, is_causal = config
-            config_str = f"B{batch_size}H{num_heads}K{num_kv_heads}Q{query_len}K{key_len}D{head_dim}W{keep_window_size}{'C' if is_causal else 'N'}"
+            config_str = f"B{batch_size} Hq{num_heads} Hkv{num_kv_heads} Q{query_len} K{key_len} D{head_dim} W{keep_window_size} {'C' if is_causal else 'N'}"
             
             # Calculate averages and format results
             sdpa_avg = f"{sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times']):.2f}ms" if results['sdpa_backward_times'] else results['sdpa_backward_status']
