@@ -11,6 +11,8 @@ def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
 
 
+def _sanitize_tensors(*tensors: Optional[torch.Tensor], nan: float = 0.0, posinf: float = 1e6, neginf: float = -1e6) -> None:
+    for t in tensors:
         if t is not None and isinstance(t, torch.Tensor):
             torch.nan_to_num(t, nan=nan, posinf=posinf, neginf=neginf, out=t)
 
