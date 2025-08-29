@@ -76,7 +76,7 @@ def prepare_dynamic_mask(
     hidden_states: torch.Tensor,
     zoh_states: torch.Tensor,
     keep_window_size: int = 2048,
-    attention_mask: torch.Tensor | None = None,
+    cache_position: torch.Tensor = None,
 ):
     """
     Calculate dynamic attention mask to mask tokens for sparse attention.
@@ -87,28 +87,23 @@ def prepare_dynamic_mask(
         hidden_states: Input hidden states to determine dtype minimum value
         zoh_states: zoh_states of shape (batch_size, num_kv_heads, key_sequence_length)
         keep_window_size: Window size of tokens not dynamically masked
-        attention_mask: Optional attention mask of shape (batch_size, 1, query_len, key_len)
+        cache_position: Optional cache position for causal masking
     
     Returns:
         tuple: (attn_bias, attn_mask)
     """
-    min_dtype = torch.finfo(hidden_states.dtype).min
     dtype = hidden_states.dtype
+    min_dtype = torch.finfo(dtype).min
     attn_bias = zoh_states[:, :, None, :].expand(
         -1, -1, hidden_states.shape[2], -1
-    )  # [batch_size, num_kv_heads, query_len, key_len]
+    ).to(dtype)     # [batch_size, num_kv_heads, query_len, key_len]
     
-    if attention_mask is not None:
-        if attention_mask.dtype == torch.bool:
-            attention_mask = torch.where(
-                attention_mask, 
-                torch.tensor(0.0, device=attention_mask.device, dtype=dtype), 
-                min_dtype
-            )
+    if cache_position is not None:
         attn_bias = attn_bias.masked_fill(
-            attention_mask[:, :, :, : attn_bias.shape[-1]] != 0, min_dtype
+            torch.arange(attn_bias.shape[-1], device=attn_bias.device) > cache_position.reshape(-1, 1),
+            min_dtype
         )
-    
+
     if attn_bias.shape[-1] > keep_window_size:
         topk_values, topk_indices = torch.topk(
             attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
@@ -212,7 +207,7 @@ def dynamic_mask_attention_cuda(
     dt_proj: torch.Tensor,
     A: torch.Tensor,
     scaling: float,
-    causal_mask: torch.Tensor,
+    cache_position: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
     return_softmax=False
@@ -227,7 +222,7 @@ def dynamic_mask_attention_cuda(
         dt_proj: [num_kv_heads, num_kv_heads * head_dim]
         A: [num_kv_heads]
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
+        cache_position: Cache position for causal masking
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
         return_softmax: Whether to return softmax weights
@@ -246,7 +241,7 @@ def dynamic_mask_attention_cuda(
         query_states,
         zoh_states,
         keep_window_size,
-        causal_mask if is_causal else None
+        cache_position if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
     
     # Ensure correct data types and memory layout for CUDA function
@@ -288,7 +283,7 @@ def dynamic_mask_attention_triton(
     dt_proj: torch.Tensor,
     A: torch.Tensor,
     scaling: float,
-    causal_mask: torch.Tensor,
+    cache_position: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
@@ -302,7 +297,7 @@ def dynamic_mask_attention_triton(
         dt_proj: [num_kv_heads, num_kv_heads * head_dim]
         A: [num_kv_heads]
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
+        cache_position: Cache position for causal masking
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
@@ -325,7 +320,7 @@ def dynamic_mask_attention_triton(
             query_states,
             zoh_states,
             keep_window_size,
-            causal_mask if is_causal else None
+            cache_position if is_causal else None
         )  # [batch_size, num_kv_heads, query_len, key_len]
         
         # Repeat KV for multi-head attention (GQA support)
@@ -371,7 +366,7 @@ def dynamic_mask_attention_flex(
     dt_proj: torch.Tensor,
     A: torch.Tensor,
     scaling: float,
-    causal_mask: torch.Tensor,
+    cache_position: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
@@ -385,7 +380,7 @@ def dynamic_mask_attention_flex(
         dt_proj: [num_kv_heads, num_kv_heads * head_dim]
         A: [num_kv_heads]
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
+        cache_position: Cache position for causal masking
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
@@ -408,7 +403,7 @@ def dynamic_mask_attention_flex(
             query_states,
             zoh_states,
             keep_window_size,
-            causal_mask if is_causal else None
+            cache_position if is_causal else None
         )  # [batch_size, num_kv_heads, query_len, key_len]
         
         # Repeat KV for multi-head attention (GQA support)
@@ -507,18 +502,18 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
     
     results = {
         'config': config,
-        'flash_attention_times': [],
-        'dynamic_mask_attention_times': [],
-        'dynamic_mask_attention_triton_times': [],
-        'dynamic_mask_attention_flex_times': [],
-        'flash_attention_memory': 0,
-        'dynamic_mask_attention_memory': 0,
-        'dynamic_mask_attention_triton_memory': 0,
-        'dynamic_mask_attention_flex_memory': 0,
-        'flash_attention_status': 'success',
-        'dynamic_mask_attention_status': 'success',
-        'dynamic_mask_attention_triton_status': 'success',
-        'dynamic_mask_attention_flex_status': 'success'
+        'sdpa_forward_times': [],
+        'fdma_cuda_forward_times': [],
+        'fdma_triton_forward_times': [],
+        'fdma_flex_forward_times': [],
+        'sdpa_forward_memory': 0,
+        'fdma_cuda_forward_memory': 0,
+        'fdma_triton_forward_memory': 0,
+        'fdma_flex_forward_memory': 0,
+        'sdpa_forward_status': 'success',
+        'fdma_cuda_forward_status': 'success',
+        'fdma_triton_forward_status': 'success',
+        'fdma_flex_forward_status': 'success'
     }
     
     # Determine which implementations to run
@@ -539,11 +534,11 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
                 scaling, causal_mask, is_causal
             )
             if result[0] == "OOM":
-                results['flash_attention_status'] = 'OOM'
+                results['sdpa_forward_status'] = 'OOM'
                 break
             torch.cuda.synchronize()
-        
-        if results['flash_attention_status'] == 'success':
+
+        if results['sdpa_forward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -555,17 +550,17 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
                 )
                 
                 if result[0] == "OOM":
-                    results['flash_attention_status'] = 'OOM'
+                    results['sdpa_forward_status'] = 'OOM'
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['flash_attention_times'].append(result[1])  # ms
+                results['sdpa_forward_times'].append(result[1])  # ms
             
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['flash_attention_memory'] = mem_after[0] - mem_before[0]
+            results['sdpa_forward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['flash_attention_status'] = 'N/A'
+        results['sdpa_forward_status'] = 'N/A'
     
     # Benchmark Dynamic Mask Attention
     if run_cuda:
@@ -576,15 +571,15 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = dynamic_mask_attention_cuda(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, causal_mask,
+                dt_proj, A, scaling, cache_position,
                 keep_window_size, is_causal
             )
             if result[0] == "OOM":
-                results['dynamic_mask_attention_status'] = 'OOM'
+                results['fdma_cuda_forward_status'] = 'OOM'
                 break
             torch.cuda.synchronize()
         
-        if results['dynamic_mask_attention_status'] == 'success':
+        if results['fdma_cuda_forward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -592,22 +587,22 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = dynamic_mask_attention_cuda(
                     query_states, key_states, value_states,
-                    dt_proj, A, scaling, causal_mask,
+                    dt_proj, A, scaling, cache_position,
                     keep_window_size, is_causal
                 )
                 
                 if result[0] == "OOM":
-                    results['dynamic_mask_attention_status'] = 'OOM'
+                    results['fdma_cuda_forward_status'] = 'OOM'
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['dynamic_mask_attention_times'].append(result[1])  # ms
+                results['fdma_cuda_forward_times'].append(result[1])  # ms
             
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['dynamic_mask_attention_memory'] = mem_after[0] - mem_before[0]
+            results['fdma_cuda_forward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['dynamic_mask_attention_status'] = 'N/A'
+        results['fdma_cuda_forward_status'] = 'N/A'
     
     # Benchmark Dynamic Mask Attention (Triton)
     if run_triton:
@@ -618,15 +613,15 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = dynamic_mask_attention_triton(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, causal_mask,
+                dt_proj, A, scaling, cache_position,
                 keep_window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
-                results['dynamic_mask_attention_triton_status'] = result[0]
+                results['fdma_triton_forward_status'] = result[0]
                 break
             torch.cuda.synchronize()
-        
-        if results['dynamic_mask_attention_triton_status'] == 'success':
+
+        if results['fdma_triton_forward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -634,22 +629,22 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = dynamic_mask_attention_triton(
                     query_states, key_states, value_states,
-                    dt_proj, A, scaling, causal_mask,
+                    dt_proj, A, scaling, cache_position,
                     keep_window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
-                    results['dynamic_mask_attention_triton_status'] = result[0]
+                    results['fdma_triton_forward_status'] = result[0]
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['dynamic_mask_attention_triton_times'].append(result[1])  # ms
+                results['fdma_triton_forward_times'].append(result[1])  # ms
             
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['dynamic_mask_attention_triton_memory'] = mem_after[0] - mem_before[0]
+            results['fdma_triton_forward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['dynamic_mask_attention_triton_status'] = 'N/A'
+        results['fdma_triton_forward_status'] = 'N/A'
     
     # Benchmark Dynamic Mask Attention (Flex)
     if run_flex:
@@ -660,15 +655,15 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = dynamic_mask_attention_flex(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, causal_mask,
+                dt_proj, A, scaling, cache_position,
                 keep_window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
-                results['dynamic_mask_attention_flex_status'] = result[0]
+                results['fdma_flex_forward_status'] = result[0]
                 break
             torch.cuda.synchronize()
-        
-        if results['dynamic_mask_attention_flex_status'] == 'success':
+
+        if results['fdma_flex_forward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -676,23 +671,23 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = dynamic_mask_attention_flex(
                     query_states, key_states, value_states,
-                    dt_proj, A, scaling, causal_mask,
+                    dt_proj, A, scaling, cache_position,
                     keep_window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
-                    results['dynamic_mask_attention_flex_status'] = result[0]
+                    results['fdma_flex_forward_status'] = result[0]
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['dynamic_mask_attention_flex_times'].append(result[1])  # ms
-            
+                results['fdma_flex_forward_times'].append(result[1])  # ms
+
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['dynamic_mask_attention_flex_memory'] = mem_after[0] - mem_before[0]
+            results['fdma_flex_forward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['dynamic_mask_attention_flex_status'] = 'N/A'
-    
+        results['fdma_flex_forward_status'] = 'N/A'
+
     return results
 
 
@@ -726,48 +721,48 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
     # Test configurations: (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, keep_window_size, is_causal)
     configs = [
         # Vary sequence length
-        (1, 2, 1, 256, 256, 128, 2048, True),
-        (1, 2, 1, 512, 512, 128, 2048, True),
-        (1, 2, 1, 1024, 1024, 128, 2048, True),
-        (1, 2, 1, 2048, 2048, 128, 2048, True),
-        (1, 2, 1, 4096, 4096, 128, 2048, True),
-        (1, 2, 1, 8192, 8192, 128, 2048, True),
-        (1, 2, 1, 16384, 16384, 128, 2048, True),
-        (1, 2, 1, 32768, 32768, 128, 2048, True),
+        (1, 2, 1, 256, 256, 128, 1024, True),
+        (1, 2, 1, 512, 512, 128, 1024, True),
+        (1, 2, 1, 1024, 1024, 128, 1024, True),
+        (1, 2, 1, 2048, 2048, 128, 1024, True),
+        (1, 2, 1, 4096, 4096, 128, 1024, True),
+        (1, 2, 1, 8192, 8192, 128, 1024, True),
+        (1, 2, 1, 16384, 16384, 128, 1024, True),
+        (1, 2, 1, 32768, 32768, 128, 1024, True),
 
-        # # Inference
-        (1, 2, 1, 1, 256, 128, 2048, True),
-        (1, 2, 1, 1, 512, 128, 2048, True),
-        (1, 2, 1, 1, 1024, 128, 2048, True),
-        (1, 2, 1, 1, 2048, 128, 2048, True),
-        (1, 2, 1, 1, 4096, 128, 2048, True),
-        (1, 2, 1, 1, 8192, 128, 2048, True),
-        (1, 2, 1, 1, 16384, 128, 2048, True),
-        (1, 2, 1, 1, 32768, 128, 2048, True),
-        (1, 2, 1, 1, 65536, 128, 2048, True),
-        (1, 2, 1, 1, 131072, 128, 2048, True),
-        (1, 2, 1, 1, 262144, 128, 2048, True),
-        (1, 2, 1, 1, 524288, 128, 2048, True),
+        # Inference
+        (1, 2, 1, 1, 256, 128, 1024, True),
+        (1, 2, 1, 1, 512, 128, 1024, True),
+        (1, 2, 1, 1, 1024, 128, 1024, True),
+        (1, 2, 1, 1, 2048, 128, 1024, True),
+        (1, 2, 1, 1, 4096, 128, 1024, True),
+        (1, 2, 1, 1, 8192, 128, 1024, True),
+        (1, 2, 1, 1, 16384, 128, 1024, True),
+        (1, 2, 1, 1, 32768, 128, 1024, True),
+        (1, 2, 1, 1, 65536, 128, 1024, True),
+        (1, 2, 1, 1, 131072, 128, 1024, True),
+        (1, 2, 1, 1, 262144, 128, 1024, True),
+        (1, 2, 1, 1, 524288, 128, 1024, True),
         
         # Vary batch size
-        (1, 2, 1, 4096, 4096, 32, 2048, True),
-        (2, 2, 1, 4096, 4096, 32, 2048, True),
-        (4, 2, 1, 4096, 4096, 32, 2048, True),
-        (8, 2, 1, 4096, 4096, 32, 2048, True),
+        (1, 2, 1, 4096, 4096, 32, 1024, True),
+        (2, 2, 1, 4096, 4096, 32, 1024, True),
+        (4, 2, 1, 4096, 4096, 32, 1024, True),
+        (8, 2, 1, 4096, 4096, 32, 1024, True),
         
         # Vary head count
-        (1, 1, 1, 4096, 4096, 32, 2048, True),
-        (1, 2, 1, 4096, 4096, 32, 2048, True),
-        (1, 4, 1, 4096, 4096, 32, 2048, True),
-        (1, 8, 2, 4096, 4096, 32, 2048, True),
+        (1, 1, 1, 4096, 4096, 32, 1024, True),
+        (1, 2, 1, 4096, 4096, 32, 1024, True),
+        (1, 4, 1, 4096, 4096, 32, 1024, True),
+        (1, 8, 2, 4096, 4096, 32, 1024, True),
         
         # Vary head dimension
-        (1, 2, 1, 4096, 4096, 32, 2048, True),
-        (1, 2, 1, 4096, 4096, 64, 2048, True),
-        (1, 2, 1, 4096, 4096, 96, 2048, True),
-        (1, 2, 1, 4096, 4096, 128, 2048, True),
-        (1, 2, 1, 4096, 4096, 192, 2048, True),
-        (1, 2, 1, 4096, 4096, 256, 2048, True),
+        (1, 2, 1, 4096, 4096, 32, 1024, True),
+        (1, 2, 1, 4096, 4096, 64, 1024, True),
+        (1, 2, 1, 4096, 4096, 96, 1024, True),
+        (1, 2, 1, 4096, 4096, 128, 1024, True),
+        (1, 2, 1, 4096, 4096, 192, 1024, True),
+        (1, 2, 1, 4096, 4096, 256, 1024, True),
         
         # Vary keep_window_size
         (1, 2, 1, 32768, 32768, 128, 32, True),
@@ -781,9 +776,6 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
         (1, 2, 1, 32768, 32768, 128, 8192, True),
         (1, 2, 1, 32768, 32768, 128, 16384, True),
         (1, 2, 1, 32768, 32768, 128, 32768, True),
-        
-        # Test non-causal
-        (1, 2, 1, 4096, 4096, 128, 2048, False),
     ]
     
     print(f"\n📊 Benchmark Results (averaged over {num_runs} runs):")
@@ -800,10 +792,10 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
         
         # Calculate averages for all implementations
         implementations = {
-            'sdpa': ('flash_attention', results['flash_attention_status'], results['flash_attention_times']),
-            'cuda': ('dynamic_mask_attention', results['dynamic_mask_attention_status'], results['dynamic_mask_attention_times']),
-            'triton': ('dynamic_mask_attention_triton', results['dynamic_mask_attention_triton_status'], results['dynamic_mask_attention_triton_times']),
-            'flex': ('dynamic_mask_attention_flex', results['dynamic_mask_attention_flex_status'], results['dynamic_mask_attention_flex_times'])
+            'sdpa': ('sdpa_forward', results['sdpa_forward_status'], results['sdpa_forward_times']),
+            'cuda': ('fdma_cuda_forward', results['fdma_cuda_forward_status'], results['fdma_cuda_forward_times']),
+            'triton': ('fdma_triton_forward', results['fdma_triton_forward_status'], results['fdma_triton_forward_times']),
+            'flex': ('fdma_flex_forward', results['fdma_flex_forward_status'], results['fdma_flex_forward_times'])
         }
         
         # Calculate time strings and averages
@@ -875,19 +867,19 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
     }
     
     for results in all_results:
-        if results['flash_attention_status'] == 'success' and results['flash_attention_times']:
-            flash_avg = sum(results['flash_attention_times']) / len(results['flash_attention_times'])
-            
+        if results['sdpa_forward_status'] == 'success' and results['sdpa_forward_times']:
+            flash_avg = sum(results['sdpa_forward_times']) / len(results['sdpa_forward_times'])
+
             # Calculate speedups for each implementation
             for impl_key in implementation_speedups.keys():
                 # Map implementation keys to actual result keys
                 if impl_key == 'cuda':
-                    status_key = 'dynamic_mask_attention_status'
-                    times_key = 'dynamic_mask_attention_times'
+                    status_key = 'fdma_cuda_forward_status'
+                    times_key = 'fdma_cuda_forward_times'
                 else:
-                    status_key = f'dynamic_mask_attention_{impl_key}_status'
-                    times_key = f'dynamic_mask_attention_{impl_key}_times'
-                
+                    status_key = f'fdma_{impl_key}_forward_status'
+                    times_key = f'fdma_{impl_key}_forward_times'
+
                 if (status_key in results and results[status_key] == 'success' and 
                     times_key in results and results[times_key]):
                     

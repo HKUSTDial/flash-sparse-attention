@@ -76,7 +76,7 @@ def prepare_dynamic_mask(
     hidden_states: torch.Tensor,
     zoh_states: torch.Tensor,
     keep_window_size: int = 2048,
-    attention_mask: torch.Tensor | None = None,
+    cache_position: torch.Tensor = None,
 ):
     """
     Calculate dynamic attention mask to mask tokens for sparse attention.
@@ -87,28 +87,23 @@ def prepare_dynamic_mask(
         hidden_states: Input hidden states to determine dtype minimum value
         zoh_states: zoh_states of shape (batch_size, num_kv_heads, key_sequence_length)
         keep_window_size: Window size of tokens not dynamically masked
-        attention_mask: Optional attention mask of shape (batch_size, 1, query_len, key_len)
+        cache_position: Optional cache position for causal masking
     
     Returns:
         tuple: (attn_bias, attn_mask)
     """
-    min_dtype = torch.finfo(hidden_states.dtype).min
     dtype = hidden_states.dtype
+    min_dtype = torch.finfo(dtype).min
     attn_bias = zoh_states[:, :, None, :].expand(
         -1, -1, hidden_states.shape[2], -1
-    )  # [batch_size, num_kv_heads, query_len, key_len]
+    ).to(dtype)     # [batch_size, num_kv_heads, query_len, key_len]
     
-    if attention_mask is not None:
-        if attention_mask.dtype == torch.bool:
-            attention_mask = torch.where(
-                attention_mask, 
-                torch.tensor(0.0, device=attention_mask.device, dtype=dtype), 
-                min_dtype
-            )
+    if cache_position is not None:
         attn_bias = attn_bias.masked_fill(
-            attention_mask[:, :, :, : attn_bias.shape[-1]] != 0, min_dtype
+            torch.arange(attn_bias.shape[-1], device=attn_bias.device) > cache_position.reshape(-1, 1),
+            min_dtype
         )
-    
+
     if attn_bias.shape[-1] > keep_window_size:
         topk_values, topk_indices = torch.topk(
             attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
@@ -224,7 +219,7 @@ def dynamic_mask_attention_backward_cuda(
     dt_proj: torch.Tensor,
     A: torch.Tensor,
     scaling: float,
-    causal_mask: torch.Tensor,
+    cache_position: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
@@ -238,7 +233,7 @@ def dynamic_mask_attention_backward_cuda(
         dt_proj: [num_kv_heads, num_kv_heads * head_dim]
         A: [num_kv_heads]
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
+        cache_position: Cache position for causal masking
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
@@ -256,7 +251,7 @@ def dynamic_mask_attention_backward_cuda(
         query_states,
         zoh_states,
         keep_window_size,
-        causal_mask if is_causal else None
+        cache_position if is_causal else None
     )  # [batch_size, num_kv_heads, query_len, key_len]
     
     # Ensure correct data types and memory layout for CUDA function
@@ -309,7 +304,7 @@ def dynamic_mask_attention_backward_triton(
     dt_proj: torch.Tensor,
     A: torch.Tensor,
     scaling: float,
-    causal_mask: torch.Tensor,
+    cache_position: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
@@ -323,7 +318,7 @@ def dynamic_mask_attention_backward_triton(
         dt_proj: [num_kv_heads, num_kv_heads * head_dim]
         A: [num_kv_heads]
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
+        cache_position: Cache position for causal masking
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
@@ -346,7 +341,7 @@ def dynamic_mask_attention_backward_triton(
             query_states,
             zoh_states,
             keep_window_size,
-            causal_mask if is_causal else None
+            cache_position if is_causal else None
         )  # [batch_size, num_kv_heads, query_len, key_len]
         
         # Repeat KV for multi-head attention (GQA support)
@@ -402,7 +397,7 @@ def dynamic_mask_attention_backward_flex(
     dt_proj: torch.Tensor,
     A: torch.Tensor,
     scaling: float,
-    causal_mask: torch.Tensor,
+    cache_position: torch.Tensor,
     keep_window_size=2048,
     is_causal=True,
 ):
@@ -416,7 +411,7 @@ def dynamic_mask_attention_backward_flex(
         dt_proj: [num_kv_heads, num_kv_heads * head_dim]
         A: [num_kv_heads]
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
+        cache_position: Cache position for causal masking
         keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
@@ -439,7 +434,7 @@ def dynamic_mask_attention_backward_flex(
             query_states,
             zoh_states,
             keep_window_size,
-            causal_mask if is_causal else None
+            cache_position if is_causal else None
         )  # [batch_size, num_kv_heads, query_len, key_len]
         
         # Repeat KV for multi-head attention (GQA support)
@@ -550,17 +545,17 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
     results = {
         'config': config,
         'sdpa_backward_times': [],
-        'cuda_backward_times': [],
-        'triton_backward_times': [],
-        'flex_backward_times': [],
+        'fdma_cuda_backward_times': [],
+        'fdma_triton_backward_times': [],
+        'fdma_flex_backward_times': [],
         'sdpa_backward_memory': 0,
-        'cuda_backward_memory': 0,
-        'triton_backward_memory': 0,
-        'flex_backward_memory': 0,
+        'fdma_cuda_backward_memory': 0,
+        'fdma_triton_backward_memory': 0,
+        'fdma_flex_backward_memory': 0,
         'sdpa_backward_status': 'success',
-        'cuda_backward_status': 'success',
-        'triton_backward_status': 'success',
-        'flex_backward_status': 'success'
+        'fdma_cuda_backward_status': 'success',
+        'fdma_triton_backward_status': 'success',
+        'fdma_flex_backward_status': 'success'
     }
     
     # Determine which implementations to run
@@ -633,14 +628,14 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
             
             result = dynamic_mask_attention_backward_cuda(
                 q_clone, k_clone, v_clone, dt_clone, a_clone,
-                scaling, causal_mask, keep_window_size, is_causal
+                scaling, cache_position, keep_window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
-                results['cuda_backward_status'] = result[0]
+                results['fdma_cuda_backward_status'] = result[0]
                 break
             torch.cuda.synchronize()
         
-        if results['cuda_backward_status'] == 'success':
+        if results['fdma_cuda_backward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -655,21 +650,21 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
                 
                 result = dynamic_mask_attention_backward_cuda(
                     q_clone, k_clone, v_clone, dt_clone, a_clone,
-                    scaling, causal_mask, keep_window_size, is_causal
+                    scaling, cache_position, keep_window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
-                    results['cuda_backward_status'] = result[0]
+                    results['fdma_cuda_backward_status'] = result[0]
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['cuda_backward_times'].append(result[1])  # ms
+                results['fdma_cuda_backward_times'].append(result[1])  # ms
             
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['cuda_backward_memory'] = mem_after[0] - mem_before[0]
+            results['fdma_cuda_backward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['cuda_backward_status'] = 'N/A'
+        results['fdma_cuda_backward_status'] = 'N/A'
     
     # Benchmark Dynamic Mask Attention Triton Backward
     if run_triton:
@@ -687,14 +682,14 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
             
             result = dynamic_mask_attention_backward_triton(
                 q_clone, k_clone, v_clone, dt_clone, a_clone,
-                scaling, causal_mask, keep_window_size, is_causal
+                scaling, cache_position, keep_window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
-                results['triton_backward_status'] = result[0]
+                results['fdma_triton_backward_status'] = result[0]
                 break
             torch.cuda.synchronize()
-        
-        if results['triton_backward_status'] == 'success':
+
+        if results['fdma_triton_backward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -709,21 +704,21 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
                 
                 result = dynamic_mask_attention_backward_triton(
                     q_clone, k_clone, v_clone, dt_clone, a_clone,
-                    scaling, causal_mask, keep_window_size, is_causal
+                    scaling, cache_position, keep_window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
-                    results['triton_backward_status'] = result[0]
+                    results['fdma_triton_backward_status'] = result[0]
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['triton_backward_times'].append(result[1])  # ms
+                results['fdma_triton_backward_times'].append(result[1])  # ms
             
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['triton_backward_memory'] = mem_after[0] - mem_before[0]
+            results['fdma_triton_backward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['triton_backward_status'] = 'N/A'
+        results['fdma_triton_backward_status'] = 'N/A'
     
     # Benchmark Dynamic Mask Attention Flex Backward
     if run_flex:
@@ -741,14 +736,14 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
             
             result = dynamic_mask_attention_backward_flex(
                 q_clone, k_clone, v_clone, dt_clone, a_clone,
-                scaling, causal_mask, keep_window_size, is_causal
+                scaling, cache_position, keep_window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
-                results['flex_backward_status'] = result[0]
+                results['fdma_flex_backward_status'] = result[0]
                 break
             torch.cuda.synchronize()
         
-        if results['flex_backward_status'] == 'success':
+        if results['fdma_flex_backward_status'] == 'success':
             # Measure memory before benchmark
             mem_before = measure_memory_usage()
             
@@ -763,21 +758,21 @@ def benchmark_backward_attention_performance(config, test_type='all', num_runs=5
                 
                 result = dynamic_mask_attention_backward_flex(
                     q_clone, k_clone, v_clone, dt_clone, a_clone,
-                    scaling, causal_mask, keep_window_size, is_causal
+                    scaling, cache_position, keep_window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
-                    results['flex_backward_status'] = result[0]
+                    results['fdma_flex_backward_status'] = result[0]
                     break
                 
                 # Use the timing from the function instead of measuring here
-                results['flex_backward_times'].append(result[1])  # ms
+                results['fdma_flex_backward_times'].append(result[1])  # ms
             
             # Measure memory after
             mem_after = measure_memory_usage()
-            results['flex_backward_memory'] = mem_after[0] - mem_before[0]
+            results['fdma_flex_backward_memory'] = mem_after[0] - mem_before[0]
     else:
-        results['flex_backward_status'] = 'N/A'
+        results['fdma_flex_backward_status'] = 'N/A'
     
     return results
 
@@ -868,25 +863,25 @@ def run_backward_performance_benchmark(test_type='all', num_runs=3, warmup_runs=
             
             # Calculate averages and format results
             sdpa_avg = f"{sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times']):.2f}ms" if results['sdpa_backward_times'] else results['sdpa_backward_status']
-            cuda_avg = f"{sum(results['cuda_backward_times'])/len(results['cuda_backward_times']):.2f}ms" if results['cuda_backward_times'] else results['cuda_backward_status']
-            triton_avg = f"{sum(results['triton_backward_times'])/len(results['triton_backward_times']):.2f}ms" if results['triton_backward_times'] else results['triton_backward_status']
-            flex_avg = f"{sum(results['flex_backward_times'])/len(results['flex_backward_times']):.2f}ms" if results['flex_backward_times'] else results['flex_backward_status']
-            
+            cuda_avg = f"{sum(results['fdma_cuda_backward_times'])/len(results['fdma_cuda_backward_times']):.2f}ms" if results['fdma_cuda_backward_times'] else results['fdma_cuda_backward_status']
+            triton_avg = f"{sum(results['fdma_triton_backward_times'])/len(results['fdma_triton_backward_times']):.2f}ms" if results['fdma_triton_backward_times'] else results['fdma_triton_backward_status']
+            flex_avg = f"{sum(results['fdma_flex_backward_times'])/len(results['fdma_flex_backward_times']):.2f}ms" if results['fdma_flex_backward_times'] else results['fdma_flex_backward_status']
+
             # Calculate speedup (SDPA vs others)
             speedup_info = []
-            if results['sdpa_backward_times'] and results['cuda_backward_times']:
+            if results['sdpa_backward_times'] and results['fdma_cuda_backward_times']:
                 sdpa_time = sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times'])
-                cuda_time = sum(results['cuda_backward_times'])/len(results['cuda_backward_times'])
+                cuda_time = sum(results['fdma_cuda_backward_times'])/len(results['fdma_cuda_backward_times'])
                 speedup_info.append(f"CUDA: {sdpa_time/cuda_time:.1f}x")
             
-            if results['sdpa_backward_times'] and results['triton_backward_times']:
+            if results['sdpa_backward_times'] and results['fdma_triton_backward_times']:
                 sdpa_time = sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times'])
-                triton_time = sum(results['triton_backward_times'])/len(results['triton_backward_times'])
+                triton_time = sum(results['fdma_triton_backward_times'])/len(results['fdma_triton_backward_times'])
                 speedup_info.append(f"Tri: {sdpa_time/triton_time:.1f}x")
-                
-            if results['sdpa_backward_times'] and results['flex_backward_times']:
+
+            if results['sdpa_backward_times'] and results['fdma_flex_backward_times']:
                 sdpa_time = sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times'])
-                flex_time = sum(results['flex_backward_times'])/len(results['flex_backward_times'])
+                flex_time = sum(results['fdma_flex_backward_times'])/len(results['fdma_flex_backward_times'])
                 speedup_info.append(f"Flex: {sdpa_time/flex_time:.1f}x")
             
             speedup_str = ", ".join(speedup_info) if speedup_info else "N/A"
@@ -907,19 +902,19 @@ def run_backward_performance_benchmark(test_type='all', num_runs=3, warmup_runs=
     }
     
     for results in all_results:
-        if results['sdpa_backward_times'] and results['cuda_backward_times']:
+        if results['sdpa_backward_times'] and results['fdma_cuda_backward_times']:
             sdpa_time = sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times'])
-            cuda_time = sum(results['cuda_backward_times'])/len(results['cuda_backward_times'])
+            cuda_time = sum(results['fdma_cuda_backward_times'])/len(results['fdma_cuda_backward_times'])
             implementation_speedups['cuda'].append(sdpa_time/cuda_time)
-            
-        if results['sdpa_backward_times'] and results['triton_backward_times']:
+
+        if results['sdpa_backward_times'] and results['fdma_triton_backward_times']:
             sdpa_time = sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times'])
-            triton_time = sum(results['triton_backward_times'])/len(results['triton_backward_times'])
+            triton_time = sum(results['fdma_triton_backward_times'])/len(results['fdma_triton_backward_times'])
             implementation_speedups['triton'].append(sdpa_time/triton_time)
-            
-        if results['sdpa_backward_times'] and results['flex_backward_times']:
+
+        if results['sdpa_backward_times'] and results['fdma_flex_backward_times']:
             sdpa_time = sum(results['sdpa_backward_times'])/len(results['sdpa_backward_times'])
-            flex_time = sum(results['flex_backward_times'])/len(results['flex_backward_times'])
+            flex_time = sum(results['fdma_flex_backward_times'])/len(results['fdma_flex_backward_times'])
             implementation_speedups['flex'].append(sdpa_time/flex_time)
     
     print(f"\n🏆 Backward Pass Summary:")
