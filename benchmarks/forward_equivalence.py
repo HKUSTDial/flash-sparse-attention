@@ -561,22 +561,22 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 4096, 4096, 96, True),
         (1, 2, 1, 4096, 4096, 96, False),
 
-        # Not support head_dim >= 128 in sm89 yet
-        # Because fwd uses splitkv branch by default, and shared memory is not enough for sm89
         # Head dim 128
-        # (1, 2, 1, 128, 128, 128, True),
-        # (1, 2, 1, 128, 128, 128, False),
-        # (1, 2, 1, 256, 256, 128, True),
-        # (1, 2, 1, 256, 256, 128, False),
-        # (1, 2, 1, 512, 512, 128, True),
-        # (1, 2, 1, 512, 512, 128, False),
-        # (1, 2, 1, 1024, 1024, 128, True),
-        # (1, 2, 1, 1024, 1024, 128, False),
-        # (1, 2, 1, 2048, 2048, 128, True),
-        # (1, 2, 1, 2048, 2048, 128, False),
-        # (1, 2, 1, 4096, 4096, 128, True),
-        # (1, 2, 1, 4096, 4096, 128, False),
+        (1, 2, 1, 128, 128, 128, True),
+        (1, 2, 1, 128, 128, 128, False),
+        (1, 2, 1, 256, 256, 128, True),
+        (1, 2, 1, 256, 256, 128, False),
+        (1, 2, 1, 512, 512, 128, True),
+        (1, 2, 1, 512, 512, 128, False),
+        (1, 2, 1, 1024, 1024, 128, True),
+        (1, 2, 1, 1024, 1024, 128, False),
+        (1, 2, 1, 2048, 2048, 128, True),
+        (1, 2, 1, 2048, 2048, 128, False),
+        (1, 2, 1, 4096, 4096, 128, True),
+        (1, 2, 1, 4096, 4096, 128, False),
 
+        # Not support head_dim = 256 in sm89 yet
+        # Because fwd uses splitkv branch by default, and shared memory is not enough for sm89
         # Head dim 256
         # (1, 2, 1, 128, 128, 256, True),
         # (1, 2, 1, 128, 128, 256, False),
