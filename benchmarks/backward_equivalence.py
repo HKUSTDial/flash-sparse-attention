@@ -598,23 +598,22 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 4096, 4096, 96, True),
         (1, 2, 1, 4096, 4096, 96, False),
 
-        # Not support head_dim => 128 in sm89 yet
-        # Because fwd uses splitkv branch, this branch does not support head_dim>=128 for now
         # Head dim 128
-        # (1, 2, 1, 128, 128, 128, True),
-        # (1, 2, 1, 128, 128, 128, True),
-        # (1, 2, 1, 256, 256, 128, True),
-        # (1, 2, 1, 256, 256, 128, False),
-        # (1, 2, 1, 512, 512, 128, True),
-        # (1, 2, 1, 512, 512, 128, False),
-        # (1, 2, 1, 1024, 1024, 128, True),
-        # (1, 2, 1, 1024, 1024, 128, False),
-        # (1, 2, 1, 2048, 2048, 128, True),
-        # (1, 2, 1, 2048, 2048, 128, False),
-        # (1, 2, 1, 4096, 4096, 128, True),
-        # (1, 2, 1, 4096, 4096, 128, False),
+        (1, 2, 1, 128, 128, 128, True),
+        (1, 2, 1, 128, 128, 128, False),
+        (1, 2, 1, 256, 256, 128, True),
+        (1, 2, 1, 256, 256, 128, False),
+        (1, 2, 1, 512, 512, 128, True),
+        (1, 2, 1, 512, 512, 128, False),
+        (1, 2, 1, 1024, 1024, 128, True),
+        (1, 2, 1, 1024, 1024, 128, False),
+        (1, 2, 1, 2048, 2048, 128, True),
+        (1, 2, 1, 2048, 2048, 128, False),
+        (1, 2, 1, 4096, 4096, 128, True),
+        (1, 2, 1, 4096, 4096, 128, False),
 
         # Head dim 256
+        # Because fwd uses splitkv branch, this branch does not support head_dim=256 for now
         # For head_dim=256, besides the reason of splitkv branch, bwd itself does not support it, not enough shared memory
         # (1, 2, 1, 128, 128, 256, True),
         # (1, 2, 1, 128, 128, 256, False),
