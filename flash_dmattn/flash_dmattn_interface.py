@@ -396,455 +396,6 @@ def _flash_dmattn_varlen_backward_fake(
 _wrapped_flash_dmattn_varlen_backward = _flash_dmattn_varlen_backward
 
 
-class FlashDMAttnQKVPackedFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx: torch.autograd.function.FunctionCtx,
-        qkv: torch.Tensor,
-        mask: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
-        softmax_scale: Optional[float],
-        is_causal: Optional[bool],
-        softcap: Optional[float],
-        deterministic: Optional[bool],
-        return_softmax: Optional[bool],
-        is_grad_enabled: bool = True,
-    ):
-        # qkv is expected to be of shape (batch_size, seqlen, 3, num_heads, head_size)
-        batch_size, seqlen, _, num_heads, _ = qkv.shape
-        is_grad = is_grad_enabled and qkv.requires_grad
-        if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
-        if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen, seqlen), dtype=qkv.dtype, device=qkv.device)
-        if is_causal is None:
-            is_causal = False
-        if softcap is None:
-            softcap = 0.0
-        if softmax_scale is None:
-            softmax_scale = qkv.shape[-1] ** (-0.5)
-        if deterministic is None:
-            deterministic = True
-        if return_softmax is None:
-            return_softmax = False
-
-        q, k, v = qkv[:, :, 0].detach(), qkv[:, :, 1].detach(), qkv[:, :, 2].detach()
-        head_size_og = q.size(3)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-
-        out_padded, softmax_lse, S_dmask =  _wrapped_flash_dmattn_forward(
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            softmax_scale,
-            is_causal=is_causal,
-            softcap=softcap,
-            return_softmax=return_softmax,
-        )
-
-        if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
-            ctx.softmax_scale = softmax_scale
-            ctx.is_causal = is_causal
-            ctx.softcap = softcap
-            ctx.deterministic = deterministic
-
-        out = out_padded[..., :head_size_og]
-        return out if not return_softmax else (out, softmax_lse, S_dmask)
-
-    @staticmethod
-    def backward(
-        ctx: torch.autograd.function.FunctionCtx,
-        dout: torch.Tensor,
-        *args: Any,
-    ):
-        q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
-        qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
-
-        dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
-        dbias = torch.empty_like(bias, dtype=bias.dtype, device=bias.device)
-
-        head_size_og = dout.size(3)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
-
-        _wrapped_flash_dmattn_backward(
-            dout_padded,
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            out,
-            softmax_lse,
-            dqkv[:, :, 0],
-            dqkv[:, :, 1],
-            dqkv[:, :, 2],
-            dbias,
-            ctx.softmax_scale,
-            ctx.is_causal,
-            ctx.softcap,
-            ctx.deterministic,
-        )
-
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
-        return dqkv, None, dbias, None, None, None, None, None, None
-
-
-class FlashDMAttnVarlenQKVPackedFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx: torch.autograd.function.FunctionCtx,
-        qkv: torch.Tensor,
-        mask: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-        softmax_scale: Optional[float],
-        is_causal: Optional[bool],
-        softcap: Optional[float],
-        deterministic: Optional[bool],
-        return_softmax: Optional[bool],
-        is_grad_enabled: bool = True,
-    ):
-        # qkv is expected to be of shape (total 3, num_heads, head_size)
-        batch_size = cu_seqlens.numel() - 1
-        total_tokens, num_heads, _ = qkv.shape
-        is_grad = is_grad_enabled and qkv.requires_grad
-        if mask is None:
-            mask = torch.ones((total_tokens, num_heads, max_seqlen), dtype=qkv.dtype, device=qkv.device)
-        if bias is None:
-            bias = torch.zeros((total_tokens, num_heads, max_seqlen), dtype=qkv.dtype, device=qkv.device)
-        if softmax_scale is None:
-            softmax_scale = qkv.shape[-1] ** (-0.5)
-        if is_causal is None:
-            is_causal = False
-        if softcap is None:
-            softcap = 0.0
-        if deterministic is None:
-            deterministic = True
-        if return_softmax is None:
-            return_softmax = False
-        
-        q, k, v = qkv[:, 0].detach(), qkv[:, 1].detach(), qkv[:, 2].detach()
-        head_size_og = q.size(2)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-
-        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            cu_seqlens,
-            cu_seqlens,
-            max_seqlen,
-            max_seqlen,
-            softmax_scale,
-            is_causal=is_causal,
-            softcap=softcap,
-            return_softmax=return_softmax,
-            block_table=None,
-        )
-
-        if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens)
-            ctx.max_seqlen = max_seqlen
-            ctx.softmax_scale = softmax_scale
-            ctx.is_causal = is_causal
-            ctx.softcap = softcap
-            ctx.deterministic = deterministic
-
-        out = out_padded[..., :head_size_og]
-        return out if not return_softmax else (out, softmax_lse, S_dmask)
-
-    @staticmethod
-    def backward(
-        ctx: torch.autograd.function.FunctionCtx,
-        dout: torch.Tensor,
-        *args: Any,
-    ):
-        q, k, v, mask, bias, out, softmax_lse, cu_seqlens = ctx.saved_tensors
-        qkv_shape = q.shape[:-2] + (3, *q.shape[-2:])
-
-        dqkv = torch.empty(qkv_shape, dtype=q.dtype, device=q.device)
-        dbias = torch.empty_like(bias, dtype=bias.dtype, device=bias.device)
-
-        head_size_og = dout.size(2)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
-
-        _wrapped_flash_dmattn_varlen_backward(
-            dout_padded,
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            out,
-            softmax_lse,
-            dqkv[:, 0],
-            dqkv[:, 1],
-            dqkv[:, 2],
-            dbias,
-            cu_seqlens,
-            cu_seqlens,
-            ctx.max_seqlen,
-            ctx.max_seqlen,
-            ctx.softmax_scale,
-            ctx.is_causal,
-            ctx.softcap,
-            ctx.deterministic,
-        )
-
-        dqkv = dqkv[..., : dout.shape[-1]]  # We could have padded the head dimension
-        return dqkv, None, dbias, None, None, None, None, None, None, None, None
-
-
-class FlashDMAttnKVPackedFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx: torch.autograd.function.FunctionCtx,
-        q: torch.Tensor,
-        kv: torch.Tensor,
-        mask: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
-        softmax_scale: Optional[float],
-        is_causal: Optional[bool],
-        softcap: Optional[float],
-        deterministic: Optional[bool],
-        return_softmax: Optional[bool],
-        is_grad_enabled: bool = True,
-    ):
-        # q is expected to be of shape (batch_size, seqlen_q, num_heads, head_size)
-        # kv is expected to be of shape (batch_size, seqlen_k, 2, num_heads, head_size)
-        batch_size, seqlen_q, num_heads, _ = q.shape
-        seqlen_k = kv.shape[1]
-        is_grad = is_grad_enabled and any(
-            x.requires_grad for x in [q, kv]
-        )
-        if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
-        if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
-        if softmax_scale is None:
-            softmax_scale = q.shape[-1] ** (-0.5)
-        if is_causal is None:
-            is_causal = False
-        if softcap is None:
-            softcap = 0.0
-        if deterministic is None:
-            deterministic = True
-        if return_softmax is None:
-            return_softmax = False
-
-        k, v = kv[:, :, 0].detach(), kv[:, :, 1].detach()
-        head_size_og = q.size(3)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-
-        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            softmax_scale,
-            is_causal=is_causal,
-            softcap=softcap,
-            return_softmax=return_softmax,
-        )
-
-        if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
-            ctx.softmax_scale = softmax_scale
-            ctx.is_causal = is_causal
-            ctx.softcap = softcap
-            ctx.deterministic = deterministic
-
-        out = out_padded[..., :head_size_og]
-        return out if not return_softmax else (out, softmax_lse, S_dmask)
-
-    @staticmethod
-    def backward(
-        ctx: torch.autograd.function.FunctionCtx,
-        dout: torch.Tensor,
-        *args: Any
-    ):
-        q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
-        kv_shape = k.shape[:-2] + (2, *k.shape[-2:])
-
-        dq = torch.empty_like(q)
-        dkv = torch.empty(kv_shape, dtype=k.dtype, device=k.device)
-        dbias = torch.empty_like(bias, dtype=bias.dtype, device=bias.device)
-
-        head_size_og = dout.size(3)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
-
-        _wrapped_flash_dmattn_backward(
-            dout_padded,
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            out,
-            softmax_lse,
-            dq,
-            dkv[:, :, 0],
-            dkv[:, :, 1],
-            dbias,
-            ctx.softmax_scale,
-            ctx.is_causal,
-            ctx.softcap,
-            ctx.deterministic,
-        )
-
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dkv = dkv[..., : dout.shape[-1]]
-        return dq, dkv, None, dbias, None, None, None, None, None, None
-
-
-class FlashDMAttnVarlenKVPackedFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx: torch.autograd.function.FunctionCtx,
-        q: torch.Tensor,
-        kv: torch.Tensor,
-        mask: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-        max_seqlen_q: int,
-        max_seqlen_k: int,
-        softmax_scale: Optional[float],
-        is_causal: Optional[bool],
-        softcap: Optional[float],
-        deterministic: Optional[bool],
-        return_softmax: Optional[bool],
-        is_grad_enabled: bool = True,
-    ):
-        # q is expected to be of shape (total, num_heads, head_size)
-        # kv is expected to be of shape (total, 2, num_heads, head_size)
-        batch_size = cu_seqlens_q.numel() - 1
-        total_q, num_heads, _ = q.shape
-        _, _, num_heads_k, _ = kv.shape
-        is_grad = is_grad_enabled and any(
-            x.requires_grad for x in [q, kv]
-        )
-        if mask is None:
-            mask = torch.ones((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
-        if bias is None:
-            bias = torch.zeros((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
-        if softmax_scale is None:
-            softmax_scale = q.shape[-1] ** (-0.5)
-        if is_causal is None:
-            is_causal = False
-        if softcap is None:
-            softcap = 0.0
-        if deterministic is None:
-            deterministic = True
-        if return_softmax is None:
-            return_softmax = False
-
-        k, v = kv[:, 0].detach(), kv[:, 1].detach()
-        head_size_og = q.size(2)
-        if head_size_og % 8 != 0:
-            q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
-            k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
-            v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-
-        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            max_seqlen_q,
-            max_seqlen_k,
-            softmax_scale,
-            is_causal=is_causal,
-            softcap=softcap,
-            return_softmax=return_softmax,
-            block_table=None,
-        )
-
-        if is_grad:
-            ctx.save_for_backward(
-                q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
-            )
-            ctx.max_seqlen_q = max_seqlen_q
-            ctx.max_seqlen_k = max_seqlen_k
-            ctx.softmax_scale = softmax_scale
-            ctx.is_causal = is_causal
-            ctx.softcap = softcap
-            ctx.deterministic = deterministic
-
-        out = out_padded[..., :head_size_og]
-        return out if not return_softmax else (out, softmax_lse, S_dmask)
-
-    @staticmethod
-    def backward(
-        ctx: torch.autograd.function.FunctionCtx,
-        dout: torch.Tensor,
-        *args: Any,
-    ):
-        q, k, v, mask, bias, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
-        kv_shape = k.shape[:-2] + (2, *k.shape[-2:])
-
-        dq = torch.empty_like(q)
-        dkv = torch.empty(kv_shape, dtype=k.dtype, device=k.device)
-        dbias = torch.empty_like(bias, dtype=bias.dtype, device=bias.device)
-
-        head_size_og = dout.size(2)
-        dout_padded = dout
-        if head_size_og % 8 != 0:
-            dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
-    
-        _wrapped_flash_dmattn_varlen_backward(
-            dout_padded,
-            q,
-            k,
-            v,
-            mask,
-            bias,
-            out,
-            softmax_lse,
-            dq,
-            dkv[:, 0],
-            dkv[:, 1],
-            dbias,
-            cu_seqlens_q,
-            cu_seqlens_k,
-            ctx.max_seqlen_q,
-            ctx.max_seqlen_k,
-            ctx.softmax_scale,
-            ctx.is_causal,
-            ctx.softcap,
-            ctx.deterministic,
-        )
-
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
-        dkv = dkv[..., : dout.shape[-1]]
-        return dq, dkv, None, dbias, None, None, None, None, None, None, None, None, None, None
-
-
 class FlashDMAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -862,15 +413,15 @@ class FlashDMAttnFunc(torch.autograd.Function):
         is_grad_enabled: bool = True,
     ):
         # q, k, v are expected to be of shape (batch_size, seqlen, num_heads, head_size)
-        batch_size, seqlen_q, num_heads, _ = q.shape
-        seqlen_k = k.shape[1]
+        batch_size, seqlen_k, num_heads_k, _ = k.shape
+        seqlen_q = q.shape[1]
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
         )
         if mask is None:
-            mask = torch.ones((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
+            mask = torch.ones((batch_size, num_heads_k, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if bias is None:
-            bias = torch.zeros((batch_size, num_heads, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
+            bias = torch.zeros((batch_size, num_heads_k, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -888,6 +439,13 @@ class FlashDMAttnFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
+        if seqlen_k % 128 != 0:
+            k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
+            v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
+            mask = torch.nn.functional.pad(mask, [0, 128 - seqlen_k % 128], value=0.0)
+            bias = torch.nn.functional.pad(bias, [0, 128 - seqlen_k % 128], value=torch.finfo(bias.dtype).min)
+        
+
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
             k,
@@ -902,6 +460,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
 
         if is_grad:
             ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
+            ctx.seqlen_k = seqlen_k
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
@@ -946,6 +505,11 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
+
+        if ctx.seqlen_k % 128 != 0:
+            dk = dk[:, : ctx.seqlen_k, :, :]
+            dv = dv[:, : ctx.seqlen_k, :, :]
+            dbias = dbias[..., : ctx.seqlen_k]
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
 
@@ -970,10 +534,11 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         block_table: Optional[torch.Tensor] = None,
         is_grad_enabled: bool = True,
     ):
+        dtype = q.dtype
+        min_dtype = torch.finfo(dtype).min
         # q, k, v are expected to be of shape (total, num_heads, head_size)
-        batch_size = cu_seqlens_q.numel() - 1
-        total_q, num_heads, _ = q.shape
-        _, num_heads_k, _ = k.shape
+        total_q = q.shape[0]
+        num_heads_k = k.shape[1]
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
         )
@@ -997,6 +562,20 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        # FDMA requires the max sequence length to be a multiple of 128
+        max_seqlen_q_og = max_seqlen_q
+        max_seqlen_k_og = max_seqlen_k
+        aligned_max_seqlen_q = ((max_seqlen_q + 128 - 1) // 128) * 128
+        aligned_max_seqlen_k = ((max_seqlen_k + 128 - 1) // 128) * 128
+        need_pad_q = aligned_max_seqlen_q != max_seqlen_q
+        need_pad_k = aligned_max_seqlen_k != max_seqlen_k
+        if need_pad_k:
+            pad_cols = aligned_max_seqlen_k - max_seqlen_k
+            mask = torch.nn.functional.pad(mask, [0, pad_cols], value=0.0)
+            bias = torch.nn.functional.pad(bias, [0, pad_cols], value=min_dtype)
+            max_seqlen_k = aligned_max_seqlen_k
+        if need_pad_q:
+            max_seqlen_q = aligned_max_seqlen_q
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
             q,
@@ -1019,6 +598,8 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             ctx.save_for_backward(
                 q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
             )
+            ctx.seqlen_q_og = max_seqlen_q_og
+            ctx.seqlen_k_og = max_seqlen_k_og
             ctx.max_seqlen_q = max_seqlen_q
             ctx.max_seqlen_k = max_seqlen_k
             ctx.softmax_scale = softmax_scale
@@ -1027,7 +608,11 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             ctx.deterministic = deterministic
 
         out = out_padded[..., :head_size_og]
-        return out if not return_softmax else (out, softmax_lse, S_dmask)
+        if return_softmax:
+            if max_seqlen_k != max_seqlen_k_og:
+                S_dmask = S_dmask[..., :max_seqlen_k_og]
+            return out, softmax_lse, S_dmask
+        return out
 
     @staticmethod
     def backward(
@@ -1069,130 +654,11 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
+
+        if ctx.seqlen_k_og != ctx.max_seqlen_k:
+            dbias = dbias[:, :, :ctx.seqlen_k_og]
+
         return dq, dk, dv, None, dbias, None, None, None, None, None, None, None, None, None, None, None
-
-
-def flash_dmattn_qkvpacked_func(
-    qkv: torch.Tensor,
-    attn_mask: Optional[torch.Tensor] = None,
-    attn_bias: Optional[torch.Tensor] = None,
-    is_causal: Optional[bool] = None,
-    scale: Optional[float] = None,
-    softcap: Optional[float] = None,
-    deterministic: Optional[bool] = None,
-    return_attn_probs: Optional[bool] = None,
-):
-    """
-    If Q, K, V are already stacked into 1 tensor, this function will be faster than
-    calling flash_dmattn_func on Q, K, V since the backward pass avoids explicit concatenation
-    of the gradients of Q, K, V.
-    For multi-query and grouped-query attention (MQA/GQA), please see
-    flash_dmattn_kvpacked_func and flash_dmattn_func.
-
-    Arguments:
-        qkv: (batch_size, seqlen, 3, nheads, headdim)
-        attn_mask: (batch_size, nheads, seqlen, seqlen). Attention mask to apply to the attention scores.
-            If None, no mask is applied.
-        attn_bias: (batch_size, nheads, seqlen, seqlen). Attention Bias to add to the attention scores.
-            If None, no bias is applied.
-        is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
-        scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
-        softcap: float. Anything > 0 activates softcapping attention.
-        deterministic: bool. Whether to use the deterministic implementation of the backward pass,
-            which is slightly slower and uses more memory. The forward pass is always deterministic.
-        return_attn_probs: bool. Whether to return the attention probabilities. This option is for
-           testing only. The returned probabilities are not guaranteed to be correct
-           (they might not have the right scaling).
-    Return:
-        out: (batch_size, seqlen, nheads, headdim).
-        softmax_lse [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
-        S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling).
-    """
-    return FlashDMAttnQKVPackedFunc.apply(
-        qkv,
-        attn_mask,
-        attn_bias,
-        scale,
-        is_causal,
-        softcap,
-        deterministic,
-        return_attn_probs,
-        torch.is_grad_enabled(),
-    )
-
-
-def flash_dmattn_kvpacked_func(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    attn_mask: Optional[torch.Tensor] = None,
-    attn_bias: Optional[torch.Tensor] = None,
-    scale: Optional[float] = None,
-    is_causal: Optional[bool] = None,
-    softcap: Optional[float] = None,
-    deterministic: Optional[bool] = None,
-    return_attn_probs: Optional[bool] = None,
-):
-    """
-    If K, V are already stacked into 1 tensor, this function will be faster than
-    calling flash_dmattn_func on Q, K, V since the backward pass avoids explicit concatenation
-    of the gradients of K, V.
-    Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
-    than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
-    For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
-    0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
-
-    If is_causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
-    For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:
-        1 1 1 1 0
-        1 1 1 1 1
-    If seqlen_q = 5 and seqlen_k = 2, the causal mask is:
-        0 0
-        0 0
-        0 0
-        1 0
-        1 1
-    If the row of the mask is all zero, the output will be zero.
-
-    Arguments:
-        q: (batch_size, seqlen, nheads, headdim)
-        kv: (batch_size, seqlen, 2, nheads_k, headdim)
-        attn_mask: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention mask to apply to the attention scores.
-            If None, no mask is applied.
-        attn_bias: (batch_size, nheads_k, seqlen_q, seqlen_k). Attention Bias to add to the attention scores.
-            If None, no bias is applied.
-        is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
-        scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
-        softcap: float. Anything > 0 activates softcapping attention.
-        deterministic: bool. Whether to use the deterministic implementation of the backward pass,
-            which is slightly slower and uses more memory. The forward pass is always deterministic.
-        return_attn_probs: bool. Whether to return the attention probabilities. This option is for
-           testing only. The returned probabilities are not guaranteed to be correct
-           (they might not have the right scaling).
-    Return:
-        out: (batch_size, seqlen, nheads, headdim).
-        softmax_lse [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
-        S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling).
-    """
-    return FlashDMAttnKVPackedFunc.apply(
-        q,
-        kv,
-        attn_mask,
-        attn_bias,
-        scale,
-        is_causal,
-        softcap,
-        deterministic,
-        return_attn_probs,
-        torch.is_grad_enabled(),
-    )
 
 
 def flash_dmattn_func(
@@ -1255,150 +721,6 @@ def flash_dmattn_func(
         value,
         attn_mask,
         attn_bias,
-        scale,
-        is_causal,
-        softcap,
-        deterministic,
-        return_attn_probs,
-        torch.is_grad_enabled(),
-    )
-
-
-def flash_dmattn_varlen_qkvpacked_func(
-    qkv: torch.Tensor,
-    attn_mask: Optional[torch.Tensor] = None,
-    attn_bias: Optional[torch.Tensor] = None,
-    cu_seqlens: torch.Tensor = None,
-    max_seqlen: int = None,
-    scale: Optional[float] = None,
-    is_causal: Optional[bool] = None,
-    softcap: Optional[float] = None,
-    deterministic: Optional[bool] = None,
-    return_attn_probs: Optional[bool] = None,
-):
-    """
-    If Q, K, V are already stacked into 1 tensor, this function will be faster than
-    calling flash_dmattn_varlen_func on Q, K, V since the backward pass avoids explicit concatenation
-    of the gradients of Q, K, V.
-    For multi-query and grouped-query attention (MQA/GQA), please see
-    flash_dmattn_varlen_kvpacked_func and flash_dmattn_varlen_func.
-
-    Arguments:
-        qkv: (total, 3, nheads, headdim), where total = total number of tokens in the batch.
-        attn_mask: (total, nheads, max_seqlen). Attention mask to apply to the attention scores.
-            If None, no mask is applied.
-        attn_bias: (total, nheads, max_seqlen). Attention Bias to add to the attention scores.
-            If None, no bias is applied.
-        cu_seqlens: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
-           of the sequences in the batch, used to index into qkv.
-        max_seqlen: int. Maximum sequence length in the batch.
-        is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
-        scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
-        softcap: float. Anything > 0 activates softcapping attention.
-        deterministic: bool. Whether to use the deterministic implementation of the backward pass,
-            which is slightly slower and uses more memory. The forward pass is always deterministic.
-        return_attn_probs: bool. Whether to return the attention probabilities. This option is for
-           testing only. The returned probabilities are not guaranteed to be correct
-           (they might not have the right scaling).
-    Return:
-        out: (total, nheads, headdim).
-        softmax_lse [optional, if return_attn_probs=True]: (nheads, total_q_seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
-        S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling).
-    """
-    return FlashDMAttnVarlenQKVPackedFunc.apply(
-        qkv,
-        attn_mask,
-        attn_bias,
-        cu_seqlens,
-        max_seqlen,
-        scale,
-        is_causal,
-        softcap,
-        deterministic,
-        return_attn_probs,
-        torch.is_grad_enabled(),
-    )
-
-
-def flash_dmattn_varlen_kvpacked_func(
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    attn_mask: Optional[torch.Tensor] = None,
-    attn_bias: Optional[torch.Tensor] = None,
-    cu_seqlens_q: torch.Tensor = None,
-    cu_seqlens_k: torch.Tensor = None,
-    max_seqlen_q: int = None,
-    max_seqlen_k: int = None,
-    scale: Optional[float] = None,
-    is_causal: Optional[bool] = None,
-    softcap: Optional[float] = None,
-    deterministic: Optional[bool] = None,
-    return_attn_probs: Optional[bool] = None,
-):
-    """
-    If K, V are already stacked into 1 tensor, this function will be faster than
-    calling flash_dmattn_func on Q, K, V since the backward pass avoids explicit concatenation
-    of the gradients of K, V.
-    Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
-    than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
-    For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
-    0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
-
-    If is_causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
-    For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:
-        1 1 1 1 0
-        1 1 1 1 1
-    If seqlen_q = 5 and seqlen_k = 2, the causal mask is:
-        0 0
-        0 0
-        0 0
-        1 0
-        1 1
-    If the row of the mask is all zero, the output will be zero.
-
-    Arguments:
-        q: (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
-        kv: (total_k, 2, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        attn_mask: (total_q, nheads_k, max_seqlen_k). Attention mask to apply to the attention scores.
-            If None, no mask is applied.
-        attn_bias: (total_q, nheads_k, max_seqlen_k). Attention Bias to add to the attention scores.
-            If None, no bias is applied.
-        cu_seqlens_q: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
-           of the sequences in the batch, used to index into q.
-        cu_seqlens_k: (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
-           of the sequences in the batch, used to index into kv.
-        max_seqlen_q: int. Maximum query sequence length in the batch.
-        max_seqlen_k: int. Maximum key sequence length in the batch.
-        is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
-        scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
-        softcap: float. Anything > 0 activates softcapping attention.
-        deterministic: bool. Whether to use the deterministic implementation of the backward pass,
-            which is slightly slower and uses more memory. The forward pass is always deterministic.
-        return_attn_probs: bool. Whether to return the attention probabilities. This option is for
-           testing only. The returned probabilities are not guaranteed to be correct
-           (they might not have the right scaling).
-    Return:
-        out: (total, nheads, headdim).
-        softmax_lse [optional, if return_attn_probs=True]: (nheads, total_q_seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
-        S_dmask [optional, if return_attn_probs=True]: (batch_size, nheads, seqlen, seqlen).
-            The output of softmax (possibly with different scaling).
-    """
-    return FlashDMAttnVarlenKVPackedFunc.apply(
-        q,
-        kv,
-        attn_mask,
-        attn_bias,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        max_seqlen_q,
-        max_seqlen_k,
         scale,
         is_causal,
         softcap,
