@@ -155,7 +155,7 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 template<typename T, int Headdim, bool Is_causal>
 void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int kBlockM = 64;  // Fixed for all head dimensions
-    constexpr static int kBlockN = Headdim <= 64 ? 64 : (Headdim <= 128 ? 64 : 32);
+    constexpr static int kBlockN = Headdim <= 32 ? 128 : (Headdim <= 128 ? 128 : 64);
     run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, false, false, T>, Is_causal>(params, stream);
 }
 
@@ -164,11 +164,10 @@ void run_mha_fwd_hdim32(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 32;
     int device;
     cudaGetDevice(&device);
-    int max_smem_per_sm, max_smem_per_block;
+    int max_smem_per_block;
     cudaError status_ = cudaDeviceGetAttribute(
-        &max_smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device);
-    status_ = cudaDeviceGetAttribute(
-        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
@@ -184,11 +183,10 @@ void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 64;
     int device;
     cudaGetDevice(&device);
-    int max_smem_per_sm, max_smem_per_block;
+    int max_smem_per_block;
     cudaError status_ = cudaDeviceGetAttribute(
-        &max_smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device);
-    status_ = cudaDeviceGetAttribute(
-        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
@@ -204,11 +202,10 @@ void run_mha_fwd_hdim96(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 96;
     int device;
     cudaGetDevice(&device);
-    int max_smem_per_sm, max_smem_per_block;
+    int max_smem_per_block;
     cudaError status_ = cudaDeviceGetAttribute(
-        &max_smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device);
-    status_ = cudaDeviceGetAttribute(
-        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
@@ -224,11 +221,10 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 128;
     int device;
     cudaGetDevice(&device);
-    int max_smem_per_sm, max_smem_per_block;
+    int max_smem_per_block;
     cudaError status_ = cudaDeviceGetAttribute(
-        &max_smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device);
-    status_ = cudaDeviceGetAttribute(
-        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
@@ -252,18 +248,17 @@ void run_mha_fwd_hdim256(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 256;
     int device;
     cudaGetDevice(&device);
-    int max_smem_per_sm, max_smem_per_block;
+    int max_smem_per_block;
     cudaError status_ = cudaDeviceGetAttribute(
-        &max_smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device);
-    status_ = cudaDeviceGetAttribute(
-        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
     if (max_smem_per_block >= 224 * 1024) {
         run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal>(params, stream);
     } else {
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 32, 4, false, false, T>, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal>(params, stream);
     }
 }
 
