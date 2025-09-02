@@ -229,9 +229,22 @@ void set_params_dgrad(
 }
 
 void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split_kernel=false) {
+    int device;
+    cudaGetDevice(&device);
+    int max_smem_per_block;
+    cudaError status_ = cudaDeviceGetAttribute(
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
+    if (status_ != cudaSuccess) {
+      C10_CUDA_CHECK(status_);
+    }
+
     FP16_SWITCH(!params.is_bf16, [&] {
         HEADDIM_SWITCH(params.d, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
+                // splitkv kernel is not supported for head_dim >= 128 in sm89 due to smem limits
+                bool splitkv_forbidden = (kHeadDim >= 128) && (max_smem_per_block < 112 * 1024);
+                params.num_splits = splitkv_forbidden ? 1 : params.num_splits;
                 if (params.num_splits <= 1 && !force_split_kernel) {    // If we don't set it num_splits == 0
                     run_mha_fwd_<elem_type, kHeadDim, Is_causal>(params, stream);
                 } else {
@@ -298,7 +311,7 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(
 ) {
 
     // This needs to match with run_mha_fwd_splitkv_dispatch
-    const int block_n = head_size <= 64 ? 64 : (head_size <= 128 ? 64 : 32);
+    const int block_n = head_size <= 32 ? 128 : (head_size <= 128 ? 128 : 64);
     const int num_n_blocks = (max_seqlen_k + block_n - 1) / block_n;
     // Technically kBlockM = 64 only for the splitKV kernels, not the standard kernel.
     // In any case we don't expect seqlen_q to be larger than 64 for inference.
