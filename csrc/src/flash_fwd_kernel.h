@@ -1084,17 +1084,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy mask from smem to registers and do OR-reduce to see if any active threads
-        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
+        // Do OR-reduce on the mask to see if any active threads
         Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
         bool any_active_local = false;
         #pragma unroll
-        for (int i = 0; i < size(tSrMask_copy_view); ++i) {
-            Element m = tSsMask_copy_view(i);
-            any_active_local |= (m != Element(0));
-            tSrMask_copy_view(i) = m;
-        }
+        for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
         bool any_active = __syncthreads_or(any_active_local);
 
         // Early skip for fully masked blocks
@@ -1199,7 +1193,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
-        // Copy bias from smem to registers
+        // Copy mask and bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
+        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
         Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
         cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
@@ -1288,17 +1285,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy mask from smem to registers and do OR-reduce to see if any active threads
-        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
+        // Do OR-reduce on the mask to see if any active threads
         Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
         bool any_active_local = false;
         #pragma unroll
-        for (int i = 0; i < size(tSrMask_copy_view); ++i) {
-            Element m = tSsMask_copy_view(i);
-            any_active_local |= (m != Element(0));
-            tSrMask_copy_view(i) = m;
-        }
+        for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
         bool any_active = __syncthreads_or(any_active_local);
 
         // Early skip for fully masked blocks
@@ -1384,7 +1375,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
-        // Copy bias from smem to registers
+        // Copy mask and bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
+        cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
         Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
         cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
