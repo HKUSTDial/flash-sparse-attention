@@ -602,44 +602,20 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     for (; m_block >= m_block_min; --m_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});    // (MMA=4, MMA_M, MMA_N)
-        clear(acc_s);
         cute::cp_async_wait<0>();
         __syncthreads();
 
-        // Copy mask from smem to registers and do OR-reduce to see if any active threads
-        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-        Tensor tSrMask_view = smem_thr_copy_PdS.retile_D(tSrMask);
+        // Do OR-reduce on the mask to see if any active threads
         Tensor tSsMask_view = smem_thr_copy_PdS.retile_S(tSsMask);
         bool any_active_local = false;
         #pragma unroll
-        for (int i = 0; i < size(tSrMask_view); ++i) {
-            Element m = tSsMask_view(i);
-            any_active_local |= (m != Element(0));
-            tSrMask_view(i) = m;
-        }
+        for (int i = 0; i < size(tSsMask_view); ++i) { any_active_local |= (tSsMask_view(i) != Element(0)); }
         bool any_active = __syncthreads_or(any_active_local);
 
         // Early skip for fully masked blocks
         if (!any_active) {
 
-            Tensor acc_dp = partition_fragment_C(tiled_mma_sdp, Shape<Int<kBlockM>, Int<kBlockN>>{});   // (MMA=4, MMA_M, MMA_N)
-            CUTE_STATIC_ASSERT_V(size<0>(acc_dp) == size<0>(acc_s));                                    // MMA
-            CUTE_STATIC_ASSERT_V(size<1>(acc_dp) == size<1>(acc_s));                                    // MMA
-            CUTE_STATIC_ASSERT_V(size<2>(acc_dp) == size<2>(acc_s));                                    // MMA
-
-            clear(acc_dp);
-
-            Tensor acc_dq = partition_fragment_C(tiled_mma_dq, Shape<Int<kBlockM>, Int<kHeadDim>>{});   // MMA, MMA_M, MMA_K
             tdQgdQaccum.data() = tdQgdQaccum.data() + (-int(kBlockM * params.h * params.d_rounded));
-            if (Is_first || Seq_parallel) {
-                clear(acc_dq);
-            } else {
-                Tensor acc_dq_reshaped_load = make_tensor(
-                    acc_dq.data(),
-                    make_layout(get<0>(acc_dq.layout()), get<2>(acc_dq.layout()), get<1>(acc_dq.layout()))
-                );
-                cute::copy(gmem_tiled_copy_dQaccum, tdQgdQaccum, acc_dq_reshaped_load);
-            }
 
             if (Double_buffer && m_block > m_block_min) {
                 // Double buffer for sQ
@@ -653,22 +629,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                     tQgQ, tQsQ,
                     tQcQ, tQpQ
                 );
-                FLASH_NAMESPACE::cp_async_fence();
             }
-
-            Tensor tdSrdS = make_tensor<Element>(shape(acc_dp));
-            clear(tdSrdS);
-            Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_M, MMA_N)
-            cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
-            __syncthreads();
-            // Write dS to dBias
-            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
-                gmem_tiled_copy_MaskBias,
-                tBiassBias, tdBiasgdBias,
-                tBiascBias,
-                binfo.actual_seqlen_q - m_block * kBlockM,
-                binfo.actual_seqlen_k - n_block * kBlockN
-            );
 
             if (m_block > m_block_min) {
                 // Advance gdO
@@ -700,7 +661,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                     tMaskcMask,
                     binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
                 );
-                FLASH_NAMESPACE::cp_async_fence();
             }
 
             if (m_block > m_block_min) {
@@ -714,7 +674,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 tdKsQt.data() = tdKsQt.data() + (m_block % 2 == 0 ? size(sQ) : -size(sQ));
             }
             if (!Double_buffer && m_block > m_block_min) {
-                __syncthreads();
                 // Advance gQ
                 tQgQ.data() = tQgQ.data() + (-int(kBlockM * params.q_row_stride));
                 FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
@@ -722,7 +681,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                     tQgQ, tQsQ,
                     tQcQ, tQpQ
                 );
-                FLASH_NAMESPACE::cp_async_fence();
             }
 
             if (m_block > m_block_min) {
@@ -735,8 +693,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                     tBiascBias,
                     binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
                 );
-                FLASH_NAMESPACE::cp_async_fence();
             }
+
+            FLASH_NAMESPACE::cp_async_fence();
 
             if (Is_first && m_block > m_block_min) {
                 cute::copy(tdOrdO, tdOsdO);
@@ -750,7 +709,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 __syncthreads();
                 Tensor tdQrdQ = make_tensor<Element>(shape(tdQgdQ));
                 clear(tdQrdQ);
-                cute::copy(gmem_tiled_copy_dQ, tdQsdQ, tdQrdQ);
                 tdQgdQ.data() = tdQgdQ.data() + (-int(kBlockM * params.dq_row_stride));
                 Tensor cdQ = make_identity_tensor(Shape<Int<kBlockM>, Int<kHeadDim>>{});    // (BLK_M, BLK_K) -> (blk_m, blk_k)
                 Tensor tdQcdQ = gmem_thr_copy_dQ.partition_D(cdQ);
@@ -764,6 +722,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
             continue;
         }
+
+        clear(acc_s);
 
         Tensor dP_sum = make_fragment_like(lse);
         #pragma unroll
@@ -787,7 +747,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
 
-        // Copy bias from smem to registers
+        // Copy mask and bias from smem to registers
+        Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+        Tensor tSrMask_copy_view = smem_thr_copy_PdS.retile_D(tSrMask);
+        cute::copy(smem_tiled_copy_PdS, tSsMask, tSrMask_copy_view);
         Tensor tSrBias = make_tensor<Element>(shape(acc_s));
         Tensor tSrBias_copy_view = smem_thr_copy_PdS.retile_D(tSrBias);
         cute::copy(smem_tiled_copy_PdS, tSsBias, tSrBias_copy_view);
