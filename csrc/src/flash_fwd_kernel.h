@@ -362,7 +362,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     #pragma unroll
     for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
     bool any_active = __syncthreads_or(any_active_local);
-    bool any_active_next = any_active;  // to be updated later for next iteration
+    bool any_active_next = false;       // to be updated later for next iteration
 
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
     if (any_active) {
@@ -1016,7 +1016,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     #pragma unroll
     for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
     bool any_active = __syncthreads_or(any_active_local);
-    bool any_active_next = any_active;  // to be updated later for next iteration
+    bool any_active_next = false;       // to be updated later for next iteration
 
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
     if (any_active) {

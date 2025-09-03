@@ -420,7 +420,9 @@ class FlashDMAttnFunc(torch.autograd.Function):
         )
         if mask is None:
             mask = torch.ones((batch_size, num_heads_k, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
+        return_dbias = True
         if bias is None:
+            return_dbias = False
             bias = torch.zeros((batch_size, num_heads_k, seqlen_q, seqlen_k), dtype=q.dtype, device=q.device)
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
@@ -465,6 +467,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
+            ctx.return_dbias = return_dbias
 
         out = out_padded[..., :head_size_og]
         return out if not return_softmax else (out, softmax_lse, S_dmask)
@@ -510,7 +513,9 @@ class FlashDMAttnFunc(torch.autograd.Function):
             dk = dk[:, : ctx.seqlen_k, :, :]
             dv = dv[:, : ctx.seqlen_k, :, :]
             dbias = dbias[..., : ctx.seqlen_k]
-        return dq, dk, dv, None, dbias, None, None, None, None, None, None
+        if ctx.return_dbias:
+            return dq, dk, dv, None, dbias, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
 class FlashDMAttnVarlenFunc(torch.autograd.Function):
@@ -544,8 +549,10 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         )
         if mask is None:
             mask = torch.ones((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
+        return_dbias = True
         if bias is None:
             bias = torch.zeros((total_q, num_heads_k, max_seqlen_k), dtype=q.dtype, device=q.device)
+            return_dbias = False
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -606,6 +613,7 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
+            ctx.return_dbias = return_dbias
 
         out = out_padded[..., :head_size_og]
         if return_softmax:
@@ -658,7 +666,9 @@ class FlashDMAttnVarlenFunc(torch.autograd.Function):
         if ctx.seqlen_k_og != ctx.max_seqlen_k:
             dbias = dbias[:, :, :ctx.seqlen_k_og]
 
-        return dq, dk, dv, None, dbias, None, None, None, None, None, None, None, None, None, None, None
+        if ctx.return_dbias:
+            return dq, dk, dv, None, dbias, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 def flash_dmattn_func(
