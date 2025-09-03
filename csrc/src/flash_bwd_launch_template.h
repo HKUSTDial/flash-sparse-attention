@@ -183,7 +183,6 @@ void run_mha_bwd_hdim96(Flash_bwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    // printf("max_smem_per_block = %d\n", max_smem_per_block);
     if (max_smem_per_block >= 116 * 1024) {             // H100 and A100
         // 116KB, 1 CTAs in A100, 1 CTAs in H100.
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, false, false, T>, Is_causal>(params, stream);
