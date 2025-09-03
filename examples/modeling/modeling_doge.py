@@ -44,13 +44,9 @@ from transformers.utils.generic import OutputRecorder, check_model_inputs
 from .configuration_doge import DogeConfig
 
 try:
-    from flash_dmattn import flash_dmattn_func_auto
+    from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
 except ImportError:
-    def flash_dmattn_func_auto(*args, **kwargs):
-        raise ImportError(
-            "flash_dmattn is not installed. Please install it to use flash_dmattn_func_auto. "
-            "You can install it with `pip install flash-dmattn` or consult the documentation."
-        )
+    flash_dynamic_mask_attention_forward = None
 
 if is_torch_flex_attn_available():
     from torch.nn.attention.flex_attention import BlockMask
@@ -183,59 +179,6 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
-def flex_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Union[torch.Tensor, "BlockMask"],
-    scaling: Optional[float] = None,
-    softcap: Optional[float] = None,
-    head_mask: Optional[torch.Tensor] = None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    block_mask = None
-    causal_mask = None
-    if isinstance(attention_mask, BlockMask):
-        block_mask = attention_mask
-    else:
-        causal_mask = attention_mask
-
-    if causal_mask is not None:
-        causal_mask = causal_mask[:, :, :, : key.shape[-2]]
-
-    def score_mod(score, batch_idx, head_idx, q_idx, kv_idx):
-        if softcap is not None:
-            score = softcap * torch.tanh(score / softcap)
-        if causal_mask is not None:
-            score = score + causal_mask[batch_idx][head_idx][q_idx][kv_idx]
-        if head_mask is not None:
-            score = score + head_mask[batch_idx][head_idx][0][0]
-        return score
-
-    attn_output, attention_weights = compile_friendly_flex_attention(
-        query,
-        key,
-        value,
-        score_mod=score_mod,
-        block_mask=block_mask,
-        enable_gqa=True,
-        scale=scaling,
-        # Last time checked on PyTorch == 2.5.1: Flex Attention always computes the lse regardless.
-        # For simplification, we thus always return it as no additional computations are introduced.
-        return_lse=True,
-    )
-    # lse is returned in float32
-    attention_weights = attention_weights.to(value.dtype)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    return attn_output, attention_weights
-
-
-ALL_ATTENTION_FUNCTIONS = AttentionInterface()
-ALL_ATTENTION_FUNCTIONS["doge_flex_attention"] = flex_attention_forward
-
-
 class DogeAttention(nn.Module):
     def __init__(self, config: DogeConfig, layer_idx: Optional[int] = None):
         super().__init__()
@@ -292,77 +235,33 @@ class DogeAttention(nn.Module):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-        # calculate dynamic mask from value_states
+        # sampling dt_states from value_states to generate attention bias
         dt_states = self.dt_proj(
             value_states.transpose(1, 2).reshape(value_states.shape[0], value_states.shape[-2], -1)
         )
         dt_states = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2)
-        attn_bias, attn_mask = self.prepare_dynamic_mask(
-            hidden_states=hidden_states,
-            dt_states=dt_states,
-            keep_window_size=self.keep_window_size,
-            attention_mask=attention_mask,
-        )
+        attn_bias = dt_states[:, :, None, :].expand(
+            -1, -1, hidden_states.shape[1], -1
+        ).to(hidden_states.dtype)  # [batch_size, num_heads, query_len, key_len]
 
-        attention_interface: Callable = flash_dmattn_func_auto(backend="cuda")
-        query_states = query_states.transpose(1, 2).contiguous()    # [B, H, Q_LEN, D]
-        key_states = key_states.transpose(1, 2).contiguous()        # [B, H, KV_LEN, D]
-        value_states = value_states.transpose(1, 2).contiguous()    # [B, H, KV_LEN, D]
+        attention_interface: Callable = eager_attention_forward
+        if flash_dynamic_mask_attention_forward is not None:
+                attention_interface = flash_dynamic_mask_attention_forward
 
-        attn_output = attention_interface(
+        attention_mask = attention_mask.expand(-1, attn_bias.shape[1], -1, -1) if attention_mask is not None else None,   # attention_mask: batch, num_kv_heads, query_len, key_len
+        attn_output, attn_weights = attention_interface(
+            self,
             query_states,
             key_states,
             value_states,
-            attn_mask=attn_mask,
-            attn_bias=attn_bias,
-            is_causal=self.is_causal,
+            attention_mask=attention_mask,
+            attention_bias=attn_bias,
             scale=self.scaling,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, None
-
-    def prepare_dynamic_mask(
-        self,
-        hidden_states: torch.Tensor,
-        dt_states: torch.Tensor,
-        keep_window_size: int = 2048,
-        attention_mask: Optional[torch.Tensor] = None,
-    ):
-        """
-        The core idea of DMA is to calculate the dynamic attention mask to mask the tokens that should be masked, so as to form sparse attention.
-
-        Combine `dt_states` with `attention_mask` to generate the final `attn_mask`.
-
-        Args:
-            hidden_states (`torch.Tensor`): The input hidden_states, used to determine the minimum value of the current input precision.
-            dt_states (`torch.Tensor`): dt_states of shape `(batch_size, num_heads, key_sequence_length)`.
-            keep_window_size (`int`): The window size of tokens that are not dynamically masked, and dynamic masking is only performed when the sequence length exceeds this value.
-            attention_mask (`torch.Tensor`, *optional*): attention mask of shape `(batch_size, 1, query_sequence_length, key_sequence_length)`.
-        """
-        min_dtype = torch.finfo(hidden_states.dtype).min
-        dtype = hidden_states.dtype
-        attn_bias = dt_states[:, :, None, :].expand(
-            -1, -1, hidden_states.shape[1], -1
-        )  # [batch_size, num_heads, query_len, key_len]
-        if attention_mask is not None and not isinstance(attention_mask, BlockMask):
-            if attention_mask.dtype == torch.bool:
-                attention_mask = torch.where(
-                    attention_mask, torch.tensor(0.0, device=attention_mask.device, dtype=dtype), min_dtype
-                )
-            attn_bias = attn_bias.masked_fill(attention_mask[:, :, :, : attn_bias.shape[-1]] != 0, min_dtype)
-        if attn_bias.shape[-1] > keep_window_size:
-            topk_values, topk_indices = torch.topk(
-                attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
-            )
-            valid_topk = topk_values != min_dtype
-            attn_mask = torch.zeros_like(attn_bias, dtype=dtype, device=attn_bias.device)
-            attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk.to(dtype))
-            attn_bias = attn_bias.masked_fill(attn_mask == 0.0, min_dtype)
-        else:
-            attn_mask = torch.ones_like(attn_bias, dtype=dtype, device=attn_bias.device)
-        return attn_bias, attn_mask
+        return attn_output, attn_weights
 
 
 class DogeMLP(nn.Module):
