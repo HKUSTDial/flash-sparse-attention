@@ -311,7 +311,8 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(
 ) {
 
     // This needs to match with run_mha_fwd_splitkv_dispatch
-    const int block_n = head_size <= 32 ? 128 : (head_size <= 128 ? 128 : 64);
+    const int block_n = 64;
+    // const int block_n = head_size <= 32 ? 128 : (head_size <= 128 ? 128 : 64);
     const int num_n_blocks = (max_seqlen_k + block_n - 1) / block_n;
     // Technically kBlockM = 64 only for the splitKV kernels, not the standard kernel.
     // In any case we don't expect seqlen_q to be larger than 64 for inference.
