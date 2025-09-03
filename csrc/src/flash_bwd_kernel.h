@@ -844,7 +844,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                         tQcQ, tQpQ
                     );
                 }
-                
                 FLASH_NAMESPACE::cp_async_fence();
             }
         }
