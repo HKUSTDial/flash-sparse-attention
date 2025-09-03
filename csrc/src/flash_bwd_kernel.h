@@ -568,7 +568,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     #pragma unroll
     for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
     bool any_active = __syncthreads_or(any_active_local);
-    bool any_active_next = any_active;  // to be updated later for next iteration
+    bool any_active_next = false;       // to be updated later for next iteration
 
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
         gmem_tiled_copy_QKV,
