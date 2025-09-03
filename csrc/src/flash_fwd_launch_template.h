@@ -258,7 +258,7 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
         // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
         // 48KB, 2 CTAs in sm86 and sm 89.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal>(params, stream);
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal>(params, stream);
     }
 }
 
@@ -293,6 +293,7 @@ void run_mha_fwd_hdim256(Flash_fwd_params &params, cudaStream_t stream) {
         // 256KB, N/A CTAs in sm86 and sm 89, N/A CTAs in A100, N/A CTAs in H100.
         // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
+        // 80KB, 1 CTAs in sm86 and sm 89.
         run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal>(params, stream);
     }
 }
