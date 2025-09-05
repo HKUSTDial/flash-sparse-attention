@@ -76,7 +76,7 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
-    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;86,89,90;100;120").split(";")
+    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;86;89;90;100;120").split(";")
 
 
 def get_platform():
@@ -151,6 +151,7 @@ if not SKIP_CUDA_BUILD:
     if "80" in cuda_archs():
         cc_flag.append("-gencode")
         cc_flag.append("arch=compute_80,code=sm_80")
+
     if CUDA_HOME is not None:
         if bare_metal_version >= Version("11.8") and "86" in cuda_archs():
             cc_flag.append("-gencode")
