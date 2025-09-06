@@ -29,7 +29,87 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 
 We present expected speedup of Flash-DMA over standard PyTorch SDPA.
 
-![Speedup](assets/speedup.png)
+---
+
+### Forward Pass Performance
+
+The following table shows the forward pass performance comparison between Flash-DMA and standard PyTorch SDPA on an NVIDIA A100-SXM4-80GB. Results are averaged over 3 runs after 2 warmup runs.
+
+| Mode   | Q len | K len  | Window W | SDPA (ms) | FDMA (ms) | Speedup |
+|--------|-------|--------|----------|-----------|-----------|---------|
+| Train  | 256   | 256    | 1024     | 0.29      | 0.19      | 1.58x   |
+| Train  | 512   | 512    | 1024     | 0.35      | 0.19      | 1.86x   |
+| Train  | 1024  | 1024   | 1024     | 0.51      | 0.18      | 2.81x   |
+| Train  | 2048  | 2048   | 1024     | 1.04      | 0.18      | 5.68x   |
+| Train  | 4096  | 4096   | 1024     | 2.53      | 0.24      | 10.41x  |
+| Train  | 8192  | 8192   | 1024     | 9.38      | 0.36      | 25.93x  |
+| Train  | 16384 | 16384  | 1024     | 28.39     | 0.81      | 35.25x  |
+| Train  | 32768 | 32768  | 1024     | 111.87    | 2.25      | 49.78x  |
+| Train  | 32768 | 32768  | 32       | 113.19    | 2.10      | 53.97x  |
+| Train  | 32768 | 32768  | 64       | 113.17    | 2.12      | 53.32x  |
+| Train  | 32768 | 32768  | 128      | 113.14    | 2.10      | 53.78x  |
+| Train  | 32768 | 32768  | 256      | 113.18    | 2.13      | 53.18x  |
+| Train  | 32768 | 32768  | 512      | 113.19    | 2.17      | 52.17x  |
+| Train  | 32768 | 32768  | 1024     | 113.19    | 2.24      | 50.45x  |
+| Train  | 32768 | 32768  | 2048     | 113.15    | 2.39      | 47.35x  |
+| Train  | 32768 | 32768  | 4096     | 113.16    | 2.67      | 42.39x  |
+| Train  | 32768 | 32768  | 8192     | 113.11    | 3.20      | 35.29x  |
+| Train  | 32768 | 32768  | 16384    | 113.15    | 3.97      | 28.51x  |
+| Train  | 32768 | 32768  | 32768    | 113.11    | 4.90      | 23.10x  |
+| Infer  | 1     | 256    | 1024     | 0.25      | 0.19      | 1.28x   |
+| Infer  | 1     | 512    | 1024     | 0.25      | 0.19      | 1.27x   |
+| Infer  | 1     | 1024   | 1024     | 0.25      | 0.20      | 1.28x   |
+| Infer  | 1     | 2048   | 1024     | 0.25      | 0.20      | 1.24x   |
+| Infer  | 1     | 4096   | 1024     | 0.25      | 0.19      | 1.29x   |
+| Infer  | 1     | 8192   | 1024     | 0.25      | 0.20      | 1.25x   |
+| Infer  | 1     | 16384  | 1024     | 0.25      | 0.19      | 1.29x   |
+| Infer  | 1     | 32768  | 1024     | 0.27      | 0.20      | 1.33x   |
+| Infer  | 1     | 65536  | 1024     | 0.42      | 0.20      | 2.10x   |
+| Infer  | 1     | 131072 | 1024     | 0.72      | 0.20      | 3.65x   |
+| Infer  | 1     | 262144 | 1024     | 1.31      | 0.22      | 6.06x   |
+| Infer  | 1     | 524288 | 1024     | 2.49      | 0.24      | 10.45x  |
+| Infer  | 1     | 524288 | 32       | 2.48      | 0.21      | 11.60x  |
+| Infer  | 1     | 524288 | 64       | 2.44      | 0.21      | 11.66x  |
+| Infer  | 1     | 524288 | 128      | 2.45      | 0.21      | 11.47x  |
+| Infer  | 1     | 524288 | 256      | 2.43      | 0.21      | 11.47x  |
+| Infer  | 1     | 524288 | 512      | 2.44      | 0.22      | 10.89x  |
+| Infer  | 1     | 524288 | 1024     | 2.44      | 0.24      | 10.31x  |
+| Infer  | 1     | 524288 | 2048     | 2.44      | 0.27      | 9.07x   |
+| Infer  | 1     | 524288 | 4096     | 2.45      | 0.33      | 7.41x   |
+| Infer  | 1     | 524288 | 8192     | 2.44      | 0.35      | 6.93x   |
+| Infer  | 1     | 524288 | 16384    | 2.44      | 0.35      | 6.93x   |
+| Infer  | 1     | 524288 | 32768    | 2.45      | 0.35      | 6.96x   |
+| Infer  | 1     | 524288 | 65536    | 2.44      | 0.35      | 6.88x   |
+
+---
+
+### Backward Pass Performance
+
+The following table shows the backward pass performance comparison between Flash-DMA and standard PyTorch SDPA on an NVIDIA A100-SXM4-80GB. Results are averaged over 3 runs after 2 warmup runs.
+
+| Mode  | Q len | K len  | Window W | SDPA-BWD (ms) | FDMA-BWD (ms) | Speedup |
+|-------|-------|--------|----------|---------------|---------------|---------|
+| Train | 256   | 256    | 1024     | 0.42          | 0.62          | 0.7x    |
+| Train | 512   | 512    | 1024     | 0.56          | 0.60          | 0.9x    |
+| Train | 1024  | 1024   | 1024     | 0.94          | 0.61          | 1.5x    |
+| Train | 2048  | 2048   | 1024     | 1.79          | 0.69          | 2.6x    |
+| Train | 4096  | 4096   | 1024     | 3.76          | 1.08          | 3.5x    |
+| Train | 8192  | 8192   | 1024     | 14.39         | 2.06          | 7.0x    |
+| Train | 16384 | 16384  | 1024     | 39.56         | 4.97          | 8.0x    |
+| Train | 32768 | 32768  | 1024     | 142.07        | 25.63         | 5.5x    |
+| Train | 32768 | 32768  | 32       | 142.70        | 21.91         | 6.5x    |
+| Train | 32768 | 32768  | 64       | 142.65        | 22.29         | 6.4x    |
+| Train | 32768 | 32768  | 128      | 142.69        | 23.04         | 6.2x    |
+| Train | 32768 | 32768  | 256      | 142.69        | 24.27         | 5.9x    |
+| Train | 32768 | 32768  | 512      | 142.67        | 25.12         | 5.7x    |
+| Train | 32768 | 32768  | 1024     | 142.55        | 25.58         | 5.6x    |
+| Train | 32768 | 32768  | 2048     | 142.75        | 25.64         | 5.6x    |
+| Train | 32768 | 32768  | 4096     | 142.61        | 24.84         | 5.7x    |
+| Train | 32768 | 32768  | 8192     | 142.33        | 25.63         | 5.6x    |
+| Train | 32768 | 32768  | 16384    | 142.40        | 25.62         | 5.6x    |
+| Train | 32768 | 32768  | 32768    | 142.43        | 25.63         | 5.6x    |
+
+---
 
 
 ## Installation
@@ -59,8 +139,7 @@ export CUDA_HOME=/usr/local/cuda
 ```bash
 git clone https://github.com/SmallDoges/flash-dmattn.git
 cd flash-dmattn
-git submodule update --init --recursive
-pip install .
+MAX_JOBS=4 pip install . --no-build-isolation
 ```
 
 
