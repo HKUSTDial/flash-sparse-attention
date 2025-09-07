@@ -250,7 +250,7 @@ class DogeAttention(nn.Module):
         if flash_dynamic_mask_attention_forward is not None:
             attention_interface = flash_dynamic_mask_attention_forward
 
-        attention_mask = attention_mask.expand(-1, attn_bias.shape[1], -1, -1) if attention_mask is not None else None,   # attention_mask: batch, num_kv_heads, query_len, key_len
+        attention_mask = attention_mask.expand(-1, attn_bias.shape[1], -1, -1) if attention_mask is not None else None  # attention_mask: batch, num_kv_heads, query_len, key_len
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
