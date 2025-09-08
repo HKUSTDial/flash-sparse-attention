@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 
 # Import CUDA functions when available
