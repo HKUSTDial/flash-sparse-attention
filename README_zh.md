@@ -169,7 +169,7 @@ key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dt
 value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
 
 # 为稀疏注意力创建 mask 和 bias
-attention_mask = torch.ones(batch_size, num_heads, seq_len, seq_len, device=device, dtype=dtype)
+attention_mask = torch.ones(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
 attention_bias = torch.randn(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
 
 # 基于 bias 生成稀疏 mask
