@@ -12,9 +12,6 @@ on:
     tags:
       - v*
 
-permissions:
-  contents: write
-
 jobs:
   setup_release:
     name: Create Release
@@ -24,16 +21,19 @@ jobs:
     steps:
       - name: Get the tag version
         id: extract_branch
-        run: echo "branch=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
         shell: bash
-      - name: Create Release
+        run: |
+          echo "branch=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: Create or Update Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.extract_branch.outputs.branch }}
-          release_name: ${{ steps.extract_branch.outputs.branch }}
+          name: ${{ steps.extract_branch.outputs.branch }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   build_wheels:
     name: Build Wheel
