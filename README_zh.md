@@ -17,12 +17,16 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 
 ## 主要特性
 
-- **动态稀疏注意力**: 为每个查询动态选择最重要的键，将计算复杂度从 $O(N^2)$ 降低到 $O(N \cdot w)$，其中 $w \ll N$，支持可训练的稀疏结构。
-- **内存效率**: 保持 Flash Attention 的 $O(N)$ 内存复杂度，无需实例化完整的注意力矩阵。
-- **CUDA 深度优化**：使用自定义 CUDA Kernel, 含共享内存别名、流水线预取、按块跳过, 实现高吞吐与低访存开销。
-- **超长上下文支持**：通过动态掩码窗口裁剪，在保持精度的前提下支撑 128K+ 令牌级别的上下文处理。
-- **可学习偏置**：内置可学习 attention bias 及其梯度反向路径 dbias，无需额外外部算子。
-- **融合式训练友好**：正向与反向过程均支持 block 级全零掩码跳过，在稀疏场景进一步降低计算开销。
+### 🎯 核心内核优势
+- **4D Mask & Bias 支持**: 原生支持 `(batch_size, num_kv_heads, query_len, key_len)` 形状的 attention_mask 和 attention_bias 张量
+- **智能计算跳过**: 基于 attention_mask 的 block-level 自动跳过机制，完全跳过全零 mask 区块的计算和内存访问
+- **完整梯度支持**: 内置 attention_bias 的完整梯度计算路径，支持端到端训练
+
+### 🚀 性能与效率
+- **动态稀疏注意力**: 为每个查询动态选择最重要的键，将计算复杂度从 $O(N^2)$ 降低到 $O(N \cdot w)$，其中 $w \ll N$， 支持可训练的稀疏结构
+- **内存效率**: 保持 Flash Attention 的 $O(N)$ 内存复杂度，无需实例化完整的注意力矩阵
+- **CUDA 深度优化**: 自定义 CUDA 内核，含共享内存别名、流水线预取、按块跳过，实现高吞吐与低访存开销
+- **超长上下文支持**: 通过动态掩码窗口裁剪，在保持精度的前提下支撑 128K+ 令牌级别的上下文处理
 
 
 ## 性能
@@ -145,43 +149,46 @@ MAX_JOBS=4 pip install . --no-build-isolation
 
 ## 快速开始
 
+### 基本用法
+
 ```python
 import torch
 from flash_dmattn import flash_dmattn_func_auto
 import math
 
 # 设置
-batch_size, seq_len, num_heads, head_dim = 2, 4096, 16, 128
+batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
+keep_window_size = 128
 device = torch.device('cuda')
 dtype = torch.bfloat16
+min_dtype = torch.finfo(dtype).min  # dtype 的最小值
 
 # 输入张量
-query = torch.randn(batch_size, seq_len, num_heads, head_dim, 
-                   device=device, dtype=dtype)
-key = torch.randn(batch_size, seq_len, num_heads, head_dim,
-                 device=device, dtype=dtype)
-value = torch.randn(batch_size, seq_len, num_heads, head_dim,
-                   device=device, dtype=dtype)
+query = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
+key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
+value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
 
-# 为稀疏注意力创建掩码和偏置
-attention_bias = torch.randn(batch_size, num_heads, seq_len, seq_len,
-                           device=device, dtype=dtype)
-attention_mask = torch.ones(batch_size, num_heads, seq_len, seq_len,
-                          device=device, dtype=dtype)
+# 为稀疏注意力创建 mask 和 bias
+attention_mask = torch.ones(batch_size, num_heads, seq_len, seq_len, device=device, dtype=dtype)
+attention_bias = torch.randn(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
 
-# 应用动态掩码（为长序列保留 top-k）
-keep_window_size = 2048
+# 基于 bias 生成稀疏 mask
 if seq_len > keep_window_size:
     # 为每个查询选择 top-k 最重要的键
-    topk_indices = torch.topk(attention_bias, keep_window_size, dim=-1, 
-                             largest=True, sorted=False).indices
-    attention_mask.zero_()
-    attention_mask.scatter(-1, topk_indices, 1.0)
+    topk_values, topk_indices = torch.topk(
+        attention_bias, keep_window_size, dim=-1, 
+        largest=True, sorted=False
+    )
+    # 生成有效的 top-k mask
+    valid_topk = (topk_values != min_dtype).to(dtype)
+    attention_mask = torch.zeros_like(attention_bias, dtype=dtype, device=attention_bias.device)
+    attention_mask = attention_mask.scatter(-1, topk_indices, valid_topk)
+    attention_bias = attention_bias.masked_fill(attention_mask == 0.0, min_dtype)
 
-# 选择后端
+# 选择 FDMA 内核
 flash_dmattn_func = flash_dmattn_func_auto(backend="cuda")
 
-# 运行 Flash 动态掩码注意力
+# 运行 FDMA
 output = flash_dmattn_func(
     query=query,
     key=key, 
@@ -192,27 +199,54 @@ output = flash_dmattn_func(
     scale=1.0/math.sqrt(head_dim),
 )
 
-print(f"输出形状: {output.shape}")  # [2, 4096, 16, 128]
+print(f"输出形状: {output.shape}")  # [1, 256, 2, 64]
+```
+
+### 梯度计算示例
+
+```python
+# 开启梯度计算
+query.requires_grad_(True)
+key.requires_grad_(True)
+value.requires_grad_(True)
+attention_bias.requires_grad_(True)
+
+# 前向传播
+output = flash_dmattn_func(
+    query=query, key=key, value=value,
+    attn_mask=attention_mask,
+    attn_bias=attention_bias,
+    is_causal=True,
+    scale=1.0/math.sqrt(head_dim)
+)
+
+# 反向传播
+loss = output.sum()
+loss.backward()
+
+print(f"Query 梯度形状: {query.grad.shape}")
+print(f"Key 梯度形状: {key.grad.shape}")
+print(f"Value 梯度形状: {value.grad.shape}")
+print(f"Bias 梯度形状: {attention_bias.grad.shape}")
 ```
 
 
 ## 工作原理
 
-Flash-DMA 结合了两种互补的技术：
+Flash-DMA 通过将 Flash Attention 的高效内存访问模式与动态掩码注意力的稀疏计算能力相结合，实现了高效的注意力机制。
 
-- **动态掩码注意力**: 计算键的相关性分数，并仅选择最重要的键进行注意力计算
-- **Flash Attention**: 分块处理注意力以减少内存使用和 HBM 访问
+### 核心技术融合
 
-### 集成方法
+- **🎯 4D Mask & Bias 原生支持**: 内核直接处理 `(batch_size, num_kv_heads, query_len, key_len)` 形状的张量
+- **⚡ Block-level 智能跳过**: 基于 mask 的统一 OR-reduction 跳过逻辑，完全避免全零区块的计算和内存访问
+- **🔄 完整梯度链路**: 内置 attention bias 梯度计算，支持端到端可微分训练
 
-集成发生在 CUDA 内核层面，具有几个关键组件：
+### 关键优化策略
 
-- **ZOH 状态**: 预计算的键选择重要性分数
-- **活跃掩码**: 指示每个查询应考虑哪些键的二进制掩码
-- **稀疏跳过**: 高效稀疏注意力计算的自定义 CUDA 内核
-- **分块处理**: 保持 Flash Attention 的分块方法以提高内存效率
-
-这创建了一种混合注意力机制，为长序列实现了内存和计算效率。
+1. **统一跳过逻辑**: 前向和反向过程使用相同的 block-level 跳过决策
+2. **内存访问优化**: 只有当 `OR(mask_block) == true` 时才加载 K/V 数据
+3. **梯度路径完整性**: dbias 梯度计算完全融合在反向内核中
+4. **共享内存复用**: sMask ↔ sP, sBias ↔ sdS 智能别名化
 
 
 ## 文档
@@ -229,7 +263,7 @@ Flash-DMA 结合了两种互补的技术：
 
 ```bash
 # 克隆包含子模块
-git clone --recursive https://github.com/SmallDoges/flash-dmattn.git
+git clone https://github.com/SmallDoges/flash-dmattn.git
 cd flash-dmattn
 
 # 在开发模式下构建
@@ -296,8 +330,8 @@ python benchmarks/grad_equivalence.py
 **编译错误**
 ```bash
 # 确保 CUDA_HOME 设置正确
-echo $CUDA_HOME  # Linux/Mac
-echo $env:CUDA_HOME  # Windows PowerShell
+echo $CUDA_HOME         # Linux/Mac
+echo $env:CUDA_HOME     # Windows PowerShell
 
 # 检查 CUDA 工具包版本
 nvcc --version

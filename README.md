@@ -17,12 +17,16 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 
 ## Key Features
 
-- **Dynamic Sparse Attention**: Dynamically selects the most relevant keys for each query, reducing computational complexity from $O(N^2)$ to $O(N \cdot w)$ where $w \ll N$, supporting trainable sparse patterns.
-- **Memory Efficiency**: Maintains Flash Attention's $O(N)$ memory complexity without instantiating the full attention matrix.
-- **CUDA Deep Optimization**: Utilizes custom CUDA kernels with shared memory aliasing, pipelined prefetching, and block skipping for high throughput and low memory access overhead.
-- **Extremely Long Context Support**: Handles 128K+ token sequences efficiently through dynamic mask windowing while preserving accuracy.
-- **Learnable Bias**: Built-in learnable attention bias and its gradient path dbias, eliminating the need for additional external operators.
-- **Fusion-Friendly Training**: Both forward and backward passes support block-level zero-mask skipping, further reducing computation in sparse scenarios.
+### 🎯 Core Kernel Advantages
+- **4D Mask & Bias Support**: Native support for `(batch_size, num_kv_heads, query_len, key_len)` shaped attention mask and attention bias tensors
+- **Intelligent Computation Skipping**: Block-level automatic skipping mechanism based on masks, completely bypassing computation and memory access for zero-mask blocks
+- **Complete Gradient Support**: Built-in full gradient computation path for attention bias, supporting end-to-end training
+
+### 🚀 Performance & Efficiency
+- **Dynamic Sparse Attention**: Dynamically selects the most relevant keys for each query, reducing computational complexity from $O(N^2)$ to $O(N \cdot w)$ where $w \ll N$, supporting trainable sparse structures
+- **Memory Efficiency**: Maintains Flash Attention's $O(N)$ memory complexity without instantiating the full attention matrix
+- **CUDA Deep Optimization**: Custom CUDA kernels with shared memory aliasing, pipelined prefetching, and block skipping for high throughput and low memory access overhead
+- **Extremely Long Context Support**: Handles 128K+ token sequences efficiently through dynamic mask windowing while preserving accuracy
 
 
 ## Performance
@@ -145,74 +149,104 @@ MAX_JOBS=4 pip install . --no-build-isolation
 
 ## Quick Start
 
+### Basic Usage
+
 ```python
 import torch
 from flash_dmattn import flash_dmattn_func_auto
 import math
 
 # Setup
-batch_size, seq_len, num_heads, head_dim = 2, 4096, 16, 128
+batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
+keep_window_size = 128
 device = torch.device('cuda')
 dtype = torch.bfloat16
+min_dtype = torch.finfo(dtype).min  # dtype minimum value
 
 # Input tensors
-query = torch.randn(batch_size, seq_len, num_heads, head_dim, 
-                   device=device, dtype=dtype)
-key = torch.randn(batch_size, seq_len, num_heads, head_dim,
-                 device=device, dtype=dtype)
-value = torch.randn(batch_size, seq_len, num_heads, head_dim,
-                   device=device, dtype=dtype)
+query = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
+key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
+value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
 
 # Create mask and bias for sparse attention
-attention_bias = torch.randn(batch_size, num_heads, seq_len, seq_len,
-                           device=device, dtype=dtype)
-attention_mask = torch.ones(batch_size, num_heads, seq_len, seq_len,
-                          device=device, dtype=dtype)
+attention_mask = torch.ones(batch_size, num_heads, seq_len, seq_len, device=device, dtype=dtype)
+attention_bias = torch.randn(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
 
-# Apply dynamic masking (keep top-k for long sequences)
-keep_window_size = 2048
+# Generate sparse mask based on bias
 if seq_len > keep_window_size:
     # Select top-k most important keys for each query
-    topk_indices = torch.topk(attention_bias, keep_window_size, dim=-1, 
-                             largest=True, sorted=False).indices
-    attention_mask.zero_()
-    attention_mask.scatter(-1, topk_indices, 1.0)
+    topk_values, topk_indices = torch.topk(
+        attention_bias, keep_window_size, dim=-1, 
+        largest=True, sorted=False
+    )
+    # Generate valid top-k mask
+    valid_topk = (topk_values != min_dtype).to(dtype)
+    attention_mask = torch.zeros_like(attention_bias, dtype=dtype, device=attention_bias.device)
+    attention_mask = attention_mask.scatter(-1, topk_indices, valid_topk)
+    attention_bias = attention_bias.masked_fill(attention_mask == 0.0, min_dtype)
 
-# Select backend
+# Select FDMA kernel
 flash_dmattn_func = flash_dmattn_func_auto(backend="cuda")
 
 # Run Flash Dynamic Mask Attention
 output = flash_dmattn_func(
-    q=query,
-    k=key, 
-    v=value,
+    query=query,
+    key=key,
+    value=value,
     attn_mask=attention_mask,
     attn_bias=attention_bias,
     is_causal=True,
     scale=1.0/math.sqrt(head_dim),
 )
 
-print(f"Output shape: {output.shape}")  # [2, 4096, 16, 128]
+print(f"Output shape: {output.shape}")  # [1, 256, 2, 64]
+```
+
+### Gradient Computation Example
+
+```python
+# Enable gradient computation
+query.requires_grad_(True)
+key.requires_grad_(True)
+value.requires_grad_(True)
+attention_bias.requires_grad_(True)
+
+# Forward pass
+output = flash_dmattn_func(
+    query=query, key=key, value=value,
+    attn_mask=attention_mask,
+    attn_bias=attention_bias,
+    is_causal=True,
+    scale=1.0/math.sqrt(head_dim)
+)
+
+# Backward pass
+loss = output.sum()
+loss.backward()
+
+print(f"Query gradient shape: {query.grad.shape}")
+print(f"Key gradient shape: {key.grad.shape}")
+print(f"Value gradient shape: {value.grad.shape}")
+print(f"Bias gradient shape: {attention_bias.grad.shape}")
 ```
 
 
 ## How It Works
 
-Flash-DMA combines two complementary techniques:
+Flash-DMA integrates the efficient memory access patterns of Flash Attention with the sparse computation capabilities of dynamic mask attention to achieve an efficient attention mechanism.
 
-- **Dynamic Mask Attention**: Computes relevance scores for keys and selects only the most important ones for attention computation
-- **Flash Attention**: Processes attention in blocks to reduce memory usage and HBM access
+### Core Technology Integration
 
-### The Integration Approach
+- **🎯 Native 4D Mask & Bias Support**: Kernels directly process `(batch_size, num_kv_heads, query_len, key_len)` shaped tensors
+- **⚡ Block-level Intelligent Skipping**: Unified OR-reduction skipping logic based on masks, completely avoiding computation and memory access for zero blocks
+- **🔄 Complete Gradient Chain**: Built-in attention bias gradient computation (dbias) supporting end-to-end differentiable training
 
-The integration happens at the CUDA kernel level with several key components:
+### Key Optimization Strategies
 
-- **ZOH States**: Pre-computed importance scores for key selection
-- **Active Masks**: Binary masks indicating which keys should be considered for each query
-- **Sparse Skipping**: Custom CUDA kernels for efficient sparse attention computation
-- **Block-Based Processing**: Maintains Flash Attention's block-based approach for memory efficiency
-
-This creates a hybrid attention mechanism that achieves both memory and computational efficiency for long sequences.
+1. **Unified Skip Logic**: Forward and backward passes use the same block-level skip decisions
+2. **Memory Access Optimization**: K/V data loaded only when `OR(mask_block) == true`
+3. **Gradient Path Completeness**: dbias gradient computation fully fused in backward kernels
+4. **Shared Memory Reuse**: sMask ↔ sP, sBias ↔ sdS intelligent aliasing
 
 
 ## Documentation
@@ -229,7 +263,7 @@ This creates a hybrid attention mechanism that achieves both memory and computat
 
 ```bash
 # Clone with submodules
-git clone --recursive https://github.com/SmallDoges/flash-dmattn.git
+git clone https://github.com/SmallDoges/flash-dmattn.git
 cd flash-dmattn
 
 # Build in development mode
@@ -297,8 +331,8 @@ Tests backward pass implementation and gradient equivalence.
 **Compilation Errors**
 ```bash
 # Ensure CUDA_HOME is set correctly
-echo $CUDA_HOME  # Linux/Mac
-echo $env:CUDA_HOME  # Windows PowerShell
+echo $CUDA_HOME         # Linux/Mac
+echo $env:CUDA_HOME     # Windows PowerShell
 
 # Check CUDA toolkit version
 nvcc --version
