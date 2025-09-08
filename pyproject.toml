@@ -40,9 +40,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SmallDoge/flash-dmattn"
-Source = "https://github.com/SmallDoge/flash-dmattn"
-Issues = "https://github.com/SmallDoge/flash-dmattn/issues"
+Homepage = "https://github.com/SmallDoges/flash-dmattn"
+Source = "https://github.com/SmallDoges/flash-dmattn"
+Issues = "https://github.com/SmallDoges/flash-dmattn/issues"
 
 [project.optional-dependencies]
 triton = [
