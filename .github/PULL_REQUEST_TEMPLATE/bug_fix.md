@@ -7,7 +7,7 @@ labels: ["bug"]
 ---
 
 ## Summary
-- What bug does this fix? Link related issues.
+- What bug does this fix?
 
 ## Root Cause
 - Brief analysis of the cause.
