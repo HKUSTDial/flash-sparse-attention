@@ -1,9 +1,17 @@
 ---
 name: Feature request
 about: Suggest an idea for Flash-DMA
-title: '[FEATURE] '
-labels: 'enhancement'
-assignees: ''
+title: '[FEATURE REQUEST] '
+labels: ["feature"]
+assignees: 
+    - LoserCheems
+    - Evanwu1125
+    - SNHuan
+    - Thanksyy
+    - ftgreat
+    - zacliu2023
+    - juliohsu
+    - wubingheng111
 
 ---
 
