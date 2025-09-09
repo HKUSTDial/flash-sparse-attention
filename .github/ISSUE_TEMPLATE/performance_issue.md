@@ -2,8 +2,16 @@
 name: Performance issue
 about: Report performance problems or optimization opportunities
 title: '[PERFORMANCE] '
-labels: 'performance'
-assignees: ''
+labels: ["performance"]
+assignees: 
+    - LoserCheems
+    - Evanwu1125
+    - SNHuan
+    - Thanksyy
+    - ftgreat
+    - zacliu2023
+    - juliohsu
+    - wubingheng111
 
 ---
 
@@ -41,8 +49,8 @@ If you have profiling data (from nsys, nvprof, or PyTorch profiler), please incl
 **System Information**
 - GPU model and memory: [e.g., RTX 4090 24GB]
 - CUDA Compute Capability: [e.g., 8.9]
-- CPU: [e.g., Intel i9-12900K]
-- RAM: [e.g., 32GB DDR4]
+- CPU: [e.g., Intel i9-14900K]
+- RAM: [e.g., 64GB DDR4]
 
 **Additional Context**
 - Is this a regression from a previous version?
