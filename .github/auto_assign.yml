@@ -1,0 +1,28 @@
+addReviewers: true
+addAssignees: true
+
+# If true, adds reviewers/assignees only if PR author is not in the list
+skipUsers:
+  - dependabot[bot]
+
+reviewers:
+  - LoserCheems
+  - Evanwu1125
+  - SNHuan
+  - Thanksyy
+  - ftgreat
+  - zacliu2023
+  - juliohsu
+  - wubingheng111
+
+assignees:
+  - LoserCheems
+  - Evanwu1125
+  - SNHuan
+  - Thanksyy
+  - ftgreat
+  - zacliu2023
+  - juliohsu
+  - wubingheng111
+
+numberOfReviewers: 8

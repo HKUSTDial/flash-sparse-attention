@@ -1,9 +1,17 @@
 ---
 name: Bug report
 about: Create a report to help us improve Flash-DMA
-title: '[BUG] '
-labels: 'bug'
-assignees: ''
+title: '[BUG REPORT] '
+labels: ["bug"]
+assignees: 
+    - LoserCheems
+    - Evanwu1125
+    - SNHuan
+    - Thanksyy
+    - ftgreat
+    - zacliu2023
+    - juliohsu
+    - wubingheng111
 
 ---
 
