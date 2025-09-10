@@ -118,32 +118,29 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 
 ## 安装
 
-### 先决条件
+### 依赖
 
-- **Python**: 3.8 或更高版本
-- **PyTorch**: 2.0.0 或更高版本  
-- **CUDA**: 11.8 或更高版本
+- **Linux**: Ubuntu 22.04 或更高版本
 - **NVIDIA GPU**: 计算能力 8.0 或更高
 - **C++ 编译器**: GCC 7+
+- **CUDA**: 11.8 或更高版本
+- **Python**: 3.9 或更高版本
+- **PyTorch**: 2.5.1 或更高版本  
 
-### CUDA 环境设置
+### 安装
 
-确保您的 CUDA 环境已正确配置：
+您可以通过预编译的轮子安装 Flash-DMA：
 
 ```bash
-# 检查 CUDA 安装
-nvcc --version
-
-# 如需要，设置 CUDA_HOME
-export CUDA_HOME=/usr/local/cuda
+pip install flash-dmattn --no-build-isolation
 ```
 
-### 从源码安装
+或者，您可以从源代码编译和安装：
 
 ```bash
 git clone https://github.com/SmallDoges/flash-dmattn.git
 cd flash-dmattn
-MAX_JOBS=4 pip install . --no-build-isolation
+pip install . --no-build-isolation
 ```
 
 
