@@ -118,32 +118,29 @@ The following table shows the backward pass performance comparison between Flash
 
 ## Installation
 
-### Prerequisites
+### Requirements
 
-- **Python**: 3.8 or later
-- **PyTorch**: 2.0.0 or later  
-- **CUDA**: 11.8 or later
+- **Linux**: Ubuntu 22.04 or later
 - **NVIDIA GPU**: Compute Capability 8.0 or higher
 - **C++ Compiler**: GCC 7+
+- **CUDA**: 11.8 or later
+- **Python**: 3.9 or later
+- **PyTorch**: 2.5.1 or later  
 
-### CUDA Environment Setup
+### Install
 
-Ensure your CUDA environment is properly configured:
+You can install Flash-DMA via pre-compiled wheels:
 
 ```bash
-# Check CUDA installation
-nvcc --version
-
-# Set CUDA_HOME if needed
-export CUDA_HOME=/usr/local/cuda
+pip install flash-dmattn --no-build-isolation
 ```
 
-### Install from Source
+Alternatively, you can compile and install from source:
 
 ```bash
 git clone https://github.com/SmallDoges/flash-dmattn.git
 cd flash-dmattn
-MAX_JOBS=4 pip install . --no-build-isolation
+pip install . --no-build-isolation
 ```
 
 
