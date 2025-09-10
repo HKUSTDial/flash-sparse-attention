@@ -1,0 +1,54 @@
+name: Manual publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to publish
+        required: true
+        type: string
+      python-version:
+        description: Python version to use for build
+        required: false
+        default: '3.10'
+        type: string
+
+jobs:
+  publish_package:
+    name: Publish package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install ninja packaging wheel twine
+          pip install setuptools==75.8.0
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build core package
+        env:
+          FLASH_DMATTN_SKIP_CUDA_BUILD: "TRUE"
+        run: |
+          python setup.py sdist --dist-dir=dist
+          ls -l dist
+
+      - name: Deploy
+        env:
+          TWINE_USERNAME: "__token__"
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "::error::PYPI_API_TOKEN secret not set; aborting publish."; exit 1
+          fi
+          python -m twine upload dist/*
