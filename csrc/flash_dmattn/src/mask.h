@@ -54,7 +54,6 @@ __forceinline__ __device__ void apply_mask(
     }
 }
 
-template <bool Is_causal>
 struct Mask {
     const int max_seqlen_k, max_seqlen_q;
 
