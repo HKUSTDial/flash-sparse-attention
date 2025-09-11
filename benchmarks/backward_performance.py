@@ -177,13 +177,6 @@ def scaled_dot_product_attention_backward(
     value_states = value_states.contiguous()
 
     try:
-        # Create gradient for output
-        batch_size, num_heads, query_len, head_dim = query_states.shape
-        dout = torch.randn(
-            batch_size, query_len, num_heads, head_dim,
-            device=query_states.device, dtype=query_states.dtype
-        )
-        
         # Forward pass - SDPA expects q, k, v in [batch, num_heads, seq_len, head_dim] format
         attn_outputs = F.scaled_dot_product_attention(
             query_states,                    # [batch, num_heads, query_len, head_dim]
@@ -201,8 +194,8 @@ def scaled_dot_product_attention_backward(
         start_time = time.time()
 
         # Backward pass
-        attn_outputs.backward(dout)
-        
+        attn_outputs.sum().backward()
+
         torch.cuda.synchronize()
         end_time = time.time()
         
@@ -261,13 +254,6 @@ def dynamic_mask_attention_backward_cuda(
     value_states = value_states.transpose(1, 2).contiguous()        # [batch, key_len, num_kv_heads, head_dim]
 
     try:
-        # Create gradient for output
-        batch_size, query_len, num_heads, head_dim = query_states.shape
-        dout = torch.randn(
-            batch_size, query_len, num_heads, head_dim,
-            device=query_states.device, dtype=query_states.dtype
-        )
-        
         # Call the flash_dmattn_func interface
         attn_outputs = flash_dmattn_func(
             query=query_states,                                         # q: [batch, query_len, num_heads, head_dim]
@@ -286,7 +272,7 @@ def dynamic_mask_attention_backward_cuda(
         start_time = time.time()
         
         # Backward pass
-        attn_outputs.backward(dout)
+        attn_outputs.sum().backward()
         
         torch.cuda.synchronize()
         end_time = time.time()
@@ -356,13 +342,6 @@ def dynamic_mask_attention_backward_triton(
         value_states = value_states.transpose(1, 2).contiguous()        # [batch, key_len, num_heads, head_dim]  
         attn_mask = attn_mask.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
         attn_bias = attn_bias.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
-
-        # Create gradient for output
-        batch_size, query_len, num_heads, head_dim = query_states.shape
-        dout = torch.randn(
-            batch_size, query_len, num_heads, head_dim,
-            device=query_states.device, dtype=query_states.dtype
-        )
         
         # Call the Triton implementation
         attn_outputs = triton_dmattn_func(
@@ -379,7 +358,7 @@ def dynamic_mask_attention_backward_triton(
         start_time = time.time()
 
         # Backward pass
-        attn_outputs.backward(dout)
+        attn_outputs.sum().backward()
         
         torch.cuda.synchronize()
         end_time = time.time()
@@ -445,13 +424,6 @@ def dynamic_mask_attention_backward_flex(
         
         # Flex attention expects: q, k, v in [batch, num_heads, seqlen, head_dim] format
         # But attention_mask and attention_bias in [batch, num_heads, query_len, key_len] format
-
-        # Create gradient for output
-        batch_size, query_len, head_dim = query_states.shape[0], query_states.shape[2], query_states.shape[3]
-        dout = torch.randn(
-            batch_size, query_len, num_heads, head_dim,
-            device=query_states.device, dtype=query_states.dtype
-        )
         
         # Call the Flex Attention implementation
         attn_outputs = flex_dmattn_func(
@@ -468,7 +440,7 @@ def dynamic_mask_attention_backward_flex(
         start_time = time.time()
 
         # Backward pass
-        attn_outputs.backward(dout)
+        attn_outputs.sum().backward()
         
         torch.cuda.synchronize()
         end_time = time.time()

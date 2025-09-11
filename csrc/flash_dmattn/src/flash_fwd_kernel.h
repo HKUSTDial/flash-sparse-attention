@@ -395,8 +395,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     FLASH_NAMESPACE::Softmax<2 * size<1>(acc_o)> softmax;
 
-    // Init dynamic mask processor
-    FLASH_NAMESPACE::Mask<Is_causal> mask(
+    // Init mask processor
+    FLASH_NAMESPACE::Mask mask(
         binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
 
@@ -1044,8 +1044,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     FLASH_NAMESPACE::Softmax<2 * size<1>(acc_o)> softmax;
 
-    // Init dynamic mask processor
-    FLASH_NAMESPACE::Mask<Is_causal> mask(
+    // Init mask processor
+    FLASH_NAMESPACE::Mask mask(
         binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
 
