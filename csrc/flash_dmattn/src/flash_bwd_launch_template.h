@@ -141,8 +141,8 @@ void run_mha_bwd_hdim32(Flash_bwd_params &params, cudaStream_t stream) {
         // 104KB, 1 CTAs in A100, 2 CTAs in H100.
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 96KB, 2 CTAs in sm86 and sm 89.
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, true, false, T>, Is_causal>(params, stream);
+        // 96KB, 1 CTAs in sm86 and sm 89.
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, false, true, T>, Is_causal>(params, stream);
     }
 }
 
@@ -166,8 +166,8 @@ void run_mha_bwd_hdim64(Flash_bwd_params &params, cudaStream_t stream) {
         // 144KB, N/A CTAs in sm86 and sm 89, 1 CTAs in A100, 1 CTAs in H100.
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 128, 128, 8, 4, 4, 4, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 72KB, 1 CTAs in sm86 and sm 89.
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, true, false, T>, Is_causal>(params, stream);
+        // 88KB, 1 CTAs in sm86 and sm 89.
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, false, false, T>, Is_causal>(params, stream);
     }
     // M=128, N=64 is quite slow, I think because we need to read/write dQaccum twice as many times
 }
@@ -187,8 +187,8 @@ void run_mha_bwd_hdim96(Flash_bwd_params &params, cudaStream_t stream) {
         // 116KB, 1 CTAs in A100, 1 CTAs in H100.
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 92KB, 1 CTAs in sm86 and sm 89.
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 4, true, false, T>, Is_causal>(params, stream);
+        // 76KB, 1 CTAs in sm86 and sm 89.
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 2, 4, 4, false, false, T>, Is_causal>(params, stream);
     }
 }
 
@@ -207,8 +207,8 @@ void run_mha_bwd_hdim128(Flash_bwd_params &params, cudaStream_t stream) {
         // 144KB, 1 CTAs in A100, 1 CTAs in H100.
         run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 128, 8, 2, 4, 2, false, false, T>, Is_causal>(params, stream);
     } else {                                            // sm86 and sm89
-        // 88KB, 1 CTAs in sm86 and sm 89.
-        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, true, false, T>, Is_causal>(params, stream);
+        // 80KB, 1 CTAs in sm86 and sm 89.
+        run_flash_bwd<Flash_bwd_kernel_traits<Headdim, 64, 64, 8, 4, 2, 2, false, true, T>, Is_causal>(params, stream);
     }
 }
 
