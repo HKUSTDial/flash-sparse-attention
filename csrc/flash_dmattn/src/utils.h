@@ -546,9 +546,7 @@ __forceinline__ __device__ void copy_MN(
                     if constexpr (Bool_to_Element) {
                         #pragma unroll
                         for (int i = 0; i < size<0>(S); ++i) {
-                            D(i, m, n) = static_cast<bool>(S(i, m, n))
-                                ? static_cast<To_type>(1.0f)
-                                : static_cast<To_type>(0.0f);
+                            D(i, m, n) = static_cast<bool>(S(i, m, n)) ? To_type(1) : To_type(0);
                         }   
                     } else {
                         cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
