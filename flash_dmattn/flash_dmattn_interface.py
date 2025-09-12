@@ -252,9 +252,9 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if seqlen_k % 128 != 0:
             k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
             v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
-            if mask is None:
+            if mask is not None:
                 mask = torch.nn.functional.pad(mask, [0, 128 - seqlen_k % 128], value=False)
-            if bias is None:
+            if bias is not None:
                 bias = torch.nn.functional.pad(bias, [0, 128 - seqlen_k % 128], value=torch.finfo(bias.dtype).min)
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
