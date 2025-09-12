@@ -87,11 +87,11 @@ def prepare_dynamic_mask(
             attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
         )
         valid_topk = topk_values != min_dtype
-        attn_mask = torch.zeros_like(attn_bias, dtype=dtype, device=attn_bias.device)
-        attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk.to(dtype))
-        attn_bias = attn_bias.masked_fill(attn_mask == 0.0, min_dtype)
+        attn_mask = torch.zeros_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
+        attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk)
+        attn_bias = attn_bias.masked_fill(attn_mask == False, min_dtype)
     else:
-        attn_mask = torch.ones_like(attn_bias, dtype=dtype, device=attn_bias.device)
+        attn_mask = torch.ones_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
     return attn_bias, attn_mask
 
 
