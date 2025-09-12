@@ -169,7 +169,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         make_coord(_, 0)
     );  // (kBlockN, kHeadDim, nblocksN)
     Tensor mMask = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element*>(params.mask_ptr) + binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, bidb)),
+        make_gmem_ptr(reinterpret_cast<const bool*>(params.mask_ptr) + binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, bidb)),
         make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
         make_stride(params.mask_head_stride, params.mask_row_stride, _1{})
     );
@@ -344,15 +344,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     }
     // Reverse iteration over N blocks
     int n_block = n_block_max - 1;
-    
-    FLASH_NAMESPACE::copy_MN<Is_even_MN>(
+
+    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
         gmem_tiled_copy_MaskBias,
         tMaskgMask(_, _, _, n_block), tMasksMask,
         tMaskcMask,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
     );
-    cute::cp_async_fence();
-    FLASH_NAMESPACE::cp_async_wait<0>();
+    // cute::cp_async_fence();
+    // FLASH_NAMESPACE::cp_async_wait<0>();
     __syncthreads();
 
     // Do OR-reduce on the mask to see if any active threads
@@ -470,14 +470,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            cute::cp_async_fence();
-            FLASH_NAMESPACE::cp_async_wait<0>();
+            // cute::cp_async_fence();
+            // FLASH_NAMESPACE::cp_async_wait<0>();
             __syncthreads();
 
             // Do OR-reduce on the mask to see if any active threads for next iteration
@@ -593,14 +593,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask(_, _, _, n_block - 1), tMasksMask,
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            cute::cp_async_fence();
-            FLASH_NAMESPACE::cp_async_wait<0>();
+            // cute::cp_async_fence();
+            // FLASH_NAMESPACE::cp_async_wait<0>();
             __syncthreads();
 
             // Do OR-reduce on the mask to see if any active threads for next iteration
@@ -873,7 +873,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         make_stride(params.v_row_stride, _1{})
     );
     Tensor gMask = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.mask_ptr) + col_offset_mask),
+        make_gmem_ptr(reinterpret_cast<const bool *>(params.mask_ptr) + col_offset_mask),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_stride(params.mask_row_stride, _1{})
     );
@@ -999,14 +999,14 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     int n_block = n_block_max - 1;
 
-    FLASH_NAMESPACE::copy_MN<Is_even_MN>(
+    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
         gmem_tiled_copy_MaskBias,
         tMaskgMask, tMasksMask,
         tMaskcMask,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
     );
-    cute::cp_async_fence();
-    FLASH_NAMESPACE::cp_async_wait<0>();
+    // cute::cp_async_fence();
+    // FLASH_NAMESPACE::cp_async_wait<0>();
     __syncthreads();
 
     // Do OR-reduce on the mask to see if any active threads for next iteration
@@ -1146,14 +1146,14 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
             }
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask, 
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
-            cute::cp_async_fence();
-            FLASH_NAMESPACE::cp_async_wait<0>();
+            // cute::cp_async_fence();
+            // FLASH_NAMESPACE::cp_async_wait<0>();
             __syncthreads();
 
             // Do OR-reduce on the mask to see if any active threads for next iteration
@@ -1287,12 +1287,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
             }
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask,
                 tMaskcMask,
                 binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
             );
+            // cute::cp_async_fence();
+            // FLASH_NAMESPACE::cp_async_wait<0>();
+            __syncthreads();
 
             // Do OR-reduce on the mask to see if any active threads for next iteration
             any_active_local_next = false;

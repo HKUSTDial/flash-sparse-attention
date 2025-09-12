@@ -144,7 +144,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         make_stride(params.v_row_stride, _1{})
     );
     Tensor gMask = make_tensor(
-        make_gmem_ptr(reinterpret_cast<Element *>(params.mask_ptr) + row_offset_mask),
+        make_gmem_ptr(reinterpret_cast<const bool *>(params.mask_ptr) + row_offset_mask),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_stride(params.mask_row_stride, _1{})
     );
@@ -552,14 +552,15 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // cute::copy(gmem_tiled_copy_QKV, tKgK, tKrK);
     // // if (cute::thread(1, 0)) { print(tKrK); }
 
-    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
         gmem_tiled_copy_MaskBias,
         tMaskgMask, tMasksMask,
         tMaskcMask,
         binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
     );
-    cute::cp_async_fence();
-    FLASH_NAMESPACE::cp_async_wait<0>();
+    // cute::cp_async_fence();
+    // FLASH_NAMESPACE::cp_async_wait<0>();
+    __syncthreads();
 
     // Do OR-reduce on the mask to see if any active threads
     Tensor tSsMask_copy_view = smem_thr_copy_PdS.retile_S(tSsMask);
@@ -807,14 +808,15 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         if (m_block > m_block_min) {
             // Advance gMask
             tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
-            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
                 gmem_tiled_copy_MaskBias,
                 tMaskgMask, tMasksMask,
                 tMaskcMask,
                 binfo.actual_seqlen_q - (m_block - 1) * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
             );
-            FLASH_NAMESPACE::cp_async_fence();
-            FLASH_NAMESPACE::cp_async_wait<0>();
+            // FLASH_NAMESPACE::cp_async_fence();
+            // FLASH_NAMESPACE::cp_async_wait<0>();
+            __syncthreads();
 
             // Do OR-reduce on the mask to see if any active threads for next iteration
             any_active_local_next = false;
