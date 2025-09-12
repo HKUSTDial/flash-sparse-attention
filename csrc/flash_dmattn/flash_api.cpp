@@ -361,7 +361,7 @@ mha_fwd(
     TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(mask.dtype() == q_dtype, "mask must have the same dtype as inputs");
+    TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
     TORCH_CHECK(bias.dtype() == q_dtype, "bias must have the same dtype as inputs");
 
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v); CHECK_DEVICE(mask); CHECK_DEVICE(bias);
@@ -512,7 +512,7 @@ mha_varlen_fwd(
     TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(mask.dtype() == q_dtype, "mask must have the same dtype as inputs");
+    TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
     TORCH_CHECK(bias.dtype() == q_dtype, "bias must have the same dtype as inputs");
     TORCH_CHECK(cu_seqlens_q.dtype() == torch::kInt32, "cu_seqlens_q must have dtype int32");
     TORCH_CHECK(cu_seqlens_k.dtype() == torch::kInt32, "cu_seqlens_k must have dtype int32");
@@ -749,7 +749,7 @@ mha_bwd(
     TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(mask.dtype() == q_dtype, "query and mask must have the same dtype");
+    TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
     TORCH_CHECK(bias.dtype() == q_dtype, "query and bias must have the same dtype");
     TORCH_CHECK(out.dtype() == q_dtype, "query and out must have the same dtype");
     TORCH_CHECK(dout.dtype() == q_dtype, "query and dout must have the same dtype");
@@ -951,7 +951,7 @@ mha_varlen_bwd(
     TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(mask.dtype() == q_dtype, "query and mask must have the same dtype");
+    TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
     TORCH_CHECK(bias.dtype() == q_dtype, "query and bias must have the same dtype");
     TORCH_CHECK(out.dtype() == q_dtype, "query and out must have the same dtype");
     TORCH_CHECK(dout.dtype() == q_dtype, "query and dout must have the same dtype");
@@ -1136,7 +1136,7 @@ mha_varlen_bwd(
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "FlashDynamicMaskAttention";
     m.def("fwd", &FLASH_NAMESPACE::mha_fwd, "Forward pass");
-    m.def("varlen_fwd", &FLASH_NAMESPACE::mha_varlen_fwd, "Forward pass with variable length");
+    // m.def("varlen_fwd", &FLASH_NAMESPACE::mha_varlen_fwd, "Forward pass with variable length");
     m.def("bwd", &FLASH_NAMESPACE::mha_bwd, "Backward pass");
-    m.def("varlen_bwd", &FLASH_NAMESPACE::mha_varlen_bwd, "Backward pass with variable length");
+    // m.def("varlen_bwd", &FLASH_NAMESPACE::mha_varlen_bwd, "Backward pass with variable length");
 }
