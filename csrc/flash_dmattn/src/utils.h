@@ -521,7 +521,7 @@ __forceinline__ __device__ void copy(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
-    bool Is_even_MN=true, bool Clear_OOB_MN=true,
+    bool Is_even_MN=true, bool Clear_OOB_MN=true, bool Bool_to_Element=false, typename To_type=void,
     typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
     typename Engine2, typename Layout2
 >
@@ -543,7 +543,16 @@ __forceinline__ __device__ void copy_MN(
             #pragma unroll
             for (int n = 0; n < size<2>(S); ++n) {
                 if (Is_even_MN || get<1>(identity_MN(0, m, n)) < max_N) {
-                    cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
+                    if constexpr (Bool_to_Element) {
+                        #pragma unroll
+                        for (int i = 0; i < size<0>(S); ++i) {
+                            D(i, m, n) = static_cast<bool>(S(i, m, n))
+                                ? static_cast<To_type>(1.0f)
+                                : static_cast<To_type>(0.0f);
+                        }   
+                    } else {
+                        cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
+                    }
                 } else if (Clear_OOB_MN) {
                     cute::clear(D(_, m, n));
                 }
