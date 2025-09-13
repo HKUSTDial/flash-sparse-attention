@@ -191,7 +191,7 @@ def dynamic_mask_attention_python(
     value_states = repeat_kv(value_states, num_queries_per_kv)
     attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
     attn_bias = repeat_kv(attn_bias_leaf, num_queries_per_kv)
-    
+
     attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1))
     attn_weights = attn_weights * scaling + attn_bias           # Apply scaling and zoh
     attn_weights = F.softmax(attn_weights, dim=-1)              # Softmax normalization
