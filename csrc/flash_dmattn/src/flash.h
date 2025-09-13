@@ -50,6 +50,9 @@ struct Mask_params {
     index_t mask_batch_stride;          // Stride between batches of attention mask
     index_t mask_head_stride;           // Stride between heads of attention mask
     index_t mask_row_stride;            // Stride between rows of attention mask
+
+    // The number of heads in the mask.
+    int h_mask;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -61,6 +64,9 @@ struct Bias_params {
     index_t bias_batch_stride;          // Stride between batches of attention bias
     index_t bias_head_stride;           // Stride between heads of attention bias
     index_t bias_row_stride;            // Stride between rows of attention bias
+
+    // The number of heads in the bias.
+    int h_bias;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
