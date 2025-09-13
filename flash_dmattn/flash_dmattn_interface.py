@@ -361,10 +361,14 @@ def flash_dmattn_func(
         key: torch.Tensor. The key tensor of shape (batch_size, seqlen, nheads_k, headdim)
         value: torch.Tensor. The value tensor of shape (batch_size, seqlen, nheads_k, headdim)
         attn_mask: torch.Tensor, optional. The attention mask boolean tensor of
-            shape (batch_size, nheads_k, seqlen_q, seqlen_k) to apply to the attention scores.
+            shape (batch_size, nheads, seqlen_q, seqlen_k) to apply to the attention scores.
+            Also supports shape (batch_size, nheads_k, seqlen_q, seqlen_k) or
+            (batch_size, 1, seqlen_q, seqlen_k) for MQA/GQA.
             If None, no mask is applied.
         attn_bias: torch.Tensor, optional. The attention bias float tensor of
-            shape (batch_size, nheads_k, seqlen_q, seqlen_k) to add to the attention scores.
+            shape (batch_size, nheads, seqlen_q, seqlen_k) to add to the attention scores.
+            Also supports shape (batch_size, nheads_k, seqlen_q, seqlen_k) or
+            (batch_size, 1, seqlen_q, seqlen_k) for MQA/GQA.
             If None, no bias is applied.
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
         scale: float. The scaling of QK^T before applying softmax.
