@@ -136,6 +136,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // might save us 1 register (we just need n_block instead of both n_block and n_block_max).
 
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
+    const int h_idx_mask = (params.h_mask == 1) ? 0 : ((params.h_mask == params.h_k) ? (bidh / params.h_h_k_ratio) : bidh);
+    const int h_idx_bias = (params.h_bias == 1) ? 0 : ((params.h_bias == params.h_k) ? (bidh / params.h_h_k_ratio) : bidh);
 
     // Global memory tensor configuration
     Tensor mQ = make_tensor(
@@ -170,21 +172,21 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     );  // (kBlockN, kHeadDim, nblocksN)
     Tensor mMask = make_tensor(
         make_gmem_ptr(reinterpret_cast<const bool*>(params.mask_ptr) + binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, bidb)),
-        make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
+        make_shape(params.h_mask, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
         make_stride(params.mask_head_stride, params.mask_row_stride, _1{})
     );
     Tensor gMask = local_tile(
-        mMask(bidh / params.h_h_k_ratio, _, _),
+        mMask(h_idx_mask, _, _),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_coord(m_block, _)
     );  // (kBlockM, kBlockN, nblocksN)
     Tensor mBias = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element*>(params.bias_ptr) + binfo.bias_offset(params.bias_batch_stride, params.bias_row_stride, bidb)),
-        make_shape(params.h_k, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
+        make_shape(params.h_bias, binfo.actual_seqlen_q, binfo.actual_seqlen_k),
         make_stride(params.bias_head_stride, params.bias_row_stride, _1{})
     );
     Tensor gBias = local_tile(
-        mBias(bidh / params.h_h_k_ratio, _, _),
+        mBias(h_idx_bias, _, _),
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_coord(m_block, _)
     );  // (kBlockM, kBlockN, nblocksN)
@@ -840,16 +842,18 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         ? binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb_cache)
           + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride
         : block_table[block_table_idx] * params.v_batch_stride + block_table_offset * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
+    const int h_idx_mask = (params.h_mask == 1) ? 0 : ((params.h_mask == params.h_k) ? (bidh / params.h_h_k_ratio) : bidh);
     const index_t col_offset_mask = (block_table == nullptr)
         ? binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.mask_head_stride + m_block * kBlockM * params.mask_row_stride + (n_block_max - 1) * kBlockN
+          + h_idx_mask * params.mask_head_stride + m_block * kBlockM * params.mask_row_stride + (n_block_max - 1) * kBlockN
         : binfo.q_offset(/*batch_stride=*/index_t(0), params.mask_row_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.mask_head_stride + m_block * kBlockM * params.mask_row_stride + block_table[block_table_idx] * params.mask_batch_stride + block_table_offset;
+          + h_idx_mask * params.mask_head_stride + m_block * kBlockM * params.mask_row_stride + block_table[block_table_idx] * params.mask_batch_stride + block_table_offset;
+    const int h_idx_bias = (params.h_bias == 1) ? 0 : ((params.h_bias == params.h_k) ? (bidh / params.h_h_k_ratio) : bidh);
     const index_t col_offset_bias = (block_table == nullptr)
         ? binfo.bias_offset(params.bias_batch_stride, params.bias_row_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.bias_head_stride + m_block * kBlockM * params.bias_row_stride + (n_block_max - 1) * kBlockN
+          + h_idx_bias * params.bias_head_stride + m_block * kBlockM * params.bias_row_stride + (n_block_max - 1) * kBlockN
         : binfo.q_offset(/*batch_stride=*/index_t(0), params.bias_row_stride, bidb_cache)
-          + (bidh / params.h_h_k_ratio) * params.bias_head_stride + m_block * kBlockM * params.bias_row_stride + block_table[block_table_idx] * params.bias_batch_stride + block_table_offset;
+          + h_idx_bias * params.bias_head_stride + m_block * kBlockM * params.bias_row_stride + block_table[block_table_idx] * params.bias_batch_stride + block_table_offset;
 
     // Global memory tensor configuration
     Tensor mQ = make_tensor(
