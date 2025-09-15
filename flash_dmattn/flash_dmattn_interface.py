@@ -14,7 +14,7 @@ def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
 def _sanitize_tensors(*tensors: Optional[torch.Tensor], nan: float = 0.0, posinf: float = 1e6, neginf: float = -1e6) -> None:
     for t in tensors:
         if t is not None and isinstance(t, torch.Tensor):
-            torch.nan_to_num(t, nan=nan, posinf=posinf, neginf=neginf, out=t)
+            torch.nan_to_num_(t, nan=nan, posinf=posinf, neginf=neginf)
 
 
 def _get_block_size_n(device, head_dim, is_causal):
@@ -95,7 +95,7 @@ def _flash_dmattn_forward(
         softcap,
         return_softmax,
     )
-    _sanitize_tensors(out)
+    _sanitize_tensors(out, nan=0.0, posinf=torch.finfo(out.dtype).max, neginf=torch.finfo(out.dtype).min)
     return out, softmax_lse, S_dmask
 
 
@@ -170,7 +170,7 @@ def _flash_dmattn_backward(
         softcap,
         deterministic,
     )
-    _sanitize_tensors(dq, dk, dv, dbias)
+    _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=torch.finfo(dq.dtype).max, neginf=torch.finfo(dq.dtype).min)
     return softmax_d
 
 
@@ -255,7 +255,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             if mask is not None:
                 mask = torch.nn.functional.pad(mask, [0, 128 - seqlen_k % 128], value=False)
             if bias is not None:
-                bias = torch.nn.functional.pad(bias, [0, 128 - seqlen_k % 128], value=torch.finfo(bias.dtype).min)
+                bias = torch.nn.functional.pad(bias, [0, 128 - seqlen_k % 128], value=0.0)
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
@@ -288,7 +288,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         *args: Any,
     ):
         q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
-        dq, dk, dv, dbias = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v), torch.empty_like(bias)
+        dq, dk, dv, dbias = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v), torch.zeros_like(bias)
 
         head_size_og = dout.size(3)
         dout_padded = dout
@@ -339,10 +339,15 @@ def flash_dmattn_func(
     return_attn_probs: Optional[bool] = None,
 ):
     """
-    Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
+    Supports multi-query attention and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
     than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
     For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
     0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
+
+    Similarity, also supports attn_mask and attn_bias with head dimension of 1, nheads_k or nheads for MQA/GQA.
+    For example, if Q has 6 heads, K, V have 2 heads, then attn_mask and attn_bias can have head dimension
+    of 1, 2 or 6. If it is 1, all heads use the same mask/bias; if it is 2, head 0, 1, 2 of Q use head 0
+    of mask/bias, head 3, 4, 5 of Q use head 1 of mask/bias. If it is 6, each head uses its own mask/bias.
 
     If is_causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
     For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:
