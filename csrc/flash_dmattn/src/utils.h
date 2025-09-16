@@ -521,15 +521,16 @@ __forceinline__ __device__ void copy(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
-    bool Is_even_MN=true, bool Clear_OOB_MN=true, bool Bool_to_Element=false, typename To_type=void,
-    typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
-    typename Engine2, typename Layout2
+    bool Is_even_MN=true, bool Clear_OOB_MN=false, bool Bool_to_Element=false, typename To_type=void,
+    // typename TiledCopy, 
+    typename Engine0, typename Layout0, typename Engine1, typename Layout1,
+    typename Engine2, typename Layout2, typename Engine3, typename Layout3
 >
 __forceinline__ __device__ void copy_MN(
-    TiledCopy tiled_copy,
+    // TiledCopy tiled_copy,
     Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D,
-    Tensor<Engine2, Layout2> const &identity_MN,
-    const int max_M=0, const int max_N=0
+    Tensor<Engine2, Layout2> const &identity_MN,  Tensor<Engine3, Layout3> const &predicate_N,
+    const int max_M=0
 ) {
     CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});          // (MMA, MMA_M, MMA_N) 
     CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});          // (MMA, MMA_M, MMA_N)
@@ -542,14 +543,19 @@ __forceinline__ __device__ void copy_MN(
         if (Is_even_MN || get<0>(identity_MN(0, m, 0)) < max_M) {
             #pragma unroll
             for (int n = 0; n < size<2>(S); ++n) {
-                if (Is_even_MN || get<1>(identity_MN(0, m, n)) < max_N) {
+                if (Is_even_MN || predicate_N(n)) {
                     if constexpr (Bool_to_Element) {
                         #pragma unroll
                         for (int i = 0; i < size<0>(S); ++i) {
                             D(i, m, n) = static_cast<bool>(S(i, m, n)) ? To_type(1) : To_type(0);
                         }   
                     } else {
-                        cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
+                        // Using vectorized load will cause out-of-bounds access when !Is_even_MN && !predicate_N(n)
+                        // cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
+                        #pragma unroll
+                        for (int i = 0; i < size<0>(S); ++i) {
+                            D(i, m, n) = S(i, m, n);
+                        }
                     }
                 } else if (Clear_OOB_MN) {
                     cute::clear(D(_, m, n));
