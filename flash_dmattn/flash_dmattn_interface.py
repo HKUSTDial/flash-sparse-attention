@@ -227,8 +227,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return_softmax: Optional[bool],
         is_grad_enabled: bool = True,
     ):
-        # q, k, v are expected to be of shape (batch_size, seqlen, num_heads, head_size)
-        seqlen_k = k.shape[1]
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
         )
@@ -249,14 +247,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        if seqlen_k % 128 != 0:
-            k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
-            v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
-            if mask is not None:
-                mask = torch.nn.functional.pad(mask, [0, 128 - seqlen_k % 128], value=False)
-            if bias is not None:
-                bias = torch.nn.functional.pad(bias, [0, 128 - seqlen_k % 128], value=0.0)
-
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
             k,
@@ -271,7 +261,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
 
         if is_grad:
             ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
-            ctx.seqlen_k = seqlen_k
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
@@ -317,11 +306,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
-
-        if ctx.seqlen_k % 128 != 0:
-            dk = dk[:, : ctx.seqlen_k, :, :]
-            dv = dv[:, : ctx.seqlen_k, :, :]
-            dbias = dbias[..., : ctx.seqlen_k]
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
