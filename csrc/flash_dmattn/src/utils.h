@@ -335,6 +335,25 @@ __forceinline__ __device__ void sparse_gemm_rs(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+
+template <typename Tensor, typename ThrCopy>
+__forceinline__ __device__ void mask_or_reduce(
+    Tensor &tSsMask,
+    bool &active,
+    ThrCopy smem_thr_copy_Mask
+) {
+    Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_D(tSsMask);
+    bool active_local = false;
+    #pragma unroll
+    for (int i = 0; i < size(tSsMask_copy_view); ++i) {
+        active_local |= tSsMask_copy_view(i);
+    }
+    active = __syncthreads_or(active_local);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // Convert acc_layout from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
 template<typename Layout>
 __forceinline__ __device__ auto convert_layout_acc_rowcol(Layout acc_layout) {
