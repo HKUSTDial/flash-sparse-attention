@@ -14,7 +14,7 @@ def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
 def _sanitize_tensors(*tensors: Optional[torch.Tensor], nan: float = 0.0, posinf: float = 1e6, neginf: float = -1e6) -> None:
     for t in tensors:
         if t is not None and isinstance(t, torch.Tensor):
-            torch.nan_to_num(t, nan=nan, posinf=posinf, neginf=neginf, out=t)
+            torch.nan_to_num_(t, nan=nan, posinf=posinf, neginf=neginf)
 
 
 def _get_block_size_n(device, head_dim, is_causal):
@@ -95,7 +95,7 @@ def _flash_dmattn_forward(
         softcap,
         return_softmax,
     )
-    _sanitize_tensors(out)
+    _sanitize_tensors(out, nan=0.0, posinf=torch.finfo(out.dtype).max, neginf=torch.finfo(out.dtype).min)
     return out, softmax_lse, S_dmask
 
 
@@ -170,7 +170,7 @@ def _flash_dmattn_backward(
         softcap,
         deterministic,
     )
-    _sanitize_tensors(dq, dk, dv, dbias)
+    _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=torch.finfo(dq.dtype).max, neginf=torch.finfo(dq.dtype).min)
     return softmax_d
 
 
@@ -227,8 +227,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return_softmax: Optional[bool],
         is_grad_enabled: bool = True,
     ):
-        # q, k, v are expected to be of shape (batch_size, seqlen, num_heads, head_size)
-        seqlen_k = k.shape[1]
         is_grad = is_grad_enabled and any(
             x.requires_grad for x in [q, k, v]
         )
@@ -243,19 +241,20 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if return_softmax is None:
             return_softmax = False
 
+        # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = q.size(3)
         if head_size_og % 8 != 0:
             q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-
-        if seqlen_k % 128 != 0:
-            k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
-            v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 128 - seqlen_k % 128])
-            if mask is not None:
-                mask = torch.nn.functional.pad(mask, [0, 128 - seqlen_k % 128], value=False)
-            if bias is not None:
-                bias = torch.nn.functional.pad(bias, [0, 128 - seqlen_k % 128], value=torch.finfo(bias.dtype).min)
+        # seqlen_k_og = k.shape[1]
+        # if seqlen_k_og % 8 != 0:
+        #     k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
+        #     v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
+        #     if mask is not None:
+        #         mask = torch.nn.functional.pad(mask, [0, 8 - seqlen_k_og % 8], value=False)
+        #     if bias is not None:
+        #         bias = torch.nn.functional.pad(bias, [0, 8 - seqlen_k_og % 8], value=0.0)
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
@@ -271,11 +270,11 @@ class FlashDMAttnFunc(torch.autograd.Function):
 
         if is_grad:
             ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
-            ctx.seqlen_k = seqlen_k
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
+            # ctx.seqlen_k_og = seqlen_k_og
 
         out = out_padded[..., :head_size_og]
 
@@ -288,7 +287,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         *args: Any,
     ):
         q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
-        dq, dk, dv, dbias = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v), torch.empty_like(bias)
+        dq, dk, dv, dbias = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v), torch.zeros_like(bias)
 
         head_size_og = dout.size(3)
         dout_padded = dout
@@ -318,10 +317,10 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
 
-        if ctx.seqlen_k % 128 != 0:
-            dk = dk[:, : ctx.seqlen_k, :, :]
-            dv = dv[:, : ctx.seqlen_k, :, :]
-            dbias = dbias[..., : ctx.seqlen_k]
+        # if ctx.seqlen_k_og % 8 != 0:
+        #     dk = dk[:, : ctx.seqlen_k_og, :, :]
+        #     dv = dv[:, : ctx.seqlen_k_og, :, :]
+        #     dbias = dbias[..., : ctx.seqlen_k_og]
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
@@ -339,10 +338,15 @@ def flash_dmattn_func(
     return_attn_probs: Optional[bool] = None,
 ):
     """
-    Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
+    Supports multi-query attention and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
     than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
     For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
     0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
+
+    Similarity, also supports attn_mask and attn_bias with head dimension of 1, nheads_k or nheads for MQA/GQA.
+    For example, if Q has 6 heads, K, V have 2 heads, then attn_mask and attn_bias can have head dimension
+    of 1, 2 or 6. If it is 1, all heads use the same mask/bias; if it is 2, head 0, 1, 2 of Q use head 0
+    of mask/bias, head 3, 4, 5 of Q use head 1 of mask/bias. If it is 6, each head uses its own mask/bias.
 
     If is_causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
     For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:

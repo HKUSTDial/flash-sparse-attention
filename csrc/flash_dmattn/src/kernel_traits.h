@@ -183,7 +183,14 @@ struct Flash_fwd_kernel_traits : public Base {
             Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per read
-    using GmemTiledCopyMaskBias = decltype(
+    using GmemTiledCopyMask = decltype(
+        make_tiled_copy(
+            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
+            GmemLayoutAtom{},
+            Layout<Shape<_1, _8>>{}
+        )
+    );      // Val layout, 8 vals per read
+    using GmemTiledCopyBias = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
             GmemLayoutAtom{},
@@ -442,7 +449,14 @@ struct Flash_bwd_kernel_traits : public Base {
             Layout<Shape < _1, _8>>{}
         )
     );      // Val layout, 8 vals per store
-    using GmemTiledCopyMaskBias = decltype(
+    using GmemTiledCopyMask = decltype(
+        make_tiled_copy(
+            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
+            GmemLayoutAtom{},
+            Layout<Shape<_1, _8>>{}
+        )
+    );      // Val layout, 8 vals per read
+    using GmemTiledCopyBias = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
             GmemLayoutAtom{},

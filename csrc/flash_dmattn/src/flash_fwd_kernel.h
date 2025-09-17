@@ -230,8 +230,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyMaskBias gmem_tiled_copy_MaskBias;
-    auto gmem_thr_copy_MaskBias = gmem_tiled_copy_MaskBias.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
+    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
+    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
 
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
@@ -239,10 +241,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                // (VCPY, VCPY_N, VCPY_K, nblocksN)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tMaskgMask = gmem_thr_copy_MaskBias.partition_S(gMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N, nblocksN)
-    Tensor tMasksMask = gmem_thr_copy_MaskBias.partition_D(sMask);
-    Tensor tBiasgBias = gmem_thr_copy_MaskBias.partition_S(gBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N, nblocksN)
-    Tensor tBiassBias = gmem_thr_copy_MaskBias.partition_D(sBias);
+    Tensor tMaskgMask = gmem_thr_copy_Mask.partition_S(gMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N, nblocksN)
+    Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
+    Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N, nblocksN)
+    Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
 
     // Matrix Multiply Accumulate
     typename Kernel_traits::TiledMma tiled_mma;
@@ -300,8 +302,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // Repeat the partitioning with identity layouts
     Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);                    // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
     Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);                 // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
-    Tensor tMaskcMask = gmem_thr_copy_MaskBias.partition_S(cMask);      // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
-    Tensor tBiascBias = gmem_thr_copy_MaskBias.partition_S(cBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
+    Tensor tMaskcMask = gmem_thr_copy_Mask.partition_S(cMask);      // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
+    Tensor tBiascBias = gmem_thr_copy_Bias.partition_S(cBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
 
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
@@ -310,17 +312,31 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // Set predicates for k bounds
     if (!Is_even_K) {
         #pragma unroll
-        for (int k = 0; k < size(tQpQ); ++k) {
-            tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d;
-        }
+        for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
         #pragma unroll
-        for (int k = 0; k < size(tKVpKV); ++k) {
-            tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d;
-        }
+        for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
+    }
+
+    // Reverse iteration over N blocks
+    int n_block = n_block_max - 1;
+
+    // Allocate predicate tensors for n
+    Tensor tMaskpMask = make_tensor<bool>(make_shape(size<2>(tMasksMask)));
+    Tensor tBiaspBias = make_tensor<bool>(make_shape(size<2>(tBiassBias)));
+
+    // Set predicates for n bounds
+    if (!Is_even_MN) {
+        #pragma unroll
+        for (int n = 0; n < size(tMaskpMask); ++n) { tMaskpMask(n) = get<1>(tMaskcMask(0, 0, n)) < std::max(0, binfo.actual_seqlen_k - n_block * kBlockN); }
+        #pragma unroll
+        for (int n = 0; n < size(tBiaspBias); ++n) { tBiaspBias(n) = get<1>(tBiascBias(0, 0, n)) < std::max(0, binfo.actual_seqlen_k - n_block * kBlockN); }
     }
 
 
     // Prologue
+
+    bool any_active = true;         // to be updated later for current iteration
+    bool any_active_next = true;    // to be updated later for next iteration
 
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K>(
@@ -344,27 +360,25 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         cute::copy(smem_tiled_copy_Q, tSsQ, tSrQ_copy_view);
         __syncthreads();
     }
-    // Reverse iteration over N blocks
-    int n_block = n_block_max - 1;
 
-    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
-        gmem_tiled_copy_MaskBias,
-        tMaskgMask(_, _, _, n_block), tMasksMask,
-        tMaskcMask,
-        binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
-    );
+    // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+    //     gmem_tiled_copy_Mask,
+    //     tMaskgMask(_, _, _, n_block), tMasksMask,
+    //     tMaskcMask, tMaskpMask,
+    //     binfo.actual_seqlen_q - m_block * kBlockM
+    // );
     // cute::cp_async_fence();
     // FLASH_NAMESPACE::cp_async_wait<0>();
-    __syncthreads();
+    // // Do OR-reduce on the mask to see if any active threads
 
-    // Do OR-reduce on the mask to see if any active threads
-    Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
-    bool any_active_local = false;
-    bool any_active_local_next = false; // to be updated later for next iteration
-    #pragma unroll
-    for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
-    bool any_active = __syncthreads_or(any_active_local);
-    bool any_active_next = false;       // to be updated later for next iteration
+    FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+        gmem_tiled_copy_Mask,
+        tMaskgMask(_, _, _, n_block), tMasksMask,
+        any_active,
+        tMaskcMask, tMaskpMask,
+        binfo.actual_seqlen_q - m_block * kBlockM
+    );
+    // We don't need to syncthreads here because copy_mask is already or_syncthreads.
 
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
     if (any_active) {
@@ -374,12 +388,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             tKVcKV, tKVpKV,
             binfo.actual_seqlen_k - n_block * kBlockN
         );
-        FLASH_NAMESPACE::copy_MN<Is_even_MN>(
-            gmem_tiled_copy_MaskBias,
+        FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            gmem_tiled_copy_Bias,
             tBiasgBias(_, _, _, n_block), tBiassBias,
-            tBiascBias,
-            binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+            tBiascBias, tBiaspBias,
+            binfo.actual_seqlen_q - m_block * kBlockM
         );
+        // Because copy_bias currently uses scalar loads, we need to sync here.
+        // TODO: Remove sync after fixing to vectorized loads.
+        __syncthreads();
         cute::cp_async_fence();
     }
     // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z < 2) { print(tKgK); }
@@ -472,21 +489,24 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
-                gmem_tiled_copy_MaskBias,
-                tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
-                tMaskcMask,
-                binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
+            // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            //     gmem_tiled_copy_Mask,
+            //     tMaskgMask(_, _, _, n_block - 1), tMasksMask, 
+            //     tMaskcMask, tMaskpMask,
+            //     binfo.actual_seqlen_q - m_block * kBlockM
+            // );
             // cute::cp_async_fence();
             // FLASH_NAMESPACE::cp_async_wait<0>();
-            __syncthreads();
+            // // Do OR-reduce on the mask to see if any active threads for next iteration.
 
-            // Do OR-reduce on the mask to see if any active threads for next iteration
-            any_active_local_next = false;
-            #pragma unroll
-            for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local_next |= (tSsMask_copy_view(i) != Element(0)); }
-            any_active_next = __syncthreads_or(any_active_local_next);
+            FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+                gmem_tiled_copy_Mask,
+                tMaskgMask(_, _, _, n_block - 1), tMasksMask,
+                any_active_next,
+                tMaskcMask, tMaskpMask,
+                binfo.actual_seqlen_q - m_block * kBlockM
+            );
+            // We don't need to syncthreads here because copy_mask is already or_syncthreads.
 
             if (any_active_next) {
                 FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
@@ -494,12 +514,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                     tKgK(_, _, _, n_block - 1), tKsK,
                     tKVcKV, tKVpKV
                 );
-                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                    gmem_tiled_copy_MaskBias,
+                FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                    gmem_tiled_copy_Bias,
                     tBiasgBias(_, _, _, n_block - 1), tBiassBias,
-                    tBiascBias,
-                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                    tBiascBias, tBiaspBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM
                 );
+                // Because copy_bias currently uses scalar loads, we need to sync here.
+                // TODO: Remove sync after fixing to vectorized loads.
+                __syncthreads();
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
                 cute::cp_async_fence();
@@ -595,34 +618,40 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         if (n_block > n_block_min) {
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
-                gmem_tiled_copy_MaskBias,
-                tMaskgMask(_, _, _, n_block - 1), tMasksMask,
-                tMaskcMask,
-                binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
+            // FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/false>(
+            //     gmem_tiled_copy_Mask,
+            //     tMaskgMask(_, _, _, n_block - 1), tMasksMask,
+            //     tMaskcMask, tMaskpMask,
+            //     binfo.actual_seqlen_q - m_block * kBlockM
+            // );
             // cute::cp_async_fence();
             // FLASH_NAMESPACE::cp_async_wait<0>();
-            __syncthreads();
+            // // Do OR-reduce on the mask to see if any active threads for next iteration.
 
-            // Do OR-reduce on the mask to see if any active threads for next iteration
-            any_active_local_next = false;
-            #pragma unroll
-            for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local_next |= (tSsMask_copy_view(i) != Element(0)); }
-            any_active_next = __syncthreads_or(any_active_local_next);
-
+            FLASH_NAMESPACE::copy_mask_with_or_reduce</*Is_even_MN=*/true, /*Clear_OOB_MN=*/false, /*To_type=*/Element>(
+                gmem_tiled_copy_Mask,
+                tMaskgMask(_, _, _, n_block - 1), tMasksMask,
+                any_active_next,
+                tMaskcMask, tMaskpMask,
+                binfo.actual_seqlen_q - m_block * kBlockM
+            );
+            // We don't need to syncthreads here because copy_mask is already or_syncthreads
+    
             if (any_active_next) {
                 FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
                     gmem_tiled_copy_QKV,
                     tKgK(_, _, _, n_block - 1), tKsK,
                     tKVcKV, tKVpKV
                 );
-                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                    gmem_tiled_copy_MaskBias,
+                FLASH_NAMESPACE::copy_bias</*Is_even_MN=*/true, /*Clear_OOB_MN=*/false>(
+                    gmem_tiled_copy_Bias,
                     tBiasgBias(_, _, _, n_block - 1), tBiassBias,
-                    tBiascBias,
-                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                    tBiascBias, tBiaspBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM
                 );
+                // Because copy_bias currently uses scalar loads, we need to sync here.
+                // TODO: Remove sync after fixing to vectorized loads.
+                __syncthreads();
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
                 cute::cp_async_fence();
@@ -920,8 +949,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // Global to Shared Memory operation
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyMaskBias gmem_tiled_copy_MaskBias;
-    auto gmem_thr_copy_MaskBias = gmem_tiled_copy_MaskBias.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyMask gmem_tiled_copy_Mask;
+    auto gmem_thr_copy_Mask = gmem_tiled_copy_Mask.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyBias gmem_tiled_copy_Bias;
+    auto gmem_thr_copy_Bias = gmem_tiled_copy_Bias.get_thread_slice(tidx);
+    
 
     Tensor tQgQ = gmem_thr_copy_QKV.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
@@ -929,10 +961,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor tKsK = gmem_thr_copy_QKV.partition_D(sK);
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);                        // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
-    Tensor tMaskgMask = gmem_thr_copy_MaskBias.partition_S(gMask);          // (MaskCPY, MaskCPY_M, MaskCPY_N)
-    Tensor tMasksMask = gmem_thr_copy_MaskBias.partition_D(sMask);
-    Tensor tBiasgBias = gmem_thr_copy_MaskBias.partition_S(gBias);          // (BiasCPY, BiasCPY_M, BiasCPY_N)
-    Tensor tBiassBias = gmem_thr_copy_MaskBias.partition_D(sBias);
+    Tensor tMaskgMask = gmem_thr_copy_Mask.partition_S(gMask);          // (MaskCPY, MaskCPY_M, MaskCPY_N)
+    Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
+    Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);          // (BiasCPY, BiasCPY_M, BiasCPY_N)
+    Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
 
     // Matrix Multiply Accumulate
     typename Kernel_traits::TiledMma tiled_mma;
@@ -972,25 +1004,39 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // Repeat the partitioning with identity layouts
     Tensor tQcQ = gmem_thr_copy_QKV.partition_S(cQ);                // (ACPY, ACPY_M, ACPY_K) -> (blk_m, blk_k)
     Tensor tKVcKV = gmem_thr_copy_QKV.partition_S(cKV);             // (BCPY, BCPY_N, BCPY_K) -> (blk_n, blk_k)
-    Tensor tMaskcMask = gmem_thr_copy_MaskBias.partition_S(cMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
-    Tensor tBiascBias = gmem_thr_copy_MaskBias.partition_S(cBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
+    Tensor tMaskcMask = gmem_thr_copy_Mask.partition_S(cMask);  // (MaskCPY, MaskCPY_M, MaskCPY_N) -> (blk_m, blk_n)
+    Tensor tBiascBias = gmem_thr_copy_Bias.partition_S(cBias);  // (BiasCPY, BiasCPY_M, BiasCPY_N) -> (blk_m, blk_n)
+
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
     Tensor tKVpKV = make_tensor<bool>(make_shape(size<2>(tKsK)));
+
     // Set predicates for k bounds
     if (!Is_even_K) {
         #pragma unroll
-        for (int k = 0; k < size(tQpQ); ++k) {
-            tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d;
-        }
+        for (int k = 0; k < size(tQpQ); ++k) { tQpQ(k) = get<1>(tQcQ(0, 0, k)) < params.d; }
         #pragma unroll
-        for (int k = 0; k < size(tKVpKV); ++k) {
-            tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d;
-        }
+        for (int k = 0; k < size(tKVpKV); ++k) { tKVpKV(k) = get<1>(tKVcKV(0, 0, k)) < params.d; }
     }
 
+    int n_block = n_block_max - 1;
+
+    // Allocate predicate tensors for m and n bounds
+    Tensor tMaskpMask = make_tensor<bool>(make_shape(size<2>(tMasksMask)));
+    Tensor tBiaspBias = make_tensor<bool>(make_shape(size<2>(tBiassBias)));
+
+    // Set predicates for n bounds
+    if (!Is_even_MN) {
+        #pragma unroll
+        for (int n = 0; n < size(tMaskpMask); ++n) { tMaskpMask(n) = get<1>(tMaskcMask(0, 0, n)) < binfo.actual_seqlen_k - n_block * kBlockN; }
+        #pragma unroll
+        for (int n = 0; n < size(tBiaspBias); ++n) { tBiaspBias(n) = get<1>(tBiascBias(0, 0, n)) < binfo.actual_seqlen_k - n_block * kBlockN; }
+    }
 
     // Prologue
+
+    bool any_active = true;         // to be updated later for current iteration
+    bool any_active_next = true;    // Load the first Q, K, V, Mask, Bias tiles
 
     // Read Q from gmem to smem
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
@@ -1001,26 +1047,24 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         binfo.actual_seqlen_q - m_block * kBlockM
     );
 
-    int n_block = n_block_max - 1;
-
-    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
-        gmem_tiled_copy_MaskBias,
-        tMaskgMask, tMasksMask,
-        tMaskcMask,
-        binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
-    );
+    // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+    //     gmem_tiled_copy_Mask,
+    //     tMaskgMask, tMasksMask,
+    //     tMaskcMask, tMaskpMask,
+    //     binfo.actual_seqlen_q - m_block * kBlockM
+    // );
     // cute::cp_async_fence();
     // FLASH_NAMESPACE::cp_async_wait<0>();
-    __syncthreads();
+    // // Do OR-reduce on the mask to see if any active threads
 
-    // Do OR-reduce on the mask to see if any active threads for next iteration
-    Tensor tSsMask_copy_view = smem_thr_copy_Mask.retile_S(tSsMask);
-    bool any_active_local = false;
-    bool any_active_local_next = false; // to be updated later for next iteration
-    #pragma unroll
-    for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local |= (tSsMask_copy_view(i) != Element(0)); }
-    bool any_active = __syncthreads_or(any_active_local);
-    bool any_active_next = false;       // to be updated later for next iteration
+    FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+        gmem_tiled_copy_Mask,
+        tMaskgMask, tMasksMask,
+        any_active,
+        tMaskcMask, tMaskpMask,
+        binfo.actual_seqlen_q - m_block * kBlockM
+    );
+    // We don't need to syncthreads here because copy_mask is already or_syncthreads.
 
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
     if (any_active) {
@@ -1030,12 +1074,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             tKVcKV, tKVpKV,
             binfo.actual_seqlen_k - n_block * kBlockN
         );
-        FLASH_NAMESPACE::copy_MN<Is_even_MN>(
-            gmem_tiled_copy_MaskBias,
+        FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            gmem_tiled_copy_Bias,
             tBiasgBias, tBiassBias,
-            tBiascBias,
-            binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - n_block * kBlockN
+            tBiascBias, tBiaspBias,
+            binfo.actual_seqlen_q - m_block * kBlockM
         );
+        // Because copy_bias currently uses scalar loads, we need to sync here.
+        // TODO: Remove sync after fixing to vectorized loads.
+        __syncthreads();
         cute::cp_async_fence();
     }
 
@@ -1150,21 +1197,24 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
             }
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
-                gmem_tiled_copy_MaskBias,
-                tMaskgMask, tMasksMask, 
-                tMaskcMask,
-                binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
+            // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            //     gmem_tiled_copy_Mask,
+            //     tMaskgMask, tMasksMask, 
+            //     tMaskcMask, tMaskpMask,
+            //     binfo.actual_seqlen_q - m_block * kBlockM
+            // );
             // cute::cp_async_fence();
             // FLASH_NAMESPACE::cp_async_wait<0>();
-            __syncthreads();
-
-            // Do OR-reduce on the mask to see if any active threads for next iteration
-            any_active_local_next = false;
-            #pragma unroll
-            for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local_next |= (tSsMask_copy_view(i) != Element(0)); }
-            any_active_next = __syncthreads_or(any_active_local_next);
+            // // Do OR-reduce on the mask to see if any active threads for next iteration.
+            
+            FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+                gmem_tiled_copy_Mask,
+                tMaskgMask, tMasksMask,
+                any_active_next,
+                tMaskcMask, tMaskpMask,
+                binfo.actual_seqlen_q - m_block * kBlockM
+            );
+            // We don't need to syncthreads here because copy_mask is already or_syncthreads.
 
             if (any_active_next) {
                 FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
@@ -1172,12 +1222,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                     tKgK, tKsK,
                     tKVcKV, tKVpKV
                 );
-                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                    gmem_tiled_copy_MaskBias,
+                FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                    gmem_tiled_copy_Bias,
                     tBiasgBias, tBiassBias, 
-                    tBiascBias,
-                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                    tBiascBias, tBiaspBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM
                 );
+                // Because copy_bias currently uses scalar loads, we need to sync here.
+                // TODO: Remove sync after fixing to vectorized loads.
+                __syncthreads();
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
                 cute::cp_async_fence();
@@ -1291,21 +1344,24 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tMaskgMask.data() = tMaskgMask.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.mask_batch_stride + (block_table_offset_next - block_table_offset_cur);
                 tBiasgBias.data() = tBiasgBias.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.bias_batch_stride + (block_table_offset_next - block_table_offset_cur);
             }
-            FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/true, /*Bool_to_Element=*/true, Element>(
-                gmem_tiled_copy_MaskBias,
-                tMaskgMask, tMasksMask,
-                tMaskcMask,
-                binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
-            );
+            // FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true, /*Clear_OOB_MN=*/false>(
+            //     gmem_tiled_copy_Mask,
+            //     tMaskgMask, tMasksMask,
+            //     tMaskcMask, tMaskpMask,
+            //     binfo.actual_seqlen_q - m_block * kBlockM
+            // );
             // cute::cp_async_fence();
             // FLASH_NAMESPACE::cp_async_wait<0>();
-            __syncthreads();
+            // // Do OR-reduce on the mask to see if any active threads for next iteration.
 
-            // Do OR-reduce on the mask to see if any active threads for next iteration
-            any_active_local_next = false;
-            #pragma unroll
-            for (int i = 0; i < size(tSsMask_copy_view); ++i) { any_active_local_next |= (tSsMask_copy_view(i) != Element(0)); }
-            any_active_next = __syncthreads_or(any_active_local_next);
+            FLASH_NAMESPACE::copy_mask_with_or_reduce</*Is_even_MN=*/true, /*Clear_OOB_MN=*/false, /*To_type=*/Element>(
+                gmem_tiled_copy_Mask,
+                tMaskgMask, tMasksMask,
+                any_active_next,
+                tMaskcMask, tMaskpMask,
+                binfo.actual_seqlen_q - m_block * kBlockM
+            );
+            // We don't need to syncthreads here because copy_mask is already or_syncthreads.
 
             if (any_active_next) {
                 FLASH_NAMESPACE::copy</*Is_even_MN=*/true, Is_even_K>(
@@ -1313,12 +1369,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                     tKgK, tKsK,
                     tKVcKV, tKVpKV
                 );
-                FLASH_NAMESPACE::copy_MN</*Is_even_MN=*/true>(
-                    gmem_tiled_copy_MaskBias,
+                FLASH_NAMESPACE::copy_bias</*Is_even_MN=*/true, /*Clear_OOB_MN=*/false>(
+                    gmem_tiled_copy_Bias,
                     tBiasgBias, tBiassBias, 
-                    tBiascBias,
-                    binfo.actual_seqlen_q - m_block * kBlockM, binfo.actual_seqlen_k - (n_block - 1) * kBlockN
+                    tBiascBias, tBiaspBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM
                 );
+                // Because copy_bias currently uses scalar loads, we need to sync here.
+                // TODO: Remove sync after fixing to vectorized loads.
+                __syncthreads();
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
                 cute::cp_async_fence();
