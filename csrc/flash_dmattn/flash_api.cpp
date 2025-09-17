@@ -69,16 +69,16 @@ void set_params_fprop(
     
     // All stride are in elements, not bytes.
     params.q_row_stride = q.stride(-3);
-    params.k_row_stride = k.stride(-3);
-    params.v_row_stride = v.stride(-3);
-    params.mask_row_stride = mask.stride(-2);
-    params.bias_row_stride = bias.stride(-2);
-    params.o_row_stride = out.stride(-3);
     params.q_head_stride = q.stride(-2);
+    params.k_row_stride = k.stride(-3);
     params.k_head_stride = k.stride(-2);
+    params.v_row_stride = v.stride(-3);
     params.v_head_stride = v.stride(-2);
     params.mask_head_stride = mask.stride(-3);
+    params.mask_row_stride = mask.stride(-2);
     params.bias_head_stride = bias.stride(-3);
+    params.bias_row_stride = bias.stride(-2);
+    params.o_row_stride = out.stride(-3);
     params.o_head_stride = out.stride(-2);
 
     if (cu_seqlens_q_d == nullptr) {
@@ -89,8 +89,8 @@ void set_params_fprop(
         params.bias_batch_stride = bias.stride(0);
         params.o_batch_stride = out.stride(0);
         if (seqlenq_ngroups_swapped) {
-             params.q_batch_stride *= seqlen_q;
-             params.o_batch_stride *= seqlen_q;
+            params.q_batch_stride *= seqlen_q;
+            params.o_batch_stride *= seqlen_q;
         }
     }
 
@@ -108,9 +108,11 @@ void set_params_fprop(
     params.b = b;
     params.h = h;
     params.h_k = h_k;
-    params.h_h_k_ratio = h / h_k;
     params.h_mask = h_mask;
     params.h_bias = h_bias;
+    params.h_h_k_ratio = h / h_k;
+    params.h_h_mask_ratio = h / h_mask;
+    params.h_h_bias_ratio = h / h_bias;
     params.seqlen_q = seqlen_q;
     params.seqlen_k = seqlen_k;
     params.seqlen_q_rounded = seqlen_q_rounded;
@@ -201,20 +203,22 @@ void set_params_dgrad(
 
     // Set the pointers and strides.
     params.do_ptr = dout.data_ptr();
-    params.do_row_stride = dout.stride(-3);
-    params.do_head_stride = dout.stride(-2);
     params.dq_ptr = dq.data_ptr();
     params.dk_ptr = dk.data_ptr();
     params.dv_ptr = dv.data_ptr();
     params.dbias_ptr = dbias.data_ptr();
+
+    // All stride are in elements, not bytes.
+    params.do_row_stride = dout.stride(-3);
+    params.do_head_stride = dout.stride(-2);
     params.dq_row_stride = dq.stride(-3);
-    params.dk_row_stride = dk.stride(-3);
-    params.dv_row_stride = dv.stride(-3);
-    params.dbias_row_stride = dbias.stride(-2);
     params.dq_head_stride = dq.stride(-2);
+    params.dk_row_stride = dk.stride(-3);
     params.dk_head_stride = dk.stride(-2);
+    params.dv_row_stride = dv.stride(-3);
     params.dv_head_stride = dv.stride(-2);
     params.dbias_head_stride = dbias.stride(-3);
+    params.dbias_row_stride = dbias.stride(-2);
 
     if (cu_seqlens_q_d == nullptr) {
         params.do_batch_stride = dout.stride(0);
