@@ -54,6 +54,8 @@ struct Mask_params {
     // The number of heads in the mask.
     int h_mask;
     int h_h_mask_ratio; // precompute h / h_mask
+
+    bool has_mask;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -69,6 +71,8 @@ struct Bias_params {
     // The number of heads in the bias.
     int h_bias;
     int h_h_bias_ratio; // precompute h / h_bias
+
+    bool has_bias;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
