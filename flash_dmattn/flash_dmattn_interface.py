@@ -241,11 +241,20 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if return_softmax is None:
             return_softmax = False
 
+        # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = q.size(3)
         if head_size_og % 8 != 0:
             q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
+        # seqlen_k_og = k.shape[1]
+        # if seqlen_k_og % 8 != 0:
+        #     k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
+        #     v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
+        #     if mask is not None:
+        #         mask = torch.nn.functional.pad(mask, [0, 8 - seqlen_k_og % 8], value=False)
+        #     if bias is not None:
+        #         bias = torch.nn.functional.pad(bias, [0, 8 - seqlen_k_og % 8], value=0.0)
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
@@ -265,6 +274,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
+            # ctx.seqlen_k_og = seqlen_k_og
 
         out = out_padded[..., :head_size_og]
 
@@ -306,6 +316,11 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
+
+        # if ctx.seqlen_k_og % 8 != 0:
+        #     dk = dk[:, : ctx.seqlen_k_og, :, :]
+        #     dv = dv[:, : ctx.seqlen_k_og, :, :]
+        #     dbias = dbias[..., : ctx.seqlen_k_og]
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
