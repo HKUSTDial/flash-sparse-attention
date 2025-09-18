@@ -50,6 +50,8 @@ void set_params_fprop(
     float softmax_scale,
     bool is_causal,
     const float softcap,
+    bool has_mask,
+    bool has_bias,
     bool seqlenq_ngroups_swapped=false,
     const bool unpadded_lse=false
 ) {
@@ -63,8 +65,8 @@ void set_params_fprop(
     params.q_ptr = q.data_ptr();
     params.k_ptr = k.data_ptr();
     params.v_ptr = v.data_ptr();
-    params.mask_ptr = mask.data_ptr();
-    params.bias_ptr = bias.data_ptr();
+    params.mask_ptr = has_mask ? mask.data_ptr() : nullptr;
+    params.bias_ptr = has_bias ? bias.data_ptr() : nullptr;
     params.o_ptr = out.data_ptr();
     
     // All stride are in elements, not bytes.
@@ -74,10 +76,10 @@ void set_params_fprop(
     params.k_head_stride = k.stride(-2);
     params.v_row_stride = v.stride(-3);
     params.v_head_stride = v.stride(-2);
-    params.mask_head_stride = mask.stride(-3);
-    params.mask_row_stride = mask.stride(-2);
-    params.bias_head_stride = bias.stride(-3);
-    params.bias_row_stride = bias.stride(-2);
+    params.mask_head_stride = has_mask ? mask.stride(-3) : 0;
+    params.mask_row_stride = has_mask ? mask.stride(-2) : 0;
+    params.bias_head_stride = has_bias ? bias.stride(-3) : 0;
+    params.bias_row_stride = has_bias ? bias.stride(-2) : 0;
     params.o_row_stride = out.stride(-3);
     params.o_head_stride = out.stride(-2);
 
@@ -85,11 +87,13 @@ void set_params_fprop(
         params.q_batch_stride = q.stride(0);
         params.k_batch_stride = k.stride(0);
         params.v_batch_stride = v.stride(0);
-        params.mask_batch_stride = mask.stride(0);
-        params.bias_batch_stride = bias.stride(0);
+        params.mask_batch_stride = has_mask ? mask.stride(0) : 0;
+        params.bias_batch_stride = has_bias ? bias.stride(0) : 0;
         params.o_batch_stride = out.stride(0);
         if (seqlenq_ngroups_swapped) {
             params.q_batch_stride *= seqlen_q;
+            params.mask_batch_stride *= seqlen_q;
+            params.bias_batch_stride *= seqlen_q;
             params.o_batch_stride *= seqlen_q;
         }
     }
@@ -136,6 +140,8 @@ void set_params_fprop(
     }
 
     params.is_causal = is_causal;
+    params.has_mask = has_mask;
+    params.has_bias = has_bias;
     params.is_seqlens_k_cumulative = true;
 
     #ifdef FLASHATTENTION_DISABLE_UNEVEN_K
