@@ -262,14 +262,18 @@ void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split
     FP16_SWITCH(!params.is_bf16, [&] {
         HEADDIM_SWITCH(params.d, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-                // splitkv kernel is not supported for head_dim >= 128 in sm89 due to smem limits
-                bool splitkv_forbidden = (kHeadDim >= 128) && (max_smem_per_block < 112 * 1024);
-                params.num_splits = splitkv_forbidden ? 1 : params.num_splits;
-                if (params.num_splits <= 1 && !force_split_kernel) {    // If we don't set it num_splits == 0
-                    run_mha_fwd_<elem_type, kHeadDim, Is_causal>(params, stream);
-                } else {
-                    run_mha_fwd_splitkv_dispatch<elem_type, kHeadDim, Is_causal>(params, stream);
-                }
+                BOOL_SWITCH(params.has_mask, Has_mask, [&] {
+                    BOOL_SWITCH(params.has_bias, Has_bias, [&] {
+                        // splitkv kernel is not supported for head_dim >= 128 in sm89 due to smem limits
+                        bool splitkv_forbidden = (kHeadDim >= 128) && (max_smem_per_block < 112 * 1024);
+                        params.num_splits = splitkv_forbidden ? 1 : params.num_splits;
+                        if (params.num_splits <= 1 && !force_split_kernel) {    // If we don't set it num_splits == 0
+                            run_mha_fwd_<elem_type, kHeadDim, Is_causal, Has_mask, Has_bias>(params, stream);
+                        } else {
+                            run_mha_fwd_splitkv_dispatch<elem_type, kHeadDim, Is_causal, Has_mask, Has_bias>(params, stream);
+                        }
+                    });
+                });
             });
         });
     });
@@ -799,7 +803,11 @@ void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     FP16_SWITCH(!params.is_bf16, [&] {
         HEADDIM_SWITCH(params.d, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-                run_mha_bwd_<elem_type, kHeadDim, Is_causal>(params, stream);
+                BOOL_SWITCH(params.has_mask, Has_mask, [&] {
+                    BOOL_SWITCH(params.has_bias, Has_bias, [&] {
+                        run_mha_bwd_<elem_type, kHeadDim, Is_causal, Has_mask, Has_bias>(params, stream);
+                    });
+                });
             });
         });
     });
