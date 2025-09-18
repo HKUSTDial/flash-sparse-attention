@@ -381,16 +381,35 @@ mha_fwd(
     TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
-    TORCH_CHECK(bias.dtype() == q_dtype, "bias must have the same dtype as inputs");
 
-    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v); CHECK_DEVICE(mask); CHECK_DEVICE(bias);
+    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
 
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(v.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-    TORCH_CHECK(mask.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-    TORCH_CHECK(bias.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+
+    auto opts = q.options();
+
+    bool has_mask = mask_.has_value();
+    at::Tensor mask;
+    if (has_mask) {
+        mask = mask_.value();
+        TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
+        CHECK_DEVICE(mask);
+        TORCH_CHECK(mask.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    } else {
+        mask = torch::empty({0}, opts);
+    }
+    bool has_bias = bias_.has_value();
+    at::Tensor bias;
+    if (has_bias) {
+        bias = bias_.value();
+        TORCH_CHECK(bias.dtype() == q_dtype, "bias must have the same dtype as inputs");
+        CHECK_DEVICE(bias);
+        TORCH_CHECK(bias.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    } else {
+        bias = torch::empty({0}, opts);
+    }
 
     const auto sizes = q.sizes();
 
@@ -400,14 +419,19 @@ mha_fwd(
     const int head_size = sizes[3];
     const int seqlen_k = k.size(1);
     const int num_heads_k = k.size(2);
-    int num_heads_mask = mask.size(1);
-    int num_heads_bias = bias.size(1);
+    int num_heads_mask = has_mask ? mask.size(1) : 1;
+    int num_heads_bias = has_bias ? bias.size(1) : 1;
+
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention forward only supports head dimension at most 256");
     TORCH_CHECK(head_size % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
-    TORCH_CHECK(num_heads_mask == 1 || num_heads_mask == num_heads_k || num_heads_mask == num_heads, "Number of heads in mask must be 1, h_k or h");
-    TORCH_CHECK(num_heads_bias == 1 || num_heads_bias == num_heads_k || num_heads_bias == num_heads, "Number of heads in bias must be 1, h_k or h");
+    if (has_mask) {
+        TORCH_CHECK(num_heads_mask == 1 || num_heads_mask == num_heads_k || num_heads_mask == num_heads, "Number of heads in mask must be 1, h_k or h");
+    }
+    if (has_bias) {
+        TORCH_CHECK(num_heads_bias == 1 || num_heads_bias == num_heads_k || num_heads_bias == num_heads, "Number of heads in bias must be 1, h_k or h");
+    }
 
     // causal=true is the same as causal=false in this case
     if (seqlen_q == 1) { is_causal = false; }
@@ -420,22 +444,26 @@ mha_fwd(
     const int orig_num_heads_bias = num_heads_bias;
     if (seqlenq_ngroups_swapped) {
         q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2);
-        if (num_heads_mask == 1) {
-            mask = mask.expand({batch_size, 1, ngroups, seqlen_k});
-        } else if (num_heads_mask == num_heads_k) {
-            mask = mask.expand({batch_size, num_heads_k, ngroups, seqlen_k});
-        } else {    // num_heads_mask == num_heads
-            mask = mask.reshape({batch_size, num_heads_k, ngroups, seqlen_k});
+        if (has_mask) {
+            mask = num_heads_mask == 1 
+                ? mask.expand({batch_size, 1, ngroups, seqlen_k})
+                : (
+                    num_heads_mask == num_heads_k
+                        ? mask.expand({batch_size, num_heads_k, ngroups, seqlen_k})
+                        : mask.reshape({batch_size, num_heads_k, ngroups, seqlen_k})
+                );
         }
-        if (num_heads_bias == 1) {
-            bias = bias.expand({batch_size, 1, ngroups, seqlen_k});
-        } else if (num_heads_bias == num_heads_k) {
-            bias = bias.expand({batch_size, num_heads_k, ngroups, seqlen_k});
-        } else {    // num_heads_bias == num_heads
-            bias = bias.reshape({batch_size, num_heads_k, ngroups, seqlen_k});
+        if (has_bias) {
+            bias = num_heads_bias == 1 
+                ? bias.expand({batch_size, 1, ngroups, seqlen_k})
+                : (
+                    num_heads_bias == num_heads_k
+                        ? bias.expand({batch_size, num_heads_k, ngroups, seqlen_k})
+                        : bias.reshape({batch_size, num_heads_k, ngroups, seqlen_k})
+                );
         }
-        num_heads_mask = (num_heads_mask == num_heads) ? num_heads_k : num_heads_mask;
-        num_heads_bias = (num_heads_bias == num_heads) ? num_heads_k : num_heads_bias;
+        num_heads_mask = has_mask ? ((num_heads_mask == num_heads) ? num_heads_k : num_heads_mask) : 1;
+        num_heads_bias = has_bias ? ((num_heads_bias == num_heads) ? num_heads_k : num_heads_bias) : 1;
         seqlen_q = ngroups;
         num_heads = num_heads_k;
     }
@@ -443,19 +471,23 @@ mha_fwd(
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size);
     CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size);
-    if (num_heads_mask == 1) {
-        CHECK_SHAPE(mask, batch_size, 1, seqlen_q, seqlen_k);
-    } else if (num_heads_mask == num_heads_k) {
-        CHECK_SHAPE(mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
-    } else {
-        CHECK_SHAPE(mask, batch_size, num_heads, seqlen_q, seqlen_k);
+    if (has_mask) {
+        if (num_heads_mask == 1) {
+            CHECK_SHAPE(mask, batch_size, 1, seqlen_q, seqlen_k);
+        } else if (num_heads_mask == num_heads_k) {
+            CHECK_SHAPE(mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
+        } else {
+            CHECK_SHAPE(mask, batch_size, num_heads, seqlen_q, seqlen_k);
+        }
     }
-    if (num_heads_bias == 1) {
-        CHECK_SHAPE(bias, batch_size, 1, seqlen_q, seqlen_k);
-    } else if (num_heads_bias == num_heads_k) {
-        CHECK_SHAPE(bias, batch_size, num_heads_k, seqlen_q, seqlen_k);
-    } else {
-        CHECK_SHAPE(bias, batch_size, num_heads, seqlen_q, seqlen_k);
+    if (has_bias) {
+        if (num_heads_bias == 1) {
+            CHECK_SHAPE(bias, batch_size, 1, seqlen_q, seqlen_k);
+        } else if (num_heads_bias == num_heads_k) {
+            CHECK_SHAPE(bias, batch_size, num_heads_k, seqlen_q, seqlen_k);
+        } else {
+            CHECK_SHAPE(bias, batch_size, num_heads, seqlen_q, seqlen_k);
+        }
     }
 
     at::Tensor out;
@@ -476,8 +508,6 @@ mha_fwd(
     const int head_size_rounded = round_multiple(head_size, head_size <= 128 ? 32 : 64);
     const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
     const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
-
-    auto opts = q.options();
 
     auto softmax_lse = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
     at::Tensor p;
@@ -504,7 +534,9 @@ mha_fwd(
         softmax_lse.data_ptr(),
         softmax_scale,
         is_causal,
-        softcap
+        softcap,
+        has_mask,
+        has_bias
     );
 
     // Keep references to these tensors to extend their lifetime
@@ -527,15 +559,15 @@ mha_fwd(
         out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
         q = q.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
-        if (orig_num_heads_mask == 1 || orig_num_heads_mask == num_heads_k) {
-            mask = mask.narrow(2, 0, 1);
-        } else {    // orig_num_heads_mask == num_heads
-            mask = mask.reshape({batch_size, num_heads_k * seqlen_q, 1, seqlen_k});
+        if (has_mask) {
+            mask = (orig_num_heads_mask == 1 || orig_num_heads_mask == num_heads_k)
+                ? mask.narrow(2, 0, 1)
+                : mask.reshape({batch_size, num_heads_k * seqlen_q, 1, seqlen_k});
         }
-        if (orig_num_heads_bias == 1 || orig_num_heads_bias == num_heads_k) {
-            bias = bias.narrow(2, 0, 1);
-        } else {    // orig_num_heads_bias == num_heads
-            bias = bias.reshape({batch_size, num_heads_k * seqlen_q, 1, seqlen_k});
+        if (has_bias) {
+            bias = (orig_num_heads_bias == 1 || orig_num_heads_bias == num_heads_k)
+                ? bias.narrow(2, 0, 1)
+                : bias.reshape({batch_size, num_heads_k * seqlen_q, 1, seqlen_k});
         }
     }
     return {out, softmax_lse, p};
@@ -810,24 +842,42 @@ mha_bwd(
     TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
-    TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
-    TORCH_CHECK(bias.dtype() == q_dtype, "query and bias must have the same dtype");
     TORCH_CHECK(out.dtype() == q_dtype, "query and out must have the same dtype");
     TORCH_CHECK(dout.dtype() == q_dtype, "query and dout must have the same dtype");
 
-    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v); CHECK_DEVICE(mask); CHECK_DEVICE(bias);
+    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
     CHECK_DEVICE(out); CHECK_DEVICE(dout); CHECK_DEVICE(softmax_lse);
 
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(v.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-    TORCH_CHECK(mask.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-    TORCH_CHECK(bias.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(out.stride(-1) == 1, "out tensor must have contiguous last dimension");
     TORCH_CHECK(dout.stride(-1) == 1, "dout tensor must have contiguous last dimension");
 
-    const auto sizes = q.sizes();
     auto opts = q.options();
+
+    bool has_mask = mask_.has_value();
+    at::Tensor mask;
+    if (has_mask) {
+        mask = mask_.value();
+        TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
+        CHECK_DEVICE(mask);
+        TORCH_CHECK(mask.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    } else {
+        mask = torch::empty({0}, opts);
+    }
+    bool has_bias = bias_.has_value();
+    at::Tensor bias;
+    if (has_bias) {
+        bias = bias_.value();
+        TORCH_CHECK(bias.dtype() == q_dtype, "bias must have the same dtype as inputs");
+        CHECK_DEVICE(bias);
+        TORCH_CHECK(bias.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    } else {
+        bias = torch::empty({0}, opts);
+    }
+
+    const auto sizes = q.sizes();
 
     const int batch_size = sizes[0];
     const int seqlen_q = sizes[1];
@@ -835,14 +885,19 @@ mha_bwd(
     const int head_size = sizes[3];
     const int seqlen_k = k.size(1);
     const int num_heads_k = k.size(2);
-    const int num_heads_mask = mask.size(1);
-    const int num_heads_bias = bias.size(1);
+    int num_heads_mask = has_mask ? mask.size(1) : 1;
+    int num_heads_bias = has_bias ? bias.size(1) : 1;
+
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size % 8 == 0, "head_size should be a multiple of 8");
     TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention backward only supports head dimension at most 256");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
-    TORCH_CHECK(num_heads_mask == 1 || num_heads_mask == num_heads_k || num_heads_mask == num_heads, "Number of heads in mask must be 1, h_k or h");
-    TORCH_CHECK(num_heads_bias == 1 || num_heads_bias == num_heads_k || num_heads_bias == num_heads, "Number of heads in bias must be 1, h_k or h");
+    if (has_mask) {
+        TORCH_CHECK(num_heads_mask == 1 || num_heads_mask == num_heads_k || num_heads_mask == num_heads, "Number of heads in mask must be 1, h_k or h");
+    }
+    if (has_bias) {
+        TORCH_CHECK(num_heads_bias == 1 || num_heads_bias == num_heads_k || num_heads_bias == num_heads, "Number of heads in bias must be 1, h_k or h");
+    }
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
     const int head_size_rounded = round_multiple(head_size, head_size <= 128 ? 32 : 64);
@@ -852,19 +907,23 @@ mha_bwd(
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size);
     CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size);
-    if (num_heads_mask == 1) {
-        CHECK_SHAPE(mask, batch_size, 1, seqlen_q, seqlen_k);
-    } else if (num_heads_mask == num_heads_k) {
-        CHECK_SHAPE(mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
-    } else {
-        CHECK_SHAPE(mask, batch_size, num_heads, seqlen_q, seqlen_k);
+    if (has_mask) {
+        if (num_heads_mask == 1) {
+            CHECK_SHAPE(mask, batch_size, 1, seqlen_q, seqlen_k);
+        } else if (num_heads_mask == num_heads_k) {
+            CHECK_SHAPE(mask, batch_size, num_heads_k, seqlen_q, seqlen_k);
+        } else {
+            CHECK_SHAPE(mask, batch_size, num_heads, seqlen_q, seqlen_k);
+        }
     }
-    if (num_heads_bias == 1) {
-        CHECK_SHAPE(bias, batch_size, 1, seqlen_q, seqlen_k);
-    } else if (num_heads_bias == num_heads_k) {
-        CHECK_SHAPE(bias, batch_size, num_heads_k, seqlen_q, seqlen_k);
-    } else {
-        CHECK_SHAPE(bias, batch_size, num_heads, seqlen_q, seqlen_k);
+    if (has_bias) {
+        if (num_heads_bias == 1) {
+            CHECK_SHAPE(bias, batch_size, 1, seqlen_q, seqlen_k);
+        } else if (num_heads_bias == num_heads_k) {
+            CHECK_SHAPE(bias, batch_size, num_heads_k, seqlen_q, seqlen_k);
+        } else {
+            CHECK_SHAPE(bias, batch_size, num_heads, seqlen_q, seqlen_k);
+        }
     }
     CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size);
     CHECK_SHAPE(dout, batch_size, seqlen_q, num_heads, head_size);
@@ -897,26 +956,30 @@ mha_bwd(
     } else {
         dv = torch::empty_like(v);
     }
-    if (dbias_.has_value()) {
-        dbias = dbias_.value();
-        TORCH_CHECK(dbias.dtype() == q_dtype, "dbias must have the same dtype as q");
-        CHECK_DEVICE(dbias);
-        TORCH_CHECK(dbias.stride(-1) == 1, "dbias must have contiguous last dimension");
-        if (num_heads_bias == 1) {
-            CHECK_SHAPE(dbias, batch_size, 1, seqlen_q, seqlen_k);
-        } else if (num_heads_bias == num_heads_k) {
-            CHECK_SHAPE(dbias, batch_size, num_heads_k, seqlen_q, seqlen_k);
+    if (has_bias) {
+        if (dbias_.has_value()) {
+            dbias = dbias_.value();
+            TORCH_CHECK(dbias.dtype() == q_dtype, "dbias must have the same dtype as q");
+            CHECK_DEVICE(dbias);
+            TORCH_CHECK(dbias.stride(-1) == 1, "dbias must have contiguous last dimension");
+            if (num_heads_bias == 1) {
+                CHECK_SHAPE(dbias, batch_size, 1, seqlen_q, seqlen_k);
+            } else if (num_heads_bias == num_heads_k) {
+                CHECK_SHAPE(dbias, batch_size, num_heads_k, seqlen_q, seqlen_k);
+            } else {
+                CHECK_SHAPE(dbias, batch_size, num_heads, seqlen_q, seqlen_k);
+            }
         } else {
-            CHECK_SHAPE(dbias, batch_size, num_heads, seqlen_q, seqlen_k);
+            if (num_heads_bias == 1) {
+                dbias = torch::empty({batch_size, 1, seqlen_q, seqlen_k}, opts);
+            } else if (num_heads_bias == num_heads_k) {
+                dbias = torch::empty({batch_size, num_heads_k, seqlen_q, seqlen_k}, opts);
+            } else {
+                dbias = torch::empty({batch_size, num_heads, seqlen_q, seqlen_k}, opts);
+            }
         }
     } else {
-        if (num_heads_bias == 1) {
-            dbias = torch::empty({batch_size, 1, seqlen_q, seqlen_k}, opts);
-        } else if (num_heads_bias == num_heads_k) {
-            dbias = torch::empty({batch_size, num_heads_k, seqlen_q, seqlen_k}, opts);
-        } else {
-            dbias = torch::empty({batch_size, num_heads, seqlen_q, seqlen_k}, opts);
-        }
+        dbias = torch::empty({0}, opts);
     }
 
     // bool loop = seqlen_k > blocksize_c;
@@ -938,18 +1001,19 @@ mha_bwd(
     }
 
     at::Tensor dk_expanded, dv_expanded, dbias_expanded;
-    if (num_heads_k != num_heads) {     // MQA / GQA
-        dk_expanded = torch::empty({batch_size, seqlen_k, num_heads, head_size}, opts);
-        dv_expanded = torch::empty({batch_size, seqlen_k, num_heads, head_size}, opts);
-    } else {
-        dk_expanded = dk;
-        dv_expanded = dv;
-    }
-    if (num_heads_bias != num_heads) {
-        dbias_expanded = torch::empty({batch_size, num_heads, seqlen_q, seqlen_k}, opts);
-    } else {
-        dbias_expanded = dbias;
-    }
+    dk_expanded = num_heads_k != num_heads  // MQA / GQA
+        ? torch::empty({batch_size, seqlen_k, num_heads, head_size}, opts)
+        : dk;
+    dv_expanded = num_heads_k != num_heads  // MQA / GQA
+        ? torch::empty({batch_size, seqlen_k, num_heads, head_size}, opts)
+        : dv; 
+    dbias_expanded = has_bias
+        ? (
+            num_heads_bias != num_heads     // MQA / GQA
+                ? torch::empty({batch_size, num_heads, seqlen_q, seqlen_k}, opts)
+                : dbias
+        )
+        : torch::empty({0}, opts);
 
     Flash_bwd_params params;
 
@@ -974,6 +1038,8 @@ mha_bwd(
         softmax_scale,
         is_causal,
         softcap,
+        has_mask,
+        has_bias,
         deterministic,
         /*unpadded_lse*/false
     );
@@ -997,7 +1063,7 @@ mha_bwd(
         at::sum_out(dv, at::reshape(dv_expanded, {batch_size, seqlen_k, num_heads_k, num_heads / num_heads_k, head_size}), {3});
     }
     // For MQA/GQA or num_heads_bias != num_heads, we also need to sum dbias across the heads
-    if (num_heads_bias != num_heads) {
+    if (has_bias && num_heads_bias != num_heads) {
         at::sum_out(dbias, at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k}), {2});
     }
 
