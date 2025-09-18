@@ -358,12 +358,12 @@ std::tuple<at::Tensor, at::Tensor> set_params_splitkv(
 
 std::vector<at::Tensor>
 mha_fwd(
-    at::Tensor &q,                      // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
-    const at::Tensor &k,                // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
-    const at::Tensor &v,                // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
-    at::Tensor &mask,                   // batch_size x num_heads x seqlen_q x seqlen_k or batch_size x num_heads_k x seqlen_q x seqlen_k or batch_size x 1 x seqlen_q x seqlen_k
-    at::Tensor &bias,                   // batch_size x num_heads x seqlen_q x seqlen_k, or batch_size x num_heads_k x seqlen_q x seqlen_k or batch_size x 1 x seqlen_q x seqlen_k
-    std::optional<at::Tensor> &out_,    // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+    at::Tensor &q,                              // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+    const at::Tensor &k,                        // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+    const at::Tensor &v,                        // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+    std::optional<at::Tensor> &mask_,           // batch_size x {1|num_heads_k|num_heads} x seqlen_q x seqlen_k
+    std::optional<at::Tensor> &bias_,           // batch_size x {1|num_heads_k|num_heads} x seqlen_q x seqlen_k
+    std::optional<at::Tensor> &out_,            // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
     const float softmax_scale,
     bool is_causal,
     const float softcap,
@@ -775,18 +775,18 @@ void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
 
 std::vector<at::Tensor>
 mha_bwd(
-    const at::Tensor &dout,             // batch_size x seqlen_q x num_heads, x multiple_of(head_size_og, 8)
-    const at::Tensor &q,                // batch_size x seqlen_q x num_heads x head_size
-    const at::Tensor &k,                // batch_size x seqlen_k x num_heads_k x head_size
-    const at::Tensor &v,                // batch_size x seqlen_k x num_heads_k x head_size
-    const at::Tensor &mask,             // batch_size x num_heads x seqlen_q x seqlen_k or batch_size x num_heads_k x seqlen_q x seqlen_k or batch_size x 1 x seqlen_q x seqlen_k
-    const at::Tensor &bias,             // batch_size x num_heads_k x seqlen_q x seqlen_k or batch_size x num_heads x seqlen_q x seqlen_k or batch_size x 1 x seqlen_q x seqlen_k
-    const at::Tensor &out,              // batch_size x seqlen_q x num_heads x head_size
-    const at::Tensor &softmax_lse,      // b x h x seqlen_q
-    std::optional<at::Tensor> &dq_,     // batch_size x seqlen_q x num_heads x head_size
-    std::optional<at::Tensor> &dk_,     // batch_size x seqlen_k x num_heads_k x head_size
-    std::optional<at::Tensor> &dv_,     // batch_size x seqlen_k x num_heads_k x head_size
-    std::optional<at::Tensor> &dbias_,  // batch_size x num_heads_k x seqlen_q x seqlen_k
+    const at::Tensor &dout,                     // batch_size x seqlen_q x num_heads, x multiple_of(head_size_og, 8)
+    const at::Tensor &q,                        // batch_size x seqlen_q x num_heads x head_size
+    const at::Tensor &k,                        // batch_size x seqlen_k x num_heads_k x head_size
+    const at::Tensor &v,                        // batch_size x seqlen_k x num_heads_k x head_size
+    const std::optional<at::Tensor> &mask_,     // batch_size x {1|num_heads_k|num_heads} x seqlen_q x seqlen_k
+    const std::optional<at::Tensor> &bias_,     // batch_size x {1|num_heads_k|num_heads} x seqlen_q x seqlen_k
+    const at::Tensor &out,                      // batch_size x seqlen_q x num_heads x head_size
+    const at::Tensor &softmax_lse,              // b x h x seqlen_q
+    std::optional<at::Tensor> &dq_,             // batch_size x seqlen_q x num_heads x head_size
+    std::optional<at::Tensor> &dk_,             // batch_size x seqlen_k x num_heads_k x head_size
+    std::optional<at::Tensor> &dv_,             // batch_size x seqlen_k x num_heads_k x head_size
+    std::optional<at::Tensor> &dbias_,          // batch_size x {1|num_heads_k|num_heads} x seqlen_q x seqlen_k
     const float softmax_scale,
     const bool is_causal,
     const float softcap,
