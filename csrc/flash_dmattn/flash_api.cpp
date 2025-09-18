@@ -188,6 +188,8 @@ void set_params_dgrad(
     float softmax_scale,
     bool is_causal,
     const float softcap,
+    bool has_mask,
+    bool has_bias,
     bool deterministic,
     const bool unpadded_lse
 ) {
@@ -203,6 +205,8 @@ void set_params_dgrad(
         softmax_scale,
         is_causal,
         softcap,
+        has_mask,
+        has_bias,
         false,  // seqlenq_ngroups_swapped
         unpadded_lse
     );
@@ -212,7 +216,7 @@ void set_params_dgrad(
     params.dq_ptr = dq.data_ptr();
     params.dk_ptr = dk.data_ptr();
     params.dv_ptr = dv.data_ptr();
-    params.dbias_ptr = dbias.data_ptr();
+    params.dbias_ptr = has_bias ? dbias.data_ptr() : nullptr;
 
     // All stride are in elements, not bytes.
     params.do_row_stride = dout.stride(-3);
@@ -223,15 +227,15 @@ void set_params_dgrad(
     params.dk_head_stride = dk.stride(-2);
     params.dv_row_stride = dv.stride(-3);
     params.dv_head_stride = dv.stride(-2);
-    params.dbias_head_stride = dbias.stride(-3);
-    params.dbias_row_stride = dbias.stride(-2);
+    params.dbias_head_stride = has_bias ? dbias.stride(-3) : 0;
+    params.dbias_row_stride = has_bias ? dbias.stride(-2) : 0;
 
     if (cu_seqlens_q_d == nullptr) {
         params.do_batch_stride = dout.stride(0);
         params.dq_batch_stride = dq.stride(0);
         params.dk_batch_stride = dk.stride(0);
         params.dv_batch_stride = dv.stride(0);
-        params.dbias_batch_stride = dbias.stride(0);
+        params.dbias_batch_stride = has_bias ? dbias.stride(0) : 0;
     }
 
     params.dq_accum_ptr = dq_accum_d;
