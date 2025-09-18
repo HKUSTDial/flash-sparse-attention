@@ -44,7 +44,7 @@ struct QKV_params {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Mask_params {
-    void * __restrict__ mask_ptr;       // Attention mask tensor [batch_size, num_kv_heads, query_len, key_len]
+    void * __restrict__ mask_ptr;       // Attention mask tensor [batch_size, num_mask_heads, query_len, key_len]
 
     // The stride of the attention mask tensors.
     index_t mask_batch_stride;          // Stride between batches of attention mask
@@ -61,7 +61,7 @@ struct Mask_params {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Bias_params {
-    void *__restrict__ bias_ptr;        // Attention bias tensor [batch_size, num_kv_heads, query_len, key_len]
+    void *__restrict__ bias_ptr;        // Attention bias tensor [batch_size, num_bias_heads, query_len, key_len]
 
     // The stride of the attention bias tensor.
     index_t bias_batch_stride;          // Stride between batches of attention bias
