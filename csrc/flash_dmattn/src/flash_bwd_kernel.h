@@ -76,7 +76,7 @@ CUTE_HOST_DEVICE auto make_tiled_copy_C_warpcontiguousN(
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Is_first, bool Is_last, bool Seq_parallel=false, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Has_mask, bool Has_bias, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Is_first, bool Is_last, bool Seq_parallel=false, typename Params>
 inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const int bidb, const int bidh, const int n_block) {
 
     using Element = typename Kernel_traits::Element;
@@ -107,12 +107,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         + n_block * kBlockN * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
     const index_t row_offset_v = binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb)
         + n_block * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
-    const int h_idx_mask = (params.h_mask == 1) ? 0 : ((params.h_mask == params.h_k) ? (bidh / params.h_h_k_ratio) : bidh);
     const index_t row_offset_mask = binfo.mask_offset(params.mask_batch_stride, params.mask_row_stride, bidb)
-        + h_idx_mask * params.mask_head_stride + (m_block_max - 1) * kBlockM * params.mask_row_stride + n_block * kBlockN;
-    const int h_idx_bias = (params.h_bias == 1) ? 0 : ((params.h_bias == params.h_k) ? (bidh / params.h_h_k_ratio) : bidh);
+        + (bidh / params.h_h_mask_ratio) * params.mask_head_stride + (m_block_max - 1) * kBlockM * params.mask_row_stride + n_block * kBlockN;
     const index_t row_offset_bias = binfo.bias_offset(params.bias_batch_stride, params.bias_row_stride, bidb)
-        + h_idx_bias * params.bias_head_stride + (m_block_max - 1) * kBlockM * params.bias_row_stride + n_block * kBlockN;
+        + (bidh / params.h_h_bias_ratio) * params.bias_head_stride + (m_block_max - 1) * kBlockM * params.bias_row_stride + n_block * kBlockN;
     const index_t row_offset_dbias = binfo.bias_offset(params.dbias_batch_stride, params.dbias_row_stride, bidb)
         + bidh * params.dbias_head_stride + (m_block_max - 1) * kBlockM * params.dbias_row_stride + n_block * kBlockN;
     const index_t row_offset_do = binfo.q_offset(params.do_batch_stride, params.do_row_stride, bidb)
@@ -424,10 +422,14 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     // Set predicates for n bounds
     if (!Is_even_MN) {
-        #pragma unroll
-        for (int n = 0; n < size(tMaskpMask); ++n) { tMaskpMask(n) = get<1>(tMaskcMask(0, 0, n)) < std::max(0, binfo.actual_seqlen_k - n_block * kBlockN); }
-        #pragma unroll
-        for (int n = 0; n < size(tBiaspBias); ++n) { tBiaspBias(n) = get<1>(tBiascBias(0, 0, n)) < std::max(0, binfo.actual_seqlen_k - n_block * kBlockN); }
+        if constexpr (Has_mask) {
+            #pragma unroll
+            for (int n = 0; n < size(tMaskpMask); ++n) { tMaskpMask(n) = get<1>(tMaskcMask(0, 0, n)) < std::max(0, binfo.actual_seqlen_k - n_block * kBlockN); }
+        }
+        if constexpr (Has_bias) {
+            #pragma unroll
+            for (int n = 0; n < size(tBiaspBias); ++n) { tBiaspBias(n) = get<1>(tBiascBias(0, 0, n)) < std::max(0, binfo.actual_seqlen_k - n_block * kBlockN); }
+        }
     }
 
 
@@ -570,24 +572,26 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // cute::copy(gmem_tiled_copy_QKV, tKgK, tKrK);
     // // if (cute::thread(1, 0)) { print(tKrK); }
 
-    // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-    //     gmem_tiled_copy_Mask,
-    //     tMaskgMask, tMasksMask,
-    //     tMaskcMask, tMaskpMask,
-    //     binfo.actual_seqlen_q - m_block * kBlockM
-    // );
-    // cute::cp_async_fence();
-    // FLASH_NAMESPACE::cp_async_wait<0>();
-    // // Do OR-reduce on the mask to see if any active threads
+    if constexpr (Has_mask) {
+        // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+        //     gmem_tiled_copy_Mask,
+        //     tMaskgMask, tMasksMask,
+        //     tMaskcMask, tMaskpMask,
+        //     binfo.actual_seqlen_q - m_block * kBlockM
+        // );
+        // cute::cp_async_fence();
+        // FLASH_NAMESPACE::cp_async_wait<0>();
+        // // Do OR-reduce on the mask to see if any active threads
 
-    FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
-        gmem_tiled_copy_Mask,
-        tMaskgMask, tMasksMask,
-        any_active,
-        tMaskcMask, tMaskpMask,
-        binfo.actual_seqlen_q - m_block * kBlockM
-    );
-    // We don't need to syncthreads here because copy_mask is already or_syncthreads.
+        FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+            gmem_tiled_copy_Mask,
+            tMaskgMask, tMasksMask,
+            any_active,
+            tMaskcMask, tMaskpMask,
+            binfo.actual_seqlen_q - m_block * kBlockM
+        );
+        // We don't need to syncthreads here because copy_mask is already or_syncthreads.
+    }
 
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
         gmem_tiled_copy_QKV,
@@ -597,15 +601,17 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     );
 
     if (any_active) {
-        FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
-            gmem_tiled_copy_Bias,
-            tBiasgBias, tBiassBias,
-            tBiascBias, tBiaspBias,
-            binfo.actual_seqlen_q - m_block * kBlockM
-        );
-        // Because copy_bias currently uses scalar loads, we need to sync here.
-        // TODO: Remove sync after fixing to vectorized loads.
-        __syncthreads();
+        if constexpr (Has_bias) {
+            FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                gmem_tiled_copy_Bias,
+                tBiasgBias, tBiassBias,
+                tBiascBias, tBiaspBias,
+                binfo.actual_seqlen_q - m_block * kBlockM
+            );
+            // Because copy_bias currently uses scalar loads, we need to sync here.
+            // TODO: Remove sync after fixing to vectorized loads.
+            __syncthreads();
+        }
     }
 
     if (!Kernel_traits::Is_V_in_regs) {
@@ -671,19 +677,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
             }
 
-            // Copy mask and bias from smem to registers
-            Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-            Tensor tSrMask_copy_view = smem_thr_copy_PdS.retile_D(tSrMask);
-            cute::copy(smem_tiled_copy_PdS, tSsMask, tSrMask_copy_view);
-            Tensor tSrBias = make_tensor<Element>(shape(acc_s));
-            Tensor tSrBias_copy_view = smem_thr_copy_PdS.retile_D(tSrBias);
-            cute::copy(smem_tiled_copy_PdS, tSsBias, tSrBias_copy_view);
-
-            // Reshape acc_s, mask, bias from (MMA=4, MMA_M, MMA_N) to (row=(2, MMA_M), col=(2, MMA_N))
+            // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (row=(2, MMA_M), col=(2, MMA_N))
             Tensor scores = make_tensor(acc_s.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(acc_s.layout()));
-            Tensor mask = make_tensor(tSrMask.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrMask.layout()));
-            Tensor bias = make_tensor(tSrBias.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrBias.layout()));
-            // if (cute::thread(32, 0)) { print(scores); }
 
             // Softcapping - calculating dTanh and scaling dS later with it
             [[maybe_unused]] Tensor dtanh = make_tensor_like(scores);
@@ -691,21 +686,78 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 FLASH_NAMESPACE::calculate_dtanh(scores, dtanh, params.softcap);
             }
 
-            // TD [2023-07-29]: I was thinking that we don't need to mask out the elements beyond
-            // actual_seqlen_k, because acc_s would be some finite value for those indices.
-            // In the end when we multiply with K to get dQ, the corresponding values of K would be 0,
-            // so the result would still be correct.
-            // However, it's possible that the values in acc_s are so large that they overflow
-            // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
-            // So we need to mask out the elements beyond actual_seqlen_k.
-            FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal>(
-                scores, mask, bias, params.scale_softmax,
-                n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
-                binfo.actual_seqlen_k,
-                m_block * kBlockM + get<0>(taccScS_row(0)),
-                binfo.actual_seqlen_q,
-                AtomLayoutMS * 16
-            );
+            if constexpr (Has_mask && Has_bias) {
+                // Copy mask and bias from smem to registers
+                Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+                Tensor tSrMask_copy_view = smem_thr_copy_PdS.retile_D(tSrMask);
+                cute::copy(smem_tiled_copy_PdS, tSsMask, tSrMask_copy_view);
+                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+                Tensor tSrBias_copy_view = smem_thr_copy_PdS.retile_D(tSrBias);
+                cute::copy(smem_tiled_copy_PdS, tSsBias, tSrBias_copy_view);
+
+                // Reshape mask, bias from (MMA=4, MMA_M, MMA_N) to (row=(2, MMA_M), col=(2, MMA_N))
+                Tensor mask = make_tensor(tSrMask.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrMask.layout()));
+                Tensor bias = make_tensor(tSrBias.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrBias.layout()));
+        
+                // TD [2023-07-29]: I was thinking that we don't need to mask out the elements beyond
+                // actual_seqlen_k, because acc_s would be some finite value for those indices.
+                // In the end when we multiply with K to get dQ, the corresponding values of K would be 0,
+                // so the result would still be correct.
+                // However, it's possible that the values in acc_s are so large that they overflow
+                // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
+                // So we need to mask out the elements beyond actual_seqlen_k.
+                FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal, /*Has_mask=*/Has_mask, /*Has_bias=*/Has_bias>(
+                    scores, mask, bias, params.scale_softmax,
+                    n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
+                    binfo.actual_seqlen_k,
+                    m_block * kBlockM + get<0>(taccScS_row(0)),
+                    binfo.actual_seqlen_q,
+                    AtomLayoutMS * 16
+                );
+            } else if constexpr (Has_mask && !Has_bias) {
+                // Copy mask from smem to registers
+                Tensor tSrMask = make_tensor<Element>(shape(acc_s));
+                Tensor tSrMask_copy_view = smem_thr_copy_PdS.retile_D(tSrMask);
+                cute::copy(smem_tiled_copy_PdS, tSsMask, tSrMask_copy_view);
+
+                // Reshape mask from (MMA=4, MMA_M, MMA_N) to (row=(2, MMA_M), col=(2, MMA_N))
+                Tensor mask = make_tensor(tSrMask.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrMask.layout()));
+        
+                FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal, /*Has_mask=*/Has_mask, /*Has_bias=*/Has_bias>(
+                    scores, mask, /*bias=*/nullptr, params.scale_softmax,
+                    n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
+                    binfo.actual_seqlen_k,
+                    m_block * kBlockM + get<0>(taccScS_row(0)),
+                    binfo.actual_seqlen_q,
+                    AtomLayoutMS * 16
+                );
+            } else if constexpr (!Has_mask && Has_bias) {
+                // Copy bias from smem to registers
+                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+                Tensor tSrBias_copy_view = smem_thr_copy_PdS.retile_D(tSrBias);
+                cute::copy(smem_tiled_copy_PdS, tSsBias, tSrBias_copy_view);
+
+                // Reshape bias from (MMA=4, MMA_M, MMA_N) to (row=(2, MMA_M), col=(2, MMA_N))
+                Tensor bias = make_tensor(tSrBias.data(), FLASH_NAMESPACE::convert_layout_acc_rowcol(tSrBias.layout()));
+        
+                FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal, /*Has_mask=*/Has_mask, /*Has_bias=*/Has_bias>(
+                    scores, /*mask=*/nullptr, bias, params.scale_softmax,
+                    n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
+                    binfo.actual_seqlen_k,
+                    m_block * kBlockM + get<0>(taccScS_row(0)),
+                    binfo.actual_seqlen_q,
+                    AtomLayoutMS * 16
+                );
+            } else {
+                FLASH_NAMESPACE::apply_mask</*Causal_mask=*/Is_causal, /*Has_mask=*/Has_mask, /*Has_bias=*/Has_bias>(
+                    scores, /*mask=*/nullptr, /*bias=*/nullptr, params.scale_softmax,
+                    n_block * kBlockN + (tidx / 32 / AtomLayoutMS) * MMA_N_SdP * 16,
+                    binfo.actual_seqlen_k,
+                    m_block * kBlockM + get<0>(taccScS_row(0)),
+                    binfo.actual_seqlen_q,
+                    AtomLayoutMS * 16
+                );
+            }
 
             // if (cute::thread(32, 0)) { print(scores); }
             // Compute the exponential value.
@@ -798,16 +850,18 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             Tensor tdSadS = smem_thr_copy_PdS.retile_S(tdSrdS);     // ((Atom, AtomNum), MMA_M, MMA_N)
             cute::copy(smem_tiled_copy_PdS, tdSadS, tdSsdS);
             __syncthreads();
-            // Write dS to dBias
-            FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/false>(
-                gmem_tiled_copy_Bias,
-                tBiassBias, tdBiasgdBias,
-                tBiascBias, tBiaspBias,
-                binfo.actual_seqlen_q - m_block * kBlockM
-            );
-            // Because copy_bias currently uses scalar loads, we need to sync here.
-            // TODO: Remove sync after fixing to vectorized loads.
-            __syncthreads();
+            if constexpr (Has_bias) {
+                // Write dS to dBias
+                FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/false>(
+                    gmem_tiled_copy_Bias,
+                    tBiassBias, tdBiasgdBias,
+                    tBiascBias, tBiaspBias,
+                    binfo.actual_seqlen_q - m_block * kBlockM
+                );
+                // Because copy_bias currently uses scalar loads, we need to sync here.
+                // TODO: Remove sync after fixing to vectorized loads.
+                __syncthreads();
+            }
 
             // if (cute::thread0()) { print(tPrP); }
             // Layout p_l = tPrP.layout();
@@ -829,26 +883,28 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         }
 
         if (m_block > m_block_min) {
-            // Advance gMask
-            tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
-            // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-            //     gmem_tiled_copy_Mask,
-            //     tMaskgMask, tMasksMask,
-            //     tMaskcMask, tMaskpMask,
-            //     binfo.actual_seqlen_q - (m_block - 1) * kBlockM
-            // );
-            // FLASH_NAMESPACE::cp_async_fence();
-            // FLASH_NAMESPACE::cp_async_wait<0>();
-            // // Do OR-reduce on the mask to see if any active threads for next iteration
+            if constexpr (Has_mask) {
+                // Advance gMask
+                tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
+                // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                //     gmem_tiled_copy_Mask,
+                //     tMaskgMask, tMasksMask,
+                //     tMaskcMask, tMaskpMask,
+                //     binfo.actual_seqlen_q - (m_block - 1) * kBlockM
+                // );
+                // FLASH_NAMESPACE::cp_async_fence();
+                // FLASH_NAMESPACE::cp_async_wait<0>();
+                // // Do OR-reduce on the mask to see if any active threads for next iteration
 
-            FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
-                gmem_tiled_copy_Mask,
-                tMaskgMask, tMasksMask,
-                any_active_next,
-                tMaskcMask, tMaskpMask,
-                binfo.actual_seqlen_q - (m_block - 1) * kBlockM
-            );
-            // We don't need to syncthreads here because copy_mask is already or_syncthreads.
+                FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+                    gmem_tiled_copy_Mask,
+                    tMaskgMask, tMasksMask,
+                    any_active_next,
+                    tMaskcMask, tMaskpMask,
+                    binfo.actual_seqlen_q - (m_block - 1) * kBlockM
+                );
+                // We don't need to syncthreads here because copy_mask is already or_syncthreads.
+            }
 
             // Advance gdO
             tdOgdO.data() = tdOgdO.data() + (-int(kBlockM * params.do_row_stride));
@@ -946,19 +1002,21 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         }
 
         if (m_block > m_block_min) {
-            // Advance gBias and gdBias
-            tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
-            tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
-            if (any_active_next) {
-                FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
-                    gmem_tiled_copy_Bias,
-                    tBiasgBias, tBiassBias,
-                    tBiascBias, tBiaspBias,
-                    binfo.actual_seqlen_q - (m_block - 1) * kBlockM
-                );
-                // Because copy_bias currently uses scalar loads, we need to sync here.
-                // TODO: Remove sync after fixing to vectorized loads.
-                __syncthreads();
+            if constexpr (Has_bias) {
+                // Advance gBias and gdBias
+                tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
+                tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
+                if (any_active_next) {
+                    FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                        gmem_tiled_copy_Bias,
+                        tBiasgBias, tBiassBias,
+                        tBiascBias, tBiaspBias,
+                        binfo.actual_seqlen_q - (m_block - 1) * kBlockM
+                    );
+                    // Because copy_bias currently uses scalar loads, we need to sync here.
+                    // TODO: Remove sync after fixing to vectorized loads.
+                    __syncthreads();
+                }
             }
         }
 
@@ -1071,7 +1129,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_causal, bool Is_even_M, bool Is_even_K, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Has_mask, bool Has_bias, bool Is_even_M, bool Is_even_K, typename Params>
 inline __device__ void compute_dq_dk_dv(const Params &params) {
 
     // The block index for the batch.
@@ -1085,20 +1143,20 @@ inline __device__ void compute_dq_dk_dv(const Params &params) {
 
     const int n_block_max = (params.seqlen_k + Kernel_traits::kBlockN - 1) / Kernel_traits::kBlockN;
     if (n_block_max == 1) {
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, true, true>(params, bidb, bidh, 0);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Has_mask, Has_bias, Is_even_M, Is_even_K, false, true, true>(params, bidb, bidh, 0);
     } else {
         // Iterating backward from n_block_max - 1 to 0 might save 1 register
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, true, false>(params, bidb, bidh, n_block_max - 1);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Has_mask, Has_bias, Is_even_M, Is_even_K, false, true, false>(params, bidb, bidh, n_block_max - 1);
         for (int n_block = n_block_max - 2; n_block > 0; n_block--) {
-            compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, false, false>(params, bidb, bidh, n_block);
+            compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Has_mask, Has_bias, Is_even_M, Is_even_K, false, false, false>(params, bidb, bidh, n_block);
         }
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_M, Is_even_K, false, false, true>(params, bidb, bidh, 0);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Has_mask, Has_bias, Is_even_M, Is_even_K, false, false, true>(params, bidb, bidh, 0);
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Is_softcap, typename Params>
+template<typename Kernel_traits, bool Is_causal, bool Has_mask, bool Has_bias, bool Is_even_MN, bool Is_even_K, bool Is_softcap, typename Params>
 inline __device__ void compute_dq_dk_dv_seqk_parallel(const Params &params) {
 
     // The block index for the batch.
@@ -1108,7 +1166,7 @@ inline __device__ void compute_dq_dk_dv_seqk_parallel(const Params &params) {
 
     // If deterministic, each thread block will do atomicAdd to a different dQ_accum buffer.
     for (int n_block = blockIdx.x; n_block < (params.seqlen_k + Kernel_traits::kBlockN - 1) / Kernel_traits::kBlockN; n_block += gridDim.x) {
-        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Is_even_MN, Is_even_K, Is_softcap, false, false, /*Seq_parallel=*/true>(params, bidb, bidh, n_block);
+        compute_dq_dk_dv_1colblock<Kernel_traits, Is_causal, Has_mask, Has_bias, Is_even_MN, Is_even_K, Is_softcap, false, false, /*Seq_parallel=*/true>(params, bidb, bidh, n_block);
     }
 }
 

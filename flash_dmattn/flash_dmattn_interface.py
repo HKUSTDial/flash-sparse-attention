@@ -287,7 +287,8 @@ class FlashDMAttnFunc(torch.autograd.Function):
         *args: Any,
     ):
         q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
-        dq, dk, dv, dbias = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v), torch.zeros_like(bias)
+        dq, dk, dv = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v)
+        dbias = torch.zeros_like(bias) if bias is not None else None
 
         head_size_og = dout.size(3)
         dout_padded = dout

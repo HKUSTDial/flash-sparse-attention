@@ -29,8 +29,8 @@ def flash_dynamic_mask_attention_forward(
         query (torch.Tensor): The query tensor of shape (batch_size, num_heads, query_len, head_dim).
         key (torch.Tensor): The key tensor of shape (batch_size, num_kv_heads, key_len, head_dim).
         value (torch.Tensor): The value tensor of shape (batch_size, num_kv_heads, key_len, head_dim).
-        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape (batch_size, num_heads, query_len, key_len), also supports (batch_size, num_kv_heads, query_len, key_len) or (batch_size, 1, query_len, key_len) for MQA/GQA.
-        attention_bias (Optional[torch.Tensor]): The attention bias float tensor of shape (batch_size, num_heads, query_len, key_len), also supports (batch_size, num_kv_heads, query_len, key_len) or (batch_size, 1, query_len, key_len) for MQA/GQA.
+        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape (batch_size, {num_heads|num_kv_heads|1}, query_len, key_len).
+        attention_bias (Optional[torch.Tensor]): The attention bias float tensor of shape (batch_size, {num_heads|num_kv_heads|1}, query_len, key_len), if attention_mask is None, also supports (batch_size, {num_heads|num_kv_heads|1}, key_len).
         scaling (Optional[float]): The scaling factor for the attention scores.
         softcap (Optional[float]): The softcap value for the attention scores.
         **kwargs: Additional keyword arguments.

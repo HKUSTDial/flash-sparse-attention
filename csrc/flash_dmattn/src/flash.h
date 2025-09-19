@@ -38,13 +38,13 @@ struct QKV_params {
     int h, h_k;
     // In the case of multi-query and grouped-query attention (MQA/GQA), nheads_k could be
     // different from nheads (query).
-    int h_h_k_ratio; // precompute h / h_k,
+    int h_h_k_ratio;    // precompute h / h_k,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Mask_params {
-    void * __restrict__ mask_ptr;       // Attention mask tensor [batch_size, num_kv_heads, query_len, key_len]
+    void * __restrict__ mask_ptr;       // Attention mask tensor [batch_size, num_mask_heads, query_len, key_len]
 
     // The stride of the attention mask tensors.
     index_t mask_batch_stride;          // Stride between batches of attention mask
@@ -53,12 +53,15 @@ struct Mask_params {
 
     // The number of heads in the mask.
     int h_mask;
+    int h_h_mask_ratio; // precompute h / h_mask
+
+    bool has_mask;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Bias_params {
-    void *__restrict__ bias_ptr;        // Attention bias tensor [batch_size, num_kv_heads, query_len, key_len]
+    void *__restrict__ bias_ptr;        // Attention bias tensor [batch_size, num_bias_heads, query_len, key_len]
 
     // The stride of the attention bias tensor.
     index_t bias_batch_stride;          // Stride between batches of attention bias
@@ -67,13 +70,16 @@ struct Bias_params {
 
     // The number of heads in the bias.
     int h_bias;
+    int h_h_bias_ratio; // precompute h / h_bias
+
+    bool has_bias;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_params {
 
-    // The O matrix (output).
+    // The O matrix.
     void * __restrict__ o_ptr;
     void * __restrict__ oaccum_ptr;
 
@@ -90,7 +96,7 @@ struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_par
     void * __restrict__ softmax_lseaccum_ptr;
 
     // The dimensions.
-    int b, seqlen_q, seqlen_k, seqlen_knew, d, seqlen_q_rounded, seqlen_k_rounded, d_rounded, rotary_dim, total_q;
+    int b, seqlen_q, seqlen_k, seqlen_knew, d, seqlen_q_rounded, seqlen_k_rounded, d_rounded, total_q, total_k;
 
     // The scaling factors for the kernel.
     float scale_softmax;
@@ -105,6 +111,7 @@ struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_par
     // If provided, the actual length of each k sequence.
     int * __restrict__ seqused_k;
 
+    // TODO: block mask for less memory usage
     int *__restrict__ blockmask;
 
     // The K_new and V_new matrices.
@@ -192,9 +199,9 @@ struct Flash_bwd_params : public Flash_fwd_params {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename T, int Headdim, bool Is_causal> void run_mha_fwd_(Flash_fwd_params &params, cudaStream_t stream);
-template<typename T, int Headdim, bool Is_causal> void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream);
+template<typename T, int Headdim, bool Is_causal, bool Has_mask, bool Has_bias> void run_mha_fwd_(Flash_fwd_params &params, cudaStream_t stream);
+template<typename T, int Headdim, bool Is_causal, bool Has_mask, bool Has_bias> void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream);
 
-template<typename T, int Headdim, bool Is_causal> void run_mha_bwd_(Flash_bwd_params &params, cudaStream_t stream);
+template<typename T, int Headdim, bool Is_causal, bool Has_mask, bool Has_bias> void run_mha_bwd_(Flash_bwd_params &params, cudaStream_t stream);
 
 }  // namespace FLASH_NAMESPACE
