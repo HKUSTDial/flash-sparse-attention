@@ -146,9 +146,10 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 template<typename T, int Headdim, bool Is_causal, bool Has_mask, bool Has_bias>
 void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int kBlockM = 64;  // Fixed for all head dimensions
-    constexpr static int kBlockN = 64;  // Fixed for all head dimensions
-    // constexpr static int kBlockN = Headdim <= 32 ? 128 : (Headdim <= 128 ? 128 : 64);
-    run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+    constexpr static int kBlockN = Has_mask || Has_bias
+        ? 64
+        : Headdim <= 64 ? 256 : (Headdim <= 128 ? 128 : 64);
+    run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, false, false, Has_mask, Has_bias, T>, Is_causal, Has_mask, Has_bias>(params, stream);
 }
 
 template<typename T, bool Is_causal, bool Has_mask, bool Has_bias>
@@ -163,18 +164,24 @@ void run_mha_fwd_hdim32(Flash_fwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 164 * 1024) {
-        // 28KB, 3 CTAs in sm86 and sm 89, 5 CTAs in A100, 8 CTAs in H100.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 48KB, 2 CTAs in sm86 and sm 89, 3 CTAs in A100, 4 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 88KB, 1 CTAs in sm86 and sm 89, 1 CTAs in A100, 2 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+    if constexpr (Has_mask && Has_bias) {
+        if (max_smem_per_block >= 112 * 1024) {
+            // 28KB, 5 CTAs in A100, 8 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, true, T>, Is_causal, true, true>(params, stream);
+        } else {
+            // 24KB, 4 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, true, T>, Is_causal, true, true>(params, stream);
+        }
+    } else if constexpr (Has_mask && !Has_bias) {
+        // 20KB, 5 CTAs in sm86 and sm 89, 8 CTAs in A100, 11 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, false, T>, Is_causal, true, false>(params, stream);
+    } else if constexpr (!Has_mask && Has_bias) {
+        // 56KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 4 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, false, true, T>, Is_causal, false, true>(params, stream);
     } else {
-        // 24KB, 4 CTAs in sm86 and sm 89.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+        // 24KB, 4 CTAs in sm86 and sm 89, 6 CTAs in A100, 9 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
     }
-   
 }
 
 template<typename T, bool Is_causal, bool Has_mask, bool Has_bias>
@@ -189,18 +196,24 @@ void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 164 * 1024) {             // H100 and A100
-        // 40KB, 2 CTAs in sm86 and sm 89, 4 CTAs in A100, 5 CTAs in H100.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 64KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 3 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 128, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 112KB, N/A in sm86 and sm 89, 1 CTAs in A100, 2 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    } else {                                            // sm86 and sm89
-        // 32KB, 3 CTAs in sm86 and sm 89.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    }
-    
+    if constexpr (Has_mask && Has_bias) {
+        if (max_smem_per_block >= 160 * 1024) {
+            // 40KB, 4 CTAs in A100, 5 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, true, T>, Is_causal, true, true>(params, stream);
+        } else {
+            // 32KB, 3 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, true, T>, Is_causal, true, true>(params, stream);
+        }
+    } else if constexpr (Has_mask && !Has_bias) {
+        // 32KB, 3 CTAs in sm86 and sm 89, 5 CTAs in A100, 7 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, false, T>, Is_causal, true, false>(params, stream);
+    } else if constexpr (!Has_mask && Has_bias) {
+        // 48KB, 2 CTAs in sm86 and sm 89, 3 CTAs in A100, 4 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, false, true, T>, Is_causal, false, true>(params, stream);
+    } else {
+        // 48KB, 2 CTAs in sm86 and sm 89, 3 CTAs in A100, 4 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
+    } 
 }
 
 template<typename T, bool Is_causal, bool Has_mask, bool Has_bias>
@@ -215,16 +228,23 @@ void run_mha_fwd_hdim96(Flash_fwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 164 * 1024) {             // H100 and A100
-        // 52KB, 1 CTAs in sm86 and sm 89, 3 CTAs in A100, 4 CTAs in H100.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 80KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 2 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 136KB, N/A CTAs in sm86 and sm 89, 1 CTAs in A100, 1 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    } else {                                            // sm86 and sm89
-        // 40KB, 2 CTAs in sm86 and sm 89.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+    if constexpr (Has_mask && Has_bias) {
+        if (max_smem_per_block >= 156 * 1024) {
+            // 52KB, 3 CTAs in A100, 4 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, true, T>, Is_causal, true, true>(params, stream);
+        } else {
+            // 40KB, 2 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, true, T>, Is_causal, true, true>(params, stream);
+        }
+    } else if constexpr (Has_mask && !Has_bias) {
+        // 44KB, 2 CTAs in sm86 and sm 89, 3 CTAs in A100, 5 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, false, T>, Is_causal, true, false>(params, stream);
+    } else if constexpr (!Has_mask && Has_bias) {
+        // 44KB, 2 CTAs in sm86 and sm 89, 3 CTAs in A100, 5 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, true, T>, Is_causal, false, true>(params, stream);
+    } else {
+        // 48KB, 2 CTAs in sm86 and sm 89, 3 CTAs in A100, 4 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
     }
 }
 
@@ -240,28 +260,63 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 164 * 1024) {             // H100 and A100
-        // 64KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 3 CTAs in H100.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 96KB, 1 CTAs in sm86 and sm 89, 1 CTAs in A100, 2 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 160KB, N/A CTAs in sm86 and sm 89, 1 CTAs in A100, 1 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    } else {                                            // sm86 and sm89
-        // 48KB, 2 CTAs in sm86 and sm 89.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+    if constexpr (Has_mask && Has_bias) {
+        if (max_smem_per_block >= 128 * 1024) {
+            // 64KB, 2 CTAs in A100, 3 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, true, T>, Is_causal, true, true>(params, stream);
+        } else {
+            // 48KB, 2 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, true, T>, Is_causal, true, true>(params, stream);
+        }
+    } else if constexpr (Has_mask && !Has_bias) {
+        if (max_smem_per_block >= 112 * 1024) {
+            // 56KB, 2 CTAs in A100, 4 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, false, T>, Is_causal, true, false>(params, stream);
+        } else {
+            // 40KB, 2 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, false, T>, Is_causal, true, false>(params, stream);
+        }
+    } else if constexpr (!Has_mask && Has_bias) {
+        // 80KB, 2 CTAs in A100, 2 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, true, T>, Is_causal, false, true>(params, stream);
+    } else {
+        if (max_smem_per_block >= 128 * 1024) {
+            // 64KB, 2 CTAs in A100, 3 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
+            return;
+        } else {
+            // 48KB, 2 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
+            return;
+        }
     }
 }
 
 template<typename T, bool Is_causal, bool Has_mask, bool Has_bias>
 void run_mha_fwd_hdim192(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 192;
-    // 88KB, 1 CTAs in sm86 and sm 89, 1 CTAs in A100, 2 CTAs in H100.
-    run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    // 128KB, N/A CTAs in sm86 and sm 89, 1 CTAs in A100, 1 CTAs in H100.
-    // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    // 208KB, N/A CTAs in sm86 and sm 89, N/A CTAs in A100, 1 CTAs in H100.
-    // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+    int device;
+    cudaGetDevice(&device);
+    int max_smem_per_block;
+    cudaError status_ = cudaDeviceGetAttribute(
+        &max_smem_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, device
+    );
+    if (status_ != cudaSuccess) {
+      C10_CUDA_CHECK(status_);
+    }
+    if constexpr (Has_mask && Has_bias) {
+        // 88KB, 1 CTAs in sm86 and sm 89, 1 CTAs in A100, 2 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, true, T>, Is_causal, true, true>(params, stream);
+    } else if constexpr (Has_mask && !Has_bias) {
+        // 80KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 2 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, false, T>, Is_causal, true, false>(params, stream);
+    } else if constexpr (!Has_mask && Has_bias) {
+        // 80KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 2 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, true, T>, Is_causal, false, true>(params, stream);
+    } else {
+        // 72KB, 1 CTAs in sm86 and sm 89, 2 CTAs in A100, 3 CTAs in H100.
+        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
+    }
 }
 
 template<typename T, bool Is_causal, bool Has_mask, bool Has_bias>
@@ -276,16 +331,38 @@ void run_mha_fwd_hdim256(Flash_fwd_params &params, cudaStream_t stream) {
     if (status_ != cudaSuccess) {
       C10_CUDA_CHECK(status_);
     }
-    if (max_smem_per_block >= 112 * 1024) {             // H100 and A100
-        // 112KB, N/A CTAs in sm86 and sm 89, 1 CTAs in A100, 2 CTAs in H100.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 192KB, N/A CTAs in sm86 and sm 89, N/A CTAs in A100, 1 CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-        // 256KB, N/A CTAs in sm86 and sm 89, N/A CTAs in A100, N/A CTAs in H100.
-        // run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, T>, Is_causal, Has_mask, Has_bias>(params, stream);
-    } else {                                            // sm86 and sm89
-        // 80KB, 1 CTAs in sm86 and sm 89.
-        run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, T>, Is_causal, Has_mask, Has_bias>(params, stream);
+    if constexpr (Has_mask && Has_bias) {
+        if (max_smem_per_block >= 112 * 1024) {
+            // 112KB, 1 CTAs in A100, 2 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, true, T>, Is_causal, true, true>(params, stream);
+        } else {
+            // 80KB, 1 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, true, T>, Is_causal, true, true>(params, stream);
+        }
+    } else if constexpr (Has_mask && !Has_bias) {
+        if (max_smem_per_block >= 104 * 1024) {
+            // 104KB, 1 CTAs in A100, 2 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, true, false, T>, Is_causal, true, false>(params, stream);
+        } else {
+            // 72KB, 1 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, true, false, T>, Is_causal, true, false>(params, stream);
+        }
+    } else if constexpr (!Has_mask && Has_bias) {
+        if (max_smem_per_block >= 104 * 1024) {
+            // 104KB, 1 CTAs in A100, 2 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, true, T>, Is_causal, false, true>(params, stream);
+        } else {
+            // 72KB, 1 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, true, true, false, true, T>, Is_causal, false, true>(params, stream);
+        }
+    } else {
+        if (max_smem_per_block >= 128 * 1024) {
+            // 128KB, 1 CTAs in A100, 1 CTAs in H100.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
+        } else {
+            // 96KB, 1 CTAs in sm86 and sm 89.
+            run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 64, 64, 4, false, false, false, false, T>, Is_causal, false, false>(params, stream);
+        }
     }
 }
 
