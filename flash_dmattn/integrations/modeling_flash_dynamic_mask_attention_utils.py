@@ -80,9 +80,6 @@ def _flash_dynamic_mask_attention_forward(
         flash_kwargs["deterministic"] = deterministic
     if softcap is not None:
         flash_kwargs["softcap"] = softcap
-    
-    if attention_bias is None:
-        attention_bias = torch.zeros((batch_size, num_kv_heads, query_length, key_length), dtype=dtype, device=query_states.device)
 
     query_states, key_states, value_states, attention_bias = fdma_peft_integration_check(
         query_states, key_states, value_states, attention_bias, target_dtype
