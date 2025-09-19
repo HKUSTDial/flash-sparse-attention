@@ -48,7 +48,7 @@ struct Flash_kernel_traits {
 // If Share_Q_K_smem is true, that forces Is_Q_in_regs to be true
 template<
     int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_,
-    bool Is_Q_in_regs_=false, bool Share_Q_K_smem_=false, typename elem_type=cutlass::half_t,
+    bool Is_Q_in_regs_=false, bool Share_Q_K_smem_=false, bool Has_mask_=false, bool Has_bias_=false, typename elem_type=cutlass::half_t,
     typename Base=Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type>
 >
 struct Flash_fwd_kernel_traits : public Base {
@@ -61,6 +61,8 @@ struct Flash_fwd_kernel_traits : public Base {
 
     static constexpr bool Share_Q_K_smem = Share_Q_K_smem_;
     static constexpr bool Is_Q_in_regs = Is_Q_in_regs_ || Share_Q_K_smem;
+    static constexpr bool Has_mask = Has_mask_;
+    static constexpr bool Has_bias = Has_bias_;
 
     // The number of threads.
     static constexpr int kNWarps = kNWarps_;
@@ -153,7 +155,7 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kSmemBiasSize = size(SmemLayoutPS{}) * sizeof(Element);
 
     // Shared memory size with QKV matrices and mask/bias matrices
-    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + kSmemMaskSize + kSmemBiasSize;
+    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + (Has_mask ? kSmemMaskSize : 0) + (Has_bias ? kSmemBiasSize : 0);
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
