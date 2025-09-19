@@ -951,9 +951,10 @@ mha_bwd(
             TORCH_CHECK(dbias.dtype() == q_dtype, "dbias must have the same dtype as q");
             CHECK_DEVICE(dbias);
             TORCH_CHECK(dbias.stride(-1) == 1, "dbias must have contiguous last dimension");
-            if (dbias.dim() == 3) {
-                // Add a dummy dimension for seqlen_q
-                dbias = dbias.unsqueeze(2).expand({-1, -1, seqlen_q, -1});
+            if (dbias.dim() == 4) {
+                CHECK_SHAPE(dbias, batch_size, num_heads_bias, seqlen_q, seqlen_k);
+            } else {
+                CHECK_SHAPE(dbias, batch_size, num_heads_bias, seqlen_k);
             }
         } else {
             if (bias.dim() == 4) {
@@ -972,7 +973,6 @@ mha_bwd(
                 } else {
                     dbias = torch::empty({batch_size, num_heads, seqlen_k}, opts);
                 }
-                dbias = dbias.unsqueeze(2).expand({-1, -1, seqlen_q, -1});
             }
         }
     } else {
@@ -1006,11 +1006,14 @@ mha_bwd(
         : dv; 
     dbias_expanded = has_bias
         ? (
-            num_heads_bias != num_heads     // MQA / GQA
+            (num_heads_bias != num_heads) || (bias_.has_value() && bias_.value().dim() == 3)    // MQA / GQA or bias has no seqlen_q dimension
                 ? torch::empty({batch_size, num_heads, seqlen_q, seqlen_k}, opts)
                 : dbias
         )
         : torch::empty({0}, opts);
+    if (has_bias) {
+        dbias_expanded.zero_();
+    }
 
     Flash_bwd_params params;
 
@@ -1061,14 +1064,24 @@ mha_bwd(
     }
     // For MQA/GQA or num_heads_bias != num_heads, we also need to sum dbias across the heads
     if (has_bias) {
+        bool sum_seqlen_q = bias_.has_value() && bias_.value().dim() == 3;
         if (num_heads_bias != num_heads) {
-            at::sum_out(dbias, at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k}), {2});
+            if (sum_seqlen_q) {
+                dbias_expanded = at::sum(
+                    at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k}), {2}
+                );
+            } else {
+                at::sum_out(
+                    dbias,
+                    at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k}), {2}
+                );
+            }
         }
-        if (bias_.value().dim() == 3) {
-            // Reduce the dummy dimension for seqlen_q
-            dbias = dbias.sum(2);
+        if (sum_seqlen_q) {
+            // We need to sum across the seqlen_q dimension
+            at::sum_out(dbias, dbias_expanded, {2});
         }
-    } 
+    }
 
     return { dq, dk, dv, dbias, softmax_d };
 }
