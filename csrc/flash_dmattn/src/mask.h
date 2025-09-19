@@ -14,8 +14,8 @@ using namespace cute;
 template <bool Causal_mask=false, bool Has_mask=true, bool Has_bias=true, typename TensorType, typename MaskType, typename BiasType>
 __forceinline__ __device__ void apply_mask(
     TensorType &tensor,
-    MaskType &mask,
-    BiasType &bias,
+    const MaskType &mask,
+    const BiasType &bias,
     const float scale_softmax,
     const int col_idx_offset_,
     const int max_seqlen_k,
