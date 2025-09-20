@@ -79,7 +79,7 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
-    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100;120").split(";")
+    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100").split(";")
 
 
 def detect_preferred_sm_arch() -> Optional[str]:
