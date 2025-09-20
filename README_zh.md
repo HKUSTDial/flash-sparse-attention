@@ -18,7 +18,7 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 ## 主要特性
 
 ### 🎯 核心内核优势
-- **4D Mask & Bias 支持**: 原生支持 `(batch_size, num_kv_heads, query_len, key_len)` 形状的 attention_mask 和 attention_bias 张量
+- **Mask & Bias 支持**: 原生支持 `(batch_size, {1|num_kv_heads|num_heads}, {0|query_len}, key_len)` 形状的 attention_mask 和 attention_bias 张量
 - **智能计算跳过**: 基于 attention_mask 的 block-level 自动跳过机制，完全跳过全零 mask 区块的计算和内存访问
 - **完整梯度支持**: 内置 attention_bias 的完整梯度计算路径，支持端到端训练
 
@@ -31,7 +31,7 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 
 ## 性能
 
-我们展示了 Flash-DMA 相对于标准 PyTorch SDPA 的预期加速效果。
+我们展示了带有mask与bias条件下 Flash-DMA 相对于标准 PyTorch SDPA 的预期加速效果。
 
 ---
 

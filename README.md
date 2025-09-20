@@ -18,7 +18,7 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 ## Key Features
 
 ### 🎯 Core Kernel Advantages
-- **4D Mask & Bias Support**: Native support for `(batch_size, num_kv_heads, query_len, key_len)` shaped attention mask and attention bias tensors
+- **Mask & Bias Support**: Native support for `(batch_size, {1|num_kv_heads|num_heads}, {0|query_len}, key_len)` shaped attention mask and attention bias tensors
 - **Intelligent Computation Skipping**: Block-level automatic skipping mechanism based on masks, completely bypassing computation and memory access for zero-mask blocks
 - **Complete Gradient Support**: Built-in full gradient computation path for attention bias, supporting end-to-end training
 
@@ -31,7 +31,7 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 
 ## Performance
 
-We present expected speedup of Flash-DMA over standard PyTorch SDPA.
+We present the expected speedup of Flash-DMA over standard PyTorch SDPA under mask and bias conditions.
 
 ---
 
