@@ -180,9 +180,9 @@ jobs:
             export FLASH_DMATTN_CUDA_ARCHS="${MATRIX_ARCH}"
           fi
 
-          # 5h timeout since GH allows max 6h and we want some buffer
+          # GH allows max 6h
           EXIT_CODE=0
-          timeout 5h python setup.py bdist_wheel --dist-dir=dist || EXIT_CODE=$?
+          timeout 6h python setup.py bdist_wheel --dist-dir=dist || EXIT_CODE=$?
 
           if [ $EXIT_CODE -eq 0 ]; then
             if [ -n "${MATRIX_ARCH}" ]; then
