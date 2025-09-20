@@ -32,6 +32,10 @@ on:
         description: "Upload wheel to this release"
         required: false
         type: string
+      arch:
+        description: "Target a single compute capability. Leave empty to build default archs"
+        required: false
+        type: string
 
 defaults:
   run:
@@ -59,6 +63,7 @@ jobs:
           echo "MATRIX_TORCH_VERSION=$(echo ${{ inputs.torch-version }} | awk -F \. {'print $1 "." $2'})" >> $GITHUB_ENV
           echo "WHEEL_CUDA_VERSION=$(echo ${{ inputs.cuda-version }} | awk -F \. {'print $1'})" >> $GITHUB_ENV
           echo "MATRIX_PYTHON_VERSION=$(echo ${{ inputs.python-version }} | awk -F \. {'print $1 $2'})" >> $GITHUB_ENV
+          echo "MATRIX_ARCH=${{ inputs.arch }}" >> $GITHUB_ENV
 
       - name: Free up disk space
         if: ${{ runner.os == 'Linux' }}
@@ -170,12 +175,21 @@ jobs:
           export FLASH_DMATTN_FORCE_BUILD="TRUE"
           export FLASH_DMATTN_FORCE_CXX11_ABI=${{ inputs.cxx11_abi }}
 
+          # If specified, limit to a single compute capability to speed up build
+          if [ -n "${MATRIX_ARCH}" ]; then
+            export FLASH_DMATTN_CUDA_ARCHS="${MATRIX_ARCH}"
+          fi
+
           # 5h timeout since GH allows max 6h and we want some buffer
           EXIT_CODE=0
           timeout 5h python setup.py bdist_wheel --dist-dir=dist || EXIT_CODE=$?
 
           if [ $EXIT_CODE -eq 0 ]; then
-            tmpname=cu${WHEEL_CUDA_VERSION}torch${MATRIX_TORCH_VERSION}cxx11abi${{ inputs.cxx11_abi }}
+            if [ -n "${MATRIX_ARCH}" ]; then
+              tmpname=sm${MATRIX_ARCH}cu${WHEEL_CUDA_VERSION}torch${MATRIX_TORCH_VERSION}cxx11abi${{ inputs.cxx11_abi }}
+            else
+              tmpname=cu${WHEEL_CUDA_VERSION}torch${MATRIX_TORCH_VERSION}cxx11abi${{ inputs.cxx11_abi }}
+            fi
             wheel_name=$(ls dist/*whl | xargs -n 1 basename | sed "s/-/+$tmpname-/2")
             ls dist/*whl |xargs -I {} mv {} dist/${wheel_name}
             echo "wheel_name=${wheel_name}" >> $GITHUB_ENV
