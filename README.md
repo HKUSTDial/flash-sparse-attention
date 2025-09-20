@@ -234,7 +234,7 @@ Flash-DMA integrates the efficient memory access patterns of Flash Attention wit
 
 ### Core Technology Integration
 
-- **🎯 Native 4D Mask & Bias Support**: Kernels directly process `(batch_size, num_kv_heads, query_len, key_len)` shaped tensors
+- **🎯 Native Mask & Bias Support**: Kernels directly process `(batch_size, {1|num_kv_heads|num_heads}, {0|query_len}, key_len)` shaped tensors
 - **⚡ Block-level Intelligent Skipping**: Unified OR-reduction skipping logic based on masks, completely avoiding computation and memory access for zero blocks
 - **🔄 Complete Gradient Chain**: Built-in attention bias gradient computation (dbias) supporting end-to-end differentiable training
 
