@@ -7,12 +7,12 @@ import os
 import re
 import ast
 import glob
-import shutil
 from pathlib import Path
 from packaging.version import parse, Version
 import platform
+from typing import Optional
 
-from setuptools import setup, find_packages
+from setuptools import setup
 import subprocess
 
 import urllib.request
@@ -22,7 +22,6 @@ from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 import torch
 from torch.utils.cpp_extension import (
     BuildExtension,
-    CppExtension,
     CUDAExtension,
     CUDA_HOME,
 )
@@ -81,6 +80,20 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
     return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;86;89;90;100;120").split(";")
+
+
+def detect_preferred_sm_arch() -> Optional[str]:
+    """Detect the preferred SM arch from the current CUDA device.
+    Returns None if CUDA is unavailable or detection fails.
+    """
+    try:
+        if torch.cuda.is_available():
+            idx = torch.cuda.current_device()
+            major, minor = torch.cuda.get_device_capability(idx)
+            return f"{major}{minor}"
+    except Exception:
+        pass
+    return None
 
 
 def get_platform():
@@ -237,6 +250,7 @@ def get_package_version():
 
 
 def get_wheel_url():
+    sm_arch = detect_preferred_sm_arch()
     torch_version_raw = parse(torch.__version__)
     python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
     platform_name = get_platform()
@@ -255,7 +269,7 @@ def get_wheel_url():
     cuda_version = f"{torch_cuda_version.major}"
 
     # Determine wheel URL based on CUDA version, torch version, python version and OS
-    wheel_filename = f"{PACKAGE_NAME}-{flash_version}+cu{cuda_version}torch{torch_version}cxx11abi{cxx11_abi}-{python_version}-{python_version}-{platform_name}.whl"
+    wheel_filename = f"{PACKAGE_NAME}-{flash_version}+sm{sm_arch}cu{cuda_version}torch{torch_version}cxx11abi{cxx11_abi}-{python_version}-{python_version}-{platform_name}.whl"
 
     wheel_url = BASE_WHEEL_URL.format(tag_name=f"v{flash_version}", wheel_name=wheel_filename)
 
