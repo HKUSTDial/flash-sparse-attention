@@ -52,7 +52,7 @@ jobs:
         # Without this we get import error (undefined symbol: _ZN3c105ErrorC2ENS_14SourceLocationESs)
         # when building without C++11 ABI and using it on nvcr images.
         cxx11_abi: ["FALSE", "TRUE"]
-        arch: ["80", "86", "89", "90", "100", "120"]
+        arch: ["80", "90"]
         include:
             - torch-version: "2.9.0.dev20250904"
               cuda-version: "13.0"
