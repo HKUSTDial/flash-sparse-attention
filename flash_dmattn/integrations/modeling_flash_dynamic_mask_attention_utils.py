@@ -85,7 +85,9 @@ def _flash_dynamic_mask_attention_forward(
         query_states, key_states, value_states, attention_bias, target_dtype
     )
 
-    if attention_mask is not None:
+    if attention_mask is not None and attention_mask.dim() == 4:
+        if attention_bias.dim() == 3:
+            attention_bias = attention_bias.unsqueeze(-2)
         attention_bias = attention_bias.masked_fill(
             ~attention_mask,
             min_dtype
@@ -98,7 +100,6 @@ def _flash_dynamic_mask_attention_forward(
             )
             attention_mask = torch.zeros_like(attention_bias, dtype=torch.bool, device=attention_bias.device)
             attention_mask = attention_mask.scatter(-1, topk_indices, topk_values != min_dtype)
-            attention_bias = attention_bias.masked_fill(~attention_mask, min_dtype)
 
     out = flash_fn(
         query_states, key_states, value_states, attn_mask=attention_mask, attn_bias=attention_bias, scale=softmax_scale, is_causal=is_causal
