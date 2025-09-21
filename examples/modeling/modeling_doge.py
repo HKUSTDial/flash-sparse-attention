@@ -241,16 +241,12 @@ class DogeAttention(nn.Module):
         dt_states = self.dt_proj(
             value_states.transpose(1, 2).reshape(value_states.shape[0], value_states.shape[-2], -1)
         )
-        dt_states = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2)
-        attn_bias = dt_states[:, :, None, :].expand(
-            -1, -1, hidden_states.shape[1], -1
-        ).to(hidden_states.dtype)  # [batch_size, num_heads, query_len, key_len]
+        attn_bias = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2).to(hidden_states.dtype)
 
         attention_interface: Callable = eager_attention_forward
         if flash_dynamic_mask_attention_forward is not None:
             attention_interface = flash_dynamic_mask_attention_forward
 
-        attention_mask = attention_mask.expand(-1, attn_bias.shape[1], -1, -1) if attention_mask is not None else None  # attention_mask: batch, num_kv_heads, query_len, key_len
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -414,7 +410,7 @@ class DogePreTrainedModel(PreTrainedModel):
         super()._init_weights(module)
         if isinstance(module, DogeAttention):
             if hasattr(module, "A"):
-                module.A.data.zero_()
+                module.A.data.normal_(mean=0.0, std=self.config.initializer_range)
         elif isinstance(module, DogeCDMoE):
             if hasattr(module, "router_gate"):
                 module.router_gate.weight.data.zero_()
