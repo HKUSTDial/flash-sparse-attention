@@ -93,13 +93,14 @@ def _flash_dynamic_mask_attention_forward(
             min_dtype
         )
 
-    if keep_window_size is not None:
-        if key_length > keep_window_size:
-            topk_values, topk_indices = torch.topk(
-                attention_bias, keep_window_size, dim=-1, largest=True, sorted=False
-            )
-            attention_mask = torch.zeros_like(attention_bias, dtype=torch.bool, device=attention_bias.device)
-            attention_mask = attention_mask.scatter(-1, topk_indices, topk_values != min_dtype)
+    if keep_window_size is not None and key_length > keep_window_size:
+        topk_values, topk_indices = torch.topk(
+            attention_bias, keep_window_size, dim=-1, largest=True, sorted=False
+        )
+        attention_mask = torch.zeros_like(attention_bias, dtype=torch.bool, device=attention_bias.device)
+        attention_mask = attention_mask.scatter(-1, topk_indices, topk_values != min_dtype)
+    else:
+        attention_mask = None
 
     out = flash_fn(
         query_states, key_states, value_states, attn_mask=attention_mask, attn_bias=attention_bias, scale=softmax_scale, is_causal=is_causal
