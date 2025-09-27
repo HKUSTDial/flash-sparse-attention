@@ -594,19 +594,32 @@ __forceinline__ __device__ void copy_mask(
     CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
     CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
 
-    #pragma unroll
-    for (int m = 0; m < size<1>(S); ++m) {
-        if (Is_even_MN || get<0>(identity_MN(0, m, 0)) < max_M) {
+    if constexpr (Is_even_MN) {
+        #pragma unroll
+        for (int m = 0; m < size<1>(S); ++m) {
             #pragma unroll
             for (int n = 0; n < size<2>(S); ++n) {
-                if (Is_even_MN || predicate_N(n)) {
-                    cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
-                } else if (Clear_OOB_MN) {
-                    cute::clear(D(_, m, n));
-                }
+                cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
             }
-        } else if (Clear_OOB_MN) {
-            cute::clear(D(_, m, _));
+        }
+    } else {
+        #pragma unroll
+        for (int m = 0; m < size<1>(S); ++m) {
+            if (get<0>(identity_MN(0, m, 0)) < max_M) {
+                #pragma unroll
+                for (int n = 0; n < size<2>(S); ++n) {
+                    if (predicate_N(n)) {
+                        #pragma unroll
+                        for (int i = 0; i < size<0>(S); ++i) {
+                            D(i, m, n) = S(i, m, n);
+                        }
+                    } else if (Clear_OOB_MN) {
+                        cute::clear(D(_, m, n));
+                    }
+                }
+            } else if (Clear_OOB_MN) {
+                cute::clear(D(_, m, _));
+            }
         }
     }
 }
@@ -675,24 +688,33 @@ __forceinline__ __device__ void copy_bias(
     CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));     // MMA
     CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
     CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
-    
-    #pragma unroll
-    for (int m = 0; m < size<1>(S); ++m) {
-        if (Is_even_MN || get<0>(identity_MN(0, m, 0)) < max_M) {
+
+    if constexpr (Is_even_MN) {
+        #pragma unroll
+        for (int m = 0; m < size<1>(S); ++m) {
             #pragma unroll
             for (int n = 0; n < size<2>(S); ++n) {
-                if (Is_even_MN || predicate_N(n)) {
-                    // cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
-                    #pragma unroll
-                    for (int i = 0; i < size<0>(S); ++i) {
-                        D(i, m, n) = S(i, m, n);
-                    }
-                } else if (Clear_OOB_MN) {
-                    cute::clear(D(_, m, n));
-                }
+                cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
             }
-        } else if (Clear_OOB_MN) {
-            cute::clear(D(_, m, _));
+        }
+    } else {
+        #pragma unroll
+        for (int m = 0; m < size<1>(S); ++m) {
+            if (get<0>(identity_MN(0, m, 0)) < max_M) {
+                #pragma unroll
+                for (int n = 0; n < size<2>(S); ++n) {
+                    if (predicate_N(n)) {
+                        #pragma unroll
+                        for (int i = 0; i < size<0>(S); ++i) {
+                            D(i, m, n) = S(i, m, n);
+                        }
+                    } else if (Clear_OOB_MN) {
+                        cute::clear(D(_, m, n));
+                    }
+                }
+            } else if (Clear_OOB_MN) {
+                cute::clear(D(_, m, _));
+            }
         }
     }
 }
