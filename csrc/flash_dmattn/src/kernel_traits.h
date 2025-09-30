@@ -23,6 +23,7 @@ struct Flash_kernel_traits {
     static constexpr bool Has_cp_async = false;
 #endif
 
+    using ElementMask = uint8_t;
     using ElementAccum = float;
     using index_t = int64_t;
 
@@ -55,6 +56,7 @@ struct Flash_fwd_kernel_traits : public Base {
     using Element = typename Base::Element;
     using ElementAccum = typename Base::ElementAccum;
     using index_t = typename Base::index_t;
+    using ElementMask = typename Base::ElementMask;
     static constexpr bool Has_cp_async = Base::Has_cp_async;
     using SmemCopyAtom = typename Base::SmemCopyAtom;
     using SmemCopyAtomTransposed = typename Base::SmemCopyAtomTransposed;
@@ -233,6 +235,7 @@ template<
 >
 struct Flash_bwd_kernel_traits : public Base {
     using Element = typename Base::Element;
+    using ElementMask = typename Base::ElementMask;
     using ElementAccum = typename Base::ElementAccum;
     using index_t = typename Base::index_t;
     static constexpr bool Has_cp_async = Base::Has_cp_async;
