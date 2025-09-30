@@ -400,9 +400,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 tBiascBias, tBiaspBias,
                 binfo.actual_seqlen_q - m_block * kBlockM
             );
-            // Because copy_bias currently uses scalar loads, we need to sync here.
-            // TODO: Remove sync after fixing to vectorized loads.
-            __syncthreads();
         }
         cute::cp_async_fence();
     }
@@ -560,9 +557,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                         tBiascBias, tBiaspBias,
                         binfo.actual_seqlen_q - m_block * kBlockM
                     );
-                    // Because copy_bias currently uses scalar loads, we need to sync here.
-                    // TODO: Remove sync after fixing to vectorized loads.
-                    __syncthreads();
                 }
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
@@ -723,9 +717,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                         tBiascBias, tBiaspBias,
                         binfo.actual_seqlen_q - m_block * kBlockM
                     );
-                    // Because copy_bias currently uses scalar loads, we need to sync here.
-                    // TODO: Remove sync after fixing to vectorized loads.
-                    __syncthreads();
                 }
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
@@ -1159,9 +1150,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tBiascBias, tBiaspBias,
                 binfo.actual_seqlen_q - m_block * kBlockM
             );
-            // Because copy_bias currently uses scalar loads, we need to sync here.
-            // TODO: Remove sync after fixing to vectorized loads.
-            __syncthreads();
         }
         cute::cp_async_fence();
     }
@@ -1350,9 +1338,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                         tBiascBias, tBiaspBias,
                         binfo.actual_seqlen_q - m_block * kBlockM
                     );
-                    // Because copy_bias currently uses scalar loads, we need to sync here.
-                    // TODO: Remove sync after fixing to vectorized loads.
-                    __syncthreads();
                 }
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
@@ -1540,9 +1525,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                         tBiascBias, tBiaspBias,
                         binfo.actual_seqlen_q - m_block * kBlockM
                     );
-                    // Because copy_bias currently uses scalar loads, we need to sync here.
-                    // TODO: Remove sync after fixing to vectorized loads.
-                    __syncthreads();
                 }
                 // This cp_async_fence needs to be in the if block, otherwise the synchronization
                 // isn't right and we get race conditions.
