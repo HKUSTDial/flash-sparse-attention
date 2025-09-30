@@ -278,6 +278,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     GmemTiledCopydO gmem_tiled_copy_dO;
     auto gmem_thr_copy_dO = gmem_tiled_copy_dO.get_thread_slice(tidx);
     typename Kernel_traits::GmemTiledCopydQ gmem_tiled_copy_dQ;
+    typename Kernel_traits::GmemTiledCopydBias gmem_tiled_copy_dBias;
+    auto gmem_thr_copy_dBias = gmem_tiled_copy_dBias.get_thread_slice(tidx);
     auto gmem_thr_copy_dQ = gmem_tiled_copy_dQ.get_thread_slice(tidx);
     using GmemLayoutAtomdQaccum = std::conditional_t<
         !Seq_parallel,
@@ -300,7 +302,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tMasksMask = gmem_thr_copy_Mask.partition_D(sMask);
     Tensor tBiasgBias = gmem_thr_copy_Bias.partition_S(gBias);      // (BiasCPY, BiasCPY_M, BiasCPY_N)
     Tensor tBiassBias = gmem_thr_copy_Bias.partition_D(sBias);
-    Tensor tdBiasgdBias = gmem_thr_copy_Bias.partition_D(gdBias);
+    Tensor tdBiasgdBias = gmem_thr_copy_dBias.partition_D(gdBias);
    
     Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);              // ((Atom, AtomNum), ATOM_M, ATOM_N)
     Tensor tdQgdQ = gmem_thr_copy_dQ.partition_D(gdQ);
@@ -350,20 +352,17 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // if (cute::thread(0, 0) && n_block == 0) { print(tSsK.layout()); printf("\n"); }
     Tensor tdPsV = smem_thr_copy_KV.partition_S(sV);
 
-    // auto smem_tiled_copy_Mask = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
-    // auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
-    // Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
-    // auto smem_tiled_copy_Bias = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
-    // auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
-    // Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
-
     // Partition sP and sdS to match the accumulator partitioning
     // This has to be tiled_mma_sdp, not tiled_mma_dkv
     // auto smem_tiled_copy_PdS = make_tiled_copy_C(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp);
     auto smem_tiled_copy_PdS = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp);
     auto smem_thr_copy_PdS = smem_tiled_copy_PdS.get_thread_slice(tidx);
-    Tensor tSsMask = smem_thr_copy_PdS.partition_S(sMask);
-    Tensor tSsBias = smem_thr_copy_PdS.partition_S(sBias);
+    auto smem_tiled_copy_Mask = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomMask{}, tiled_mma_sdp);
+    auto smem_thr_copy_Mask = smem_tiled_copy_Mask.get_thread_slice(tidx);
+    auto smem_tiled_copy_Bias = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomBias{}, tiled_mma_sdp);
+    auto smem_thr_copy_Bias = smem_tiled_copy_Bias.get_thread_slice(tidx);
+    Tensor tSsMask = smem_thr_copy_Mask.partition_S(sMask);
+    Tensor tSsBias = smem_thr_copy_Bias.partition_S(sBias);
     Tensor tPsP = smem_thr_copy_PdS.partition_D(sP);        // ((Atom, AtomNum), PIPE_M, PIPE_N)
     Tensor tdSsdS = smem_thr_copy_PdS.partition_D(sdS);     // ((Atom, AtomNum), PIPE_M, PIPE_N)
 
@@ -608,9 +607,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 tBiascBias, tBiaspBias,
                 binfo.actual_seqlen_q - m_block * kBlockM
             );
-            // Because copy_bias currently uses scalar loads, we need to sync here.
-            // TODO: Remove sync after fixing to vectorized loads.
-            __syncthreads();
         }
     }
 
@@ -853,14 +849,11 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             if constexpr (Has_bias) {
                 // Write dS to dBias
                 FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/false>(
-                    gmem_tiled_copy_Bias,
+                    gmem_tiled_copy_dBias,
                     tBiassBias, tdBiasgdBias,
                     tBiascBias, tBiaspBias,
                     binfo.actual_seqlen_q - m_block * kBlockM
                 );
-                // Because copy_bias currently uses scalar loads, we need to sync here.
-                // TODO: Remove sync after fixing to vectorized loads.
-                __syncthreads();
             }
 
             // if (cute::thread0()) { print(tPrP); }
@@ -1013,9 +1006,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                         tBiascBias, tBiaspBias,
                         binfo.actual_seqlen_q - (m_block - 1) * kBlockM
                     );
-                    // Because copy_bias currently uses scalar loads, we need to sync here.
-                    // TODO: Remove sync after fixing to vectorized loads.
-                    __syncthreads();
                 }
             }
         }
