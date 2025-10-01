@@ -80,6 +80,7 @@ template<typename Kernel_traits, bool Is_causal, bool Has_mask, bool Has_bias, b
 inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const int bidb, const int bidh, const int n_block) {
 
     using Element = typename Kernel_traits::Element;
+    using ElementMask = typename Kernel_traits::ElementMask;
     using ElementAccum = typename Kernel_traits::ElementAccum;
     using index_t = typename Kernel_traits::index_t;
 
@@ -245,25 +246,29 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         sBias.data(),
         typename Kernel_traits::SmemLayoutPdStransposedNoSwizzle{}
     );
-    Tensor sMask = make_tensor(
+    Tensor sMaskPlace = make_tensor(
         sBias.data() + size(sBias),
+        typename Kernel_traits::SmemLayoutMaskBiasPdS{}
+    );  // For pointers alignment only
+    Tensor sMask = make_tensor(
+        make_smem_ptr(reinterpret_cast<ElementMask *>(sMaskPlace.data().get())),
         typename Kernel_traits::SmemLayoutMaskBiasPdS{}
     );
     Tensor sP = make_tensor(
-        sMask.data(),
+        sMaskPlace.data(),
         typename Kernel_traits::SmemLayoutMaskBiasPdS{}
     );
     Tensor sPt = make_tensor(
-        sMask.data(),
+        sMaskPlace.data(),
         typename Kernel_traits::SmemLayoutPdStransposed{}
     );
     Tensor sPtNoSwizzle = make_tensor(
-        sMask.data(),
+        sMaskPlace.data(),
         typename Kernel_traits::SmemLayoutPdStransposedNoSwizzle{}
     );
     // sMask, sP and sdQ share the same memory so be careful
     Tensor sdQ = make_tensor(
-        sMask.data(),
+        sMaskPlace.data(),
         typename Kernel_traits::SmemLayoutdQ{}
     );
 
@@ -572,24 +577,19 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // // if (cute::thread(1, 0)) { print(tKrK); }
 
     if constexpr (Has_mask) {
-        // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-        //     gmem_tiled_copy_Mask,
-        //     tMaskgMask, tMasksMask,
-        //     tMaskcMask, tMaskpMask,
-        //     binfo.actual_seqlen_q - m_block * kBlockM
-        // );
-        // cute::cp_async_fence();
-        // FLASH_NAMESPACE::cp_async_wait<0>();
-        // // Do OR-reduce on the mask to see if any active threads
-
-        FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+        FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
             gmem_tiled_copy_Mask,
             tMaskgMask, tMasksMask,
-            any_active,
             tMaskcMask, tMaskpMask,
             binfo.actual_seqlen_q - m_block * kBlockM
         );
-        // We don't need to syncthreads here because copy_mask is already or_syncthreads.
+        __syncthreads();
+        // Do OR-reduce on the mask to see if any active threads for current interation.
+        FLASH_NAMESPACE::mask_or_reduce(
+            tMasksMask,
+            any_active,
+            smem_thr_copy_Mask
+        );
     }
 
     FLASH_NAMESPACE::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
@@ -601,7 +601,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     if (any_active) {
         if constexpr (Has_bias) {
-            FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+            FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
                 gmem_tiled_copy_Bias,
                 tBiasgBias, tBiassBias,
                 tBiascBias, tBiaspBias,
@@ -623,9 +623,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // if (cute::thread0()) { print(tdOgdO.layout()); printf("\n"); print(tdOrdO); print(tdOrO); }
     if (Is_first) {
         cute::copy(tdOrdO, tdOsdO);
-        dot_do_o<Kernel_traits::kGmemThreadsPerRow>(
+        dot_do_o<Kernel_traits::kGmemThreadsPerRowQKVO>(
             tdOrdO, tdOrO, gdPsum,
-            Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow)
+            Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKVO)
         );
     }
 
@@ -848,7 +848,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             __syncthreads();
             if constexpr (Has_bias) {
                 // Write dS to dBias
-                FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/false>(
+                FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
                     gmem_tiled_copy_dBias,
                     tBiassBias, tdBiasgdBias,
                     tBiascBias, tBiaspBias,
@@ -879,24 +879,19 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             if constexpr (Has_mask) {
                 // Advance gMask
                 tMaskgMask.data() = tMaskgMask.data() + (-int(kBlockM * params.mask_row_stride));
-                // FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
-                //     gmem_tiled_copy_Mask,
-                //     tMaskgMask, tMasksMask,
-                //     tMaskcMask, tMaskpMask,
-                //     binfo.actual_seqlen_q - (m_block - 1) * kBlockM
-                // );
-                // FLASH_NAMESPACE::cp_async_fence();
-                // FLASH_NAMESPACE::cp_async_wait<0>();
-                // // Do OR-reduce on the mask to see if any active threads for next iteration
-
-                FLASH_NAMESPACE::copy_mask_with_or_reduce<Is_even_MN, /*Clear_OOB_MN=*/true, /*To_type=*/Element>(
+                FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
                     gmem_tiled_copy_Mask,
                     tMaskgMask, tMasksMask,
-                    any_active_next,
                     tMaskcMask, tMaskpMask,
                     binfo.actual_seqlen_q - (m_block - 1) * kBlockM
                 );
-                // We don't need to syncthreads here because copy_mask is already or_syncthreads.
+                __syncthreads();
+                // Do OR-reduce on the mask to see if any active threads for next iteration
+                FLASH_NAMESPACE::mask_or_reduce(
+                    tMasksMask,
+                    any_active_next,
+                    smem_thr_copy_Mask
+                );
             }
 
             // Advance gdO
@@ -1000,7 +995,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
                 tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
                 if (any_active_next) {
-                    FLASH_NAMESPACE::copy_bias<Is_even_MN, /*Clear_OOB_MN=*/true>(
+                    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
                         gmem_tiled_copy_Bias,
                         tBiasgBias, tBiassBias,
                         tBiascBias, tBiaspBias,
@@ -1014,9 +1009,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
         if (Is_first && m_block > m_block_min) {
             cute::copy(tdOrdO, tdOsdO);
-            dot_do_o<Kernel_traits::kGmemThreadsPerRow>(
+            dot_do_o<Kernel_traits::kGmemThreadsPerRowQKVO>(
                 tdOrdO, tdOrO, gdPsum,
-                Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow)
+                Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKVO)
             );
         }
 
