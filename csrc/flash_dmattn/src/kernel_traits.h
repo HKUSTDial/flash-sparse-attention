@@ -229,15 +229,15 @@ struct Flash_fwd_kernel_traits : public Base {
     // Accumulator layout for output
     using GmemLayoutAtomOaccum = std::conditional_t<
         kBlockKSmem == 32,
-        Layout<Shape <_16, _8>, Stride< _8, _1>>,   // Thread layout, 8 threads per row
-        Layout<Shape <_8, _16>, Stride< _16, _1>>   // Thread layout, 16 threads per row       
+        Layout<Shape<_16, _8>, Stride<_8, _1>>,     // Thread layout, 8 threads per row
+        Layout<Shape<_8, _16>, Stride<_16, _1>>     // Thread layout, 16 threads per row
     >;
 
     using GmemTiledCopyOaccum = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
             GmemLayoutAtomOaccum{},
-            Layout<Shape < _1, _4>>{}
+            Layout<Shape<_1, _4>>{}
         )
     );  // Val layout, 4 vals per store
 };
@@ -442,15 +442,15 @@ struct Flash_bwd_kernel_traits : public Base {
     static_assert(kNThreads % kGmemThreadsPerRowMask == 0, "kNThreads must be a multiple of kGmemThreadsPerRowMask");
     static_assert(kNThreads % kGmemThreadsPerRowBias == 0, "kNThreads must be a multiple of kGmemThreadsPerRowBias");
     using GmemLayoutAtomQKVO = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRowQKVO>, Int<kGmemThreadsPerRowQKVO>>,
+        Shape<Int<kNThreads / kGmemThreadsPerRowQKVO>, Int<kGmemThreadsPerRowQKVO>>,
         Stride<Int<kGmemThreadsPerRowQKVO>, _1>
     >;
     using GmemLayoutAtomMask = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRowMask>, Int<kGmemThreadsPerRowMask>>,
+        Shape<Int<kNThreads / kGmemThreadsPerRowMask>, Int<kGmemThreadsPerRowMask>>,
         Stride<Int<kGmemThreadsPerRowMask>, _1>
     >;
     using GmemLayoutAtomBias = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRowBias>, Int<kGmemThreadsPerRowBias>>,
+        Shape<Int<kNThreads / kGmemThreadsPerRowBias>, Int<kGmemThreadsPerRowBias>>,
         Stride<Int<kGmemThreadsPerRowBias>, _1>
     >;
 
@@ -486,7 +486,7 @@ struct Flash_bwd_kernel_traits : public Base {
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
             GmemLayoutAtomQKVO{},
-            Layout<Shape < _1, _8>>{}
+            Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per store
     using GmemTiledCopydBias = decltype(
@@ -500,35 +500,35 @@ struct Flash_bwd_kernel_traits : public Base {
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
             GmemLayoutAtomQKVO{},
-            Layout<Shape < _1, _8>>{}
+            Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per store
     using GmemTiledCopydQ = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
             GmemLayoutAtomQKVO{},
-            Layout<Shape < _1, _8>>{}
+            Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per store
     using GmemLayoutAtomdQaccum = std::conditional_t<
         kBlockKSmem == 32,
-        Layout<Shape <_32, _8>, Stride< _8, _1>>,       // Thread layout, 8 threads per row
-        Layout<Shape <_16, _16>, Stride< _16, _1>>      // Thread layout, 16 threads per row       
+        Layout<Shape<_32, _8>, Stride<_8, _1>>,         // Thread layout, 8 threads per row
+        Layout<Shape<_16, _16>, Stride<_16, _1>>        // Thread layout, 16 threads per row
     >;
     using GmemTiledCopydQaccum = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
             GmemLayoutAtomdQaccum{},
-            Layout<Shape < _1, _4>>{}
+            Layout<Shape<_1, _4>>{}
         )
     );      // Val layout, 4 vals per store
 
     using GmemTiledCopydQaccumAtomicAdd = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
-            Layout<Shape <_8, _32>,                     // Thread layout, 8 threads per row
+            Layout<Shape<_8, _32>,                      // Thread layout, 8 threads per row
             Stride<_32, _1>>{},
-            Layout<Shape < _1, _1>>{}
+            Layout<Shape<_1, _1>>{}
         )
     );      // Val layout, 1 val per store
 };
