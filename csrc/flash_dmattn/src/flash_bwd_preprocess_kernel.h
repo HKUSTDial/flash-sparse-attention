@@ -148,9 +148,9 @@ inline __device__ void compute_dot_do_o(
         tdOcdO, tdOpdO,
         binfo.actual_seqlen_q - m_block * kBlockM
     );
-    dot_do_o<Kernel_traits::kGmemThreadsPerRow>(
+    dot_do_o<Kernel_traits::kGmemThreadsPerRowQKVO>(
         tdOrdO, tdOrO, dP_sum,
-        Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRow)
+        Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKVO)
     );
     if (Clear_dQaccum) {
         // We're actually not zero'ing out all of dQaccum, but only the part that we're going to
