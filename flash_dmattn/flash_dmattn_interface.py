@@ -95,7 +95,7 @@ def _flash_dmattn_forward(
         softcap,
         return_softmax,
     )
-    _sanitize_tensors(out, nan=0.0, posinf=torch.finfo(out.dtype).max, neginf=torch.finfo(out.dtype).min)
+    # _sanitize_tensors(out, nan=0.0, posinf=torch.finfo(out.dtype).max, neginf=torch.finfo(out.dtype).min)
     return out, softmax_lse, S_dmask
 
 
@@ -170,7 +170,7 @@ def _flash_dmattn_backward(
         softcap,
         deterministic,
     )
-    _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=torch.finfo(dq.dtype).max, neginf=torch.finfo(dq.dtype).min)
+    # _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=torch.finfo(dq.dtype).max, neginf=torch.finfo(dq.dtype).min)
     return softmax_d
 
 
@@ -321,7 +321,8 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if ctx.seqlen_k_og % 8 != 0:
             dk = dk[:, : ctx.seqlen_k_og, :, :]
             dv = dv[:, : ctx.seqlen_k_og, :, :]
-            dbias = dbias[..., : ctx.seqlen_k_og]
+            if dbias is not None:
+                dbias = dbias[..., : ctx.seqlen_k_og]
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
