@@ -85,7 +85,7 @@ struct Flash_fwd_kernel_traits : public Base {
         Tile<Int<16 * kNWarps>, _16, _16>
     >;
 
-    // Shared memory layout for Q matrix and Mask matrix
+    // Shared memory layout for Q matrix
     using SmemLayoutAtomQ = decltype(
         composition(
             Swizzle<kSwizzle, 3, 3>{},
@@ -94,14 +94,6 @@ struct Flash_fwd_kernel_traits : public Base {
             Stride<Int<kBlockKSmem>, _1>>{}
         )
     );
-    using SmemLayoutAtomPS = decltype(
-        composition(
-            Swizzle<kSwizzlePS, 3, 3>{},
-            Layout<Shape<Int<kBlockM>, Int<kBlockN>>,
-            Stride<Int<kBlockN>, _1>>{}
-        )
-    );
-
     using SmemLayoutQ = decltype(
         tile_to_shape(
             SmemLayoutAtomQ{},
@@ -125,13 +117,21 @@ struct Flash_fwd_kernel_traits : public Base {
     );
     using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
+    // Shared memory layout for Mask and Bias matrices
+    using SmemLayoutAtomPS = decltype(
+        composition(
+            Swizzle<kSwizzlePS, 3, 3>{},
+            Layout<Shape<Int<kBlockM>, Int<kBlockN>>,
+            Stride<Int<kBlockN>, _1>>{}
+        )
+    );
     using SmemLayoutPS = decltype(
         tile_to_shape(
             SmemLayoutAtomPS{},
             Shape<Int<kBlockM>, Int<kBlockN>>{}
         )
     );
-    using SmemCopyAtomMask = Copy_Atom<DefaultCopy, ElementMask>;
+    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementMask>;
     using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
 
     // Shared memory layout for output
@@ -160,18 +160,34 @@ struct Flash_fwd_kernel_traits : public Base {
     // Shared memory size with QKV matrices and mask/bias matrices
     static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + (Has_mask ? kSmemMaskSize : 0) + (Has_bias ? kSmemBiasSize : 0);
 
-    static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
-    static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
+    static constexpr int kGmemElemsPerLoadQKVO = sizeof(cute::uint128_t) / sizeof(Element);
+    static constexpr int kGmemElemsPerLoadMask = sizeof(cute::uint128_t) / sizeof(ElementMask);
+    static constexpr int kGmemElemsPerLoadBias = sizeof(cute::uint128_t) / sizeof(Element);
+    static_assert(kHeadDim % kGmemElemsPerLoadQKVO == 0, "kHeadDim must be a multiple of kGmemElemsPerLoadQKVO");
+    static_assert(kBlockN % kGmemElemsPerLoadMask == 0, "kBlockN must be a multiple of kGmemElemsPerLoadMask");
+    static_assert(kBlockN % kGmemElemsPerLoadBias == 0, "kBlockN must be a multiple of kGmemElemsPerLoadBias");
     // Using kBlockKSmem here is 6-10% faster than kBlockKGmem for d=128 because of bank conflicts.
     // For example, for d=128, smem is split into 2 "pages", each page takes care of columns
     // 0-63 and 64-127. If we have 16 threads per row for gmem read, when we write to smem,
     // thread 0 - 7 will write to the first page and thread 8 - 15 will write to the second page,
     // to the same banks.
-    static constexpr int kGmemThreadsPerRow = kBlockKSmem / kGmemElemsPerLoad;
-    static_assert(kNThreads % kGmemThreadsPerRow == 0, "kNThreads must be a multiple of kGmemThreadsPerRow");
-    using GmemLayoutAtom = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
-        Stride<Int<kGmemThreadsPerRow>, _1>
+    static constexpr int kGmemThreadsPerRowQKVO = kBlockKSmem / kGmemElemsPerLoadQKVO;
+    static constexpr int kGmemThreadsPerRowMask = kBlockN / kGmemElemsPerLoadMask;
+    static constexpr int kGmemThreadsPerRowBias = kBlockN / kGmemElemsPerLoadBias;
+    static_assert(kNThreads % kGmemThreadsPerRowQKVO == 0, "kNThreads must be a multiple of kGmemThreadsPerRowQKVO");
+    static_assert(kNThreads % kGmemThreadsPerRowMask == 0, "kNThreads must be a multiple of kGmemThreadsPerRowMask");
+    static_assert(kNThreads % kGmemThreadsPerRowBias == 0, "kNThreads must be a multiple of kGmemThreadsPerRowBias");
+    using GmemLayoutAtomQKVO = Layout<
+        Shape <Int<kNThreads / kGmemThreadsPerRowQKVO>, Int<kGmemThreadsPerRowQKVO>>,
+        Stride<Int<kGmemThreadsPerRowQKVO>, _1>
+    >;
+    using GmemLayoutAtomMask = Layout<
+        Shape <Int<kNThreads / kGmemThreadsPerRowMask>, Int<kGmemThreadsPerRowMask>>,
+        Stride<Int<kGmemThreadsPerRowMask>, _1>
+    >;
+    using GmemLayoutAtomBias = Layout<
+        Shape <Int<kNThreads / kGmemThreadsPerRowBias>, Int<kGmemThreadsPerRowBias>>,
+        Stride<Int<kGmemThreadsPerRowBias>, _1>
     >;
 
     // We use CACHEGLOBAL instead of CACHEALWAYS for both Q and K/V, since we won't be reading
@@ -184,28 +200,28 @@ struct Flash_fwd_kernel_traits : public Base {
     using GmemTiledCopyQKV = decltype(
         make_tiled_copy(
             Copy_Atom<Gmem_copy_struct, Element>{},
-            GmemLayoutAtom{},
+            GmemLayoutAtomQKVO{},
             Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per read
     using GmemTiledCopyMask = decltype(
         make_tiled_copy(
-            Copy_Atom<DefaultCopy, ElementMask>{},
-            GmemLayoutAtom{},
-            Layout<Shape<_1, _8>>{}
+            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementMask>{},
+            GmemLayoutAtomMask{},
+            Layout<Shape<_1, _16>>{}
         )
-    );      // Val layout, 8 vals per read
+    );      // Val layout, 16 vals per read
     using GmemTiledCopyBias = decltype(
         make_tiled_copy(
             Copy_Atom<Gmem_copy_struct, Element>{},
-            GmemLayoutAtom{},
+            GmemLayoutAtomBias{},
             Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per read
     using GmemTiledCopyO = decltype(
         make_tiled_copy(
             Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
-            GmemLayoutAtom{},
+            GmemLayoutAtomQKVO{},
             Layout<Shape<_1, _8>>{}
         )
     );      // Val layout, 8 vals per store
