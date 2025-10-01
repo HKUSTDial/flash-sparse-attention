@@ -594,32 +594,19 @@ __forceinline__ __device__ void copy_mask(
     CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
     CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
 
-    if constexpr (Is_even_MN) {
-        #pragma unroll
-        for (int m = 0; m < size<1>(S); ++m) {
+    #pragma unroll
+    for (int m = 0; m < size<1>(S); ++m) {
+        if (Is_even_MN || get<0>(identity_MN(0, m, 0)) < max_M) {
             #pragma unroll
             for (int n = 0; n < size<2>(S); ++n) {
-                cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
-            }
-        }
-    } else {
-        #pragma unroll
-        for (int m = 0; m < size<1>(S); ++m) {
-            if (get<0>(identity_MN(0, m, 0)) < max_M) {
-                #pragma unroll
-                for (int n = 0; n < size<2>(S); ++n) {
-                    if (predicate_N(n)) {
-                        #pragma unroll
-                        for (int i = 0; i < size<0>(S); ++i) {
-                            D(i, m, n) = S(i, m, n);
-                        }
-                    } else if (Clear_OOB_MN) {
-                        cute::clear(D(_, m, n));
-                    }
+                if (Is_even_MN || predicate_N(n)) {
+                    cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
+                } else if (Clear_OOB_MN) {
+                    cute::clear(D(_, m, n));
                 }
-            } else if (Clear_OOB_MN) {
-                cute::clear(D(_, m, _));
             }
+        } else if (Clear_OOB_MN) {
+            cute::clear(D(_, m, _));
         }
     }
 }
@@ -627,7 +614,7 @@ __forceinline__ __device__ void copy_mask(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
-    bool Is_even_MN=true, bool Clear_OOB_MN=false, typename To_type=void,
+    bool Is_even_MN=true, bool Clear_OOB_MN=false,
     typename TiledCopy,
     typename Engine0, typename Layout0, typename Engine1, typename Layout1,
     typename Engine2, typename Layout2, typename Engine3, typename Layout3
@@ -635,7 +622,7 @@ template <
 __forceinline__ __device__ void copy_mask_with_or_reduce(
     TiledCopy tiled_copy,
     Tensor<Engine0, Layout0> const &S, Tensor<Engine1, Layout1> &D,
-    bool &block_active,
+    bool &active,
     Tensor<Engine2, Layout2> const &identity_MN,  Tensor<Engine3, Layout3> const &predicate_N,
     const int max_M=0
 ) {
@@ -645,18 +632,13 @@ __forceinline__ __device__ void copy_mask_with_or_reduce(
     CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));     // MMA_M
     CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));     // MMA_N
 
-    bool any_active = false;
     #pragma unroll
     for (int m = 0; m < size<1>(S); ++m) {
         if (Is_even_MN || get<0>(identity_MN(0, m, 0)) < max_M) {
             #pragma unroll
             for (int n = 0; n < size<2>(S); ++n) {
                 if (Is_even_MN || predicate_N(n)) {
-                    #pragma unroll
-                    for (int i = 0; i < size<0>(S); ++i) {
-                        any_active |= S(i, m, n);
-                        D(i, m, n) = static_cast<To_type>(S(i, m, n));
-                    }
+                    cute::copy(tiled_copy, S(_, m, n), D(_, m, n));
                 } else if (Clear_OOB_MN) {
                     cute::clear(D(_, m, n));
                 }
@@ -666,7 +648,14 @@ __forceinline__ __device__ void copy_mask_with_or_reduce(
         }
     }
 
-    block_active = __syncthreads_or(any_active);
+    __syncthreads();
+
+    bool active_local = false;
+    #pragma unroll
+    for (int i = 0; i < size(D); ++i) {
+        active_local |= D(i);
+    }
+    active = __syncthreads_or(active_local);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
