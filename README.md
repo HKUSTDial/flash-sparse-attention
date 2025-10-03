@@ -33,6 +33,8 @@ Flash-DMA is a high-performance attention implementation that integrates Flash A
 
 We present the expected speedup of Flash-DMA over standard PyTorch SDPA under mask and bias conditions.
 
+![Flash-DMA Performance Overview](assets/performance_overview.png)
+
 ---
 
 ### Forward Pass Performance

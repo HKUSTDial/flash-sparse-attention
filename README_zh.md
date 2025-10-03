@@ -33,6 +33,8 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 
 我们展示了带有mask与bias条件下 Flash-DMA 相对于标准 PyTorch SDPA 的预期加速效果。
 
+![Flash-DMA Performance Overview](assets/performance_overview.png)
+
 ---
 
 ### 前向传播性能
