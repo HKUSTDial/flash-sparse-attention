@@ -361,10 +361,8 @@ mha_fwd(
     const float softcap,
     const bool return_softmax
 ) {
-
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
-
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
     TORCH_CHECK(is_sm8x_min, "FlashDynamicMaskAttention only supports Ampere GPUs or newer.");
@@ -816,7 +814,6 @@ mha_bwd(
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
-
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
     TORCH_CHECK(is_sm8x_min, "FlashDynamicMaskAttention only supports Ampere GPUs or newer.");
