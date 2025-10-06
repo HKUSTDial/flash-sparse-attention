@@ -95,7 +95,7 @@ def _flash_dmattn_forward(
         softcap,
         return_softmax,
     )
-    # _sanitize_tensors(out, nan=0.0, posinf=torch.finfo(out.dtype).max, neginf=torch.finfo(out.dtype).min)
+    _sanitize_tensors(out, nan=0.0, posinf=0.0, neginf=0.0)
     return out, softmax_lse, S_dmask
 
 
@@ -145,7 +145,7 @@ def _flash_dmattn_backward(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    dout, dbias, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, dbias, q, k, v, mask, bias, out)]
+    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
     (
         dq,
         dk,
@@ -170,7 +170,7 @@ def _flash_dmattn_backward(
         softcap,
         deterministic,
     )
-    # _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=torch.finfo(dq.dtype).max, neginf=torch.finfo(dq.dtype).min)
+    _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=0.0, neginf=0.0)
     return softmax_d
 
 
@@ -193,7 +193,7 @@ def _flash_dmattn_backward_fake(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    dout, dbias, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, dbias, q, k, v, mask, bias, out)]
+    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
     if dq is None:
         dq = torch.empty_like(q)
     if dk is None:
@@ -288,7 +288,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
     ):
         q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
         dq, dk, dv = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v)
-        dbias = torch.zeros_like(bias) if bias is not None else None
+        dbias = torch.zeros_like(bias).contiguous() if bias is not None else None
 
         head_size_og = dout.size(3)
         dout_padded = dout
