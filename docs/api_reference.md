@@ -5,66 +5,148 @@
 
 Flash Dynamic Mask Attention is a high-performance attention implementation that combines the memory efficiency of Flash Attention with the sparse compute benefits of Dynamic Mask Attention. It supports CUDA, Triton, and Flex Attention backends and dynamic masking for very long sequences.
 
-Interfaces provided:
-- High-level: simple entry point with automatic backend selection
-- Backend-specific: direct access to CUDA, Triton, and Flex implementations
-- Transformers Integration: seamless integration with HuggingFace Transformers models
-
 
 ## Table of Contents
 
 1. [Installation](#installation)
-2. [High-Level Interface](#high-level-interface)
-3. [Core Functions](#core-functions)
-4. [Transformers Integration](#transformers-integration)
-5. [Backend Selection](#backend-selection)
+2. [Quick Start](#quick-start)
+3. [Backend Selection and Comparison](#backend-selection-and-comparison)
+4. [API Reference](#api-reference)
+   - [CUDA Backend: flash_dmattn_func](#flash_dmattn_func-cuda-backend)
+   - [Triton Backend: triton_dmattn_func](#triton_dmattn_func-triton-backend)
+   - [Flex Backend: flex_dmattn_func](#flex_dmattn_func-flex-backend)
+5. [Integrations](#integrations)
+   - [Transformers Integration](#transformers-integration)
 6. [Common Issues and Solutions](#common-issues-and-solutions)
-7. [Summary](#summary)
 
 
 ## Installation
 
-### Prerequisites
-
-- Python: 3.8+
-- PyTorch: 2.0.0+ with CUDA
-- CUDA: 11.8+ for CUDA backend
-- NVIDIA GPU: Compute Capability 8.0+ for CUDA backend
-- Optional: `triton` for Triton backend, `transformers` for Flex backend and integrations
-
-### Install from Source
+Please refer to the [README](https://github.com/SmallDoges/flash-dmattn/blob/main/README.md#install) for detailed installation instructions.
 
 ```bash
-git clone https://github.com/SmallDoges/flash-dmattn.git
-cd flash-dmattn
-MAX_JOBS=4 pip install . --no-build-isolation
+# With CUDA backend
+pip install flash-dmattn
+
+# Or install from source
+pip install -e .
+
+# Triton/Flex only
+FLASH_DMATTN_SKIP_CUDA_BUILD=1 pip install -e .
 ```
 
 
-## High-Level Interface
+## Quick Start
 
-### Automatic Backend Selection
-
-Note: `flash_dmattn_func_auto` returns a callable attention function, not the attention output.
+Use `flash_dmattn_func_auto` to automatically select the best available backend without manual checking.
 
 ```python
-from flash_dmattn import get_available_backends, flash_dmattn_func_auto
+import torch
+from flash_dmattn import flash_dmattn_func_auto
 
-# Check available backends
-backends = get_available_backends()
-print(f"Available backends: {backends}")
+# Prepare input tensors
+batch, seqlen, num_heads, head_dim = 2, 1024, 8, 64
+q = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device='cuda')
+k = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device='cuda')
+v = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device='cuda')
 
-# Auto-select (priority: cuda > triton > flex)
-dmattn_func = flash_dmattn_func_auto()
-output = dmattn_func(q, k, v, attn_mask=attention_mask, attn_bias=attention_bias, is_causal=True, scale=None)
+# Get attention function (auto-select backend, priority: cuda > triton > flex)
+attn_func = flash_dmattn_func_auto()
 
-# Force a specific backend
-dmattn_func = flash_dmattn_func_auto(backend="cuda")  # or "triton", "flex"
-output = dmattn_func(q, k, v, attn_mask=attention_mask, attn_bias=attention_bias, is_causal=True, scale=None)
+# Compute attention
+output = attn_func(q, k, v, is_causal=True)
+print(f"Output shape: {output.shape}")  # (2, 1024, 8, 64)
+
+# Or force a specific backend
+attn_func = flash_dmattn_func_auto(backend="cuda")  # or "triton", "flex"
+output = attn_func(q, k, v, is_causal=True)
+```
+
+> [!NOTE]
+> `flash_dmattn_func_auto` returns a callable attention function, not the attention output.
+
+
+## Backend Selection and Comparison
+
+### Check Available Backends
+
+```python
+from flash_dmattn import get_available_backends, CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE
+
+# List all available backends
+print(get_available_backends())  # e.g., ["cuda", "triton", "flex"]
+
+# Check specific backend availability
+print(f"CUDA: {CUDA_AVAILABLE}, Triton: {TRITON_AVAILABLE}, Flex: {FLEX_AVAILABLE}")
+```
+
+### Backend Feature Comparison
+
+| Feature | CUDA | Triton | Flex |
+|---------|------|--------|------|
+| **Performance** | Highest | Good | Good |
+| **Memory Efficiency** | Best | Good | Good |
+| **Build Requirements** | Custom CUDA extension | triton package | transformers package |
+| **GQA Support** | ✅ | ✅ | ✅ |
+| **Attention Mask** | ✅ | ✅ | ⚠️ |
+| **Attention Bias** | ✅ | ✅ | ✅ |
+| **Causal Mask** | ✅ | ✅ | ✅ |
+| **Softcap** | ✅ | ❌ | ❌ |
+| **Deterministic** | ✅ | ❌ | ❌ |
+| **Return Attention Probs** | ✅ | ❌ | ❌ |
+| **Backward Support** | ✅ | ✅ | ⚠️ |
+
+> [!NOTE]
+> ✅ Fully supported | ⚠️ Limited support | ❌ Not supported
+
+### When to Use Each Backend
+
+**CUDA Backend** ([details](#flash_dmattn_func-cuda-backend))
+- ✅ Training workloads requiring full gradient support
+- ✅ Production inference requiring maximum performance
+- ✅ Applications needing deterministic behavior
+- ❌ Avoid: when custom CUDA extensions cannot be built
+
+**Triton Backend** ([details](#triton_dmattn_func-triton-backend))
+- ✅ Training when CUDA extension unavailable
+- ✅ Development and prototyping
+- ✅ Cross-platform compatibility needs
+- ✅ Good balance of performance and ease of installation
+
+**Flex Backend** ([details](#flex_dmattn_func-flex-backend))
+- ✅ Inference-only applications
+- ✅ Research with latest PyTorch features
+- ✅ Quick experimentation without custom builds
+- ❌ Avoid: training (limited backward support)
+- ❌ Avoid: when strict attention mask compliance required
+
+### Import Available Functions
+
+```python
+from flash_dmattn import (
+    # Automatic backend selection
+    get_available_backends,
+    flash_dmattn_func_auto,
+    
+    # Backend-specific functions
+    flash_dmattn_func,      # CUDA backend
+    triton_dmattn_func,     # Triton backend
+    flex_dmattn_func,       # Flex backend
+    
+    # Backend availability flags
+    CUDA_AVAILABLE,
+    TRITON_AVAILABLE,
+    FLEX_AVAILABLE,
+)
+
+# Transformers integration
+from flash_dmattn.integrations.flash_dynamic_mask_attention import (
+    flash_dynamic_mask_attention_forward
+)
 ```
 
 
-## Core Functions
+## API Reference
 
 ### flash_dmattn_func (CUDA backend)
 
@@ -75,8 +157,8 @@ def flash_dmattn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_kv_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
-    attn_mask: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
-    attn_bias: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
+    attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
+    attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
     scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
     is_causal: Optional[bool] = None,               # causal mask
     softcap: Optional[float] = None,                # CUDA-only
@@ -90,8 +172,8 @@ def flash_dmattn_func(
 - query: (B, Q, H, D). CUDA tensor, fp16/bf16, last dim contiguous
 - key: (B, K, H_kv, D). Same dtype/device as query; GQA when H_kv <= H
 - value: (B, K, H_kv, D). Same dtype/device as query; GQA when H_kv <= H
-- attn_mask: (B, H, Q, K). 1.0 = visible, 0.0 = masked. None to disable
-- attn_bias: (B, H, Q, K). Added to scores before softmax. None to disable
+- attn_mask: (B, {H, H_kv, 1}, {Q, 0}, K). 1.0 = visible, 0.0 = masked. None to disable
+- attn_bias: (B, {H, H_kv, 1}, {Q, 0}, K). Added to scores before softmax. None to disable
 - scale: score scaling; default 1/sqrt(D)
 - is_causal: apply lower-triangular mask
 - softcap, deterministic, return_attn_probs: only effective on the CUDA backend; ignored on others
@@ -133,11 +215,13 @@ def flex_dmattn_func(
 ```
 
 
-## Transformers Integration
+## Integrations
+
+### Transformers Integration
 
 Integration function for HuggingFace Transformers models that provides seamless flash dynamic mask attention support.
 
-### flash_dynamic_mask_attention_forward
+#### flash_dynamic_mask_attention_forward
 
 
 ```python
@@ -148,8 +232,8 @@ def flash_dynamic_mask_attention_forward(
     query: torch.Tensor,                            # (batch_size, num_heads, query_len, head_dim)
     key: torch.Tensor,                              # (batch_size, num_kv_heads, key_len, head_dim)
     value: torch.Tensor,                            # (batch_size, num_kv_heads, key_len, head_dim)
-    attention_mask: Optional[torch.Tensor],         # (batch_size, num_kv_heads, query_len, key_len)
-    attention_bias: Optional[torch.Tensor],         # (batch_size, num_kv_heads, query_len, key_len)
+    attention_mask: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 0}, key_len)
+    attention_bias: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 0}, key_len)
     scaling: Optional[float] = None,                # score scaling
     softcap: Optional[float] = None,                # softcap value
     **kwargs,
@@ -162,8 +246,8 @@ def flash_dynamic_mask_attention_forward(
 - query: Query tensor with head-first layout (B, H, Q, D)
 - key: Key tensor with head-first layout (B, H_kv, K, D)
 - value: Value tensor with head-first layout (B, H_kv, K, D)
-- attention_mask: Boolean attention mask
-- attention_bias: Attention bias to add to scores
+- attention_mask: Boolean attention mask (B, {H, H_kv, 1}, {Q, 0}, K)
+- attention_bias: Attention bias to add to scores (B, {H, H_kv, 1}, {Q, 0}, K)
 - scaling: Score scaling factor
 - softcap: Softcap value for attention scores
 - **kwargs: Additional arguments including:
@@ -176,7 +260,7 @@ def flash_dynamic_mask_attention_forward(
 
 - tuple[torch.Tensor, None]: Output tensor (B, Q, H, D) and None for compatibility
 
-### Usage with Transformers
+#### Usage Example
 
 ```python
 import torch
@@ -207,7 +291,6 @@ class DynamicMaskAttention(nn.Module):
         self.v_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
-        # Dynamic mask for the QK^T attention weights matrix
         self.A = nn.Parameter(torch.zeros(config.num_key_value_heads))
         self.dt_proj = nn.Linear(
             config.num_key_value_heads * self.head_dim, config.num_key_value_heads, bias=config.attention_bias
@@ -238,27 +321,18 @@ class DynamicMaskAttention(nn.Module):
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            # sin and cos are specific to RoPE models; static cache needs cache_position
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-        # Sampling dt_states from value_states to generate attention bias
+        # Sample dt_states from value_states to generate attention_bias
         dt_states = self.dt_proj(
             value_states.transpose(1, 2).reshape(value_states.shape[0], value_states.shape[-2], -1)
         )
-        dt_states = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2)
-        attn_bias = dt_states[:, :, None, :].expand(
-            -1, -1, hidden_states.shape[1], -1
-        ).to(hidden_states.dtype)  # [batch_size, num_heads, query_len, key_len]
+        attn_bias = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2).to(hidden_states.dtype)
 
-        # Choose attention implementation: fallback to eager if flash_dmattn is not available
-        attention_interface: Callable = eager_attention_forward
-        if flash_dynamic_mask_attention_forward is not None:
-            attention_interface = flash_dynamic_mask_attention_forward
-
-        # Expand attention mask to match the expected shape
-        if attention_mask is not None:
-            attention_mask = attention_mask.expand(-1, attn_bias.shape[1], -1, -1)
+        # Choose attention implementation
+        attention_interface: Callable = flash_dynamic_mask_attention_forward
         
         attn_output, attn_weights = attention_interface(
             self,
@@ -277,90 +351,9 @@ class DynamicMaskAttention(nn.Module):
 
 This example shows:
 - **Dynamic attention bias generation**: Using learnable parameters to create attention bias
-- **Flexible backend selection**: Graceful fallback to standard attention when flash_dmattn is unavailable
+- **Flexible backend selection**: Easily switch attention implementations via `attention_interface`
 - **Proper tensor reshaping**: Converting between different tensor layouts as needed
 - **Integration with caching**: Support for key-value caching in generation scenarios
-
-
-## Backend Selection
-
-### Available Backends
-
-```python
-from flash_dmattn import get_available_backends, CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE
-
-print(get_available_backends())   # e.g., ["cuda", "triton", "flex"]
-print(CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE)
-```
-
-### Available Functions
-
-The library exports the following functions:
-
-```python
-from flash_dmattn import (
-    # High-level interface
-    get_available_backends,     # Get list of available backends
-    flash_dmattn_func_auto,     # Automatic backend selection
-    
-    
-    # Backend-specific functions
-    flash_dmattn_func,          # CUDA backend (if available)
-    triton_dmattn_func,         # Triton backend (if available)
-    flex_dmattn_func,           # Flex Attention backend (if available)
-    
-    # Backend availability flags
-    CUDA_AVAILABLE,
-    TRITON_AVAILABLE,
-    FLEX_AVAILABLE,
-)
-
-# Transformers integration
-from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
-```
-
-### Backend-Specific Functions
-
-```python
-# Direct access to specific backends
-from flash_dmattn import flash_dmattn_func        # CUDA backend
-from flash_dmattn import triton_dmattn_func       # Triton backend
-from flash_dmattn import flex_dmattn_func         # Flex Attention backend
-
-# Unified call signature (public layer)
-# query/key/value: (B, L{q/k}, H, D)
-# attn_mask/attn_bias: (B, H, Lq, Lk)
-# is_causal: bool, scale: Optional[float]
-output = flash_dmattn_func(q, k, v, attn_mask=mask, attn_bias=bias, is_causal=True, scale=None)
-output = triton_dmattn_func(q, k, v, attn_mask=mask, attn_bias=bias, is_causal=True, scale=None)
-output = flex_dmattn_func(q, k, v, attn_mask=mask, attn_bias=bias, is_causal=True, scale=None)
-```
-
-Notes:
-- All backends support the same unified interface for seamless switching
-- Flex backend currently uses causal masking and score_mod with bias; provided attn_mask is not applied in the kernel at the moment, subject to change in future versions
-- CUDA backend supports additional parameters like softcap, deterministic, and return_attn_probs
-
-### When to Use Each Backend
-
-**CUDA Backend:**
-- ✅ Training workloads requiring full gradient support
-- ✅ Production inference requiring maximum performance
-- ✅ Applications needing deterministic behavior
-- ❌ Avoid if you cannot build custom CUDA extensions
-
-**Triton Backend:**
-- ✅ Training workloads when CUDA extension is not available
-- ✅ Development and prototyping
-- ✅ Cross-platform compatibility needs
-- ✅ Good balance of performance and ease of installation
-
-**Flex Backend:**
-- ✅ Inference-only applications
-- ✅ Research with latest PyTorch features
-- ✅ Quick experimentation without custom builds
-- ❌ Avoid for training due to limited backward support
-- ❌ Avoid when strict attention mask compliance is required
 
 
 ## Common Issues and Solutions
@@ -415,41 +408,4 @@ attn = flash_dmattn_func_auto()
 output = attn(q, k, v)
 print_memory_stats()
 ```
-
-## Summary
-
-Flash Dynamic Mask Attention provides a unified interface for high-performance attention computation with the following key features:
-
-- **Multiple Backends**: CUDA for best performance, Triton for good compatibility, and Flex Attention for native PyTorch support
-- **Automatic Backend Selection**: Seamless fallback between available backends
-- **Dynamic Masking**: Efficient sparse attention with arbitrary attention masks
-- **GQA Support**: Grouped-query attention for efficient inference
-- **Transformers Integration**: Direct integration with HuggingFace models
-- **Memory Efficiency**: Optimized memory usage for very long sequences
-
-Choose the backend that best fits your needs:
-- **CUDA**: For maximum performance and full feature support, especially for training
-- **Triton**: For good performance without custom CUDA compilation, supports both training and inference
-- **Flex**: For inference scenarios and compatibility with latest PyTorch features, but limited backward support for training yet
-
-### Backend Comparison
-
-| Feature | CUDA | Triton | Flex |
-|---------|------|--------|------|
-| Performance | Highest | Good | Good |
-| Memory Efficiency | Best | Good | Good |
-| Build Requirements | Custom CUDA extension | triton package | transformers package |
-| GQA Support | ✅ | ✅ | ✅ |
-| Attention Mask | ✅ | ✅ | ⚠️ |
-| Attention Bias | ✅ | ✅ | ✅ |
-| Causal Mask | ✅ | ✅ | ✅ |
-| Softcap | ✅ | ❌ | ❌ |
-| Deterministic | ✅ | ❌ | ❌ |
-| Return Attention Probs | ✅ | ❌ | ❌ |
-| Backward Support | ✅ | ✅ | ⚠️ |
-
-Notes:
-- ✅ = Fully supported
-- ⚠️ = Limited support or workarounds needed  
-- ❌ = Not supported
 
