@@ -334,7 +334,7 @@ def flash_dmattn_func(
     value: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
-    scale: Optional[float] = None,
+    softmax_scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
     deterministic: Optional[bool] = None,
@@ -368,18 +368,15 @@ def flash_dmattn_func(
         key: torch.Tensor. The key tensor of shape (batch_size, seqlen, nheads_k, headdim)
         value: torch.Tensor. The value tensor of shape (batch_size, seqlen, nheads_k, headdim)
         attn_mask: torch.Tensor, optional. The attention mask boolean tensor of
-            shape (batch_size, nheads, seqlen_q, seqlen_k) to apply to the attention scores.
-            Also supports shape (batch_size, nheads_k, seqlen_q, seqlen_k) or
-            (batch_size, 1, seqlen_q, seqlen_k) for MQA/GQA.
+            shape (batch_size, {nheads|nheads_k|1}, {seqlen_q|0}, seqlen_k) to apply to the attention scores.
             If None, no mask is applied.
         attn_bias: torch.Tensor, optional. The attention bias float tensor of
-            shape (batch_size, nheads, seqlen_q, seqlen_k) to add to the attention scores.
-            Also supports shape (batch_size, nheads_k, seqlen_q, seqlen_k) or
-            (batch_size, 1, seqlen_q, seqlen_k) for MQA/GQA.
+            shape (batch_size, {nheads|nheads_k|1}, {seqlen_q|0}, seqlen_k) to add to the attention scores.
             If None, no bias is applied.
-        is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
-        scale: float. The scaling of QK^T before applying softmax.
+        softmax_scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
+        is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+        softcap: float. Anything > 0 activates softcapping attention.
         deterministic: bool. Whether to use the deterministic implementation of the backward pass,
             which is slightly slower and uses more memory. The forward pass is always deterministic.
         return_attn_probs: bool. Whether to return the attention probabilities. This option is for
@@ -399,7 +396,7 @@ def flash_dmattn_func(
         value,
         attn_mask,
         attn_bias,
-        scale,
+        softmax_scale,
         is_causal,
         softcap,
         deterministic,
