@@ -7,11 +7,11 @@ __version__ = "1.2.0"
 
 # Import CUDA functions when available
 try:
-    from flash_dmattn.flash_dmattn_interface import flash_dmattn_func
+    from flash_dmattn.flash_dmattn_interface import flash_dmattn_func, flash_dmattn_varlen_func
     CUDA_AVAILABLE = True
 except ImportError:
     CUDA_AVAILABLE = False
-    flash_dmattn_func = None
+    flash_dmattn_func, flash_dmattn_varlen_func = None, None
 
 # Import Triton functions when available
 try:
@@ -89,6 +89,7 @@ __all__ = [
     "TRITON_AVAILABLE",
     "FLEX_AVAILABLE",
     "flash_dmattn_func",
+    "flash_dmattn_varlen_func",
     "triton_dmattn_func",
     "flex_dmattn_func",
     "get_available_backends",

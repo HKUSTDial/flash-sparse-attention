@@ -36,7 +36,7 @@ def flash_dynamic_mask_attention_forward(
         **kwargs: Additional keyword arguments.
             Includes:
                 - is_causal (bool): Whether to apply a causal mask.
-                - keep_window_size (int): The size of the window to keep.
+                - window_size (int): The size of the window to keep.
                 - layer_idx (int): The index of the layer (for logging purposes).
                 - implementation (str): The implementation to use ("flash_dmattn" or None).
 
@@ -84,7 +84,7 @@ def flash_dynamic_mask_attention_forward(
 
     # FDMA always relies on the value set in the module, so remove it if present in kwargs to avoid passing it twice
     kwargs.pop("is_causal", None)
-    kwargs.pop("keep_window_size", None)
+    kwargs.pop("window_size", None)
 
     attn_output = _flash_dynamic_mask_attention_forward(
         query,
@@ -97,7 +97,7 @@ def flash_dynamic_mask_attention_forward(
         is_causal=module.is_causal,
         softmax_scale=scaling,
         softcap=softcap,
-        keep_window_size=module.keep_window_size,
+        window_size=module.window_size,
         target_dtype=target_dtype,
         implementation="flash_dmattn",
         layer_idx=module.layer_idx if hasattr(module, "layer_idx") else None,

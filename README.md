@@ -157,7 +157,7 @@ import math
 
 # Setup
 batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
-keep_window_size = 128
+window_size = 128
 device = torch.device('cuda')
 dtype = torch.bfloat16
 min_dtype = torch.finfo(dtype).min  # dtype minimum value
@@ -172,10 +172,10 @@ attention_mask = torch.ones(batch_size, num_kv_heads, seq_len, seq_len, device=d
 attention_bias = torch.randn(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
 
 # Generate sparse mask based on bias
-if seq_len > keep_window_size:
+if seq_len > window_size:
     # Select top-k most important keys for each query
     topk_values, topk_indices = torch.topk(
-        attention_bias, keep_window_size, dim=-1, 
+        attention_bias, window_size, dim=-1, 
         largest=True, sorted=False
     )
     # Generate valid top-k mask

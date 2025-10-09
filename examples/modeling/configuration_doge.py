@@ -108,7 +108,7 @@ class DogeConfig(PretrainedConfig):
             Whether to use a bias in up_proj, down_proj and gate_proj layers in the MLP layers.
         sliding_window (`int`, *optional*):
             Sliding window attention window size. If not specified, will default to `None`.
-        keep_window_size (`int`, *optional*, defaults to 2048):
+        window_size (`int`, *optional*, defaults to 2048):
             The window size of tokens that are not dynamically masked, and dynamic masking is only performed when the sequence length exceeds this value.
         is_moe (`bool`, *optional*, defaults to `False`):
             Whether to use the Cross Domain Mixture of Experts, if `True`, the MoE will inherit the MLP to initialize.
@@ -185,7 +185,7 @@ class DogeConfig(PretrainedConfig):
         attention_dropout=0.0,
         mlp_bias=False,
         sliding_window=None,
-        keep_window_size=2048,
+        window_size=2048,
         is_moe=False,
         num_experts=16384,
         num_experts_per_tok=64,
@@ -214,7 +214,7 @@ class DogeConfig(PretrainedConfig):
         self.attention_dropout = attention_dropout
         self.mlp_bias = mlp_bias
         self.sliding_window = sliding_window
-        self.keep_window_size = keep_window_size
+        self.window_size = window_size
         self.is_moe = is_moe
         self.num_experts = num_experts
         self.num_experts_per_tok = num_experts_per_tok
