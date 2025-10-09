@@ -4,7 +4,7 @@ from typing import Optional, Tuple, Any
 from packaging import version
 import torch
 
-import flash_dmattn_cuda as flash_dmattn_gpu # type: ignore
+import flash_dmattn_cuda as flash_dmattn_gpu    # type: ignore
 
 
 def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -75,8 +75,8 @@ def _flash_dmattn_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: torch.Tensor,
-    bias: torch.Tensor,
+    mask: Optional[torch.Tensor],
+    bias: Optional[torch.Tensor],
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
@@ -104,8 +104,8 @@ def _flash_dmattn_forward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: torch.Tensor,
-    bias: torch.Tensor,
+    mask: Optional[torch.Tensor],
+    bias: Optional[torch.Tensor],
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
@@ -132,8 +132,8 @@ def _flash_dmattn_backward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: torch.Tensor,
-    bias: torch.Tensor,
+    mask: Optional[torch.Tensor],
+    bias: Optional[torch.Tensor],
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
     dq: Optional[torch.Tensor],
@@ -180,8 +180,8 @@ def _flash_dmattn_backward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: torch.Tensor,
-    bias: torch.Tensor,
+    mask: Optional[torch.Tensor],
+    bias: Optional[torch.Tensor],
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
     dq: Optional[torch.Tensor],
@@ -314,7 +314,8 @@ class FlashDMAttnFunc(torch.autograd.Function):
             ctx.deterministic,
         )
 
-        dq = dq[..., : dout.shape[-1]]  # We could have padded the head dimension
+        # We could have padded the head dimension
+        dq = dq[..., : dout.shape[-1]]  
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
 
