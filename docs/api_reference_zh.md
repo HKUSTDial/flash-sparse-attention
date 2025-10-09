@@ -251,7 +251,7 @@ def flash_dynamic_mask_attention_forward(
 - softcap: 注意力分数的 softcap 值
 - **kwargs: 额外参数，包括：
   - is_causal: 是否应用因果掩码
-  - keep_window_size: 保持的窗口大小
+  - window_size: 保持的窗口大小
   - layer_idx: 用于日志的层索引
   - implementation: 使用的实现（"flash_dmattn" 或 None）
 
@@ -278,7 +278,7 @@ class DynamicMaskAttention(nn.Module):
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
-        self.keep_window_size = config.keep_window_size
+        self.window_size = config.window_size
         self.is_causal = True
 
         self.q_proj = nn.Linear(

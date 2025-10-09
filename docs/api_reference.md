@@ -252,7 +252,7 @@ def flash_dynamic_mask_attention_forward(
 - softcap: Softcap value for attention scores
 - **kwargs: Additional arguments including:
   - is_causal: Whether to apply causal mask
-  - keep_window_size: Size of window to keep
+  - window_size: Size of window to keep
   - layer_idx: Layer index for logging
   - implementation: Implementation to use ("flash_dmattn" or None)
 
@@ -279,7 +279,7 @@ class DynamicMaskAttention(nn.Module):
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
-        self.keep_window_size = config.keep_window_size
+        self.window_size = config.window_size
         self.is_causal = True
 
         self.q_proj = nn.Linear(
