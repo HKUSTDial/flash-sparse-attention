@@ -129,7 +129,7 @@ def _flash_dynamic_mask_attention_forward(
         attention_mask = attention_mask.scatter(-1, topk_indices, topk_values != min_dtype)
 
     out = flash_fn(
-        query_states, key_states, value_states, attn_mask=attention_mask, attn_bias=attention_bias, scale=softmax_scale, is_causal=is_causal
+        query_states, key_states, value_states, attn_mask=attention_mask, attn_bias=attention_bias, softmax_scale=softmax_scale, is_causal=is_causal
     )
 
     return out[0] if isinstance(out, tuple) else out
