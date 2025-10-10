@@ -1,0 +1,61 @@
+name: Performance Optimization
+description: Optimise performance with benchmark evidence
+title: "[PERFORMANCE OPTIMIZATION] "
+labels:
+  - performance
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Document the optimisation, methodology, and results so reviewers can validate gains and correctness.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is optimised and why?
+      placeholder: Improves forward latency for...
+    validations:
+      required: true
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baseline metrics
+      description: Provide the current performance numbers and environment.
+      placeholder: Baseline throughput 150 tok/s on H100 with...
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Approach
+      description: Describe the optimisation techniques used.
+      placeholder: Introduced block-wise accumulation...
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: Share before/after benchmarks and how to reproduce them.
+      placeholder: |
+        Before: 15.2 ms/iteration (benchmark command)
+        After: 9.8 ms/iteration (benchmark command)
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Note memory, throughput trade-offs, or hardware-specific considerations.
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks
+      description: Highlight edge cases, correctness risks, or gating tests added.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Linked issue provided
+        - label: Benchmarks included and reproducible
+        - label: No accuracy regression
+        - label: Docs updated where needed

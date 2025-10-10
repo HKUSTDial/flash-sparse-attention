@@ -1,0 +1,69 @@
+name: Bug report
+description: Create a report to help us improve Flash-DMA
+title: "[BUG REPORT] "
+labels:
+  - bug
+assignees:
+  - LoserCheems
+  - Evanwu1125
+  - SNHuan
+  - Thanksyy
+  - ftgreat
+  - zacliu2023
+  - juliohsu
+  - wubingheng111
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue. Please fill out the details below so we can reproduce and fix the problem quickly.
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Describe the bug
+      description: Provide a concise description of the incorrect behaviour.
+      placeholder: Unexpected error when calling flash_dmattn(...)
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Share the minimal steps or code necessary for us to see the failure.
+      placeholder: |
+        1. Import flash_dmattn
+        2. Run the snippet below
+        3. Observe the error
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behaviour
+      description: Tell us what you expected to happen instead.
+      placeholder: The kernel should return valid attention output without raising an exception.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment information
+      description: Run the following command and paste the full output.
+      placeholder: |
+        python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.version.cuda}'); print(f'GPU: {torch.cuda.get_device_name() if torch.cuda.is_available() else \"None\"}')"
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Include sequence lengths, batch sizes, or any other details that might help us debug.
+      placeholder: Tested with seq_len=8192, batch=2, head_dim=128...
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Error traceback
+      description: Paste the full traceback if available.
+      render: text

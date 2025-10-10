@@ -1,0 +1,79 @@
+name: Performance issue
+description: Report performance problems or optimisation opportunities
+title: "[PERFORMANCE] "
+labels:
+  - performance
+assignees:
+  - LoserCheems
+  - Evanwu1125
+  - SNHuan
+  - Thanksyy
+  - ftgreat
+  - zacliu2023
+  - juliohsu
+  - wubingheng111
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Provide enough detail about performance regressions or optimisation opportunities so we can reproduce and diagnose them.
+  - type: textarea
+    id: issue-description
+    attributes:
+      label: Performance issue description
+      description: Summarise the performance problem.
+      placeholder: Forward latency increases when...
+    validations:
+      required: true
+  - type: textarea
+    id: current-performance
+    attributes:
+      label: Current performance metrics
+      description: Share benchmark numbers and configuration (sequence length, batch size, heads, head dimension, throughput, memory usage).
+      placeholder: |
+        Sequence length: 8192
+        Batch size: 2
+        Heads: 32
+        Head dim: 128
+        Speed: 15.2 ms/iteration
+        Memory: 8.5 GB
+    validations:
+      required: true
+  - type: textarea
+    id: expected-performance
+    attributes:
+      label: Expected performance
+      description: Explain what performance you expect and the baseline you are comparing against.
+      placeholder: Expect <10 ms/iteration based on Flash Attention benchmark...
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment information
+      description: Run the following command and paste the output.
+      placeholder: |
+        python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.version.cuda}'); print(f'GPU: {torch.cuda.get_device_name() if torch.cuda.is_available() else \"None\"}')"
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: benchmark-code
+    attributes:
+      label: Benchmark code
+      description: Provide the code snippet or script used to measure performance.
+      render: python
+  - type: textarea
+    id: profiling
+    attributes:
+      label: Profiling information
+      description: Include relevant excerpts from nsys, nvprof, or PyTorch profiler if available.
+  - type: textarea
+    id: system-info
+    attributes:
+      label: System information
+      description: GPU model, compute capability, CPU, RAM, and other hardware details.
+      placeholder: RTX 4090 24GB, compute capability 8.9, Intel i9-14900K, 64GB RAM
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Mention regressions, different batch sizes, attention patterns, or other observations.
