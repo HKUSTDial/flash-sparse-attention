@@ -12,7 +12,7 @@ body:
     id: summary
     attributes:
       label: Summary
-      description: What is optimised and why?
+      description: What is optimized and why?
       placeholder: Improves forward latency for...
     validations:
       required: true
