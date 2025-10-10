@@ -1,0 +1,60 @@
+name: Bug Fix
+description: Fix a bug with clear reproduction, scope, and tests
+title: "[BUG FIX] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for contributing a bug fix! Please complete the sections below so reviewers can understand and verify the change quickly.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What bug is fixed and what parts of the codebase are impacted?
+      placeholder: Resolves crash when...
+    validations:
+      required: true
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root cause
+      description: Briefly describe the underlying issue.
+      placeholder: The kernel assumed...
+  - type: textarea
+    id: changes
+    attributes:
+      label: Changes
+      description: Highlight the notable code-level modifications.
+      placeholder: Updated flash_dmattn_interface to...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps or MRE
+      description: Provide steps or a minimal snippet that reproduces the original bug.
+      render: python
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests
+      description: List the tests you added or ran and their results.
+      placeholder: Ran benchmarks/forward_equivalence.py; added unit test...
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility
+      description: Note any migration concerns or backwards compatibility considerations.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Linked issue provided
+        - label: Adds or updates tests
+        - label: Updates docs if needed
+        - label: No performance regressions observed

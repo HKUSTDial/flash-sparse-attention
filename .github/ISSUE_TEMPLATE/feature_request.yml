@@ -1,0 +1,64 @@
+name: Feature request
+description: Suggest an idea for FDMA
+title: "[FEATURE REQUEST] "
+labels:
+  - feature
+assignees:
+  - LoserCheems
+  - Evanwu1125
+  - SNHuan
+  - Thanksyy
+  - ftgreat
+  - zacliu2023
+  - juliohsu
+  - wubingheng111
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us understand the feature you are proposing and why it matters for Flash-DMA workflows.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: Explain the problem or limitation that motivates this feature request.
+      placeholder: I am limited by...
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or behaviour you would like to see.
+      placeholder: Introduce a kernel path that...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: List any other approaches you have evaluated and why they are insufficient.
+      placeholder: I tried using...
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Implementation details
+      description: Call out potential CUDA/Python changes, performance implications, or compatibility considerations.
+      placeholder: Requires updates to flash_dmattn_interface and CUDA op...
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Describe the workloads or scenarios that would benefit from this feature.
+      placeholder: Long-context code completion with...
+  - type: textarea
+    id: references
+    attributes:
+      label: Related work
+      description: Share links to papers, repositories, or prior art that inspired this request.
+      placeholder: Paper link or repository URL
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add any extra information or screenshots that may help us understand the request.

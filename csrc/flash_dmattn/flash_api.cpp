@@ -553,6 +553,7 @@ mha_fwd(
     return {out, softmax_lse, p};
 }
 
+
 // std::vector<at::Tensor>
 // mha_varlen_fwd(
 //     at::Tensor &q,                                  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
@@ -774,19 +775,19 @@ mha_fwd(
 //     return {out, softmax_lse, p};
 // }
 
-// void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
-//     FP16_SWITCH(!params.is_bf16, [&] {
-//         HEADDIM_SWITCH(params.d, [&] {
-//             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-//                 BOOL_SWITCH(params.has_mask, Has_mask, [&] {
-//                     BOOL_SWITCH(params.has_bias, Has_bias, [&] {
-//                         run_mha_bwd_<elem_type, kHeadDim, Is_causal, Has_mask, Has_bias>(params, stream);
-//                     });
-//                 });
-//             });
-//         });
-//     });
-// }
+void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
+    FP16_SWITCH(!params.is_bf16, [&] {
+        HEADDIM_SWITCH(params.d, [&] {
+            BOOL_SWITCH(params.is_causal, Is_causal, [&] {
+                BOOL_SWITCH(params.has_mask, Has_mask, [&] {
+                    BOOL_SWITCH(params.has_bias, Has_bias, [&] {
+                        run_mha_bwd_<elem_type, kHeadDim, Is_causal, Has_mask, Has_bias>(params, stream);
+                    });
+                });
+            });
+        });
+    });
+}
 
 std::vector<at::Tensor>
 mha_bwd(

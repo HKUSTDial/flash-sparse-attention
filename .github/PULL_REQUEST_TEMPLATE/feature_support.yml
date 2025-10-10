@@ -1,0 +1,60 @@
+name: Feature Support
+description: Introduce a new feature with design context and tests
+title: "[FEATURE SUPPORT] "
+labels:
+  - feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share enough detail about the new feature so reviewers can evaluate scope, design, and testing.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What feature is being added and why?
+      placeholder: Adds configurable...
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Design
+      description: Outline the design or architecture and mention alternatives considered.
+      placeholder: Uses new backend selection flow...
+  - type: textarea
+    id: changes
+    attributes:
+      label: Changes
+      description: Describe new or changed public APIs, configuration, or CLI behaviour.
+      placeholder: Adds flash_dmattn.feature_flag...
+    validations:
+      required: true
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation notes
+      description: Highlight tricky parts or noteworthy implementation details.
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests
+      description: List unit or integration tests you added or updated and how you validated them.
+      placeholder: Ran benchmarks/forward_equivalence.py; added example in...
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Documentation
+      description: Mention doc updates or examples that accompany this feature.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Linked issue provided
+        - label: API stabilised
+        - label: Tests added or updated
+        - label: Docs added or updated
+        - label: No known performance regressions
