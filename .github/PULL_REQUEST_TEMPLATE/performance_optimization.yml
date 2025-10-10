@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Document the optimisation, methodology, and results so reviewers can validate gains and correctness.
+        Document the optimization, methodology, and results so reviewers can validate gains and correctness.
   - type: textarea
     id: summary
     attributes:

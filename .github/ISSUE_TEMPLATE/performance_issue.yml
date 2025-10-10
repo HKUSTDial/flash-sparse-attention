@@ -1,5 +1,5 @@
 name: Performance issue
-description: Report performance problems or optimisation opportunities
+description: Report performance problems or optimization opportunities
 title: "[PERFORMANCE] "
 labels:
   - performance
