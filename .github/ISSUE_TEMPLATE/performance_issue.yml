@@ -16,7 +16,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Provide enough detail about performance regressions or optimisation opportunities so we can reproduce and diagnose them.
+        Provide enough detail about performance regressions or optimization opportunities so we can reproduce and diagnose them.
   - type: textarea
     id: issue-description
     attributes:
