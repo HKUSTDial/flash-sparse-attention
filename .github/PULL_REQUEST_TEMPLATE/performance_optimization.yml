@@ -28,7 +28,7 @@ body:
     id: approach
     attributes:
       label: Approach
-      description: Describe the optimisation techniques used.
+      description: Describe the optimization techniques used.
       placeholder: Introduced block-wise accumulation...
   - type: textarea
     id: results
