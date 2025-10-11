@@ -461,7 +461,7 @@ def _process_flash_dynamic_mask_attention_kwargs(
 
     if supports_mapping["deterministic"]:
         flash_kwargs["deterministic"] = (
-            deterministic if deterministic is not None else os.getenv("FLASH_ATTENTION_DETERMINISTIC", "0") == "1"
+            deterministic if deterministic is not None else os.getenv("FLASH_DMATTN_DETERMINISTIC", "0") == "1"
         )
 
     if supports_mapping["softcap"] and softcap is not None:
