@@ -131,8 +131,6 @@ def _flash_dmattn_varlen_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -146,13 +144,11 @@ def _flash_dmattn_varlen_forward(
     seqused_k: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
+    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
     out, softmax_lse, S_dmask = flash_dmattn_gpu.varlen_fwd(
         q,
         k,
         v,
-        mask,
-        bias,
         None,
         cu_seqlens_q,
         cu_seqlens_k,
@@ -176,8 +172,6 @@ def _flash_dmattn_varlen_forward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -191,7 +185,7 @@ def _flash_dmattn_varlen_forward_fake(
     seqused_k: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
+    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
     paged_kv = block_table is not None
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
@@ -294,20 +288,17 @@ def _flash_dmattn_backward_fake(
 _wrapped_flash_dmattn_backward = _flash_dmattn_backward
 
 
-@_torch_custom_op_wrapper("flash_dmattn::_flash_dmattn_varlen_backward", mutates_args=("dq", "dk", "dv", "dbias"), device_types="cuda")
+@_torch_custom_op_wrapper("flash_dmattn::_flash_dmattn_varlen_backward", mutates_args=("dq", "dk", "dv"), device_types="cuda")
 def _flash_dmattn_varlen_backward(
     dout: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
     dq: Optional[torch.Tensor],
     dk: Optional[torch.Tensor],
     dv: Optional[torch.Tensor],
-    dbias: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -318,20 +309,17 @@ def _flash_dmattn_varlen_backward(
     deterministic: bool,
     zero_tensors: bool = False,
 ) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
     (
         dq,
         dk,
         dv,
-        dbias,
         softmax_d,
     ) = flash_dmattn_gpu.varlen_bwd(
         dout,
         q,
         k,
         v,
-        mask,
-        bias,
         out,
         softmax_lse,
         dq,
@@ -347,7 +335,7 @@ def _flash_dmattn_varlen_backward(
         softcap,
         deterministic,
     )
-    _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=0.0, neginf=0.0)
+    _sanitize_tensors(dq, dk, dv, nan=0.0, posinf=0.0, neginf=0.0)
     return softmax_d
 
 
@@ -357,8 +345,6 @@ def _flash_dmattn_varlen_backward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    mask: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
     dq: Optional[torch.Tensor],
@@ -375,7 +361,7 @@ def _flash_dmattn_varlen_backward_fake(
     deterministic: bool,
     zero_tensors: bool = False,
 ) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
 
@@ -385,8 +371,6 @@ def _flash_dmattn_varlen_backward_fake(
         dk = torch.empty_like(k)
     if dv is None:
         dv = torch.empty_like(v)
-    if dbias is None and bias is not None:
-        dbias = torch.empty_like(bias)
     softmax_d = torch.empty((num_heads, total_q + 128 * batch_size), device=q.device, dtype=torch.float32)
 
     return softmax_d
@@ -422,7 +406,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if softcap is None:
             softcap = 0.0
         if deterministic is None:
-            deterministic = True
+            deterministic = False
         if return_softmax is None:
             return_softmax = False
 
@@ -521,8 +505,6 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        mask: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
@@ -545,7 +527,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         if softcap is None:
             softcap = 0.0
         if deterministic is None:
-            deterministic = True
+            deterministic = False
         if return_softmax is None:
             return_softmax = False
         
@@ -555,21 +537,11 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-        seqlen_k_og = k.shape[1]
-        if seqlen_k_og % 8 != 0:
-            k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
-            v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
-            if mask is not None:
-                mask = torch.nn.functional.pad(mask, [0, 8 - seqlen_k_og % 8], value=False)
-            if bias is not None:
-                bias = torch.nn.functional.pad(bias, [0, 8 - seqlen_k_og % 8], value=0.0)
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
             q,
             k,
             v,
-            mask,
-            bias,
             cu_seqlens_q,
             cu_seqlens_k,
             max_seqlen_q,
@@ -583,7 +555,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
 
         if is_grad:
             ctx.save_for_backward(
-                q, k, v, mask, bias, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
+                q, k, v, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
             )
             ctx.max_seqlen_q = max_seqlen_q
             ctx.max_seqlen_k = max_seqlen_k
@@ -598,9 +570,8 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *args):
-        q, k, v, mask, bias, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
+        q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-        dbias = torch.zeros_like(bias).contiguous() if bias is not None else None
 
         head_size_og = dout.size(2)
         dout_padded = dout
@@ -612,14 +583,11 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             q,
             k,
             v,
-            mask,
-            bias,
             out,
             softmax_lse,
             dq,
             dk,
             dv,
-            dbias,
             cu_seqlens_q,
             cu_seqlens_k,
             ctx.max_seqlen_q,
@@ -635,13 +603,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
 
-        if ctx.seqlen_k_og % 8 != 0:
-            dk = dk[:, : ctx.seqlen_k_og, :, :]
-            dv = dv[:, : ctx.seqlen_k_og, :, :]
-            if dbias is not None:
-                dbias = dbias[..., : ctx.seqlen_k_og]
-
-        return dq, dk, dv, None, dbias, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
 
 
 def flash_dmattn_func(
@@ -725,8 +687,6 @@ def flash_dmattn_varlen_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attn_mask: Optional[torch.Tensor],
-    attn_bias: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -744,11 +704,6 @@ def flash_dmattn_varlen_func(
     For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
     0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
 
-    Similarity, also supports attn_mask and attn_bias with head dimension of 1, nheads_k or nheads for MQA/GQA.
-    For example, if Q has 6 heads, K, V have 2 heads, then attn_mask and attn_bias can have head dimension
-    of 1, 2 or 6. If it is 1, all heads use the same mask/bias; if it is 2, head 0, 1, 2 of Q use head 0
-    of mask/bias, head 3, 4, 5 of Q use head 1 of mask/bias. If it is 6, each head uses its own mask/bias.
-
     If is_causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
     For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:
         1 1 1 1 0
@@ -765,12 +720,6 @@ def flash_dmattn_varlen_func(
         query: torch.Tensor. The query tensor of shape (total_q, nheads, headdim), where total_q = total number of query tokens in the batch.
         key: torch.Tensor. The key tensor of shape (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
         value: torch.Tensor. The value tensor of shape (total_k, nheads_k, headdim), where total_k = total number of key tokens in the batch.
-        attn_mask: torch.Tensor, optional. The attention mask boolean tensor of
-            shape (total_q, {nheads|nheads_k|1}, max_seqlen_k) or (total_k, {nheads|nheads_k|1}) to apply to the attention scores.
-            If None, no mask is applied.
-        attn_bias: torch.Tensor, optional. The attention bias float tensor of
-            shape (total_q, {nheads|nheads_k|1}, max_seqlen_k) or (total_k, {nheads|nheads_k|1}) to add to the attention scores.
-            If None, no bias is applied.
         cu_seqlens_q: torch.Tensor. The cumulative sequence lengths of the sequences in the batch, used to index into q.
         cu_seqlens_k: torch.Tensor. The cumulative sequence lengths of the sequences in the batch, used to index into kv.
         max_seqlen_q: int. Maximum query sequence length in the batch.
@@ -796,8 +745,6 @@ def flash_dmattn_varlen_func(
         query,
         key,
         value,
-        attn_mask,
-        attn_bias,
         cu_seqlens_q,
         cu_seqlens_k,
         max_seqlen_q,

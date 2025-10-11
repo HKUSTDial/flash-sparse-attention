@@ -12,7 +12,7 @@ def flex_attention_forward(
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
     is_causal: Optional[bool] = None,
-    scale: Optional[float] = None,
+    softmax_scale: Optional[float] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     batch, seqlen_q, nheads, dhead = query.shape
@@ -30,8 +30,8 @@ def flex_attention_forward(
         attn_bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype)
     if is_causal is None:
         is_causal = True
-    if scale is None:
-        scale = 1.0 / math.sqrt(dhead)
+    if softmax_scale is None:
+        softmax_scale = 1.0 / math.sqrt(dhead)
 
     def score_mod(score, batch_idx, head_idx, q_idx, kv_idx):
         score = score + attn_bias[batch_idx][head_idx][q_idx][kv_idx]
@@ -66,7 +66,7 @@ def flex_attention_forward(
         value,
         score_mod=score_mod,
         block_mask=block_mask if is_causal else None,
-        scale=scale,
+        scale=softmax_scale,
         kernel_options=kernel_options,
         # Last time checked on PyTorch == 2.5.1: Flex Attention always computes the lse regardless.
         # For simplification, we thus always return it as no additional computations are introduced.

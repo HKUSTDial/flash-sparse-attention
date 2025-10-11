@@ -17,6 +17,7 @@ def flash_dynamic_mask_attention_forward(
     attention_mask: Optional[torch.Tensor],
     attention_bias: Optional[torch.Tensor],
     scaling: Optional[float] = None,
+    window_size: Optional[int] = None,
     softcap: Optional[float] = None,
     **kwargs,
 ) -> tuple[torch.Tensor, None]:
@@ -29,14 +30,16 @@ def flash_dynamic_mask_attention_forward(
         query (torch.Tensor): The query tensor of shape (batch_size, num_heads, query_len, head_dim).
         key (torch.Tensor): The key tensor of shape (batch_size, num_kv_heads, key_len, head_dim).
         value (torch.Tensor): The value tensor of shape (batch_size, num_kv_heads, key_len, head_dim).
-        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape (batch_size, {num_heads|num_kv_heads|1}, query_len, key_len).
-        attention_bias (Optional[torch.Tensor]): The attention bias float tensor of shape (batch_size, {num_heads|num_kv_heads|1}, query_len, key_len), if attention_mask is None, also supports (batch_size, {num_heads|num_kv_heads|1}, key_len).
+        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape 
+        (batch_size, seq_len) or (batch_size, {num_heads|num_kv_heads|1}, {query_len|0}, key_len).
+        attention_bias (Optional[torch.Tensor]): The attention bias float tensor of shape
+        (batch_size, {num_heads|num_kv_heads|1}, {query_len|0}, key_len).
         scaling (Optional[float]): The scaling factor for the attention scores.
+        window_size (Optional[int]): The size of the window to keep.
         softcap (Optional[float]): The softcap value for the attention scores.
         **kwargs: Additional keyword arguments.
             Includes:
                 - is_causal (bool): Whether to apply a causal mask.
-                - window_size (int): The size of the window to keep.
                 - layer_idx (int): The index of the layer (for logging purposes).
                 - implementation (str): The implementation to use ("flash_dmattn" or None).
 
@@ -82,9 +85,10 @@ def flash_dynamic_mask_attention_forward(
         else:
             target_dtype = next(layer for layer in module.modules() if isinstance(layer, torch.nn.Linear)).weight.dtype
 
-    # FDMA always relies on the value set in the module, so remove it if present in kwargs to avoid passing it twice
-    kwargs.pop("is_causal", None)
-    kwargs.pop("window_size", None)
+    # Instead of relying on the value set in the module directly, we use the is_causal passed in kwargs if it is presented
+    is_causal = kwargs.pop("is_causal", None)
+    if is_causal is None:
+        is_causal = module.is_causal
 
     attn_output = _flash_dynamic_mask_attention_forward(
         query,
@@ -94,10 +98,10 @@ def flash_dynamic_mask_attention_forward(
         attention_bias,
         query_length=query_len,
         key_length=key_len,
-        is_causal=module.is_causal,
+        is_causal=is_causal,
         softmax_scale=scaling,
         softcap=softcap,
-        window_size=module.window_size,
+        window_size=window_size,
         target_dtype=target_dtype,
         implementation="flash_dmattn",
         layer_idx=module.layer_idx if hasattr(module, "layer_idx") else None,

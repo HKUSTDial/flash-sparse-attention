@@ -159,7 +159,7 @@ def flash_dmattn_func(
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
     attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
     attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
-    scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
+    softmax_scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
     is_causal: Optional[bool] = None,               # 因果掩码
     softcap: Optional[float] = None,                # 仅 CUDA 支持
     deterministic: Optional[bool] = None,           # 仅 CUDA 支持
@@ -174,7 +174,7 @@ def flash_dmattn_func(
 - value: (B, K, H_kv, D). 与 query 相同的数据类型/设备；当 H_kv <= H 时为 GQA
 - attn_mask: (B, {H, H_kv, 1}, {Q, 0}, K). 1.0 = 可见，0.0 = 被掩码。None 表示禁用
 - attn_bias: (B, {H, H_kv, 1}, {Q, 0}, K). 在 softmax 前加到分数上。None 表示禁用
-- scale: 分数缩放；默认为 1/sqrt(D)
+- softmax_scale: 分数缩放；默认为 1/sqrt(D)
 - is_causal: 应用因果掩码
 - softcap, deterministic, return_attn_probs: 仅在 CUDA 后端有效；在其他后端被忽略
 
@@ -194,7 +194,7 @@ def triton_dmattn_func(
     attn_mask: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     attn_bias: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     is_causal: bool = False,                        # 因果掩码
-    scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
+    softmax_scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
 ) -> torch.Tensor
 ```
 
@@ -210,7 +210,7 @@ def flex_dmattn_func(
     attn_mask: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     attn_bias: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     is_causal: Optional[bool] = None,               # 因果掩码
-    scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
+    softmax_scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
 ) -> torch.Tensor
 ```
 
@@ -340,7 +340,7 @@ class DynamicMaskAttention(nn.Module):
             value_states,
             attention_mask=attention_mask,
             attention_bias=attn_bias,
-            scale=self.scaling,
+            softmax_scale=self.scaling,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()

@@ -159,7 +159,7 @@ def flash_dmattn_func(
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
     attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
     attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
-    scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
+    softmax_scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
     is_causal: Optional[bool] = None,               # causal mask
     softcap: Optional[float] = None,                # CUDA-only
     deterministic: Optional[bool] = None,           # CUDA-only
@@ -174,7 +174,7 @@ def flash_dmattn_func(
 - value: (B, K, H_kv, D). Same dtype/device as query; GQA when H_kv <= H
 - attn_mask: (B, {H, H_kv, 1}, {Q, 0}, K). 1.0 = visible, 0.0 = masked. None to disable
 - attn_bias: (B, {H, H_kv, 1}, {Q, 0}, K). Added to scores before softmax. None to disable
-- scale: score scaling; default 1/sqrt(D)
+- softmax_scale: score scaling; default 1/sqrt(D)
 - is_causal: apply lower-triangular mask
 - softcap, deterministic, return_attn_probs: only effective on the CUDA backend; ignored on others
 
@@ -194,7 +194,7 @@ def triton_dmattn_func(
     attn_mask: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     attn_bias: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     is_causal: bool = False,                        # causal mask
-    scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
+    softmax_scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
 ) -> torch.Tensor
 ```
 
@@ -210,7 +210,7 @@ def flex_dmattn_func(
     attn_mask: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     attn_bias: Optional[torch.Tensor] = None,       # (batch, num_heads, seqlen_q, seqlen_k)
     is_causal: Optional[bool] = None,               # causal mask
-    scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
+    softmax_scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
 ) -> torch.Tensor
 ```
 
@@ -341,7 +341,7 @@ class DynamicMaskAttention(nn.Module):
             value_states,
             attention_mask=attention_mask,
             attention_bias=attn_bias,
-            scale=self.scaling,
+            softmax_scale=self.scaling,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()

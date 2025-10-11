@@ -195,7 +195,7 @@ output = flash_dmattn_func(
     attn_mask=attention_mask,
     attn_bias=attention_bias,
     is_causal=True,
-    scale=1.0/math.sqrt(head_dim),
+    softmax_scale=1.0/math.sqrt(head_dim),
 )
 
 print(f"Output shape: {output.shape}")  # [1, 256, 2, 64]
@@ -216,7 +216,7 @@ output = flash_dmattn_func(
     attn_mask=attention_mask,
     attn_bias=attention_bias,
     is_causal=True,
-    scale=1.0/math.sqrt(head_dim)
+    softmax_scale=1.0/math.sqrt(head_dim)
 )
 
 # Backward pass

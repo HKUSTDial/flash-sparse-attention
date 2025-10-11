@@ -186,7 +186,7 @@ def scaled_dot_product_attention_cuda(
             key_states,
             value_states,
             attn_mask=causal_mask,
-            scale=scaling,
+            softmax_scale=scaling,
             # is_causal=is_causal if query_len == key_len else False,
             enable_gqa=True
         )
@@ -262,7 +262,7 @@ def dynamic_mask_attention_cuda(
             attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
             attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
             is_causal=is_causal,
-            scale=scaling,
+            softmax_scale=scaling,
             softcap=0.0,
             deterministic=False,
             return_attn_probs=return_softmax
@@ -348,7 +348,7 @@ def dynamic_mask_attention_triton(
             attn_mask=attn_mask,        # mask: [batch, num_heads, seqlen_q, seqlen_k]
             attn_bias=attn_bias,        # bias: [batch, num_heads, seqlen_q, seqlen_k]
             is_causal=is_causal,        # causal masking
-            scale=scaling               # scaling factor
+            softmax_scale=scaling               # scaling factor
         )
         
         torch.cuda.synchronize()
@@ -427,7 +427,7 @@ def dynamic_mask_attention_flex(
             attn_mask=attn_mask,                        # attn_mask: [batch, num_heads, query_len, key_len]
             attn_bias=attn_bias,                        # attn_bias: [batch, num_heads, query_len, key_len]
             is_causal=is_causal,                        # is_causal: whether to apply causal masking
-            scale=scaling                               # scaling factor
+            softmax_scale=scaling                               # scaling factor
         )
         
         torch.cuda.synchronize()

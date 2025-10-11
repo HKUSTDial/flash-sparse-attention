@@ -1108,5 +1108,5 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, dbias, None, None
 
 
-def triton_dmattn_func(query, key, value, attn_mask=None, attn_bias=None, is_causal=False, scale=None):
-    return FlashDMAttnFunc.apply(query, key, value, attn_mask, attn_bias, is_causal, scale)
+def triton_dmattn_func(query, key, value, attn_mask=None, attn_bias=None, is_causal=False, softmax_scale=None):
+    return FlashDMAttnFunc.apply(query, key, value, attn_mask, attn_bias, is_causal, softmax_scale)
