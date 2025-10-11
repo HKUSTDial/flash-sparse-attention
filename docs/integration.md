@@ -1108,7 +1108,7 @@ def _flash_dynamic_mask_attention_forward(
     out = flash_dmattn_func(
         query_states, key_states, value_states, 
         attn_mask=attention_mask, attn_bias=attention_bias, 
-        scale=softmax_scale, is_causal=is_causal
+        softmax_scale=softmax_scale, is_causal=is_causal
     )
 
     return out[0] if isinstance(out, tuple) else out
@@ -1551,7 +1551,7 @@ def _flash_dynamic_mask_attention_forward(
     out = flash_dmattn_func(
         query_states, key_states, value_states, 
         attn_mask=attention_mask, attn_bias=attention_bias, 
-        scale=softmax_scale, is_causal=is_causal
+        softmax_scale=softmax_scale, is_causal=is_causal
     )
 
     return out[0] if isinstance(out, tuple) else out
@@ -1994,7 +1994,7 @@ def _flash_dynamic_mask_attention_forward(
     out = flash_dmattn_func(
         query_states, key_states, value_states, 
         attn_mask=attention_mask, attn_bias=attention_bias, 
-        scale=softmax_scale, is_causal=is_causal
+        softmax_scale=softmax_scale, is_causal=is_causal
     )
 
     return out[0] if isinstance(out, tuple) else out
@@ -2421,7 +2421,7 @@ def _flash_dynamic_mask_attention_forward(
     out = flash_dmattn_func(
         query_states, key_states, value_states, 
         attn_mask=attention_mask, attn_bias=attention_bias, 
-        scale=softmax_scale, is_causal=is_causal
+        softmax_scale=softmax_scale, is_causal=is_causal
     )
 
     return out[0] if isinstance(out, tuple) else out
