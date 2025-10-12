@@ -353,8 +353,8 @@ mha_fwd(
     at::Tensor &q,                                  // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
     const at::Tensor &k,                            // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
     const at::Tensor &v,                            // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
-    std::optional<at::Tensor> &mask_,               // batch_size x {1|num_heads_k|num_heads} x {seqlen_q|0} x seqlen_k
-    std::optional<at::Tensor> &bias_,               // batch_size x {1|num_heads_k|num_heads} x {seqlen_q|0} x seqlen_k
+    std::optional<at::Tensor> &mask_,               // {batch_size|1} x {num_heads|num_heads_k|1} x {seqlen_q|1} x round_multiple(seqlen_k, 128)
+    std::optional<at::Tensor> &bias_,               // {batch_size|1} x {num_heads|num_heads_k|1} x {seqlen_q|1} x round_multiple(seqlen_k, 128)
     std::optional<at::Tensor> &out_,                // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
     const float softmax_scale,
     bool is_causal,
@@ -387,11 +387,8 @@ mha_fwd(
         mask = mask_.value();
         TORCH_CHECK(mask.dtype() == torch::kBool, "mask must have dtype bool");
         CHECK_DEVICE(mask);
+        TORCH_CHECK(mask.dim() == 4, "mask must have 4 dimensions with shape (batch_size, nheads, seqlen_q, seqlen_k_rounded)");
         TORCH_CHECK(mask.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-        if (mask.dim() == 3) {
-            // Add a dummy dimension for seqlen_q
-            mask = mask.unsqueeze(2).expand({-1, -1, q.size(1), -1});
-        }
     } else {
         mask = torch::empty({0}, opts);
     }
@@ -401,11 +398,8 @@ mha_fwd(
         bias = bias_.value();
         TORCH_CHECK(bias.dtype() == q_dtype, "bias must have the same dtype as inputs");
         CHECK_DEVICE(bias);
+        TORCH_CHECK(bias.dim() == 4, "bias must have 4 dimensions with shape (batch_size, nheads, seqlen_q, seqlen_k_rounded)");
         TORCH_CHECK(bias.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-        if (bias.dim() == 3) {
-            // Add a dummy dimension for seqlen_q
-            bias = bias.unsqueeze(2).expand({-1, -1, q.size(1), -1});
-        }
     } else {
         bias = torch::empty({0}, opts);
     }
@@ -420,16 +414,27 @@ mha_fwd(
     const int num_heads_k = k.size(2);
     int num_heads_mask = has_mask ? mask.size(1) : 1;
     int num_heads_bias = has_bias ? bias.size(1) : 1;
+    auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+    const int head_size_rounded = round_multiple(head_size, head_size <= 128 ? 32 : 64);
+    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
 
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention forward only supports head dimension at most 256");
     TORCH_CHECK(head_size % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
+
     if (has_mask) {
+        TORCH_CHECK(mask.size(0) == batch_size || mask.size(0) == 1, "Batch dimension in mask must be 1 or equal to batch size");
         TORCH_CHECK(num_heads_mask == 1 || num_heads_mask == num_heads_k || num_heads_mask == num_heads, "Number of heads in mask must be 1, h_k or h");
+        TORCH_CHECK(mask.size(2) == 1 || mask.size(2) == seqlen_q, "Query length dimension in mask must be 1 or equal to seqlen_q");
+        TORCH_CHECK(mask.size(3) == seqlen_k_rounded, "Key length dimension in mask must be seqlen_k_rounded");
     }
     if (has_bias) {
+        TORCH_CHECK(bias.size(0) == batch_size || bias.size(0) == 1, "Batch dimension in bias must be 1 or equal to batch size");
         TORCH_CHECK(num_heads_bias == 1 || num_heads_bias == num_heads_k || num_heads_bias == num_heads, "Number of heads in bias must be 1, h_k or h");
+        TORCH_CHECK(bias.size(2) == 1 || bias.size(2) == seqlen_q, "Query length dimension in bias must be 1 or equal to seqlen_q");
+        TORCH_CHECK(bias.size(3) == seqlen_k_rounded, "Key length dimension in bias must be seqlen_k_rounded");
     }
 
     // causal=true is the same as causal=false in this case
@@ -439,27 +444,29 @@ mha_fwd(
     // H/t Daniel Haziza
     const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && head_size % 8 == 0;
     const int ngroups = num_heads / num_heads_k;
-    const int orig_num_heads_mask = num_heads_mask;
-    const int orig_num_heads_bias = num_heads_bias;
+    const int batch_size_mask_og = has_mask ? mask.size(0) : batch_size;
+    const int batch_size_bias_og = has_bias ? bias.size(0) : batch_size;
+    const int num_heads_mask_og = num_heads_mask;
+    const int num_heads_bias_og = num_heads_bias;
     if (seqlenq_ngroups_swapped) {
         q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2);
         if (has_mask) {
-            mask = num_heads_mask == 1
-                ? mask.expand({batch_size, 1, ngroups, seqlen_k})
-                : (
-                    num_heads_mask == num_heads_k
-                        ? mask.expand({batch_size, num_heads_k, ngroups, seqlen_k})
-                        : mask.reshape({batch_size, num_heads_k, ngroups, seqlen_k})
-                );
+            if (num_heads_mask == 1) {
+                mask = mask.reshape({batch_size_mask_og, 1, 1, seqlen_k_rounded});
+            } else if (num_heads_mask == num_heads_k) {
+                mask = mask.reshape({batch_size_mask_og, num_heads_k, 1, seqlen_k_rounded});
+            } else if (num_heads_mask == num_heads) {
+                mask = mask.reshape({batch_size_mask_og, num_heads_k, ngroups, seqlen_k_rounded});
+            }
         }
         if (has_bias) {
-            bias = num_heads_bias == 1
-                ? bias.expand({batch_size, 1, ngroups, seqlen_k})
-                : (
-                    num_heads_bias == num_heads_k
-                        ? bias.expand({batch_size, num_heads_k, ngroups, seqlen_k})
-                        : bias.reshape({batch_size, num_heads_k, ngroups, seqlen_k})
-                );
+            if (num_heads_bias == 1) {
+                bias = bias.reshape({batch_size_bias_og, 1, 1, seqlen_k_rounded});
+            } else if (num_heads_bias == num_heads_k) {
+                bias = bias.reshape({batch_size_bias_og, num_heads_k, 1, seqlen_k_rounded});
+            } else if (num_heads_bias == num_heads) {
+                bias = bias.reshape({batch_size_bias_og, num_heads_k, ngroups, seqlen_k_rounded});
+            }
         }
         num_heads_mask = has_mask ? ((num_heads_mask == num_heads) ? num_heads_k : num_heads_mask) : 1;
         num_heads_bias = has_bias ? ((num_heads_bias == num_heads) ? num_heads_k : num_heads_bias) : 1;
@@ -484,11 +491,6 @@ mha_fwd(
     } else {
         out = torch::empty_like(q);
     }
-
-    auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
-    const int head_size_rounded = round_multiple(head_size, head_size <= 128 ? 32 : 64);
-    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
-    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
 
     auto softmax_lse = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
     at::Tensor p;
@@ -541,16 +543,13 @@ mha_fwd(
         q = q.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
         if (has_mask) {
-            mask = (orig_num_heads_mask == 1 || orig_num_heads_mask == num_heads_k)
-                ? mask.narrow(2, 0, 1)
-                : mask.reshape({batch_size, num_heads_k * seqlen_q, 1, seqlen_k});
+            mask = mask.reshape({batch_size_mask_og, num_heads_mask_og, 1, seqlen_k_rounded});
         }
         if (has_bias) {
-            bias = (orig_num_heads_bias == 1 || orig_num_heads_bias == num_heads_k)
-                ? bias.narrow(2, 0, 1)
-                : bias.reshape({batch_size, num_heads_k * seqlen_q, 1, seqlen_k});
+            bias = bias.reshape({batch_size_bias_og, num_heads_bias_og, 1, seqlen_k_rounded});
         }
     }
+
     return {out, softmax_lse, p};
 }
 
