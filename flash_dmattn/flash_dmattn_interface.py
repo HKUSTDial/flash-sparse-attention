@@ -648,7 +648,7 @@ def flash_dmattn_func(
             shape ({batch_size|1}, {nheads|nheads_k|1}, {seqlen_q|1}, {seqlen_k|1}) to apply to the attention scores.
             If None, no mask is applied.
         attn_bias: torch.Tensor, optional. The attention bias float tensor of
-            shape (batch_size, {nheads|nheads_k|1}, {seqlen_q|1}, {seqlen_k|1}) to add to the attention scores.
+            shape ({batch_size|1}, {nheads|nheads_k|1}, {seqlen_q|1}, {seqlen_k|1}) to add to the attention scores.
             If None, no bias is applied.
         softmax_scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
