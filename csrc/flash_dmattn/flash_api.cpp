@@ -76,10 +76,10 @@ void set_params_fprop(
     params.k_head_stride = k.stride(-2);
     params.v_row_stride = v.stride(-3);
     params.v_head_stride = v.stride(-2);
-    params.mask_head_stride = has_mask ? mask.stride(-3) : 0;
-    params.mask_row_stride = has_mask ? mask.stride(-2) : 0;
-    params.bias_head_stride = has_bias ? bias.stride(-3) : 0;
-    params.bias_row_stride = has_bias ? bias.stride(-2) : 0;
+    params.mask_head_stride = has_mask ? (mask.size(-3) == 1 ? 0 : mask.stride(-3)) : 0;
+    params.mask_row_stride = has_mask ? (mask.size(-2) == 1 ? 0 : mask.stride(-2)) : 0;
+    params.bias_head_stride = has_bias ? (bias.size(-3) == 1 ? 0 : bias.stride(-3)) : 0;
+    params.bias_row_stride = has_bias ? (bias.size(-2) == 1 ? 0 : bias.stride(-2)) : 0;
     params.o_row_stride = out.stride(-3);
     params.o_head_stride = out.stride(-2);
 
@@ -87,8 +87,8 @@ void set_params_fprop(
         params.q_batch_stride = q.stride(0);
         params.k_batch_stride = k.stride(0);
         params.v_batch_stride = v.stride(0);
-        params.mask_batch_stride = has_mask ? mask.stride(0) : 0;
-        params.bias_batch_stride = has_bias ? bias.stride(0) : 0;
+        params.mask_batch_stride = has_mask ? (mask.size(0) == 1 ? 0 : mask.stride(0)) : 0;
+        params.bias_batch_stride = has_bias ? (bias.size(0) == 1 ? 0 : bias.stride(0)) : 0;
         params.o_batch_stride = out.stride(0);
         if (seqlenq_ngroups_swapped) {
             params.q_batch_stride *= seqlen_q;
