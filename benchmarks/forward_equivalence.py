@@ -988,8 +988,8 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
         start_time = time.time()
         py_output = dynamic_mask_attention_python(
             query_states, key_states, value_states,
-            attn_bias, causal_mask, scaling, cache_position,
-            window_size, is_causal
+            window_size, attn_bias, causal_mask, scaling,
+            is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
