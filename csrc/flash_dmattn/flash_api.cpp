@@ -227,15 +227,15 @@ void set_params_dgrad(
     params.dk_head_stride = dk.stride(-2);
     params.dv_row_stride = dv.stride(-3);
     params.dv_head_stride = dv.stride(-2);
-    params.dbias_head_stride = has_bias ? dbias.stride(-3) : 0;
-    params.dbias_row_stride = has_bias ? dbias.stride(-2) : 0;
+    params.dbias_head_stride = has_bias ? (dbias.size(-3) == 1 ? 0 : dbias.stride(-3)) : 0;
+    params.dbias_row_stride = has_bias ? (dbias.size(-2) == 1 ? 0 : dbias.stride(-2)) : 0;
 
     if (cu_seqlens_q_d == nullptr) {
         params.do_batch_stride = dout.stride(0);
         params.dq_batch_stride = dq.stride(0);
         params.dk_batch_stride = dk.stride(0);
         params.dv_batch_stride = dv.stride(0);
-        params.dbias_batch_stride = has_bias ? dbias.stride(0) : 0;
+        params.dbias_batch_stride = has_bias ? (dbias.size(0) == 1 ? 0 : dbias.stride(0)) : 0;
     }
 
     params.dq_accum_ptr = dq_accum_d;
