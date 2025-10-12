@@ -50,79 +50,6 @@ except ImportError as e:
     flex_dmattn_func = None
 
 
-def prepare_dynamic_mask(
-    hidden_states: torch.Tensor,
-    zoh_states: torch.Tensor,
-    keep_window_size: int = 2048,
-    cache_position: torch.Tensor = None,
-):
-    """
-    Calculate dynamic attention mask to mask tokens for sparse attention.
-
-    Combine `zoh_states` with `attention_mask` to generate the final `attn_mask`.
-
-    Args:
-        hidden_states: Input hidden states to determine dtype minimum value
-        zoh_states: zoh_states of shape (batch_size, num_kv_heads, key_sequence_length)
-        keep_window_size: Window size of tokens not dynamically masked
-        cache_position: Optional cache position for causal masking
-    
-    Returns:
-        tuple: (attn_bias, attn_mask)
-    """
-    dtype = hidden_states.dtype
-    min_dtype = torch.finfo(dtype).min
-    attn_bias = zoh_states[:, :, None, :].expand(
-        -1, -1, hidden_states.shape[2], -1
-    ).to(dtype)     # [batch_size, num_kv_heads, query_len, key_len]
-    
-    if cache_position is not None:
-        attn_bias = attn_bias.masked_fill(
-            torch.arange(attn_bias.shape[-1], device=attn_bias.device) > cache_position.reshape(-1, 1),
-            min_dtype
-        )
-
-    if attn_bias.shape[-1] > keep_window_size:
-        topk_values, topk_indices = torch.topk(
-            attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
-        )
-        valid_topk = topk_values != min_dtype
-        attn_mask = torch.zeros_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
-        attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk)
-        attn_bias = attn_bias.masked_fill(~attn_mask, min_dtype)
-    else:
-        attn_mask = torch.ones_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
-    return attn_bias, attn_mask
-
-
-def calculate_zoh_states(value_states, dt_proj, A):
-    """
-    Calculate zoh states for dynamic mask attention.
-    
-    Args:
-        value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
-        causal_mask: Optional causal mask
-    
-    Returns:
-        zoh_states: [batch_size, num_kv_heads, key_len]
-    """
-    batch_size, _, key_len, _ = value_states.shape
-    
-    # Transpose and reshape value_states, then matrix multiply with dt_proj.T
-    dt_result = torch.matmul(
-        value_states.transpose(-2, -3).reshape(batch_size, key_len, -1), 
-        dt_proj.T
-    )
-    
-    # Apply softplus activation and coefficient A
-    dt_states = torch.exp(F.softplus(dt_result) * A)
-    zoh_states = dt_states.transpose(-1, -2)  # [batch_size, num_kv_heads, key_len]
-
-    return zoh_states
-
-
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
     Equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). 
@@ -138,16 +65,51 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
+def prepare_mask(
+    hidden_states: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor = None,
+    window_size: int = None,
+):
+    """
+    Args:
+        hidden_states: Input hidden states to determine dtype minimum value
+        attn_bias: Attention bias of shape (batch_size, num_heads, query_length, key_length)
+        causal_mask: Optional causal mask to apply
+        window_size: Window size of tokens not masked
+    
+    Returns:
+        tuple: (attn_bias, attn_mask)
+    """
+    dtype = hidden_states.dtype
+    min_dtype = torch.finfo(dtype).min
+
+    if attn_bias.shape[-1] > window_size:
+        if causal_mask is not None:
+            topk_values, topk_indices = torch.topk(
+                attn_bias.masked_fill(~causal_mask, min_dtype).detach(),
+                window_size, dim=-1, largest=True, sorted=False
+            )
+        else:
+            topk_values, topk_indices = torch.topk(
+                attn_bias,
+                window_size, dim=-1, largest=True, sorted=False
+            )
+        attn_mask = torch.zeros_like(attn_bias, dtype=torch.bool, device=attn_bias.device).scatter_(-1, topk_indices, topk_values != min_dtype)
+    else:
+        attn_mask = causal_mask.expand_as(attn_bias) if causal_mask is not None else torch.ones_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
+    return attn_bias, attn_mask
+
+
 def dynamic_mask_attention_python(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
-    is_causal=True,
+    window_size: int,
+    is_causal: bool,
 ):
     """
     Python reference implementation of dynamic mask attention.
@@ -156,11 +118,10 @@ def dynamic_mask_attention_python(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_kv_heads, query_len, key_len]
+        causal_mask: [batch_size, 1, query_len, key_len] or None
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
+        window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
@@ -171,26 +132,25 @@ def dynamic_mask_attention_python(
 
     num_queries_per_kv = num_heads // num_kv_heads
 
-    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
-
-    # Use prepare_dynamic_mask function to process dynamic mask
-    attn_bias, attn_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_mask(
         query_states,
-        zoh_states,
-        keep_window_size,
-        cache_position if is_causal else None
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
     )
-    
-    # Sparse attention weight calculation
+
     key_states = repeat_kv(key_states, num_queries_per_kv)
     value_states = repeat_kv(value_states, num_queries_per_kv)
     attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
-    
-    attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1))
-    attn_weights = attn_weights * scaling + attn_bias           # Apply scaling and zoh
-    attn_weights = F.softmax(attn_weights, dim=-1)              # Softmax normalization
-    attn_outputs = torch.matmul(attn_weights, value_states)
-    attn_outputs = attn_outputs.transpose(1, 2).contiguous()    # Transpose to [batch, query_len, num_heads, head_dim]
+    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+
+    # Sparse attention weight calculation
+    attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1))     # Dot product weights
+    attn_weights = attn_weights * scaling + attn_bias                           # Apply scaling and bias
+    attn_weights = attn_weights.masked_fill(~attn_mask, float('-inf'))          # Apply mask
+    attn_weights = F.softmax(attn_weights, dim=-1)                              # Softmax normalization
+    attn_outputs = torch.matmul(attn_weights, value_states)                     # Weighted sum of values
+    attn_outputs = attn_outputs.transpose(1, 2).contiguous()                    # Transpose to [batch, query_len, num_heads, head_dim]
 
     return attn_outputs
 
@@ -199,13 +159,11 @@ def dynamic_mask_attention_cuda(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
-    is_causal=True,
-    return_softmax=False
+    window_size: int,
+    is_causal: bool,
 ):
     """
     CUDA implementation of dynamic mask attention.
@@ -214,13 +172,11 @@ def dynamic_mask_attention_cuda(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_kv_heads, query_len, key_len]
+        causal_mask: [batch_size, 1, query_len, key_len] or None
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
+        window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
-        return_softmax: Whether to return softmax weights
     
     Returns:
         attn_outputs: [batch_size, query_len, num_heads, head_dim]
@@ -228,35 +184,30 @@ def dynamic_mask_attention_cuda(
     if flash_dmattn_func is None:
         raise RuntimeError("flash_dmattn_func not available")
 
-    # Calculate zoh_states
-    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
-
-    # Use prepare_dynamic_mask to get the processed attention mask  
-    attn_bias, attn_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_mask(
         query_states,
-        zoh_states,
-        keep_window_size,
-        cache_position if is_causal else None
-    )  # [batch_size, num_kv_heads, query_len, key_len]
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
     
     # Ensure correct data types and memory layout for CUDA function
-    # CUDA function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
     query_states = query_states.transpose(1, 2)     # [batch, query_len, num_heads, head_dim]
     key_states = key_states.transpose(1, 2)         # [batch, key_len, num_kv_heads, head_dim]
     value_states = value_states.transpose(1, 2)     # [batch, key_len, num_kv_heads, head_dim]
 
     # Call the flash_dmattn_func interface
     attn_outputs = flash_dmattn_func(
-        query_states,               # [batch, query_len, num_heads, head_dim]
-        key_states,                 # [batch, key_len, num_kv_heads, head_dim]
-        value_states,               # [batch, key_len, num_kv_heads, head_dim]
-        attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
-        attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=attn_mask,
+        attn_bias=attn_bias,
         is_causal=is_causal,
         softmax_scale=scaling,
         softcap=0.0,
         deterministic=True,
-        return_attn_probs=return_softmax
+        return_attn_probs=False,
     )
     
     return attn_outputs  # [batch, query_len, num_heads, head_dim]
@@ -266,12 +217,11 @@ def dynamic_mask_attention_triton(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
-    is_causal=True,
+    window_size: int,
+    is_causal: bool,
 ):
     """
     Triton implementation of dynamic mask attention.
@@ -280,11 +230,10 @@ def dynamic_mask_attention_triton(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_kv_heads, query_len, key_len]
+        causal_mask: [batch_size, 1, query_len, key_len] or None
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
+        window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
@@ -297,16 +246,12 @@ def dynamic_mask_attention_triton(
     _, num_kv_heads, _, _ = key_states.shape
     num_queries_per_kv = num_heads // num_kv_heads
 
-    # Calculate zoh_states
-    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
-
-    # Use prepare_dynamic_mask to get the processed attention mask  
-    attn_bias, attn_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_mask(
         query_states,
-        zoh_states,
-        keep_window_size,
-        cache_position if is_causal else None
-    )  # [batch_size, num_kv_heads, query_len, key_len]
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
     
     # Repeat KV for multi-head attention (GQA support)
     key_states = repeat_kv(key_states, num_queries_per_kv)
@@ -323,13 +268,13 @@ def dynamic_mask_attention_triton(
     
     # Call the Triton implementation
     attn_outputs = triton_dmattn_func(
-        query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
-        key_states,                 # k: [batch, seqlen_k, num_heads, head_dim]
-        value_states,               # v: [batch, seqlen_k, num_heads, head_dim]
-        attn_mask=attn_mask,        # mask: [batch, num_heads, seqlen_q, seqlen_k]
-        attn_bias=attn_bias,        # bias: [batch, num_heads, seqlen_q, seqlen_k]
-        is_causal=is_causal,        # causal masking
-        softmax_scale=scaling               # scaling factor
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=attn_mask,
+        attn_bias=attn_bias,
+        is_causal=is_causal,
+        softmax_scale=scaling,
     )
     
     return attn_outputs  # [batch, query_len, num_heads, head_dim]
@@ -339,12 +284,11 @@ def dynamic_mask_attention_flex(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
-    is_causal=True,
+    window_size: int,
+    is_causal: bool,
 ):
     """
     Flex Attention implementation of dynamic mask attention.
@@ -353,11 +297,10 @@ def dynamic_mask_attention_flex(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_kv_heads, query_len, key_len]
+        causal_mask: [batch_size, 1, query_len, key_len] or None
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
+        window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
@@ -370,16 +313,12 @@ def dynamic_mask_attention_flex(
     _, num_kv_heads, _, _ = key_states.shape
     num_queries_per_kv = num_heads // num_kv_heads
 
-    # Calculate zoh_states
-    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
-
-    # Use prepare_dynamic_mask to get the processed attention mask  
-    attn_bias, attn_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_mask(
         query_states,
-        zoh_states,
-        keep_window_size,
-        cache_position if is_causal else None
-    )  # [batch_size, num_kv_heads, query_len, key_len]
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
     
     # Repeat KV for multi-head attention (GQA support)
     key_states = repeat_kv(key_states, num_queries_per_kv)
@@ -387,18 +326,22 @@ def dynamic_mask_attention_flex(
     attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
     attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
     
-    # Flex attention expects: q, k, v in [batch, num_heads, seqlen, head_dim] format
-    # But attention_mask and attention_bias in [batch, num_heads, query_len, key_len] format
-    
+    # Ensure correct data types and memory layout for Flex function
+    query_states = query_states.transpose(1, 2).contiguous()        # [batch, query_len, num_heads, head_dim]
+    key_states = key_states.transpose(1, 2).contiguous()            # [batch, key_len, num_heads, head_dim]
+    value_states = value_states.transpose(1, 2).contiguous()        # [batch, key_len, num_heads, head_dim]
+    attn_mask = attn_mask.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
+    attn_bias = attn_bias.contiguous()                              # [batch, num_heads, seqlen_q, seqlen_k]
+
     # Call the Flex Attention implementation
     attn_outputs = flex_dmattn_func(
-        query_states.transpose(1, 2),               # q: [batch, query_len, num_heads, head_dim]
-        key_states.transpose(1, 2),                 # k: [batch, key_len, num_heads, head_dim]
-        value_states.transpose(1, 2),               # v: [batch, key_len, num_heads, head_dim]
-        attn_mask=attn_mask,                        # attn_mask: [batch, num_heads, query_len, key_len]
-        attn_bias=attn_bias,                        # attn_bias: [batch, num_heads, query_len, key_len]
-        is_causal=is_causal,                        # is_causal: whether to apply causal masking
-        softmax_scale=scaling                               # scaling factor
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=attn_mask,
+        attn_bias=attn_bias,
+        is_causal=is_causal,
+        softmax_scale=scaling,
     )
     
     return attn_outputs  # [batch, query_len, num_heads, head_dim]
@@ -611,18 +554,18 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
         torch.cuda.synchronize()
 
         batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, is_causal = config
-        
+
         # Progress indicator
         progress_filled = "█" * (i + 1)
         progress_empty = "░" * (len(test_configs) - i - 1)
         progress_bar = f"[{progress_filled}{progress_empty}]"
-        
+
         print(f"\n🧪 Test configuration {i+1}/{len(test_configs)} {progress_bar}")
         print(f"  📊 batch_size={batch_size}, num_heads={num_heads}, num_kv_heads={num_kv_heads}")
         print(f"  📏 query_len={query_len}, key_len={key_len}, head_dim={head_dim}")
         print(f"  🔒 is_causal={is_causal}")
         print(f"  🎯 Accuracy threshold: {accuracy_threshold*100:.1f}%")
-        
+
         # Create random input data
         query_states = torch.randn(
             batch_size, num_heads, query_len, head_dim, 
@@ -636,40 +579,39 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
             batch_size, num_kv_heads, key_len, head_dim, 
             device=device, dtype=torch.bfloat16
         )
-        dt_proj = torch.randn(
-            num_kv_heads, num_kv_heads * head_dim, 
+        attn_bias = torch.randn(
+            batch_size, num_kv_heads, query_len, key_len,
             device=device, dtype=torch.bfloat16
         )
-        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
-        
-        # Create cache position
         cache_position = torch.arange(key_len - query_len, key_len, device=device)
-        
+        causal_mask = torch.arange(key_len, device=device) <= cache_position.reshape(-1, 1)
+        causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+
         # Set scaling factor and keep window size
         scaling = head_dim ** -0.5
-        keep_window_size = 1024
+        window_size = 1024
 
         # Run Python implementation
         start_time = time.time()
         py_output = dynamic_mask_attention_python(
             query_states, key_states, value_states,
-            dt_proj, A, scaling, cache_position,
-            keep_window_size, is_causal
+            attn_bias, causal_mask, scaling,
+            window_size, is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
-        
+
         # Run CUDA implementation
         start_time = time.time()
         cuda_output = dynamic_mask_attention_cuda(
             query_states, key_states, value_states,
-            dt_proj, A, scaling, cache_position,
-            keep_window_size, is_causal
+            attn_bias, causal_mask, scaling,
+            window_size, is_causal
         )
         torch.cuda.synchronize()
         cuda_time = time.time() - start_time
-        
-        
+
+
         # Analyze differences
         py_output_copy = py_output.clone()
         cuda_output_copy = cuda_output.clone()
@@ -692,7 +634,7 @@ def test_cuda_forward_equivalence(accuracy_threshold=0.95):
         if not is_close and max_diff > 1e-2:
             print("  ⚠️ Difference too large, stopping subsequent tests.")
             break
-        del query_states, key_states, value_states, dt_proj, A, cache_position, py_output, cuda_output, py_output_copy, cuda_output_copy
+        del query_states, key_states, value_states, attn_bias, causal_mask, py_output, cuda_output, py_output_copy, cuda_output_copy
         torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.synchronize()
@@ -774,8 +716,8 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
         (1, 2, 1, 4096, 4096, 128, False),
 
         # Not support head_dim > 128 in triton yet
-        # (1, 2, 1, 128, 128, 128, True),
-        # (1, 2, 1, 128, 128, 128, False),
+        # (1, 2, 1, 128, 128, 256, True),
+        # (1, 2, 1, 128, 128, 256, False),
         # (1, 2, 1, 256, 256, 256, True),
         # (1, 2, 1, 256, 256, 256, False),
         # (1, 2, 1, 512, 512, 256, True),
@@ -825,25 +767,24 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
             batch_size, num_kv_heads, key_len, head_dim, 
             device=device, dtype=torch.bfloat16
         )
-        dt_proj = torch.randn(
-            num_kv_heads, num_kv_heads * head_dim, 
+        attn_bias = torch.randn(
+            batch_size, num_kv_heads, query_len, key_len,
             device=device, dtype=torch.bfloat16
         )
-        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
-        
-        # Create cache position
-        cache_position = torch.arange(0, query_len + 0, device=device)
+        cache_position = torch.arange(key_len - query_len, key_len, device=device)
+        causal_mask = torch.arange(key_len, device=device) <= cache_position.reshape(-1, 1)
+        causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
         
         # Set scaling factor and keep window size
         scaling = head_dim ** -0.5
-        keep_window_size = 64
+        window_size = 1024
 
         # Run Python implementation
         start_time = time.time()
         py_output = dynamic_mask_attention_python(
             query_states, key_states, value_states,
-            dt_proj, A, scaling, cache_position,
-            keep_window_size, is_causal
+            attn_bias, causal_mask, scaling,
+            window_size, is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
@@ -853,8 +794,8 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
         try:
             triton_output = dynamic_mask_attention_triton(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, cache_position,
-                keep_window_size, is_causal
+                attn_bias, causal_mask, scaling,
+                window_size, is_causal
             )
             torch.cuda.synchronize()
             triton_time = time.time() - start_time
@@ -896,8 +837,8 @@ def test_triton_forward_equivalence(accuracy_threshold=0.95):
                 if triton_max_diff > 1e-2:
                     print("  ⚠️ Difference too large, stopping subsequent tests.")
                     break
-        
-        del query_states, key_states, value_states, dt_proj, A, cache_position, py_output, py_output_copy
+
+        del query_states, key_states, value_states, attn_bias, causal_mask, py_output, py_output_copy
         if triton_output is not None:
             del triton_output, triton_output_copy
         torch.cuda.empty_cache()
@@ -1031,25 +972,24 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
             batch_size, num_kv_heads, key_len, head_dim, 
             device=device, dtype=torch.bfloat16
         )
-        dt_proj = torch.randn(
-            num_kv_heads, num_kv_heads * head_dim, 
+        attn_bias = torch.randn(
+            batch_size, num_kv_heads, query_len, key_len,
             device=device, dtype=torch.bfloat16
         )
-        A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
-        
-        # Create cache position
-        cache_position = torch.arange(0, query_len + 0, device=device)
+        cache_position = torch.arange(key_len - query_len, key_len, device=device)
+        causal_mask = torch.arange(key_len, device=device) <= cache_position.reshape(-1, 1)
+        causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
         
         # Set scaling factor and keep window size
         scaling = head_dim ** -0.5
-        keep_window_size = 64
+        window_size = 1024
 
         # Run Python implementation
         start_time = time.time()
         py_output = dynamic_mask_attention_python(
             query_states, key_states, value_states,
-            dt_proj, A, scaling, cache_position,
-            keep_window_size, is_causal
+            window_size, attn_bias, causal_mask, scaling,
+            is_causal
         )
         torch.cuda.synchronize()
         py_time = time.time() - start_time
@@ -1059,8 +999,8 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
         try:
             flex_output = dynamic_mask_attention_flex(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, cache_position,
-                keep_window_size, is_causal
+                attn_bias, causal_mask, scaling,
+                window_size, is_causal
             )
             torch.cuda.synchronize()
             flex_time = time.time() - start_time
@@ -1102,8 +1042,8 @@ def test_flex_forward_equivalence(accuracy_threshold=0.95):
                 if flex_max_diff > 1e-2:
                     print("  ⚠️ Difference too large, stopping subsequent tests.")
                     break
-        
-        del query_states, key_states, value_states, dt_proj, A, cache_position, py_output, py_output_copy
+
+        del query_states, key_states, value_states, attn_bias, causal_mask, py_output, py_output_copy
         if flex_output is not None:
             del flex_output, flex_output_copy
         torch.cuda.empty_cache()

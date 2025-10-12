@@ -18,7 +18,7 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 ## 主要特性
 
 ### 🎯 核心内核优势
-- **Mask & Bias 支持**: 原生支持 `(batch_size, {1|num_kv_heads|num_heads}, {0|query_len}, key_len)` 形状的 attention_mask 和 attention_bias 张量
+- **Mask & Bias 支持**: 原生支持 `({1|batch_size}, {1|num_kv_heads|num_heads}, {1|query_len}, {1|key_len})` 形状的 attention_mask 和 attention_bias 张量
 - **智能计算跳过**: 基于 attention_mask 的 block-level 自动跳过机制，完全跳过全零 mask 区块的计算和内存访问
 - **完整梯度支持**: 内置 attention_bias 的完整梯度计算路径，支持端到端训练
 
@@ -236,7 +236,7 @@ Flash-DMA 通过将 Flash Attention 的高效内存访问模式与动态掩码�
 
 ### 核心技术融合
 
-- **🎯 Mask & Bias 原生支持**: 内核直接处理 `(batch_size, {1|num_kv_heads|num_heads}, {0|query_len}, key_len)` 形状的张量
+- **🎯 Mask & Bias 原生支持**: 内核直接处理 `({1|batch_size}, {1|num_kv_heads|num_heads}, {1|query_len}, {1|key_len})` 形状的张量
 - **⚡ Block-level 智能跳过**: 基于 mask 的统一 OR-reduction 跳过逻辑，完全避免全零区块的计算和内存访问
 - **🔄 完整梯度链路**: 内置 attention bias 梯度计算，支持端到端可微分训练
 

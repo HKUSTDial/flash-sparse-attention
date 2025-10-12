@@ -416,14 +416,17 @@ class FlashDMAttnFunc(torch.autograd.Function):
             q = torch.nn.functional.pad(q, [0, 8 - head_size_og % 8])
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
-        seqlen_k_og = k.shape[1]
-        if seqlen_k_og % 8 != 0:
-            k = torch.nn.functional.pad(k, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
-            v = torch.nn.functional.pad(v, [0, 0, 0, 0, 0, 8 - seqlen_k_og % 8])
-            if mask is not None:
-                mask = torch.nn.functional.pad(mask, [0, 8 - seqlen_k_og % 8], value=False)
-            if bias is not None:
-                bias = torch.nn.functional.pad(bias, [0, 8 - seqlen_k_og % 8], value=0.0)
+        seqlen_k_rounded = round_multiple(k.shape[1], 128)
+        if mask is not None and mask.shape[-1] != seqlen_k_rounded:
+            if mask.shape[-1] == 1:
+                mask = mask.expand(*mask.shape[:-1], seqlen_k_rounded)
+            else:
+                mask = torch.nn.functional.pad(mask, [0, seqlen_k_rounded - mask.shape[-1]])
+        if bias is not None and bias.shape[-1] != seqlen_k_rounded:
+            if bias.shape[-1] == 1:
+                bias = bias.expand(*bias.shape[:-1], seqlen_k_rounded)
+            else:
+                bias = torch.nn.functional.pad(bias, [0, seqlen_k_rounded - bias.shape[-1]])
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
             q,
@@ -443,7 +446,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
-            ctx.seqlen_k_og = seqlen_k_og
 
         out = out_padded[..., :head_size_og]
 
@@ -488,11 +490,8 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
 
-        if ctx.seqlen_k_og % 8 != 0:
-            dk = dk[:, : ctx.seqlen_k_og, :, :]
-            dv = dv[:, : ctx.seqlen_k_og, :, :]
-            if dbias is not None:
-                dbias = dbias[..., : ctx.seqlen_k_og]
+        if dbias is not None:
+            dbias = dbias[..., : k.shape[1]]
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
@@ -646,10 +645,10 @@ def flash_dmattn_func(
         key: torch.Tensor. The key tensor of shape (batch_size, seqlen, nheads_k, headdim)
         value: torch.Tensor. The value tensor of shape (batch_size, seqlen, nheads_k, headdim)
         attn_mask: torch.Tensor, optional. The attention mask boolean tensor of
-            shape (batch_size, {nheads|nheads_k|1}, {seqlen_q|0}, seqlen_k) to apply to the attention scores.
+            shape ({batch_size|1}, {nheads|nheads_k|1}, {seqlen_q|1}, {seqlen_k|1}) to apply to the attention scores.
             If None, no mask is applied.
         attn_bias: torch.Tensor, optional. The attention bias float tensor of
-            shape (batch_size, {nheads|nheads_k|1}, {seqlen_q|0}, seqlen_k) to add to the attention scores.
+            shape ({batch_size|1}, {nheads|nheads_k|1}, {seqlen_q|1}, {seqlen_k|1}) to add to the attention scores.
             If None, no bias is applied.
         softmax_scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).

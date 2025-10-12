@@ -72,86 +72,51 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-def prepare_dynamic_mask(
+def prepare_mask(
     hidden_states: torch.Tensor,
-    zoh_states: torch.Tensor,
-    keep_window_size: int = 2048,
-    cache_position: torch.Tensor = None,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor = None,
+    window_size: int = None,
 ):
     """
-    Calculate dynamic attention mask to mask tokens for sparse attention.
-
-    Combine `zoh_states` with `attention_mask` to generate the final `attn_mask`.
-
     Args:
         hidden_states: Input hidden states to determine dtype minimum value
-        zoh_states: zoh_states of shape (batch_size, num_kv_heads, key_sequence_length)
-        keep_window_size: Window size of tokens not dynamically masked
-        cache_position: Optional cache position for causal masking
+        attn_bias: Attention bias of shape (batch_size, num_heads, query_length, key_length)
+        causal_mask: Optional causal mask to apply
+        window_size: Window size of tokens not masked
     
     Returns:
         tuple: (attn_bias, attn_mask)
     """
     dtype = hidden_states.dtype
     min_dtype = torch.finfo(dtype).min
-    attn_bias = zoh_states[:, :, None, :].expand(
-        -1, -1, hidden_states.shape[2], -1
-    ).to(dtype)     # [batch_size, num_kv_heads, query_len, key_len]
-    
-    if cache_position is not None:
-        attn_bias = attn_bias.masked_fill(
-            torch.arange(attn_bias.shape[-1], device=attn_bias.device) > cache_position.reshape(-1, 1),
-            min_dtype
-        )
 
-    if attn_bias.shape[-1] > keep_window_size:
-        topk_values, topk_indices = torch.topk(
-            attn_bias, keep_window_size, dim=-1, largest=True, sorted=False
-        )
-        valid_topk = topk_values != min_dtype
-        attn_mask = torch.zeros_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
-        attn_mask = attn_mask.scatter(-1, topk_indices, valid_topk)
-        attn_bias = attn_bias.masked_fill(~attn_mask, min_dtype)
+    if attn_bias.shape[-1] > window_size:
+        if causal_mask is not None:
+            topk_values, topk_indices = torch.topk(
+                attn_bias.masked_fill(~causal_mask, min_dtype).detach(),
+                window_size, dim=-1, largest=True, sorted=False
+            )
+        else:
+            topk_values, topk_indices = torch.topk(
+                attn_bias,
+                window_size, dim=-1, largest=True, sorted=False
+            )
+        attn_mask = torch.zeros_like(attn_bias, dtype=torch.bool, device=attn_bias.device).scatter_(-1, topk_indices, topk_values != min_dtype)
     else:
-        attn_mask = torch.ones_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
+        attn_mask = causal_mask.expand_as(attn_bias) if causal_mask is not None else torch.ones_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
     return attn_bias, attn_mask
-
-
-def calculate_zoh_states(value_states, dt_proj, A):
-    """
-    Calculate zoh states for dynamic mask attention.
-    
-    Args:
-        value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
-        causal_mask: Optional causal mask
-    
-    Returns:
-        zoh_states: [batch_size, num_kv_heads, key_len]
-    """
-    batch_size, _, key_len, _ = value_states.shape
-    
-    # Transpose and reshape value_states, then matrix multiply with dt_proj.T
-    dt_result = torch.matmul(
-        value_states.transpose(-2, -3).reshape(batch_size, key_len, -1), 
-        dt_proj.T
-    )
-    
-    # Apply softplus activation and coefficient A
-    dt_states = torch.exp(F.softplus(dt_result) * A)
-    zoh_states = dt_states.transpose(-1, -2)  # [batch_size, num_kv_heads, key_len]
-
-    return zoh_states
 
 
 def scaled_dot_product_attention_cuda(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    scaling: float,
+    attn_bias: torch.Tensor,
     causal_mask: torch.Tensor,
-    is_causal=True,
+    scaling: float,
+    window_size: int,
+    is_causal: bool,
 ):
     """
     CUDA implementation of SDPA baseline.
@@ -160,24 +125,36 @@ def scaled_dot_product_attention_cuda(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
+        attn_bias: [batch_size, num_heads, query_length, key_length]
+        causal_mask: [batch_size, 1, query_length, key_length] or None
+        window_size: Number of tokens to keep in attention window
         scaling: Attention scaling factor
-        causal_mask: Causal attention mask
         is_causal: Whether to apply causal masking
     
     Returns:
-        attn_outputs or "OOM" if out of memory
+        tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
-    _, _, query_len, _ = query_states.shape
-    _, _, key_len, _ = key_states.shape
-    if query_len > 32768 and key_len > 32768:
-        return "OOM"
+    _, num_heads, _, _ = query_states.shape
+    _, num_kv_heads, _, _ = key_states.shape
+    num_queries_per_kv = num_heads // num_kv_heads
+ 
+    attn_bias, attn_mask = prepare_mask(
+        query_states,
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
+
+    # Repeat KV for multi-head attention (GQA support)
+    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+    attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
 
     query_states = query_states.contiguous()
     key_states = key_states.contiguous()
     value_states = value_states.contiguous()
+    attn_bias = attn_bias.masked_fill(~attn_mask, torch.finfo(query_states.dtype).min).contiguous()
 
     try:
-        # Only measure the core attention computation
         torch.cuda.synchronize()
         start_time = time.time()
 
@@ -185,17 +162,17 @@ def scaled_dot_product_attention_cuda(
             query_states,
             key_states,
             value_states,
-            attn_mask=causal_mask,
-            softmax_scale=scaling,
-            # is_causal=is_causal if query_len == key_len else False,
-            enable_gqa=True
+            attn_mask=attn_bias,
+            scale=scaling,
+            # is_causal=is_causal,
+            enable_gqa=True,
         )
         
         torch.cuda.synchronize()
         end_time = time.time()
         
-        attn_outputs = attn_outputs.transpose(1, 2).contiguous()  # Transpose to [batch, query_len, num_heads, head_dim]
-        return attn_outputs, (end_time - start_time) * 1000  # Return output and time in ms
+        attn_outputs = attn_outputs.transpose(1, 2).contiguous()
+        return attn_outputs, (end_time - start_time) * 1000
     except torch.cuda.OutOfMemoryError:
         return "OOM", 0
 
@@ -204,13 +181,11 @@ def dynamic_mask_attention_cuda(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
+    window_size=2048,
     is_causal=True,
-    return_softmax=False
 ):
     """
     CUDA implementation of dynamic mask attention.
@@ -219,33 +194,26 @@ def dynamic_mask_attention_cuda(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_heads, query_length, key_length]
+        causal_mask: [batch_size, 1, query_length, key_length] or None
+        window_size: Number of tokens to keep in attention window
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
-        return_softmax: Whether to return softmax weights
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
     if flash_dmattn_func is None:
         return "Not Available", 0
 
-    # Calculate zoh_states
-    zoh_states = calculate_zoh_states(value_states, dt_proj, A)
-
-    # Use prepare_dynamic_mask to get the processed attention mask  
-    attn_bias, attn_mask = prepare_dynamic_mask(
+    attn_bias, attn_mask = prepare_mask(
         query_states,
-        zoh_states,
-        keep_window_size,
-        cache_position if is_causal else None
-    )  # [batch_size, num_kv_heads, query_len, key_len]
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
     
     # Ensure correct data types and memory layout for CUDA function
-    # CUDA function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
     query_states = query_states.transpose(1, 2)     # [batch, query_len, num_heads, head_dim]
     key_states = key_states.transpose(1, 2)         # [batch, key_len, num_kv_heads, head_dim]
     value_states = value_states.transpose(1, 2)     # [batch, key_len, num_kv_heads, head_dim]
@@ -254,24 +222,23 @@ def dynamic_mask_attention_cuda(
         torch.cuda.synchronize()
         start_time = time.time()
 
-        # Call the new flash_dmattn_func interface
         attn_outputs = flash_dmattn_func(
-            query_states,               # [batch, query_len, num_heads, head_dim]
-            key_states,                 # [batch, key_len, num_kv_heads, head_dim]
-            value_states,               # [batch, key_len, num_kv_heads, head_dim]
-            attn_mask=attn_mask,        # [batch, num_kv_heads, query_len, key_len]
-            attn_bias=attn_bias,        # [batch, num_kv_heads, query_len, key_len]
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=attn_mask,
+            attn_bias=attn_bias,
             is_causal=is_causal,
             softmax_scale=scaling,
             softcap=0.0,
             deterministic=False,
-            return_attn_probs=return_softmax
+            return_attn_probs=False
         )
         
         torch.cuda.synchronize()
         end_time = time.time()
         
-        return attn_outputs, (end_time - start_time) * 1000  # Return output and time in ms
+        return attn_outputs, (end_time - start_time) * 1000
     except torch.cuda.OutOfMemoryError:
         return "OOM", 0
 
@@ -280,11 +247,10 @@ def dynamic_mask_attention_triton(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
+    window_size=2048,
     is_causal=True,
 ):
     """
@@ -294,15 +260,14 @@ def dynamic_mask_attention_triton(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_heads, query_length, key_length]
+        causal_mask: [batch_size, 1, query_length, key_length] or None
+        window_size: Number of tokens to keep in attention window
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
     if triton_dmattn_func is None:
         return "Not Available", 0
@@ -311,44 +276,38 @@ def dynamic_mask_attention_triton(
     _, num_kv_heads, _, _ = key_states.shape
     num_queries_per_kv = num_heads // num_kv_heads
 
-    try:
-        # Calculate zoh_states
-        zoh_states = calculate_zoh_states(value_states, dt_proj, A)
+    attn_bias, attn_mask = prepare_mask(
+        query_states,
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
 
-        # Use prepare_dynamic_mask to get the processed attention mask  
-        attn_bias, attn_mask = prepare_dynamic_mask(
-            query_states,
-            zoh_states,
-            keep_window_size,
-            cache_position if is_causal else None
-        )  # [batch_size, num_kv_heads, query_len, key_len]
-        
-        # Repeat KV for multi-head attention (GQA support)
-        key_states = repeat_kv(key_states, num_queries_per_kv)
-        value_states = repeat_kv(value_states, num_queries_per_kv)
-        attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
-        attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
-        
-        # Triton function expects: q, k, v in [batch, seqlen, num_heads, head_dim] format
-        query_states = query_states.transpose(1, 2).contiguous()    # [batch, query_len, num_heads, head_dim]
-        key_states = key_states.transpose(1, 2).contiguous()        # [batch, key_len, num_heads, head_dim]
-        value_states = value_states.transpose(1, 2).contiguous()    # [batch, key_len, num_heads, head_dim]
-        attn_mask = attn_mask.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
-        attn_bias = attn_bias.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
-        
-        # Only measure the core Triton kernel computation
+    # Repeat KV for multi-head attention (GQA support)
+    key_states = repeat_kv(key_states, num_queries_per_kv)
+    value_states = repeat_kv(value_states, num_queries_per_kv)
+    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+    attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
+
+    # Ensure correct data types and memory layout for Triton function
+    query_states = query_states.transpose(1, 2).contiguous()    # [batch, query_len, num_heads, head_dim]
+    key_states = key_states.transpose(1, 2).contiguous()        # [batch, key_len, num_heads, head_dim]
+    value_states = value_states.transpose(1, 2).contiguous()    # [batch, key_len, num_heads, head_dim]
+    attn_mask = attn_mask.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
+    attn_bias = attn_bias.contiguous()                          # [batch, num_heads, seqlen_q, seqlen_k]
+
+    try:
         torch.cuda.synchronize()
         start_time = time.time()
         
-        # Call the Triton implementation
         attn_outputs = triton_dmattn_func(
-            query_states,               # q: [batch, seqlen_q, num_heads, head_dim]
-            key_states,                 # k: [batch, seqlen_k, num_heads, head_dim]
-            value_states,               # v: [batch, seqlen_k, num_heads, head_dim]
-            attn_mask=attn_mask,        # mask: [batch, num_heads, seqlen_q, seqlen_k]
-            attn_bias=attn_bias,        # bias: [batch, num_heads, seqlen_q, seqlen_k]
-            is_causal=is_causal,        # causal masking
-            softmax_scale=scaling               # scaling factor
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=attn_mask,
+            attn_bias=attn_bias,
+            is_causal=is_causal,
+            softmax_scale=scaling,
         )
         
         torch.cuda.synchronize()
@@ -363,11 +322,10 @@ def dynamic_mask_attention_flex(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
-    dt_proj: torch.Tensor,
-    A: torch.Tensor,
+    attn_bias: torch.Tensor,
+    causal_mask: torch.Tensor,
     scaling: float,
-    cache_position: torch.Tensor,
-    keep_window_size=2048,
+    window_size=2048,
     is_causal=True,
 ):
     """
@@ -377,15 +335,14 @@ def dynamic_mask_attention_flex(
         query_states: [batch_size, num_heads, query_len, head_dim]
         key_states: [batch_size, num_kv_heads, key_len, head_dim]
         value_states: [batch_size, num_kv_heads, key_len, head_dim]
-        dt_proj: [num_kv_heads, num_kv_heads * head_dim]
-        A: [num_kv_heads]
+        attn_bias: [batch_size, num_heads, query_length, key_length]
+        causal_mask: [batch_size, 1, query_length, key_length] or None
+        window_size: Number of tokens to keep in attention window
         scaling: Attention scaling factor
-        cache_position: Cache position for causal masking
-        keep_window_size: Number of tokens to keep in attention window
         is_causal: Whether to apply causal masking
     
     Returns:
-        attn_outputs: [batch_size, query_len, num_heads, head_dim]
+        tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
     if flex_dmattn_func is None:
         return "Not Available", 0
@@ -394,40 +351,39 @@ def dynamic_mask_attention_flex(
     _, num_kv_heads, _, _ = key_states.shape
     num_queries_per_kv = num_heads // num_kv_heads
 
-    try:
-        # Calculate zoh_states
-        zoh_states = calculate_zoh_states(value_states, dt_proj, A)
+    attn_bias, attn_mask = prepare_mask(
+        query_states,
+        attn_bias,
+        causal_mask if is_causal else None,
+        window_size,
+    )
 
-        # Use prepare_dynamic_mask to get the processed attention mask  
-        attn_bias, attn_mask = prepare_dynamic_mask(
-            query_states,
-            zoh_states,
-            keep_window_size,
-            cache_position if is_causal else None
-        )  # [batch_size, num_kv_heads, query_len, key_len]
-        
-        # Repeat KV for multi-head attention (GQA support)
-        key_states = repeat_kv(key_states, num_queries_per_kv)
-        value_states = repeat_kv(value_states, num_queries_per_kv)
-        attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
-        attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
-        
-        # Flex attention expects: q, k, v in [batch, num_heads, seqlen, head_dim] format
-        # But attention_mask and attention_bias in [batch, num_heads, query_len, key_len] format
-        
-        # Only measure the core Flex Attention computation
+    # Repeat KV for multi-head attention (GQA support)
+    key_states = repeat_kv(key_states, num_queries_per_kv)
+    value_states = repeat_kv(value_states, num_queries_per_kv)
+    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+    attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
+
+    # Ensure correct data types and memory layout for Flex function
+    query_states = query_states.transpose(1, 2).contiguous()
+    key_states = key_states.transpose(1, 2).contiguous()
+    value_states = value_states.transpose(1, 2).contiguous()
+    attn_mask = attn_mask.contiguous()
+    attn_bias = attn_bias.contiguous()
+
+    try:
         torch.cuda.synchronize()
         start_time = time.time()
         
         # Call the Flex Attention implementation
         attn_outputs = flex_dmattn_func(
-            query_states.transpose(1, 2),               # q: [batch, query_len, num_heads, head_dim]
-            key_states.transpose(1, 2),                 # k: [batch, key_len, num_heads, head_dim]
-            value_states.transpose(1, 2),               # v: [batch, key_len, num_heads, head_dim]
-            attn_mask=attn_mask,                        # attn_mask: [batch, num_heads, query_len, key_len]
-            attn_bias=attn_bias,                        # attn_bias: [batch, num_heads, query_len, key_len]
-            is_causal=is_causal,                        # is_causal: whether to apply causal masking
-            softmax_scale=scaling                               # scaling factor
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=attn_mask,
+            attn_bias=attn_bias,
+            is_causal=is_causal,
+            softmax_scale=scaling,
         )
         
         torch.cuda.synchronize()
@@ -457,14 +413,14 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
     Benchmark attention performance for a given configuration.
     
     Args:
-        config: Tuple of (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, keep_window_size, is_causal)
+        config: Tuple of (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, window_size, is_causal)
         num_runs: Number of benchmark runs
         warmup_runs: Number of warmup runs
     
     Returns:
         dict: Performance metrics
     """
-    batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, keep_window_size, is_causal = config
+    batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, window_size, is_causal = config
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Create random input data
@@ -480,21 +436,12 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         batch_size, num_kv_heads, key_len, head_dim, 
         device=device, dtype=torch.bfloat16
     )
-    dt_proj = torch.randn(
-        num_kv_heads, num_kv_heads * head_dim, 
+    attn_bias = torch.randn(
+        batch_size, num_kv_heads, query_len, key_len,
         device=device, dtype=torch.bfloat16
     )
-    A = torch.randn(num_kv_heads, device=device, dtype=torch.bfloat16)
-    
-    # Create custom causal mask with cache position
     cache_position = torch.arange(key_len - query_len, key_len, device=device)
-    min_type = torch.finfo(value_states.dtype).min
-    causal_mask = torch.full(
-        (query_len, key_len), fill_value=min_type, 
-        device=device, dtype=value_states.dtype
-    )
-    causal_mask = torch.triu(causal_mask, diagonal=1)
-    causal_mask *= torch.arange(key_len, device=device) > cache_position.reshape(-1, 1)
+    causal_mask = torch.arange(key_len, device=device) <= cache_position.reshape(-1, 1)
     causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
     
     # Set scaling factor from config
@@ -531,7 +478,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = scaled_dot_product_attention_cuda(
                 query_states, key_states, value_states,
-                scaling, causal_mask, is_causal
+                attn_bias, causal_mask,
+                scaling, window_size, is_causal
             )
             if result[0] == "OOM":
                 results['sdpa_forward_status'] = 'OOM'
@@ -546,7 +494,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = scaled_dot_product_attention_cuda(
                     query_states, key_states, value_states,
-                    scaling, causal_mask, is_causal
+                    attn_bias, causal_mask,
+                    scaling, window_size, is_causal
                 )
                 
                 if result[0] == "OOM":
@@ -571,8 +520,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = dynamic_mask_attention_cuda(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, cache_position,
-                keep_window_size, is_causal
+                attn_bias, causal_mask,
+                scaling, window_size, is_causal
             )
             if result[0] == "OOM":
                 results['fdma_cuda_forward_status'] = 'OOM'
@@ -587,8 +536,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = dynamic_mask_attention_cuda(
                     query_states, key_states, value_states,
-                    dt_proj, A, scaling, cache_position,
-                    keep_window_size, is_causal
+                    attn_bias, causal_mask,
+                    scaling, window_size, is_causal
                 )
                 
                 if result[0] == "OOM":
@@ -613,8 +562,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = dynamic_mask_attention_triton(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, cache_position,
-                keep_window_size, is_causal
+                attn_bias, causal_mask,
+                scaling, window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
                 results['fdma_triton_forward_status'] = result[0]
@@ -629,8 +578,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = dynamic_mask_attention_triton(
                     query_states, key_states, value_states,
-                    dt_proj, A, scaling, cache_position,
-                    keep_window_size, is_causal
+                    attn_bias, causal_mask,
+                    scaling, window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
@@ -655,8 +604,8 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         for _ in range(warmup_runs):
             result = dynamic_mask_attention_flex(
                 query_states, key_states, value_states,
-                dt_proj, A, scaling, cache_position,
-                keep_window_size, is_causal
+                attn_bias, causal_mask,
+                scaling, window_size, is_causal
             )
             if result[0] in ["OOM", "Not Available"]:
                 results['fdma_flex_forward_status'] = result[0]
@@ -671,8 +620,7 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
             for _ in range(num_runs):
                 result = dynamic_mask_attention_flex(
                     query_states, key_states, value_states,
-                    dt_proj, A, scaling, cache_position,
-                    keep_window_size, is_causal
+                    attn_bias, causal_mask, scaling, window_size, is_causal
                 )
                 
                 if result[0] in ["OOM", "Not Available"]:
@@ -718,43 +666,43 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
     print(title)
     print("🏆" + "=" * 76 + "🏆")
     
-    # Test configurations: (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, keep_window_size, is_causal)
+    # Test configurations: (batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, window_size, is_causal)
     configs = [
         # Vary sequence length
-        (1, 2, 1, 256, 256, 128, 1024, True),
-        (1, 2, 1, 512, 512, 128, 1024, True),
-        (1, 2, 1, 1024, 1024, 128, 1024, True),
-        (1, 2, 1, 2048, 2048, 128, 1024, True),
-        (1, 2, 1, 4096, 4096, 128, 1024, True),
-        (1, 2, 1, 8192, 8192, 128, 1024, True),
-        (1, 2, 1, 16384, 16384, 128, 1024, True),
-        (1, 2, 1, 32768, 32768, 128, 1024, True),
+        (1, 2, 1, 256, 256, 64, 1024, True),
+        (1, 2, 1, 512, 512, 64, 1024, True),
+        (1, 2, 1, 1024, 1024, 64, 1024, True),
+        (1, 2, 1, 2048, 2048, 64, 1024, True),
+        (1, 2, 1, 4096, 4096, 64, 1024, True),
+        (1, 2, 1, 8192, 8192, 64, 1024, True),
+        (1, 2, 1, 16384, 16384, 64, 1024, True),
+        (1, 2, 1, 32768, 32768, 64, 1024, True),
 
         # Inference
-        (1, 2, 1, 1, 256, 128, 1024, True),
-        (1, 2, 1, 1, 512, 128, 1024, True),
-        (1, 2, 1, 1, 1024, 128, 1024, True),
-        (1, 2, 1, 1, 2048, 128, 1024, True),
-        (1, 2, 1, 1, 4096, 128, 1024, True),
-        (1, 2, 1, 1, 8192, 128, 1024, True),
-        (1, 2, 1, 1, 16384, 128, 1024, True),
-        (1, 2, 1, 1, 32768, 128, 1024, True),
-        (1, 2, 1, 1, 65536, 128, 1024, True),
-        (1, 2, 1, 1, 131072, 128, 1024, True),
-        (1, 2, 1, 1, 262144, 128, 1024, True),
-        (1, 2, 1, 1, 524288, 128, 1024, True),
+        (1, 2, 1, 1, 256, 64, 1024, True),
+        (1, 2, 1, 1, 512, 64, 1024, True),
+        (1, 2, 1, 1, 1024, 64, 1024, True),
+        (1, 2, 1, 1, 2048, 64, 1024, True),
+        (1, 2, 1, 1, 4096, 64, 1024, True),
+        (1, 2, 1, 1, 8192, 64, 1024, True),
+        (1, 2, 1, 1, 16384, 64, 1024, True),
+        (1, 2, 1, 1, 32768, 64, 1024, True),
+        (1, 2, 1, 1, 65536, 64, 1024, True),
+        (1, 2, 1, 1, 131072, 64, 1024, True),
+        (1, 2, 1, 1, 262144, 64, 1024, True),
+        (1, 2, 1, 1, 524288, 64, 1024, True),
         
         # Vary batch size
-        (1, 2, 1, 4096, 4096, 32, 1024, True),
-        (2, 2, 1, 4096, 4096, 32, 1024, True),
-        (4, 2, 1, 4096, 4096, 32, 1024, True),
-        (8, 2, 1, 4096, 4096, 32, 1024, True),
+        (1, 2, 1, 4096, 4096, 64, 1024, True),
+        (2, 2, 1, 4096, 4096, 64, 1024, True),
+        (4, 2, 1, 4096, 4096, 64, 1024, True),
+        (8, 2, 1, 4096, 4096, 64, 1024, True),
         
         # Vary head count
-        (1, 1, 1, 4096, 4096, 32, 1024, True),
-        (1, 2, 1, 4096, 4096, 32, 1024, True),
-        (1, 4, 1, 4096, 4096, 32, 1024, True),
-        (1, 8, 2, 4096, 4096, 32, 1024, True),
+        (1, 1, 1, 4096, 4096, 64, 1024, True),
+        (1, 2, 1, 4096, 4096, 64, 1024, True),
+        (1, 4, 1, 4096, 4096, 64, 1024, True),
+        (1, 8, 2, 4096, 4096, 64, 1024, True),
         
         # Vary head dimension
         (1, 2, 1, 4096, 4096, 32, 1024, True),
@@ -764,18 +712,18 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
         (1, 2, 1, 4096, 4096, 192, 1024, True),
         (1, 2, 1, 4096, 4096, 256, 1024, True),
         
-        # Vary keep_window_size
-        (1, 2, 1, 32768, 32768, 128, 32, True),
-        (1, 2, 1, 32768, 32768, 128, 64, True),
-        (1, 2, 1, 32768, 32768, 128, 128, True),
-        (1, 2, 1, 32768, 32768, 128, 256, True),
-        (1, 2, 1, 32768, 32768, 128, 512, True),
-        (1, 2, 1, 32768, 32768, 128, 1024, True),
-        (1, 2, 1, 32768, 32768, 128, 2048, True),
-        (1, 2, 1, 32768, 32768, 128, 4096, True),
-        (1, 2, 1, 32768, 32768, 128, 8192, True),
-        (1, 2, 1, 32768, 32768, 128, 16384, True),
-        (1, 2, 1, 32768, 32768, 128, 32768, True),
+        # Vary window_size
+        (1, 2, 1, 32768, 32768, 64, 32, True),
+        (1, 2, 1, 32768, 32768, 64, 64, True),
+        (1, 2, 1, 32768, 32768, 64, 128, True),
+        (1, 2, 1, 32768, 32768, 64, 256, True),
+        (1, 2, 1, 32768, 32768, 64, 512, True),
+        (1, 2, 1, 32768, 32768, 64, 1024, True),
+        (1, 2, 1, 32768, 32768, 64, 2048, True),
+        (1, 2, 1, 32768, 32768, 64, 4096, True),
+        (1, 2, 1, 32768, 32768, 64, 8192, True),
+        (1, 2, 1, 32768, 32768, 64, 16384, True),
+        (1, 2, 1, 32768, 32768, 64, 32768, True),
     ]
     
     print(f"\n📊 Benchmark Results (averaged over {num_runs} runs):")
@@ -785,7 +733,7 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
     all_results = []
     
     for config in configs:
-        batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, keep_window_size, is_causal = config
+        batch_size, num_heads, num_kv_heads, query_len, key_len, head_dim, window_size, is_causal = config
         
         results = benchmark_attention_performance(config, test_type, num_runs, warmup_runs)
         all_results.append(results)
@@ -824,7 +772,7 @@ def run_performance_benchmark(test_type='all', num_runs=3, warmup_runs=2):
                 speedup_strs[impl_key] = "N/A"
         
         # Format output with shorter config string
-        config_short = f" B{batch_size} Hq{num_heads} Hkv{num_kv_heads} Q{query_len} K{key_len} D{head_dim} W{keep_window_size} "
+        config_short = f" B{batch_size} Hq{num_heads} Hkv{num_kv_heads} Q{query_len} K{key_len} D{head_dim} W{window_size} "
         if not is_causal:
             config_short += "N"
         else:
