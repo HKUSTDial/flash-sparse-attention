@@ -979,13 +979,10 @@ mha_bwd(
     dbias_expanded = has_bias
         ? (
             (num_heads_bias != num_heads || batch_size_bias != batch_size || seqlen_q_bias != seqlen_q)     // MQA / GQA or dbias has different batch size or seqlen_q
-                ? torch::empty({batch_size, num_heads, seqlen_q, seqlen_k_rounded}, opts)
+                ? torch::zeros({batch_size, num_heads, seqlen_q, seqlen_k_rounded}, opts)
                 : dbias
         )
         : torch::empty({0}, opts);
-    if (has_bias) {
-        dbias_expanded.zero_();
-    }
 
     Flash_bwd_params params;
 
@@ -1050,7 +1047,7 @@ mha_bwd(
         }
     }
 
-    return { dq, dk, dv, dbias, softmax_d };
+    return {dq, dk, dv, dbias, softmax_d};
 }
 
 std::vector<at::Tensor>
