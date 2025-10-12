@@ -409,6 +409,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             deterministic = False
         if return_softmax is None:
             return_softmax = False
+        seqlen_k_bias_og = bias.shape[-1] if bias is not None else 0
 
         # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = q.size(3)
@@ -446,6 +447,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
+            ctx.seqlen_k_bias_og = seqlen_k_bias_og
 
         out = out_padded[..., :head_size_og]
 
@@ -491,7 +493,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dv = dv[..., : dout.shape[-1]]
 
         if dbias is not None:
-            dbias = dbias[..., : k.shape[1]]
+            dbias = dbias[..., :k.shape[1]].sum(dim=-1, keepdim=True) if ctx.seqlen_k_bias_og == 1 else dbias[..., : k.shape[1]]
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
