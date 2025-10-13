@@ -626,11 +626,6 @@ def _flash_dynamic_mask_attention_forward(
         ):
             min_dtype = torch.finfo(query_states.dtype).min
             if attention_mask is not None:
-                if attention_mask.dim() == 4 and attention_bias.dim() == 3:
-                    attention_bias = attention_bias.unsqueeze(-2).expand(-1, -1, query_length, -1)
-                if attention_mask.dim() == 3 and attention_bias.dim() == 4:
-                    attention_mask = attention_mask.unsqueeze(-2).expand(-1, -1, query_length, -1)
-
                 topk_values, topk_indices = torch.topk(
                     attention_bias.masked_fill(~attention_mask, min_dtype).detach(),
                     window_size, dim=-1, largest=True, sorted=False
