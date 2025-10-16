@@ -190,6 +190,7 @@ void set_params_dgrad(
     const float softcap,
     bool has_mask,
     bool has_bias,
+    bool accum_dbias,
     bool deterministic,
     const bool unpadded_lse
 ) {
@@ -244,6 +245,8 @@ void set_params_dgrad(
 
     // Softmax sum
     params.dsoftmax_sum = dsoftmax_sum_d;
+
+    params.accum_dbias = accum_dbias;
 
     params.deterministic = deterministic;
 }
@@ -977,12 +980,13 @@ mha_bwd(
         ? torch::empty({batch_size, seqlen_k, num_heads, head_size}, opts)
         : dv;
     dbias_expanded = has_bias
-        ? (
-            (num_heads_bias != num_heads || batch_size_bias != batch_size || seqlen_q_bias != seqlen_q)     // MQA / GQA or dbias has different batch size or seqlen_q
-                ? torch::zeros({batch_size, num_heads, seqlen_q, seqlen_k_rounded}, opts)
-                : dbias
-        )
+        ? (num_heads_bias != num_heads || batch_size_bias == 1 || seqlen_q_bias == 1)     // MQA / GQA or dbias has different batch size or seqlen_q
+            ? (seqlen_q_bias == 1)
+                ? torch::zeros({batch_size, num_heads, 1, seqlen_k_rounded}, opts.dtype(at::kFloat))
+                : torch::zeros({batch_size, num_heads, seqlen_q, seqlen_k_rounded}, opts)
+            : dbias
         : torch::empty({0}, opts);
+    bool accum_dbias = has_bias && seqlen_q_bias != seqlen_q && seqlen_q_bias == 1;
 
     Flash_bwd_params params;
 
@@ -1009,6 +1013,7 @@ mha_bwd(
         softcap,
         has_mask,
         has_bias,
+        accum_dbias,
         deterministic,
         /*unpadded_lse*/false
     );
@@ -1036,9 +1041,10 @@ mha_bwd(
         if (num_heads_bias != num_heads && batch_size_bias == batch_size && seqlen_q_bias == seqlen_q) {
             at::sum_out(dbias, at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k_rounded}), {2});
         } else {
-            dbias_expanded = at::sum(at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k_rounded}), {2});
-            if (seqlen_q_bias == 1) {
-                dbias_expanded = at::sum(dbias_expanded, {2}, true);
+            if (accum_dbias) {
+                dbias_expanded = at::sum(at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, 1, seqlen_k_rounded}), {2});
+            } else {
+                dbias_expanded = at::sum(at::reshape(dbias_expanded, {batch_size, num_heads_bias, num_heads / num_heads_bias, seqlen_q, seqlen_k_rounded}), {2});
             }
             if (batch_size_bias == 1) {
                 dbias_expanded = at::sum(dbias_expanded, {0}, true);
@@ -1238,6 +1244,7 @@ mha_varlen_bwd(
         softcap,
         has_mask,
         has_bias,
+        /*accum_dbias*/false,
         deterministic,
         /*unpadded_lse*/true
     );
