@@ -986,7 +986,7 @@ mha_bwd(
                 : torch::zeros({batch_size, num_heads, seqlen_q, seqlen_k_rounded}, opts)
             : dbias
         : torch::empty({0}, opts);
-    bool accum_dbias = has_bias && seqlen_q_bias != seqlen_q && seqlen_q_bias == 1;
+    bool accum_dbias = has_bias && (seqlen_q_bias == 1 && seqlen_q != 1);
 
     Flash_bwd_params params;
 
