@@ -159,6 +159,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         Shape<Int<kBlockM>, Int<kBlockN>>{},
         make_stride(params.dbias_row_stride, _1{})
     );
+    [[maybe_unused]] ElementAccum *gdBias_accum_ptr = nullptr;
+    if constexpr (Has_bias) {
+        gdBias_accum_ptr = reinterpret_cast<ElementAccum *>(params.dbias_ptr) + row_offset_dbias;
+    }
     Tensor gdO = make_tensor(
         make_gmem_ptr(reinterpret_cast<Element *>(params.do_ptr) + row_offset_do),
         Shape<Int<kBlockM>, Int<kHeadDim>>{},
@@ -848,12 +852,37 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             __syncthreads();
             if constexpr (Has_bias) {
                 // Write dS to dBias
-                FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
-                    gmem_tiled_copy_dBias,
-                    tBiassBias, tdBiasgdBias,
-                    tBiascBias, tBiaspBias,
-                    binfo.actual_seqlen_q - m_block * kBlockM
-                );
+                if (!params.accum_dbias) {
+                    FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/false>(
+                        gmem_tiled_copy_dBias,
+                        tBiassBias, tdBiasgdBias,
+                        tBiascBias, tBiaspBias,
+                        binfo.actual_seqlen_q - m_block * kBlockM
+                    );
+                } else {
+                    #pragma unroll
+                    for (int m = 0; m < size<1>(tBiassBias); ++m) {
+                        if (Is_even_MN || get<0>(tBiascBias(0, m, 0)) < binfo.actual_seqlen_q - m_block * kBlockM) {
+                            #pragma unroll
+                            for (int n = 0; n < size<2>(tBiassBias); ++n) {
+                                if (Is_even_MN || tBiaspBias(n)) {
+                                    #pragma unroll
+                                    for (int i = 0; i < size<0>(tBiassBias); ++i) {
+                                        const auto coord = tBiascBias(i, m, n);
+                                        const int row = get<0>(coord);
+                                        const int col = get<1>(coord);
+                                        if (Is_even_MN || row < binfo.actual_seqlen_q - m_block * kBlockM) {
+                                            atomicAdd(
+                                                gdBias_accum_ptr + row * params.dbias_row_stride + col,
+                                                static_cast<ElementAccum>(tBiassBias(i, m, n))
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // if (cute::thread0()) { print(tPrP); }
@@ -994,6 +1023,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                 // Advance gBias and gdBias
                 tBiasgBias.data() = tBiasgBias.data() + (-int(kBlockM * params.bias_row_stride));
                 tdBiasgdBias.data() = tdBiasgdBias.data() + (-int(kBlockM * params.dbias_row_stride));
+                if (params.accum_dbias) {
+                    gdBias_accum_ptr -= int(kBlockM * params.dbias_row_stride);
+                }
                 if (any_active_next) {
                     FLASH_NAMESPACE::copy_MN<Is_even_MN, /*Clear_OOB_MN=*/true>(
                         gmem_tiled_copy_Bias,
