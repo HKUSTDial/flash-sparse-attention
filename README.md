@@ -169,13 +169,13 @@ key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dt
 value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
 
 # Create bias for sparse attention
-attn_mask = torch.ones(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
+attn_bias = torch.ones(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
 
 # Generate dynamic mask based on bias
 if seq_len > window_size:
     attn_mask = create_mask(
         attention_bias=attn_bias,
-        attention_mask=attn_mask,
+        attention_mask=None,
         batch_size=batch_size,
         query_len=seq_len,
         key_len=seq_len,
