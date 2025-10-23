@@ -65,9 +65,9 @@ def create_mask(
     
     Args:
         attention_bias (torch.Tensor): The attention bias tensor of shape
-            ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, {key_len|1}).
-        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape 
-            (batch_size, seq_len) or ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, {key_len|1}).
+            ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
+        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape
+            (batch_size, seq_len) or ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
         batch_size (int): The batch size.
         query_len (int): The sequence length of the query.
         key_len (int): The sequence length of the key.
@@ -76,7 +76,7 @@ def create_mask(
 
     Returns:
         attention (Tensor): The attention mask tensor of shape
-            ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, {key_len|1}).
+            ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
     """
 
     # If attention_mask is of shape (batch_size, seq_len), reshape it to (batch_size, 1, 1, key_len)
