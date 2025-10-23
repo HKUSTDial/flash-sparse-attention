@@ -102,6 +102,7 @@ def create_mask(
                 f"attention_mask shape {attention_mask.shape} is not compatible with key_len {key_len} or query_len {query_len}."
             )
     
+    # Generate dynamic mask based on attention_bias and attention_mask
     attention_mask = dynamic_mask(attention_bias, attention_mask, window_size, min_dtype)
 
     return attention_mask
