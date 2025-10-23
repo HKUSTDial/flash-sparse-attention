@@ -64,7 +64,6 @@ def create_mask(
     If attention_mask is not of shape (batch_size, seq_len), it needs to match the shape of attention_bias.
     
     Args:
-        Args:
         attention_bias (torch.Tensor): The attention bias tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, {key_len|1}).
         attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape 
