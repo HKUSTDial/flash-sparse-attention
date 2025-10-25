@@ -285,7 +285,7 @@ class DogeCDMoE(nn.Module):
         bsz, seq_len, _ = hidden_states.shape
 
         # get routing logits with router gate
-        router_logits = self.router_gate(hidden_states).view(2, bsz * seq_len, -1)
+        router_logits = self.router_gate(hidden_states).view(bsz * seq_len, 2, -1).transpose(0, 1)
 
         # get experts with the highest routing logits
         (scores_x, scores_y), (indices_x, indices_y) = router_logits.topk(self.num_keys, dim=-1)
