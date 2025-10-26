@@ -95,7 +95,7 @@ def _flash_dmattn_forward(
         softcap,
         return_softmax,
     )
-    _sanitize_tensors(out, nan=0.0, posinf=0.0, neginf=0.0)
+    # _sanitize_tensors(out, nan=0.0, posinf=0.0, neginf=0.0)
     return out, softmax_lse, S_dmask
 
 
@@ -163,7 +163,7 @@ def _flash_dmattn_varlen_forward(
         softcap,
         return_softmax,
     )
-    _sanitize_tensors(out, nan=0.0, posinf=0.0, neginf=0.0)
+    # _sanitize_tensors(out, nan=0.0, posinf=0.0, neginf=0.0)
     return out, softmax_lse, S_dmask
 
 
@@ -247,7 +247,7 @@ def _flash_dmattn_backward(
         softcap,
         deterministic,
     )
-    _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=0.0, neginf=0.0)
+    # _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=0.0, neginf=0.0)
     return softmax_d
 
 
@@ -335,7 +335,7 @@ def _flash_dmattn_varlen_backward(
         softcap,
         deterministic,
     )
-    _sanitize_tensors(dq, dk, dv, nan=0.0, posinf=0.0, neginf=0.0)
+    # _sanitize_tensors(dq, dk, dv, nan=0.0, posinf=0.0, neginf=0.0)
     return softmax_d
 
 
