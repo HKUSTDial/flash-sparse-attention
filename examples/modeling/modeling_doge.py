@@ -218,7 +218,7 @@ class DogeAttention(nn.Module):
             value_states.transpose(1, 2).reshape(value_states.shape[0], value_states.shape[-2], -1)
         )
         # original formula is exp(A * softplus(delta V)), but for numerical stability, it is changed to A * softplus(delta V)
-        attn_bias = self.A * F.softplus(dt_states).transpose(-1, -2).unsqueeze(-2).to(hidden_states.dtype)
+        attn_bias = (self.A * F.softplus(dt_states)).transpose(-1, -2).unsqueeze(-2).to(hidden_states.dtype)
 
         attention_interface: Callable = flash_dynamic_mask_attention_forward
 
@@ -230,6 +230,7 @@ class DogeAttention(nn.Module):
             attention_mask=attention_mask,
             attention_bias=attn_bias,
             scale=self.scaling,
+            window_size=self.window_size,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
