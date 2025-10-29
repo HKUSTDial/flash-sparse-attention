@@ -1114,13 +1114,6 @@ class FlashDMAttnFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, do):
         query, key, value, o, lse, attn_mask, attn_bias = ctx.saved_tensors
-        assert not ctx.needs_input_grad[3], "FlashDMAttn does not support mask gradient yet"
-        # Backward for GQA/MQA (nheads_q != nheads_k) is not implemented for Triton
-        if query.shape[2] != key.shape[2]:
-            raise RuntimeError(
-                "Triton backward for GQA/MQA (nheads_q != nheads_k) is not implemented yet. "
-                "Use the CUDA backend for training or disable grad for Triton path."
-            )
         dq, dk, dv, dbias = _flash_attn_backward(
             do,
             query,
