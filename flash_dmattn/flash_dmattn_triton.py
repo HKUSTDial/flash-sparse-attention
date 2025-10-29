@@ -891,7 +891,7 @@ def _bwd_kernel(
         )
 
 
-def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_causal=False):
+def _flash_attn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=False):
     # shape constraints
     batch, seqlen_q, nheads_q, d = q.shape
     _, seqlen_k, nheads_k, _ = k.shape
@@ -989,23 +989,29 @@ def _flash_attn_backward(
     # Make sure that the last dimension is contiguous
     if do.stride(-1) != 1:
         do = do.contiguous()
-    batch, seqlen_q, nheads, d = q.shape
-    _, seqlen_k, _, _ = k.shape
-    # assert d in {16, 32, 64, 128}
-    assert d <= 128
+    batch, seqlen_q, nheads_q, d = q.shape
+    _, seqlen_k, nheads_k, dk = k.shape
+
+    assert nheads_q % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
+    assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
-    assert lse.shape == (batch, nheads, seqlen_q_rounded)
+    assert lse.shape == (batch, nheads_q, seqlen_q_rounded)
+    
+    has_mask = mask is not None
+    if has_mask:
+        assert mask.dtype == torch.bool, "Only support bool mask"
+        nheads_mask = mask.shape[1]
+    else:
+        nheads_mask = 1
+        mask = torch.empty(0, device=q.device, dtype=torch.bool)
 
-    # Use boolean mask consistently (True = keep). Ensure GPU + layout.
-    assert mask.dtype == torch.bool, "Only support bool mask"
-    assert mask.is_cuda
-    assert mask.dim() == 4
-    assert mask.stride(-1) == 1
-
-    assert bias.dtype in [q.dtype, torch.float]
-    assert bias.is_cuda
-    assert bias.dim() == 4
-    assert bias.stride(-1) == 1
+    has_bias = bias is not None
+    if has_bias:
+        assert bias.dtype in [q.dtype, torch.float]
+        nheads_bias = bias.shape[1]
+    else:
+        nheads_bias = 1
+        bias = torch.empty(0, device=q.device, dtype=q.dtype)
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
     # dq_accum = torch.zeros_like(q, dtype=torch.float32)
@@ -1014,10 +1020,10 @@ def _flash_attn_backward(
     # delta = torch.zeros_like(lse)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
-    dbias = torch.empty_like(bias)
+    dbias = torch.empty_like(bias) if has_bias else torch.empty(0, device=q.device, dtype=q.dtype)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
-    grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads)
+    grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads_q)
     _bwd_preprocess_do_o_dot[grid](
         o,
         do,
@@ -1028,7 +1034,7 @@ def _flash_attn_backward(
         do.stride(0),
         do.stride(2),
         do.stride(1),
-        nheads,
+        nheads_q,
         seqlen_q,
         seqlen_q_rounded,
         d,
@@ -1041,7 +1047,7 @@ def _flash_attn_backward(
     # num_warps = 4
     grid = lambda META: (
         triton.cdiv(seqlen_k, META["BLOCK_N"]) if META["SEQUENCE_PARALLEL"] else 1,
-        batch * nheads,
+        batch * nheads_q,
     )
     _bwd_kernel[grid](
         q,
@@ -1066,12 +1072,12 @@ def _flash_attn_backward(
         v.stride(0),
         v.stride(2),
         v.stride(1),
-        mask.stride(0),
-        mask.stride(1),
-        mask.stride(2),
-        bias.stride(0),
-        bias.stride(1),
-        bias.stride(2),
+        mask.stride(0) if has_mask else 0,
+        mask.stride(1) if has_mask else 0,
+        mask.stride(2) if has_mask else 0,
+        bias.stride(0) if has_bias else 0,
+        bias.stride(1) if has_bias else 0,
+        bias.stride(2) if has_bias else 0,
         do.stride(0),
         do.stride(2),
         do.stride(1),
@@ -1084,10 +1090,14 @@ def _flash_attn_backward(
         dv.stride(0),
         dv.stride(2),
         dv.stride(1),
-        dbias.stride(0),
-        dbias.stride(1),
-        dbias.stride(2),
-        nheads,
+        dbias.stride(0) if has_bias else 0,
+        dbias.stride(1) if has_bias else 0,
+        dbias.stride(2) if has_bias else 0,
+        nheads_q,
+        nheads_k,
+        nheads_mask,
+        nheads_bias,
+        nheads_q // nheads_k,
         seqlen_q,
         seqlen_k,
         seqlen_q_rounded,
@@ -1095,11 +1105,14 @@ def _flash_attn_backward(
         seqlen_q // 32,
         seqlen_k // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
-        # IS_CAUSAL=causal, BLOCK_HEADDIM=d,
+        # IS_CAUSAL=is_causal, HAS_MASK=has_mask, HAS_BIAS=has_bias, BLOCK_HEADDIM=BLOCK_HEADDIM,
         is_causal,
+        has_mask,
+        has_bias,
         BLOCK_HEADDIM,
         # SEQUENCE_PARALLEL=False,
-        # BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+        # BLOCK_M=BLOCK_M,
+        # BLOCK_N=BLOCK_N,
         # num_warps=num_warps,
         # num_stages=1,
     )
