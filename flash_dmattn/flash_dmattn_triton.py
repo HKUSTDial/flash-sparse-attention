@@ -6,15 +6,41 @@ import triton
 import triton.language as tl
 
 
-# Disabling autotune for now, set num_warps=4 if headdim=64 and num_warps=8 if headdim=128
-# @triton.autotune(
-#     configs=[
-#         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4, num_stages=1),
-#         # This config has a race condition when EVEN_M == False, disabling it for now.
-#         # triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=1),
-#     ],
-#     key=['CACHE_KEY_SEQLEN_Q', 'CACHE_KEY_SEQLEN_K', 'IS_CAUSAL', 'BLOCK_HEADDIM']
-# )
+@triton.autotune(
+    configs=[
+        triton.Config(
+            {"BLOCK_M": 128, "BLOCK_N": 128},
+            num_warps=4,
+            num_stages=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 128, "BLOCK_N": 64},
+            num_warps=4,
+            num_stages=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 64, "BLOCK_N": 64},
+            num_warps=4,
+            num_stages=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 128, "BLOCK_N": 128},
+            num_warps=8,
+            num_stages=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 128, "BLOCK_N": 64},
+            num_warps=8,
+            num_stages=1,
+        ),
+        triton.Config(
+            {"BLOCK_M": 64, "BLOCK_N": 64},
+            num_warps=8,
+            num_stages=1,
+        ),
+    ],
+    key=['CACHE_KEY_SEQLEN_Q', 'CACHE_KEY_SEQLEN_K', 'IS_CAUSAL', 'HAS_MASK', 'HAS_BIAS', 'BLOCK_HEADDIM']
+)
 @triton.heuristics(
     {
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
@@ -883,6 +909,7 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
         nheads_mask = mask.shape[1]
     else:
         nheads_mask = 1
+        mask = torch.empty(0, device=q.device, dtype=torch.bool)
 
     has_bias = bias is not None
     if has_bias:
@@ -891,6 +918,7 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
         nheads_bias = bias.shape[1]
     else:
         nheads_bias = 1
+        bias = torch.empty(0, device=q.device, dtype=q.dtype)
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
@@ -899,16 +927,16 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
     o = torch.empty_like(q)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
-    BLOCK_M = 128
-    BLOCK_N = 64
-    num_warps = 4 if d <= 64 else 8
+    # BLOCK_M = 128
+    # BLOCK_N = 64
+    # num_warps = 4 if d <= 64 else 8
     grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads_q)
     _fwd_kernel[grid](
         q,
         k,
         v,
-        mask if has_mask else torch.empty(0, device=q.device, dtype=torch.bool),
-        bias if has_bias else torch.empty(0, device=q.device, dtype=q.dtype),
+        mask,
+        bias,
         o,
         lse,
         softmax_scale,
@@ -947,10 +975,10 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
         has_mask,
         has_bias,
         BLOCK_HEADDIM,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        num_warps=num_warps,
-        num_stages=2,
+        # BLOCK_M=BLOCK_M,
+        # BLOCK_N=BLOCK_N,
+        # num_warps=num_warps,
+        # num_stages=1,
     )
     return o, lse, softmax_scale  # softmax_scale could have been updated
 
