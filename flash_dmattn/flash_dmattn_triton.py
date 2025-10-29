@@ -730,6 +730,7 @@ def init_to_zero(names):
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
         "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
         "EVEN_HEADDIM": lambda args: args["headdim"] == args["BLOCK_HEADDIM"],
+        "ATOMIC_ADD": lambda args: args["SEQUENCE_PARALLEL"] or (args["nheads_q"] != args["nheads_k"] and args["nheads_q"] != args["nheads_bias"]),
     }
 )
 @triton.jit
@@ -777,7 +778,11 @@ def _bwd_kernel(
     stride_dbb,
     stride_dbh,
     stride_dbm,
-    nheads,
+    nheads_q,
+    nheads_k,
+    nheads_mask,
+    nheads_bias,
+    h_h_k_ratio,
     seqlen_q,
     seqlen_k,
     seqlen_q_rounded,
@@ -785,31 +790,54 @@ def _bwd_kernel(
     CACHE_KEY_SEQLEN_Q,
     CACHE_KEY_SEQLEN_K,
     IS_CAUSAL: tl.constexpr,
+    HAS_MASK: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     SEQUENCE_PARALLEL: tl.constexpr,
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
     EVEN_HEADDIM: tl.constexpr,
+    ATOMIC_ADD: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
     off_hb = tl.program_id(1)
-    off_b = off_hb // nheads
-    off_h = off_hb % nheads
-    # offset pointers for batch/head
-    Q += off_b * stride_qb + off_h * stride_qh
-    K += off_b * stride_kb + off_h * stride_kh
-    V += off_b * stride_vb + off_h * stride_vh
-    Mask += off_b * stride_mb + off_h * stride_mh
-    Bias += off_b * stride_bb + off_h * stride_bh
-    DO += off_b * stride_dob + off_h * stride_doh
-    DQ += off_b * stride_dqb + off_h * stride_dqh
-    DK += off_b * stride_dkb + off_h * stride_dkh
-    DV += off_b * stride_dvb + off_h * stride_dvh
-    DBias += off_b * stride_dbb + off_h * stride_dbh
-    # pointer to row-wise quantities in value-like data
+    off_b = off_hb // nheads_q
+    off_hq = off_hb % nheads_q
+    off_hk = off_hq // h_h_k_ratio
+    if HAS_MASK:
+        if nheads_mask == 1:
+            off_hmask = 0
+        elif nheads_mask == nheads_k:
+            off_hmask = off_hk
+        else:
+            off_hmask = off_hq
+    if HAS_BIAS:
+        if nheads_bias == 1:
+            off_hbbias = 0
+        elif nheads_bias == nheads_k:
+            off_hbbias = off_hk
+        else:
+            off_hbbias = off_hq
+
+    # Advance offset pointers for batch and head
+    Q += off_b * stride_qb + off_hq * stride_qh
+    K += off_b * stride_kb + off_hk * stride_kh
+    V += off_b * stride_vb + off_hk * stride_vh
+    if HAS_MASK:
+        Mask += off_b * stride_mb + off_hmask * stride_mh
+    if HAS_BIAS:
+        Bias += off_b * stride_bb + off_hbbias * stride_bh
+    DO += off_b * stride_dob + off_hq * stride_doh
+    DQ += off_b * stride_dqb + off_hq * stride_dqh
+    DK += off_b * stride_dkb + off_hk * stride_dkh
+    DV += off_b * stride_dvb + off_hk * stride_dvh
+    if HAS_BIAS:
+        DBias += off_b * stride_dbb + off_hbbias * stride_dbh
+    # Advance pointer to row-wise quantities in value-like data
     D += off_hb * seqlen_q_rounded
     LSE += off_hb * seqlen_q_rounded
+
     if not SEQUENCE_PARALLEL:
         num_block_n = tl.cdiv(seqlen_k, BLOCK_N)
         for start_n in range(0, num_block_n):
@@ -841,12 +869,14 @@ def _bwd_kernel(
                 seqlen_q,
                 seqlen_k,
                 headdim,
-                ATOMIC_ADD=False,
                 IS_CAUSAL=IS_CAUSAL,
+                HAS_MASK=HAS_MASK,
+                HAS_BIAS=HAS_BIAS,
                 BLOCK_HEADDIM=BLOCK_HEADDIM,
                 EVEN_M=EVEN_M,
                 EVEN_N=EVEN_N,
                 EVEN_HEADDIM=EVEN_HEADDIM,
+                ATOMIC_ADD=ATOMIC_ADD,
                 BLOCK_M=BLOCK_M,
                 BLOCK_N=BLOCK_N,
             )
@@ -880,12 +910,14 @@ def _bwd_kernel(
             seqlen_q,
             seqlen_k,
             headdim,
-            ATOMIC_ADD=True,
             IS_CAUSAL=IS_CAUSAL,
+            HAS_MASK=HAS_MASK,
+            HAS_BIAS=HAS_BIAS,
             BLOCK_HEADDIM=BLOCK_HEADDIM,
             EVEN_M=EVEN_M,
             EVEN_N=EVEN_N,
             EVEN_HEADDIM=EVEN_HEADDIM,
+            ATOMIC_ADD=ATOMIC_ADD,
             BLOCK_M=BLOCK_M,
             BLOCK_N=BLOCK_N,
         )
