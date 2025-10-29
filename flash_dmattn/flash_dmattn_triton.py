@@ -362,23 +362,40 @@ def _bwd_store_dk_dv(
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
     EVEN_HEADDIM: tl.constexpr,
+    ATOMIC_ADD: tl.constexpr,
 ):
     # [2022-11-01] TD: Same bug. In the case of EVEN_N=True and EVEN_M=False,
     # if we just call tl.store(dv_ptrs), there's a race condition
-    if EVEN_N & EVEN_M:
-        if EVEN_HEADDIM:
-            tl.store(dv_ptrs, dv)
-            tl.store(dk_ptrs, dk)
+    if not ATOMIC_ADD:
+        if EVEN_N & EVEN_M:
+            if EVEN_HEADDIM:
+                tl.store(dv_ptrs, dv)
+                tl.store(dk_ptrs, dk)
+            else:
+                tl.store(dv_ptrs, dv, mask=offs_d[None, :] < headdim)
+                tl.store(dk_ptrs, dk, mask=offs_d[None, :] < headdim)
         else:
-            tl.store(dv_ptrs, dv, mask=offs_d[None, :] < headdim)
-            tl.store(dk_ptrs, dk, mask=offs_d[None, :] < headdim)
+            if EVEN_HEADDIM:
+                tl.store(dv_ptrs, dv, mask=offs_n[:, None] < seqlen_k)
+                tl.store(dk_ptrs, dk, mask=offs_n[:, None] < seqlen_k)
+            else:
+                tl.store(dv_ptrs, dv, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim))
+                tl.store(dk_ptrs, dk, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim))
     else:
-        if EVEN_HEADDIM:
-            tl.store(dv_ptrs, dv, mask=offs_n[:, None] < seqlen_k)
-            tl.store(dk_ptrs, dk, mask=offs_n[:, None] < seqlen_k)
+        if EVEN_N & EVEN_M:
+            if EVEN_HEADDIM:
+                tl.atomic_add(dv_ptrs, dv)
+                tl.atomic_add(dk_ptrs, dk)
+            else:
+                tl.atomic_add(dv_ptrs, dv, mask=offs_d[None, :] < headdim)
+                tl.atomic_add(dk_ptrs, dk, mask=offs_d[None, :] < headdim)
         else:
-            tl.store(dv_ptrs, dv, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim))
-            tl.store(dk_ptrs, dk, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim))
+            if EVEN_HEADDIM:
+                tl.atomic_add(dv_ptrs, dv, mask=offs_n[:, None] < seqlen_k)
+                tl.atomic_add(dk_ptrs, dk, mask=offs_n[:, None] < seqlen_k)
+            else:
+                tl.atomic_add(dv_ptrs, dv, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim))
+                tl.atomic_add(dk_ptrs, dk, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim))
 
 
 @triton.jit
