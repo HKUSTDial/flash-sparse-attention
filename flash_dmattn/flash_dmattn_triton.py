@@ -876,33 +876,19 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert q.is_cuda and k.is_cuda and v.is_cuda
 
-    HAS_MASK = mask is not None
-    if HAS_MASK:
+    has_mask = mask is not None
+    if has_mask:
         assert mask.dtype == torch.bool, "Only support bool mask"
         assert mask.is_cuda
-        assert mask.dim() == 4, "mask must be 4D"
-        mb, hm, mq, nk = mask.shape
-        assert mb in (1, batch), "mask batch dim must be 1 or batch"
-        assert hm in (1, nheads_k, nheads_q), "mask head dim must be 1, nheads_k, or nheads_q"
-        assert mq in (1, seqlen_q), "mask query dim must be 1 or seqlen_q"
-        assert nk in (1, seqlen_k), "mask key dim must be 1 or seqlen_k"
-        mask = mask.expand(batch, hm, seqlen_q, seqlen_k)
-        nheads_mask = hm
+        nheads_mask = mask.shape[1]
     else:
         nheads_mask = 1
 
-    HAS_BIAS = bias is not None
-    if HAS_BIAS:
+    has_bias = bias is not None
+    if has_bias:
         assert bias.dtype in [q.dtype, torch.float]
         assert bias.is_cuda
-        assert bias.dim() == 4, "bias must be 4D"
-        bb, hb, bq, bk_ = bias.shape
-        assert bb in (1, batch), "bias batch dim must be 1 or batch"
-        assert hb in (1, nheads_k, nheads_q), "bias head dim must be 1, nheads_k, or nheads_q"
-        assert bq in (1, seqlen_q), "bias query dim must be 1 or seqlen_q"
-        assert bk_ in (1, seqlen_k), "bias key dim must be 1 or seqlen_k"
-        bias = bias.expand(batch, hb, seqlen_q, seqlen_k)
-        nheads_bias = hb
+        nheads_bias = bias.shape[1]
     else:
         nheads_bias = 1
 
@@ -921,8 +907,8 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
         q,
         k,
         v,
-        mask if HAS_MASK else torch.empty(0, device=q.device, dtype=torch.bool),
-        bias if HAS_BIAS else torch.empty(0, device=q.device, dtype=q.dtype),
+        mask if has_mask else torch.empty(0, device=q.device, dtype=torch.bool),
+        bias if has_bias else torch.empty(0, device=q.device, dtype=q.dtype),
         o,
         lse,
         softmax_scale,
@@ -935,12 +921,12 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
         v.stride(0),
         v.stride(2),
         v.stride(1),
-        mask.stride(0) if HAS_MASK else 0,
-        mask.stride(1) if HAS_MASK else 0,
-        mask.stride(2) if HAS_MASK else 0,
-        bias.stride(0) if HAS_BIAS else 0,
-        bias.stride(1) if HAS_BIAS else 0,
-        bias.stride(2) if HAS_BIAS else 0,
+        mask.stride(0) if has_mask else 0,
+        mask.stride(1) if has_mask else 0,
+        mask.stride(2) if has_mask else 0,
+        bias.stride(0) if has_bias else 0,
+        bias.stride(1) if has_bias else 0,
+        bias.stride(2) if has_bias else 0,
         o.stride(0),
         o.stride(2),
         o.stride(1),
@@ -956,10 +942,10 @@ def _flash_attn_forward(q, k, v, mask=None, bias=None, softmax_scale=None, is_ca
         seqlen_q // 32,
         seqlen_k // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
-        # IS_CAUSAL=causal, BLOCK_HEADDIM=d,
+        # IS_CAUSAL=is_causal, HAS_MASK=has_mask, HAS_BIAS=has_bias, BLOCK_HEADDIM=d,
         is_causal,
-        HAS_MASK,
-        HAS_BIAS,
+        has_mask,
+        has_bias,
         BLOCK_HEADDIM,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
