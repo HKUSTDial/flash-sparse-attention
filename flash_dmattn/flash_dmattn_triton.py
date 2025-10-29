@@ -216,7 +216,7 @@ def _fwd_kernel(
             if IS_CAUSAL:
                 acc_s += tl.where(offs_m[:, None] >= (start_n + offs_n)[None, :], 0, float("-inf"))
             if HAS_MASK:
-                acc_s += tl.where(mask, 0.0, float("-inf"))
+                acc_s += tl.where(mask, 0, float("-inf"))
 
             if HAS_BIAS:
                 # Load bias
@@ -315,7 +315,7 @@ def _bwd_preprocess_do_o_dot(
     stride_dob,
     stride_doh,
     stride_dom,
-    nheads,
+    nheads_q,
     seqlen_q,
     seqlen_q_rounded,
     headdim,
@@ -324,8 +324,8 @@ def _bwd_preprocess_do_o_dot(
 ):
     start_m = tl.program_id(0)
     off_hb = tl.program_id(1)
-    off_b = off_hb // nheads
-    off_h = off_hb % nheads
+    off_b = off_hb // nheads_q
+    off_h = off_hb % nheads_q
     # Initialize offsets
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_d = tl.arange(0, BLOCK_HEADDIM)
