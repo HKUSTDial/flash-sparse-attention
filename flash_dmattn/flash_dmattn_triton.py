@@ -409,6 +409,8 @@ def _bwd_kernel_one_col_block(
     # Initialize dv and dk
     dv = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
     dk = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
+    # Initialize softmax unscale factor
+    softmax_unscale = 1.0 / softmax_scale
     # There seems to be some problem with Triton pipelining that makes results wrong for
     # headdim=64, seqlen=(113, 255). In this case the for loop may have zero step,
     # and pipelining with the bias matrix could screw it up. So we just exit early.
@@ -451,6 +453,11 @@ def _bwd_kernel_one_col_block(
             v = tl.load(
                 v_ptrs, mask=(offs_n[:, None] < seqlen_k) & (offs_d[None, :] < headdim), other=0.0
             )
+
+    # Scale k
+    k = (k * softmax_scale).to(k.dtype)
+
+    # Initialize accumulator for dbias if needed
     acc_dbias = tl.zeros([BLOCK_N], dtype=tl.float32) if (HAS_BIAS and ACCUM_DBIAS) else None
 
     # Loop over q and update accumulators
@@ -490,18 +497,6 @@ def _bwd_kernel_one_col_block(
                         other=0.0,
                     )
 
-            # Compute acc_s
-            acc_s = tl.dot(q, tl.trans(k))
-            
-            # Apply masks
-            # Trying to combine the three masks seem to make the result wrong
-            if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
-                acc_s += tl.where(offs_n[None, :] < seqlen_k, 0, float("-inf"))
-            if IS_CAUSAL:
-                acc_s += tl.where(offs_m_curr[:, None] >= (offs_n[None, :]), 0, float("-inf"))
-            if HAS_MASK:
-                acc_s += tl.where(mask, 0, float("-inf"))
-
             if HAS_BIAS:
                 # Load bias
                 if EVEN_M & EVEN_N:
@@ -513,11 +508,18 @@ def _bwd_kernel_one_col_block(
                         other=0.0,
                     ).to(tl.float32)
 
-                # Apply scaling and bias
-                acc_s = acc_s * softmax_scale + bias
-            else:
-                # Apply scaling
-                acc_s = acc_s * softmax_scale
+            # Compute acc_s
+            acc_s = bias if HAS_BIAS else tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+            acc_s += tl.dot(q, tl.trans(k))
+
+            # Apply masks
+            # Trying to combine the three masks seem to make the result wrong
+            if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
+                acc_s += tl.where(offs_n[None, :] < seqlen_k, 0, float("-inf"))
+            if IS_CAUSAL:
+                acc_s += tl.where(offs_m_curr[:, None] >= (offs_n[None, :]), 0, float("-inf"))
+            if HAS_MASK:
+                acc_s += tl.where(mask, 0, float("-inf"))
 
             lse_i = tl.load(LSE + offs_m_curr)
             # p = tl.exp(acc_s - lse_i[:, None])
@@ -577,7 +579,7 @@ def _bwd_kernel_one_col_block(
             if not ATOMIC_ADD:
                 if EVEN_M & EVEN_HEADDIM:  # Race condition if we just do EVEN_M
                     dq = tl.load(dq_ptrs, eviction_policy="evict_last")
-                    dq += tl.dot(ds, k)
+                    dq += tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
                     tl.store(dq_ptrs, dq, eviction_policy="evict_last")
                 else:
                     if EVEN_HEADDIM:
@@ -587,7 +589,7 @@ def _bwd_kernel_one_col_block(
                             other=0.0,
                             eviction_policy="evict_last",
                         )
-                        dq += tl.dot(ds, k)
+                        dq += tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
                         tl.store(
                             dq_ptrs,
                             dq,
@@ -601,7 +603,7 @@ def _bwd_kernel_one_col_block(
                             other=0.0,
                             eviction_policy="evict_last",
                         )
-                        dq += tl.dot(ds, k)
+                        dq += tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
                         tl.store(
                             dq_ptrs,
                             dq,
@@ -609,7 +611,7 @@ def _bwd_kernel_one_col_block(
                             eviction_policy="evict_last",
                         )
             else:  # If we're parallelizing across the seqlen_k dimension
-                dq = tl.dot(ds, k)
+                dq = tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
                 if EVEN_M & EVEN_HEADDIM:  # Race condition if we just do EVEN_M
                     tl.atomic_add(dq_ptrs, dq)
                 else:
