@@ -219,9 +219,11 @@ def _fwd_kernel(
                         & ((start_n + offs_n)[None, :] < seqlen_k),
                         other=0.0,
                     ).to(tl.float32)
+                acc_s = bias
+            else:
+                acc_s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 
             # Compute acc_s
-            acc_s = bias if HAS_BIAS else tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             acc_s += tl.dot(q, tl.trans(k))
 
             # Apply masks
@@ -507,9 +509,11 @@ def _bwd_kernel_one_col_block(
                         mask=(offs_m_curr[:, None] < seqlen_q) & (offs_n[None, :] < seqlen_k),
                         other=0.0,
                     ).to(tl.float32)
+                acc_s = bias
+            else:
+                acc_s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 
             # Compute acc_s
-            acc_s = bias if HAS_BIAS else tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
             acc_s += tl.dot(q, tl.trans(k))
 
             # Apply masks
