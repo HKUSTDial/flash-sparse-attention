@@ -161,6 +161,9 @@ def _fwd_kernel(
                 q_ptrs, mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim), other=0.0
             )
 
+    # Scale q
+    q = (q * softmax_scale).to(q.dtype)
+
     # Loop over k, v and update accumulator
     end_n = seqlen_k if not IS_CAUSAL else tl.minimum((start_m + 1) * BLOCK_M, seqlen_k)
     for start_n in range(0, end_n, BLOCK_N):
@@ -205,19 +208,6 @@ def _fwd_kernel(
                         other=0.0,
                     )
 
-            # Compute acc_s
-            acc_s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-            acc_s += tl.dot(q, tl.trans(k))
-
-            # Apply masks
-            # Trying to combine the three masks seem to make the result wrong
-            if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
-                acc_s += tl.where((start_n + offs_n)[None, :] < seqlen_k, 0, float("-inf"))
-            if IS_CAUSAL:
-                acc_s += tl.where(offs_m[:, None] >= (start_n + offs_n)[None, :], 0, float("-inf"))
-            if HAS_MASK:
-                acc_s += tl.where(mask, 0, float("-inf"))
-
             if HAS_BIAS:
                 # Load bias
                 if EVEN_M & EVEN_N:
@@ -230,12 +220,20 @@ def _fwd_kernel(
                         other=0.0,
                     ).to(tl.float32)
 
-                # Apply scaling and bias
-                acc_s = acc_s * softmax_scale + bias
-            else:
-                # Apply scaling
-                acc_s = acc_s * softmax_scale
+            # Compute acc_s
+            acc_s = bias if HAS_BIAS else tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+            acc_s += tl.dot(q, tl.trans(k))
 
+            # Apply masks
+            # Trying to combine the three masks seem to make the result wrong
+            if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
+                acc_s += tl.where((start_n + offs_n)[None, :] < seqlen_k, 0, float("-inf"))
+            if IS_CAUSAL:
+                acc_s += tl.where(offs_m[:, None] >= (start_n + offs_n)[None, :], 0, float("-inf"))
+            if HAS_MASK:
+                acc_s += tl.where(mask, 0, float("-inf"))
+
+            # Compute p
             m_ij = tl.maximum(tl.max(acc_s, 1), lse_i)
             p = tl.exp(acc_s - m_ij[:, None])
             l_ij = tl.sum(p, 1)
