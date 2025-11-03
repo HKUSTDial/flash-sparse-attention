@@ -132,11 +132,13 @@ void set_params_fprop(
         params.softcap = softmax_scale / softcap;
         params.scale_softmax = softcap;
         params.scale_softmax_log2 = softcap * M_LOG2E;
+        params.unscale_softmax = 1.0f / softmax_scale;
     } else{
         // Remove potential NaN
         params.softcap = 0.0;
         params.scale_softmax = softmax_scale;
         params.scale_softmax_log2 = softmax_scale * M_LOG2E;
+        params.unscale_softmax = 1.0f / softmax_scale;
     }
 
     params.is_causal = is_causal;
