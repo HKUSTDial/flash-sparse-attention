@@ -433,7 +433,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         for (int i = 0; i < size(tSsQ); ++i) {
             tSsQ(i) = static_cast<Element>(tSsQ(i) * params.scale_softmax);
         }
-        __syncthreads();
     }
 
     // For performance reason, we separate out two kinds of iterations:
@@ -451,9 +450,21 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     #pragma unroll
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
-        clear(acc_s);
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
+
+        if (any_active) {
+            if constexpr (Has_bias) {
+                // Copy bias from smem to acc_s registers
+                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+                Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+                cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+                #pragma unroll
+                for (int i = 0; i < size(acc_s); ++i) { acc_s(i) = tSrBias(i); }
+            } else {
+                clear(acc_s);
+            }
+        }
 
         // Advance gV
         if (masking_step > 0 && any_active) {
@@ -487,46 +498,19 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
             }
 
-            if constexpr (Has_mask && Has_bias) {
-                // Copy mask and bias from smem to registers
-                Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-                Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-                cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
-                Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-                cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
-
-                // Scale attention scores and apply mask and add bias
-                mask.template apply_mask<Is_causal, Has_mask, Has_bias>(
-                    acc_s, tSrMask, tSrBias, params.scale_softmax,
-                    n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-                );
-            } else if constexpr (Has_mask && !Has_bias) {
+            if constexpr (Has_mask) {
                 // Copy mask from smem to registers
                 Tensor tSrMask = make_tensor<Element>(shape(acc_s));
                 Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
                 cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
 
-                // Scale attention scores and apply mask
-                mask.template apply_mask<Is_causal, Has_mask, Has_bias>(
-                    acc_s, tSrMask, /*bias=*/nullptr, params.scale_softmax,
-                    n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-                );
-            } else if constexpr (!Has_mask && Has_bias) {
-                // Copy bias from smem to registers
-                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
-                Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-                cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
-
-                // Scale attention scores and add bias
-                mask.template apply_mask<Is_causal, Has_mask, Has_bias>(
-                    acc_s, /*mask=*/nullptr, tSrBias, params.scale_softmax,
+                mask.template apply_mask<Is_causal, Has_mask>(
+                    acc_s, tSrMask,
                     n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
                 );
             } else {
-                // Scale attention scores only
-                mask.template apply_mask<Is_causal, Has_mask, Has_bias>(
-                    acc_s, /*mask=*/nullptr, /*bias=*/nullptr, params.scale_softmax,
+                mask.template apply_mask<Is_causal, Has_mask>(
+                    acc_s, /*mask=*/nullptr,
                     n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
                 );
             }
@@ -616,9 +600,21 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // These are the iterations where we don't need masking on S
     for (; n_block >= n_block_min; --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
-        clear(acc_s);
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
+
+        if (any_active) {
+            if constexpr (Has_bias) {
+                // Copy bias from smem to acc_s registers
+                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
+                Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
+                cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
+                #pragma unroll
+                for (int i = 0; i < size(acc_s); ++i) { acc_s(i) = tSrBias(i); }
+            } else {
+                clear(acc_s);
+            }
+        }
 
         // Advance gV
         if (any_active) {
@@ -642,46 +638,19 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
             }
 
-            if constexpr (Has_mask && Has_bias) {
-                // Copy mask and bias from smem to registers
-                Tensor tSrMask = make_tensor<Element>(shape(acc_s));
-                Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
-                cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
-                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
-                Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-                cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
-
-                // Scale attention scores and apply mask and add bias
-                mask.template apply_mask</*Causal_mask=*/false, Has_mask, Has_bias>(
-                    acc_s, tSrMask, tSrBias, params.scale_softmax,
-                    n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-                );
-            } else if constexpr (Has_mask && !Has_bias) {
+            if constexpr (Has_mask) {
                 // Copy mask from smem to registers
                 Tensor tSrMask = make_tensor<Element>(shape(acc_s));
                 Tensor tSrMask_copy_view = smem_thr_copy_Mask.retile_D(tSrMask);
                 cute::copy(smem_tiled_copy_Mask, tSsMask, tSrMask_copy_view);
 
-                // Scale attention scores and apply mask
-                mask.template apply_mask</*Causal_mask=*/false, Has_mask, Has_bias>(
-                    acc_s, tSrMask, /*bias=*/nullptr, params.scale_softmax,
-                    n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-                );
-            } else if constexpr (!Has_mask && Has_bias) {
-                // Copy bias from smem to registers
-                Tensor tSrBias = make_tensor<Element>(shape(acc_s));
-                Tensor tSrBias_copy_view = smem_thr_copy_Bias.retile_D(tSrBias);
-                cute::copy(smem_tiled_copy_Bias, tSsBias, tSrBias_copy_view);
-
-                // Scale attention scores and apply bias
-                mask.template apply_mask</*Causal_mask=*/false, Has_mask, Has_bias>(
-                    acc_s, /*mask=*/nullptr, tSrBias, params.scale_softmax,
+                mask.template apply_mask</*Causal_mask=*/false, Has_mask>(
+                    acc_s, tSrMask,
                     n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
                 );
             } else {
-                // Scale attention scores only
-                mask.template apply_mask</*Causal_mask=*/false, Has_mask, Has_bias>(
-                    acc_s, /*mask=*/nullptr, /*bias=*/nullptr, params.scale_softmax,
+                mask.template apply_mask</*Causal_mask=*/false, Has_mask>(
+                    acc_s, /*mask=*/nullptr,
                     n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
                 );
             }
