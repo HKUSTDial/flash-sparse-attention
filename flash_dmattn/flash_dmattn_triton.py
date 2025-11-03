@@ -688,7 +688,7 @@ def init_to_zero(names):
             pre_hook=init_to_zero(["DQ", "DBias"]),
         ),
     ],
-    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "BLOCK_HEADDIM"],
+    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "IS_CAUSAL", "HAS_MASK", "HAS_BIAS", "HAS_INDICE", "BLOCK_HEADDIM"],
 )
 @triton.heuristics(
     {
@@ -903,7 +903,7 @@ def _flash_attn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=False
 
     has_mask = mask is not None
     if has_mask:
-        assert mask.dtype == torch.bool, "Only support bool mask"
+        assert mask.dtype == torch.bool, "Only support bool"
         assert mask.is_cuda
         nheads_mask = mask.shape[1]
     else:
@@ -912,7 +912,7 @@ def _flash_attn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=False
 
     has_bias = bias is not None
     if has_bias:
-        assert bias.dtype in [q.dtype, torch.float]
+        assert bias.dtype == q.dtype, "Only support fp16 and bf16"
         assert bias.is_cuda
         nheads_bias = bias.shape[1]
     else:
@@ -999,7 +999,7 @@ def _flash_attn_backward(
 
     has_mask = mask is not None
     if has_mask:
-        assert mask.dtype == torch.bool, "Only support bool mask"
+        assert mask.dtype == torch.bool, "Only support bool"
         nheads_mask = mask.shape[1]
     else:
         nheads_mask = 1
@@ -1007,7 +1007,7 @@ def _flash_attn_backward(
 
     has_bias = bias is not None
     if has_bias:
-        assert bias.dtype in [q.dtype, torch.float]
+        assert bias.dtype == q.dtype, "Only support fp16 and bf16"
         nheads_bias = bias.shape[1]
     else:
         nheads_bias = 1
