@@ -422,6 +422,20 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
 
+    // Scale Q once before streaming loop KV
+    if constexpr (Kernel_traits::Is_Q_in_regs) {
+        #pragma unroll
+        for (int i = 0; i < size(tSrQ); ++i) {
+            tSrQ(i) = static_cast<Element>(tSrQ(i) * params.scale_softmax);
+        }
+    } else {
+        #pragma unroll
+        for (int i = 0; i < size(tSsQ); ++i) {
+            tSsQ(i) = static_cast<Element>(tSsQ(i) * params.scale_softmax);
+        }
+        __syncthreads();
+    }
+
     // For performance reason, we separate out two kinds of iterations:
     // those that need masking on S, and those that don't.
     // We need masking on S for the very last block when K and V has length not multiple of kBlockN.
