@@ -101,7 +101,6 @@ struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_par
     // The scaling factors for the kernel.
     float scale_softmax;
     float scale_softmax_log2;
-    float unscale_softmax;
     float softcap;
 
     // array of length b+1 holding starting offset of each sequence.
