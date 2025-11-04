@@ -422,6 +422,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
 
+    FLASH_NAMESPACE::cp_async_wait<0>();
+    __syncthreads();
+
     // Scale Q once before streaming loop KV
     if constexpr (Kernel_traits::Is_Q_in_regs) {
         #pragma unroll
@@ -1139,6 +1142,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     FLASH_NAMESPACE::Mask mask(
         binfo.actual_seqlen_k, binfo.actual_seqlen_q
     );
+
+    FLASH_NAMESPACE::cp_async_wait<0>();
+    __syncthreads();
 
     // Scale Q once before streaming loop KV
     #pragma unroll
