@@ -411,8 +411,6 @@ def _bwd_kernel_one_col_block(
     # Initialize dv and dk
     dv = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
     dk = tl.zeros([BLOCK_N, BLOCK_HEADDIM], dtype=tl.float32)
-    # Initialize softmax unscale factor
-    softmax_unscale = 1.0 / softmax_scale
     # There seems to be some problem with Triton pipelining that makes results wrong for
     # headdim=64, seqlen=(113, 255). In this case the for loop may have zero step,
     # and pipelining with the bias matrix could screw it up. So we just exit early.
@@ -549,32 +547,29 @@ def _bwd_kernel_one_col_block(
             # Putting the subtraction after the dp matmul (instead of before) is slightly faster
             Di = tl.load(D + offs_m_curr)
 
-            # Compute dbias
-            dbias = (p * (dp - Di[:, None])).to(q.dtype)
-            
+            # Compute ds
+            # Converting ds to q.dtype here reduces register pressure and makes it much faster
+            # for BLOCK_HEADDIM=128
+            ds = (p * (dp - Di[:, None])).to(q.dtype)
+
             # Write back
             if not (EVEN_M & EVEN_N):
                 tl.debug_barrier()
             if HAS_BIAS:
                 if ACCUM_DBIAS:
-                    acc_dbias += tl.sum(dbias, axis=0)
+                    acc_dbias += tl.sum(ds, axis=0)
                 else:
                     if EVEN_M & EVEN_N:
                         tl.store(
                             db_ptrs,
-                            dbias,
+                            ds,
                         )
                     else:
                         tl.store(
                             db_ptrs,
-                            dbias,
+                            ds,
                             mask=(offs_m_curr[:, None] < seqlen_q) & (offs_n[None, :] < seqlen_k),
                         )
-
-            # Compute ds
-            # Converting ds to q.dtype here reduces register pressure and makes it much faster
-            # for BLOCK_HEADDIM=128
-            ds = (dbias * softmax_scale).to(q.dtype)
 
             # Compute dk
             dk += tl.dot(tl.trans(ds), q)
@@ -583,7 +578,7 @@ def _bwd_kernel_one_col_block(
             if not ATOMIC_ADD:
                 if EVEN_M & EVEN_HEADDIM:  # Race condition if we just do EVEN_M
                     dq = tl.load(dq_ptrs, eviction_policy="evict_last")
-                    dq += tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
+                    dq += tl.dot(ds, k).to(ds.dtype)
                     tl.store(dq_ptrs, dq, eviction_policy="evict_last")
                 else:
                     if EVEN_HEADDIM:
@@ -593,7 +588,7 @@ def _bwd_kernel_one_col_block(
                             other=0.0,
                             eviction_policy="evict_last",
                         )
-                        dq += tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
+                        dq += tl.dot(ds, k).to(ds.dtype)
                         tl.store(
                             dq_ptrs,
                             dq,
@@ -607,7 +602,7 @@ def _bwd_kernel_one_col_block(
                             other=0.0,
                             eviction_policy="evict_last",
                         )
-                        dq += tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
+                        dq += tl.dot(ds, k).to(ds.dtype)
                         tl.store(
                             dq_ptrs,
                             dq,
@@ -615,7 +610,7 @@ def _bwd_kernel_one_col_block(
                             eviction_policy="evict_last",
                         )
             else:  # If we're parallelizing across the seqlen_k dimension
-                dq = tl.dot(ds, (k * softmax_unscale).to(ds.dtype))
+                dq = tl.dot(ds, k).to(ds.dtype)
                 if EVEN_M & EVEN_HEADDIM:  # Race condition if we just do EVEN_M
                     tl.atomic_add(dq_ptrs, dq)
                 else:
@@ -638,7 +633,10 @@ def _bwd_kernel_one_col_block(
                 m_ptrs += BLOCK_M * stride_mm
             if HAS_BIAS:
                 b_ptrs += BLOCK_M * stride_bm
-        
+
+    # Scale dk
+    dk = (dk * softmax_scale).to(dk.dtype)
+
     # Write back
     dv_ptrs = DV + (offs_n[:, None] * stride_dvn + offs_d[None, :])
     dk_ptrs = DK + (offs_n[:, None] * stride_dkn + offs_d[None, :])
