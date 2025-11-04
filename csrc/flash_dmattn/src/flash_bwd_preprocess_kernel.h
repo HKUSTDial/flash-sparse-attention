@@ -279,8 +279,8 @@ inline __device__ void convert_dQ(
         for (int i = 0; i < size(acc_dq); ++i) { acc_dq(i) += tdQrdQaccum(i); }
         tdQgdQaccum.data() = tdQgdQaccum.data() + params.dq_accum_split_stride;
     }
-    #pragma unroll
-    for (int i = 0; i < size(acc_dq); ++i) { acc_dq(i) *= params.scale_softmax; }
+    // #pragma unroll
+    // for (int i = 0; i < size(acc_dq); ++i) { acc_dq(i) *= params.scale_softmax; }
     // Convert acc_dq from fp32 to fp16
     Tensor rdQ = FLASH_NAMESPACE::convert_type<Element>(acc_dq);
     Tensor taccdQrdQ = smem_thr_copy_dQ.retile_S(rdQ);      // ((Atom, AtomNum), MMA_N, MMA_N)
