@@ -10,7 +10,7 @@
 </div>
 
 
-![Flash-DMA Banner](assets/flash_dmattn_banner.png)
+<!-- ![Flash-DMA Banner](assets/flash_dmattn_banner.png) -->
 
 Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存效率与动态掩码注意力的稀疏计算能力相结合，用于在 Transformer 模型中处理超长序列。
 

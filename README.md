@@ -10,7 +10,7 @@
 </div>
 
 
-![Flash-DMA Banner](assets/flash_dmattn_banner.png)
+<!-- ![Flash-DMA Banner](assets/flash_dmattn_banner.png) -->
 
 Flash-DMA is a high-performance attention implementation that integrates Flash Attention's memory efficiency with Dynamic Mask Attention's sparse computation capabilities for processing extremely long sequences in transformer models.
 
