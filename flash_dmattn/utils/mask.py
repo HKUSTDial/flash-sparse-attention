@@ -49,7 +49,7 @@ def topk_mask(
     attention_bias = attention_bias.detach()
     attention_bias = attention_bias.masked_fill(~attention_mask, min_dtype) if attention_mask is not None else attention_bias
     topk_values, topk_indices = torch.topk(
-        attention_bias.to(torch.float),
+        attention_bias,
         window_size, dim=-1, largest=True, sorted=False
     )
     attention_mask = torch.zeros_like(
