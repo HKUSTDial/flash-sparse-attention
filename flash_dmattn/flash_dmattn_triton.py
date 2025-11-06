@@ -1150,7 +1150,7 @@ def _flash_dmattn_backward(
             if bias.shape[0] == 1:
                 dbias_expanded = dbias_expanded.sum(dim=0, keepdim=True)
             dbias.copy_(dbias_expanded)
-    return dq, dk, dv, dbias
+    return dq, dk, dv, dbias if has_bias else None
 
 
 def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
