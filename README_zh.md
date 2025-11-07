@@ -1,6 +1,6 @@
-<div align="center">
+<!-- <div align="center">
   <img src="./assets/logo.png" alt="SmallDoges" width="100%">
-</div>
+</div> -->
 
 <div align="center">
 
