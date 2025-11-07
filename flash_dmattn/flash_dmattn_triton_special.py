@@ -147,16 +147,8 @@ def _fwd_preprocess(
             v_base_ptrs + gather_idx[:, None] * stride_vn + offs_d[None, :]
         )
         if EVEN_HEADDIM:
-            k = tl.load(
-                k_ptrs,
-                mask=valid_idx[:, None],
-                other=0.0,
-            )
-            v = tl.load(
-                v_ptrs,
-                mask=valid_idx[:, None],
-                other=0.0,
-            )
+            k = tl.load(k_ptrs, mask=valid_idx[:, None], other=0.0)
+            v = tl.load(v_ptrs, mask=valid_idx[:, None], other=0.0)
         else:
             k = tl.load(
                 k_ptrs,
@@ -171,11 +163,7 @@ def _fwd_preprocess(
         b_ptrs = (
             b_base_ptrs + gather_idx * stride_bn
         )
-        b = tl.load(
-            b_ptrs,
-            mask=valid_idx,
-            other=0.0,
-        )
+        b = tl.load(b_ptrs, mask=valid_idx, other=0.0)
         
         # Store to CuK, CuV, CuB
         cuk_ptrs = (
@@ -185,35 +173,21 @@ def _fwd_preprocess(
             cuv_base_ptrs + offs_k[:, None] * stride_cvk + offs_d[None, :]
         )
         if EVEN_HEADDIM:
-            tl.store(
-                cuk_ptrs,
-                k,
-                mask=valid_idx[:, None],
-            )
-            tl.store(
-                cuv_ptrs,
-                v,
-                mask=valid_idx[:, None],
-            )
+            tl.store(cuk_ptrs, k, mask=valid_idx[:, None])
+            tl.store(cuv_ptrs, v, mask=valid_idx[:, None])
         else:
             tl.store(
-                cuk_ptrs,
-                k,
+                cuk_ptrs, k,
                 mask=valid_idx[:, None] & (offs_d[None, :] < headdim),
             )
             tl.store(
-                cuv_ptrs,
-                v,
+                cuv_ptrs, v,
                 mask=valid_idx[:, None] & (offs_d[None, :] < headdim),
             )
         cub_ptrs = (
             cub_base_ptrs + offs_k * stride_cbk
         )
-        tl.store(
-            cub_ptrs,
-            b,
-            mask=valid_idx,
-        )
+        tl.store(cub_ptrs, b, mask=valid_idx)
 
         # Store mask to CuM
         for start_m in range(0, seqlen_q, BLOCK_M):
@@ -234,11 +208,7 @@ def _fwd_preprocess(
 
             cum = tl.where(row_mask & col_mask[None, :], mask, False)
 
-            tl.store(
-                cum_ptrs,
-                cum,
-                mask=row_mask & col_mask[None, :],
-            )
+            tl.store(cum_ptrs, cum, mask=row_mask & col_mask[None, :])
 
 
 @triton.autotune(
@@ -371,7 +341,9 @@ def _fwd_kernel(
             q = tl.load(q_ptrs, mask=offs_m[:, None] < seqlen_q, other=0.0)
         else:
             q = tl.load(
-                q_ptrs, mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim), other=0.0
+                q_ptrs,
+                mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
+                other=0.0
             )
 
     # Scale q
@@ -386,9 +358,7 @@ def _fwd_kernel(
         )
         # Load mask
         if EVEN_M & EVEN_N:
-            m = tl.load(
-                cum_ptrs,
-            )
+            m = tl.load(cum_ptrs)
         else:
             m = tl.load(
                 cum_ptrs,
@@ -408,15 +378,9 @@ def _fwd_kernel(
             )
             if EVEN_N:
                 if EVEN_HEADDIM:
-                    k = tl.load(
-                        cuk_ptrs,
-                    )
+                    k = tl.load(cuk_ptrs)
                 else:
-                    k = tl.load(
-                        cuk_ptrs,
-                        mask=offs_d[None, :] < headdim,
-                        other=0.0
-                    )
+                    k = tl.load(cuk_ptrs, mask=offs_d[None, :] < headdim, other=0.0)
             else:
                 if EVEN_HEADDIM:
                     k = tl.load(
@@ -436,9 +400,7 @@ def _fwd_kernel(
                 cub_base_ptrs + (start_n + offs_n) * stride_cbk
             )
             if EVEN_M & EVEN_N:
-                b = tl.load(
-                    cub_ptrs
-                )
+                b = tl.load(cub_ptrs)
             else:
                 b = tl.load(
                     cub_ptrs,
@@ -475,15 +437,9 @@ def _fwd_kernel(
             )
             if EVEN_N:
                 if EVEN_HEADDIM:
-                    v = tl.load(
-                        cuv_ptrs,
-                    )
+                    v = tl.load(cuv_ptrs)
                 else:
-                    v = tl.load(
-                        cuv_ptrs,
-                        mask=offs_d[None, :] < headdim,
-                        other=0.0
-                    )
+                    v = tl.load(cuv_ptrs, mask=offs_d[None, :] < headdim, other=0.0)
             else:
                 if EVEN_HEADDIM:
                     v = tl.load(
@@ -532,7 +488,8 @@ def _fwd_kernel(
             tl.store(out_ptrs, acc_o, mask=offs_m[:, None] < seqlen_q)
         else:
             tl.store(
-                out_ptrs, acc_o, mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim)
+                out_ptrs, acc_o,
+                mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim)
             )
 
 
@@ -654,10 +611,14 @@ def _bwd_kernel_one_col_block(
             v = tl.load(cuv_ptrs, mask=offs_n[:, None] < window_size, other=0.0)
         else:
             k = tl.load(
-                cuk_ptrs, mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim), other=0.0
+                cuk_ptrs,
+                mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim),
+                other=0.0
             )
             v = tl.load(
-                cuv_ptrs, mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim), other=0.0
+                cuv_ptrs,
+                mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim),
+                other=0.0
             )
     if EVEN_N:
         b = tl.load(cub_ptrs)
