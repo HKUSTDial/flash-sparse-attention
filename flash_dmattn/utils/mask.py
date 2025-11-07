@@ -17,6 +17,33 @@ from typing import Optional
 import torch
 
 
+def topk_indices(
+    attention_bias: torch.Tensor,
+    window_size: int,
+    **kwargs,
+) -> torch.Tensor:
+    r"""
+    This function generates top-k indices based on the attention bias.
+
+    Args:
+        attention_bias (torch.Tensor): The attention bias tensor of
+            (batch_size, num_kv_heads, key_len).
+        window_size (int): The number of top elements to consider for the mask.
+        **kwargs: Additional keyword arguments.
+    
+    Returns:
+        topk_indices (Tensor): The top-k indices tensor of shape
+            (batch_size, num_kv_heads, window_size).
+    """
+    attention_bias = attention_bias.detach()
+    topk_indices = torch.topk(
+        attention_bias,
+        window_size, dim=-1, largest=True, sorted=False
+    ).indices
+    topk_indices = torch.sort(topk_indices, dim=-1).values
+    return topk_indices
+
+
 def dynamic_mask(
     attention_bias: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
