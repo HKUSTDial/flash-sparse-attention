@@ -45,6 +45,117 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - 进一步提升跳过访存与计算的性能
 
 
+## 安装
+
+### 依赖
+
+- **Linux**: Ubuntu 22.04 或更高版本
+- **NVIDIA GPU**: 计算能力 8.0 或更高
+- **C++ 编译器**: GCC 7+
+- **CUDA**: 11.8 或更高版本
+- **Python**: 3.9 或更高版本
+- **PyTorch**: 2.5.1 或更高版本  
+
+### 安装
+
+您可以通过预编译的轮子安装 FSA：
+
+```bash
+pip install flash-sparse-attn --no-build-isolation
+```
+
+或者, 您可以从源代码编译和安装：
+
+```bash
+git clone https://github.com/SmallDoges/flash-sparse-attn.git
+cd flash-sparse-attn
+pip install . --no-build-isolation
+```
+
+
+## 快速开始
+
+### 基本用法
+
+```python
+import torch
+from flash_sparse_attn import flash_sparse_attn_func_auto
+from flash_sparse_attn.utils.mask import create_mask
+import math
+
+# 设置
+batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
+window_size = 128
+device = torch.device('cuda')
+dtype = torch.bfloat16
+min_dtype = torch.finfo(dtype).min  # dtype 的最小值
+
+# 输入张量
+query = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
+key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
+value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
+
+# 为稀疏注意力创建 bias
+attn_bias = torch.randn(batch_size, num_kv_heads, 1, seq_len, device=device, dtype=dtype)
+
+# 基于 bias 生成动态 mask
+if seq_len > window_size:
+    attn_mask = create_mask(
+        attention_bias=attn_bias,
+        attention_mask=None,
+        batch_size=batch_size,
+        query_len=seq_len,
+        key_len=seq_len,
+        window_size=window_size,
+        min_dtype=min_dtype,
+    )
+
+# 选择 FSA 内核
+flash_sparse_attn_func = flash_sparse_attn_func_auto(backend="cuda")
+
+# 运行 FSA
+output = flash_sparse_attn_func(
+    query=query,
+    key=key, 
+    value=value,
+    attn_mask=attn_mask,
+    attn_bias=attn_bias,
+    is_causal=True,
+    softmax_scale=1.0/math.sqrt(head_dim),
+)
+
+print(f"输出形状: {output.shape}")  # [1, 256, 2, 64]
+```
+
+### 梯度计算示例
+
+```python
+# 开启梯度计算
+query.requires_grad_(True)
+key.requires_grad_(True)
+value.requires_grad_(True)
+attn_bias.requires_grad_(True)
+
+# 前向传播
+output = flash_sparse_attn_func(
+    query=query, key=key, value=value,
+    attn_mask=attn_mask,
+    attn_bias=attn_bias,
+    is_causal=True,
+    softmax_scale=1.0/math.sqrt(head_dim)
+)
+
+# 反向传播
+loss = output.sum()
+loss.backward()
+
+print(f"Query 梯度形状: {query.grad.shape}")
+print(f"Key 梯度形状: {key.grad.shape}")
+print(f"Value 梯度形状: {value.grad.shape}")
+print(f"Bias 梯度形状: {attn_bias.grad.shape}")
+```
+
+
 ## 性能
 
 我们展示了带有mask与bias条件下 FSA 相对于标准 PyTorch SDPA 的预期加速效果. 
@@ -132,117 +243,6 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 | Train | 32768 | 32768  | 32768    | 142.43        | 25.63         | 5.6x    |
 
 ---
-
-
-## 安装
-
-### 依赖
-
-- **Linux**: Ubuntu 22.04 或更高版本
-- **NVIDIA GPU**: 计算能力 8.0 或更高
-- **C++ 编译器**: GCC 7+
-- **CUDA**: 11.8 或更高版本
-- **Python**: 3.9 或更高版本
-- **PyTorch**: 2.5.1 或更高版本  
-
-### 安装
-
-您可以通过预编译的轮子安装 FSA：
-
-```bash
-pip install flash_sparse_attn --no-build-isolation
-```
-
-或者, 您可以从源代码编译和安装：
-
-```bash
-git clone https://github.com/SmallDoges/flash_sparse_attn.git
-cd flash_sparse_attn
-pip install . --no-build-isolation
-```
-
-
-## 快速开始
-
-### 基本用法
-
-```python
-import torch
-from flash_sparse_attn import flash_sparse_attn_func_auto
-from flash_sparse_attn.utils.mask import create_mask
-import math
-
-# 设置
-batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
-window_size = 128
-device = torch.device('cuda')
-dtype = torch.bfloat16
-min_dtype = torch.finfo(dtype).min  # dtype 的最小值
-
-# 输入张量
-query = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
-key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
-value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
-
-# 为稀疏注意力创建 bias
-attn_bias = torch.randn(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
-
-# 基于 bias 生成动态 mask
-if seq_len > window_size:
-    attn_mask = create_mask(
-        attention_bias=attn_bias,
-        attention_mask=None,
-        batch_size=batch_size,
-        query_len=seq_len,
-        key_len=seq_len,
-        window_size=window_size,
-        min_dtype=min_dtype,
-    )
-
-# 选择 FSA 内核
-flash_sparse_attn_func = flash_sparse_attn_func_auto(backend="cuda")
-
-# 运行 FSA
-output = flash_sparse_attn_func(
-    query=query,
-    key=key, 
-    value=value,
-    attn_mask=attn_mask,
-    attn_bias=attn_bias,
-    is_causal=True,
-    softmax_scale=1.0/math.sqrt(head_dim),
-)
-
-print(f"输出形状: {output.shape}")  # [1, 256, 2, 64]
-```
-
-### 梯度计算示例
-
-```python
-# 开启梯度计算
-query.requires_grad_(True)
-key.requires_grad_(True)
-value.requires_grad_(True)
-attn_bias.requires_grad_(True)
-
-# 前向传播
-output = flash_sparse_attn_func(
-    query=query, key=key, value=value,
-    attn_mask=attn_mask,
-    attn_bias=attn_bias,
-    is_causal=True,
-    softmax_scale=1.0/math.sqrt(head_dim)
-)
-
-# 反向传播
-loss = output.sum()
-loss.backward()
-
-print(f"Query 梯度形状: {query.grad.shape}")
-print(f"Key 梯度形状: {key.grad.shape}")
-print(f"Value 梯度形状: {value.grad.shape}")
-print(f"Bias 梯度形状: {attn_bias.grad.shape}")
-```
 
 
 ## 基准测试
