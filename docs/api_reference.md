@@ -1,9 +1,9 @@
-# Flash Dynamic Mask Attention API Reference
+# Flash Sparse Attention API Reference
 
 
 ## Overview
 
-Flash Dynamic Mask Attention is a high-performance attention implementation that combines the memory efficiency of Flash Attention with the sparse compute benefits of Dynamic Mask Attention. It supports CUDA, Triton, and Flex Attention backends and dynamic masking for very long sequences.
+Flash Sparse Attention is a high-performance attention implementation that combines the memory efficiency of Flash Attention with the sparse compute benefits of Dynamic Mask Attention. It supports CUDA, Triton, and Flex Attention backends and dynamic masking for very long sequences.
 
 
 ## Table of Contents
@@ -12,9 +12,9 @@ Flash Dynamic Mask Attention is a high-performance attention implementation that
 2. [Quick Start](#quick-start)
 3. [Backend Selection and Comparison](#backend-selection-and-comparison)
 4. [API Reference](#api-reference)
-   - [CUDA Backend: flash_dmattn_func](#flash_dmattn_func-cuda-backend)
-   - [Triton Backend: triton_dmattn_func](#triton_dmattn_func-triton-backend)
-   - [Flex Backend: flex_dmattn_func](#flex_dmattn_func-flex-backend)
+   - [CUDA Backend: flash_sparse_attn_func](#flash_sparse_attn_func-cuda-backend)
+   - [Triton Backend: triton_sparse_attn_func](#triton_sparse_attn_func-triton-backend)
+   - [Flex Backend: flex_sparse_attn_func](#flex_sparse_attn_func-flex-backend)
 5. [Integrations](#integrations)
    - [Transformers Integration](#transformers-integration)
 6. [Common Issues and Solutions](#common-issues-and-solutions)
@@ -22,27 +22,27 @@ Flash Dynamic Mask Attention is a high-performance attention implementation that
 
 ## Installation
 
-Please refer to the [README](https://github.com/SmallDoges/flash-dmattn/blob/main/README.md#install) for detailed installation instructions.
+Please refer to the [README](https://github.com/SmallDoges/flash-sparse-attention/blob/main/README.md#install) for detailed installation instructions.
 
 ```bash
 # With CUDA backend
-pip install flash-dmattn
+pip install flash-sparse-attn
 
 # Or install from source
 pip install -e .
 
 # Triton/Flex only
-FLASH_DMATTN_SKIP_CUDA_BUILD=1 pip install -e .
+FLASH_SPARSE_ATTENTION_SKIP_CUDA_BUILD=1 pip install -e .
 ```
 
 
 ## Quick Start
 
-Use `flash_dmattn_func_auto` to automatically select the best available backend without manual checking.
+Use `flash_sparse_attn_func_auto` to automatically select the best available backend without manual checking.
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func_auto
+from flash_sparse_attn import flash_sparse_attn_func_auto
 
 # Prepare input tensors
 batch, seqlen, num_heads, head_dim = 2, 1024, 8, 64
@@ -51,19 +51,19 @@ k = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device
 v = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device='cuda')
 
 # Get attention function (auto-select backend, priority: cuda > triton > flex)
-attn_func = flash_dmattn_func_auto()
+attn_func = flash_sparse_attn_func_auto()
 
 # Compute attention
 output = attn_func(q, k, v, is_causal=True)
 print(f"Output shape: {output.shape}")  # (2, 1024, 8, 64)
 
 # Or force a specific backend
-attn_func = flash_dmattn_func_auto(backend="cuda")  # or "triton", "flex"
+attn_func = flash_sparse_attn_func_auto(backend="cuda")  # or "triton", "flex"
 output = attn_func(q, k, v, is_causal=True)
 ```
 
 > [!NOTE]
-> `flash_dmattn_func_auto` returns a callable attention function, not the attention output.
+> `flash_sparse_attn_func_auto` returns a callable attention function, not the attention output.
 
 
 ## Backend Selection and Comparison
@@ -71,7 +71,7 @@ output = attn_func(q, k, v, is_causal=True)
 ### Check Available Backends
 
 ```python
-from flash_dmattn import get_available_backends, CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE
+from flash_sparse_attn import get_available_backends, CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE
 
 # List all available backends
 print(get_available_backends())  # e.g., ["cuda", "triton", "flex"]
@@ -101,19 +101,19 @@ print(f"CUDA: {CUDA_AVAILABLE}, Triton: {TRITON_AVAILABLE}, Flex: {FLEX_AVAILABL
 
 ### When to Use Each Backend
 
-**CUDA Backend** ([details](#flash_dmattn_func-cuda-backend))
+**CUDA Backend** ([details](#flash_sparse_attn_func-cuda-backend))
 - ✅ Training workloads requiring full gradient support
 - ✅ Production inference requiring maximum performance
 - ✅ Applications needing deterministic behavior
 - ❌ Avoid: when custom CUDA extensions cannot be built
 
-**Triton Backend** ([details](#triton_dmattn_func-triton-backend))
+**Triton Backend** ([details](#triton_sparse_attn_func-triton-backend))
 - ✅ Training when CUDA extension unavailable
 - ✅ Development and prototyping
 - ✅ Cross-platform compatibility needs
 - ✅ Good balance of performance and ease of installation
 
-**Flex Backend** ([details](#flex_dmattn_func-flex-backend))
+**Flex Backend** ([details](#flex_sparse_attn_func-flex-backend))
 - ✅ Inference-only applications
 - ✅ Research with latest PyTorch features
 - ✅ Quick experimentation without custom builds
@@ -123,15 +123,15 @@ print(f"CUDA: {CUDA_AVAILABLE}, Triton: {TRITON_AVAILABLE}, Flex: {FLEX_AVAILABL
 ### Import Available Functions
 
 ```python
-from flash_dmattn import (
+from flash_sparse_attn import (
     # Automatic backend selection
     get_available_backends,
-    flash_dmattn_func_auto,
+    flash_sparse_attn_func_auto,
     
     # Backend-specific functions
-    flash_dmattn_func,      # CUDA backend
-    triton_dmattn_func,     # Triton backend
-    flex_dmattn_func,       # Flex backend
+    flash_sparse_attn_func,      # CUDA backend
+    triton_sparse_attn_func,     # Triton backend
+    flex_sparse_attn_func,       # Flex backend
     
     # Backend availability flags
     CUDA_AVAILABLE,
@@ -140,20 +140,20 @@ from flash_dmattn import (
 )
 
 # Transformers integration
-from flash_dmattn.integrations.flash_dynamic_mask_attention import (
-    flash_dynamic_mask_attention_forward
+from flash_sparse_attn.integrations.flash_sparse_attention import (
+    flash_sparse_attention_forward
 )
 ```
 
 
 ## API Reference
 
-### flash_dmattn_func (CUDA backend)
+### flash_sparse_attn_func (CUDA backend)
 
 Main attention function. Supports multi-head and grouped-query attention (when the number of KV heads is smaller than the number of Q heads). Requires the CUDA extension to be built and available.
 
 ```python
-def flash_dmattn_func(
+def flash_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_kv_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
@@ -182,12 +182,12 @@ def flash_dmattn_func(
 
 - output: (B, Q, H, D)
 
-### triton_dmattn_func (Triton backend)
+### triton_sparse_attn_func (Triton backend)
 
 Triton-based implementation that provides good performance without requiring custom CUDA kernels.
 
 ```python
-def triton_dmattn_func(
+def triton_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_heads, head_dim)
@@ -198,12 +198,12 @@ def triton_dmattn_func(
 ) -> torch.Tensor
 ```
 
-### flex_dmattn_func (Flex Attention backend)
+### flex_sparse_attn_func (Flex Attention backend)
 
 Flex Attention-based implementation using PyTorch's native flex attention with dynamic masking support.
 
 ```python
-def flex_dmattn_func(
+def flex_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_heads, head_dim)
@@ -221,13 +221,13 @@ def flex_dmattn_func(
 
 Integration function for HuggingFace Transformers models that provides seamless flash dynamic mask attention support.
 
-#### flash_dynamic_mask_attention_forward
+#### flash_sparse_attention_forward
 
 
 ```python
-from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
+from flash_sparse_attn.integrations.flash_sparse_attention import flash_sparse_attention_forward
 
-def flash_dynamic_mask_attention_forward(
+def flash_sparse_attention_forward(
     module: torch.nn.Module,                        # The attention module
     query: torch.Tensor,                            # (batch_size, num_heads, query_len, head_dim)
     key: torch.Tensor,                              # (batch_size, num_kv_heads, key_len, head_dim)
@@ -254,7 +254,7 @@ def flash_dynamic_mask_attention_forward(
   - is_causal: Whether to apply causal mask
   - window_size: Size of window to keep
   - layer_idx: Layer index for logging
-  - implementation: Implementation to use ("flash_dmattn" or None)
+  - implementation: Implementation to use ("flash_sparse_attn" or None)
 
 #### Returns
 
@@ -268,7 +268,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Callable, tuple
 from transformers.cache_utils import Cache
-from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
+from flash_sparse_attn.integrations.flash_sparse_attention import flash_sparse_attention_forward
 
 class DynamicMaskAttention(nn.Module):
     def __init__(self, config, layer_idx: Optional[int] = None):
@@ -332,7 +332,7 @@ class DynamicMaskAttention(nn.Module):
         attn_bias = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2).to(hidden_states.dtype)
 
         # Choose attention implementation
-        attention_interface: Callable = flash_dynamic_mask_attention_forward
+        attention_interface: Callable = flash_sparse_attention_forward
         
         attn_output, attn_weights = attention_interface(
             self,
@@ -362,7 +362,7 @@ This example shows:
 
 ```python
 try:
-    from flash_dmattn import flash_dmattn_func_auto, get_available_backends
+    from flash_sparse_attn import flash_sparse_attn_func_auto, get_available_backends
     print("✅ Imported successfully", get_available_backends())
 except ImportError as e:
     print(f"❌ Import failed: {e}")
@@ -385,10 +385,10 @@ except ImportError as e:
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func_auto
+from flash_sparse_attn import flash_sparse_attn_func_auto
 
 torch.autograd.set_detect_anomaly(True)
-attn = flash_dmattn_func_auto()
+attn = flash_sparse_attn_func_auto()
 output = attn(q, k, v, attn_mask=attn_mask, attn_bias=attn_bias, is_causal=True)
 if torch.isnan(output).any():
     print("⚠️ NaN detected in attention output")
@@ -404,7 +404,7 @@ def print_memory_stats():
         print(f"max alloc: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
 
 print_memory_stats()
-attn = flash_dmattn_func_auto()
+attn = flash_sparse_attn_func_auto()
 output = attn(q, k, v)
 print_memory_stats()
 ```
