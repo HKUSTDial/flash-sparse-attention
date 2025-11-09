@@ -44,7 +44,7 @@ def get_available_backends():
 
 def flash_sparse_attn_func_auto(backend: Optional[str] = None, **kwargs):
     """
-    Flash Dynamic Mask Attention function with automatic backend selection.
+    Flash Sparse Attention function with automatic backend selection.
     
     Args:
         backend (str, optional): Backend to use ('cuda', 'triton', 'flex'). 
