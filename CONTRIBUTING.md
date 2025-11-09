@@ -202,4 +202,4 @@ If you discover a security vulnerability, please send an e-mail to the maintaine
 
 If you have questions about contributing, feel free to ask in the [GitHub Discussions](https://github.com/SmallDoges/flash-sparse-attention/discussions) or open an issue.
 
-Thank you for contributing to Flash Dynamic Mask Attention! 🚀
+Thank you for contributing to Flash Sparse Attention! 🚀
