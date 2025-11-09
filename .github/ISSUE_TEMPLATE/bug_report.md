@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a report to help us improve Flash-DMA
+about: Create a report to help us improve FSA
 title: '[BUG REPORT] '
 labels: ["bug"]
 assignees: 
@@ -39,7 +39,7 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {
 **Additional context**
 - OS: [e.g. Ubuntu 20.04, Windows 10, macOS 12]
 - Python version: [e.g. 3.9.7]
-- Flash-DMA version: [e.g. 0.1.0]
+- FSA version: [e.g. 0.1.0]
 - CUDA Compute Capability: [e.g. 8.6]
 
 **Error traceback**

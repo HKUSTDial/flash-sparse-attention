@@ -4,7 +4,7 @@ from typing import Optional, Tuple, Any
 from packaging import version
 import torch
 
-import flash_dmattn_cuda as flash_dmattn_gpu    # type: ignore
+import flash_sparse_attn_cuda as flash_sparse_attn_gpu    # type: ignore
 
 
 def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -70,8 +70,8 @@ else:
     _torch_register_fake_wrapper = noop_register_fake_wrapper
 
 
-@_torch_custom_op_wrapper("flash_dmattn::_flash_dmattn_forward", mutates_args=(), device_types="cuda")
-def _flash_dmattn_forward(
+@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_forward", mutates_args=(), device_types="cuda")
+def _flash_sparse_attn_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -83,7 +83,7 @@ def _flash_dmattn_forward(
     return_softmax: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
-    out, softmax_lse, S_dmask = flash_dmattn_gpu.fwd(
+    out, softmax_lse, S_dmask = flash_sparse_attn_gpu.fwd(
         q,
         k,
         v,
@@ -99,8 +99,8 @@ def _flash_dmattn_forward(
     return out, softmax_lse, S_dmask
 
 
-@_torch_register_fake_wrapper("flash_dmattn::_flash_dmattn_forward")
-def _flash_dmattn_forward_fake(
+@_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_forward")
+def _flash_sparse_attn_forward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -123,11 +123,11 @@ def _flash_dmattn_forward_fake(
     return out, softmax_lse, p
 
 
-_wrapped_flash_dmattn_forward = _flash_dmattn_forward
+_wrapped_flash_sparse_attn_forward = _flash_sparse_attn_forward
 
 
-@_torch_custom_op_wrapper("flash_dmattn::_flash_dmattn_varlen_forward", mutates_args=(), device_types="cuda")
-def _flash_dmattn_varlen_forward(
+@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_forward", mutates_args=(), device_types="cuda")
+def _flash_sparse_attn_varlen_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -145,7 +145,7 @@ def _flash_dmattn_varlen_forward(
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse, S_dmask = flash_dmattn_gpu.varlen_fwd(
+    out, softmax_lse, S_dmask = flash_sparse_attn_gpu.varlen_fwd(
         q,
         k,
         v,
@@ -167,8 +167,8 @@ def _flash_dmattn_varlen_forward(
     return out, softmax_lse, S_dmask
 
 
-@_torch_register_fake_wrapper("flash_dmattn::_flash_dmattn_varlen_forward")
-def _flash_dmattn_varlen_forward_fake(
+@_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_forward")
+def _flash_sparse_attn_varlen_forward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -200,11 +200,11 @@ def _flash_dmattn_varlen_forward_fake(
     return out, softmax_lse, p
 
 
-_wrapped_flash_dmattn_varlen_forward = _flash_dmattn_varlen_forward
+_wrapped_flash_sparse_attn_varlen_forward = _flash_sparse_attn_varlen_forward
 
 
-@_torch_custom_op_wrapper("flash_dmattn::_flash_dmattn_backward", mutates_args=("dq", "dk", "dv", "dbias"), device_types="cuda")
-def _flash_dmattn_backward(
+@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_backward", mutates_args=("dq", "dk", "dv", "dbias"), device_types="cuda")
+def _flash_sparse_attn_backward(
     dout: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,
@@ -229,7 +229,7 @@ def _flash_dmattn_backward(
         dv,
         dbias,
         softmax_d,
-    ) = flash_dmattn_gpu.bwd(
+    ) = flash_sparse_attn_gpu.bwd(
         dout,
         q,
         k,
@@ -251,8 +251,8 @@ def _flash_dmattn_backward(
     return softmax_d
 
 
-@_torch_register_fake_wrapper("flash_dmattn::_flash_dmattn_backward")
-def _flash_dmattn_backward_fake(
+@_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_backward")
+def _flash_sparse_attn_backward_fake(
     dout: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,
@@ -285,11 +285,11 @@ def _flash_dmattn_backward_fake(
     return softmax_d
 
 
-_wrapped_flash_dmattn_backward = _flash_dmattn_backward
+_wrapped_flash_sparse_attn_backward = _flash_sparse_attn_backward
 
 
-@_torch_custom_op_wrapper("flash_dmattn::_flash_dmattn_varlen_backward", mutates_args=("dq", "dk", "dv"), device_types="cuda")
-def _flash_dmattn_varlen_backward(
+@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_backward", mutates_args=("dq", "dk", "dv"), device_types="cuda")
+def _flash_sparse_attn_varlen_backward(
     dout: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,
@@ -315,7 +315,7 @@ def _flash_dmattn_varlen_backward(
         dk,
         dv,
         softmax_d,
-    ) = flash_dmattn_gpu.varlen_bwd(
+    ) = flash_sparse_attn_gpu.varlen_bwd(
         dout,
         q,
         k,
@@ -339,8 +339,8 @@ def _flash_dmattn_varlen_backward(
     return softmax_d
 
 
-@_torch_register_fake_wrapper("flash_dmattn::_flash_dmattn_varlen_backward")
-def _flash_dmattn_varlen_backward_fake(
+@_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_backward")
+def _flash_sparse_attn_varlen_backward_fake(
     dout: torch.Tensor,
     q: torch.Tensor,
     k: torch.Tensor,
@@ -376,7 +376,7 @@ def _flash_dmattn_varlen_backward_fake(
     return softmax_d
 
 
-_wrapped_flash_dmattn_varlen_backward = _flash_dmattn_varlen_backward
+_wrapped_flash_sparse_attn_varlen_backward = _flash_sparse_attn_varlen_backward
 
 
 class FlashDMAttnFunc(torch.autograd.Function):
@@ -429,7 +429,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             else:
                 bias = torch.nn.functional.pad(bias, [0, seqlen_k_rounded - bias.shape[-1]])
 
-        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_sparse_attn_forward(
             q,
             k,
             v,
@@ -468,7 +468,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if head_size_og % 8 != 0:
             dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
 
-        _wrapped_flash_dmattn_backward(
+        _wrapped_flash_sparse_attn_backward(
             dout_padded,
             q,
             k,
@@ -539,7 +539,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             k = torch.nn.functional.pad(k, [0, 8 - head_size_og % 8])
             v = torch.nn.functional.pad(v, [0, 8 - head_size_og % 8])
 
-        out_padded, softmax_lse, S_dmask = _wrapped_flash_dmattn_varlen_forward(
+        out_padded, softmax_lse, S_dmask = _wrapped_flash_sparse_attn_varlen_forward(
             q,
             k,
             v,
@@ -579,7 +579,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         if head_size_og % 8 != 0:
             dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
 
-        _wrapped_flash_dmattn_varlen_backward(
+        _wrapped_flash_sparse_attn_varlen_backward(
             dout_padded,
             q,
             k,
@@ -607,7 +607,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
 
 
-def flash_dmattn_func(
+def flash_sparse_attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -684,7 +684,7 @@ def flash_dmattn_func(
     )
 
 
-def flash_dmattn_varlen_func(
+def flash_sparse_attn_varlen_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,

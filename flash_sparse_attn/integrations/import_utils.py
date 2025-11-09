@@ -80,11 +80,11 @@ def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[
 
 
 @lru_cache
-def is_flash_dmattn_available():
+def is_flash_sparse_attn_available():
     if not is_torch_available():
         return False
 
-    if not _is_package_available("flash_dmattn"):
+    if not _is_package_available("flash_sparse_attn"):
         return False
 
     import torch

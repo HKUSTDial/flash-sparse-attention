@@ -45,6 +45,117 @@ Thus, a more effective approach is sparse attention: interacting each query with
 - Further performance improvements for skipping memory access and computation
 
 
+## Installation
+
+### Requirements
+
+- **Linux**: Ubuntu 22.04 or later
+- **NVIDIA GPU**: Compute Capability 8.0 or higher
+- **C++ Compiler**: GCC 7+
+- **CUDA**: 11.8 or later
+- **Python**: 3.9 or later
+- **PyTorch**: 2.5.1 or later  
+
+### Install
+
+You can install FSA via pre-compiled wheels:
+
+```bash
+pip install flash-sparse-attn --no-build-isolation
+```
+
+Alternatively, you can compile and install from source:
+
+```bash
+git clone https://github.com/SmallDoges/flash-sparse-attn.git
+cd flash-sparse-attn
+pip install . --no-build-isolation
+```
+
+
+## Quick Start
+
+### Basic Usage
+
+```python
+import torch
+from flash_sparse_attn import flash_sparse_attn_func_auto
+from flash_sparse_attn.utils.mask import create_mask
+import math
+
+# Setup
+batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
+window_size = 128
+device = torch.device('cuda')
+dtype = torch.bfloat16
+min_dtype = torch.finfo(dtype).min  # dtype minimum value
+
+# Input tensors
+query = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
+key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
+value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
+
+# Create bias for sparse attention
+attn_bias = torch.randn(batch_size, num_kv_heads, 1, seq_len, device=device, dtype=dtype)
+
+# Generate dynamic mask based on bias
+if seq_len > window_size:
+    attn_mask = create_mask(
+        attention_bias=attn_bias,
+        attention_mask=None,
+        batch_size=batch_size,
+        query_len=seq_len,
+        key_len=seq_len,
+        window_size=window_size,
+        min_dtype=min_dtype,
+    )
+
+# Select FSA kernel
+flash_sparse_attn_func = flash_sparse_attn_func_auto(backend="cuda")
+
+# Run Flash-Sparse-Attention
+output = flash_sparse_attn_func(
+    query=query,
+    key=key,
+    value=value,
+    attn_mask=attn_mask,
+    attn_bias=attn_bias,
+    is_causal=True,
+    softmax_scale=1.0/math.sqrt(head_dim),
+)
+
+print(f"Output shape: {output.shape}")  # [1, 256, 2, 64]
+```
+
+### Gradient Computation Example
+
+```python
+# Enable gradient computation
+query.requires_grad_(True)
+key.requires_grad_(True)
+value.requires_grad_(True)
+attn_bias.requires_grad_(True)
+
+# Forward pass
+output = flash_sparse_attn_func(
+    query=query, key=key, value=value,
+    attn_mask=attn_mask,
+    attn_bias=attn_bias,
+    is_causal=True,
+    softmax_scale=1.0/math.sqrt(head_dim)
+)
+
+# Backward pass
+loss = output.sum()
+loss.backward()
+
+print(f"Query gradient shape: {query.grad.shape}")
+print(f"Key gradient shape: {key.grad.shape}")
+print(f"Value gradient shape: {value.grad.shape}")
+print(f"Bias gradient shape: {attn_bias.grad.shape}")
+```
+
+
 ## Performance
 
 We present the expected speedup of FSA over standard PyTorch SDPA under mask and bias conditions.
@@ -132,117 +243,6 @@ The following table shows the backward pass performance comparison between FSA a
 | Train | 32768 | 32768  | 32768    | 142.43        | 25.63         | 5.6x    |
 
 ---
-
-
-## Installation
-
-### Requirements
-
-- **Linux**: Ubuntu 22.04 or later
-- **NVIDIA GPU**: Compute Capability 8.0 or higher
-- **C++ Compiler**: GCC 7+
-- **CUDA**: 11.8 or later
-- **Python**: 3.9 or later
-- **PyTorch**: 2.5.1 or later  
-
-### Install
-
-You can install FSA via pre-compiled wheels:
-
-```bash
-pip install flash_sparse_attn --no-build-isolation
-```
-
-Alternatively, you can compile and install from source:
-
-```bash
-git clone https://github.com/SmallDoges/flash_sparse_attn.git
-cd flash_sparse_attn
-pip install . --no-build-isolation
-```
-
-
-## Quick Start
-
-### Basic Usage
-
-```python
-import torch
-from flash_sparse_attn import flash_sparse_attn_func_auto
-from flash_sparse_attn.utils.mask import create_mask
-import math
-
-# Setup
-batch_size, seq_len, num_heads, num_kv_heads, head_dim = 1, 256, 2, 1, 64
-window_size = 128
-device = torch.device('cuda')
-dtype = torch.bfloat16
-min_dtype = torch.finfo(dtype).min  # dtype minimum value
-
-# Input tensors
-query = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=dtype)
-key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
-value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
-
-# Create bias for sparse attention
-attn_bias = torch.randn(batch_size, num_kv_heads, 1, seq_len, device=device, dtype=dtype)
-
-# Generate dynamic mask based on bias
-if seq_len > window_size:
-    attn_mask = create_mask(
-        attention_bias=attn_bias,
-        attention_mask=None,
-        batch_size=batch_size,
-        query_len=seq_len,
-        key_len=seq_len,
-        window_size=window_size,
-        min_dtype=min_dtype,
-    )
-
-# Select FSA kernel
-flash_sparse_attn_func = flash_sparse_attn_func_auto(backend="cuda")
-
-# Run Flash-Sparse-Attention
-output = flash_sparse_attn_func(
-    query=query,
-    key=key,
-    value=value,
-    attn_mask=attn_mask,
-    attn_bias=attn_bias,
-    is_causal=True,
-    softmax_scale=1.0/math.sqrt(head_dim),
-)
-
-print(f"Output shape: {output.shape}")  # [1, 256, 2, 64]
-```
-
-### Gradient Computation Example
-
-```python
-# Enable gradient computation
-query.requires_grad_(True)
-key.requires_grad_(True)
-value.requires_grad_(True)
-attn_bias.requires_grad_(True)
-
-# Forward pass
-output = flash_sparse_attn_func(
-    query=query, key=key, value=value,
-    attn_mask=attn_mask,
-    attn_bias=attn_bias,
-    is_causal=True,
-    softmax_scale=1.0/math.sqrt(head_dim)
-)
-
-# Backward pass
-loss = output.sum()
-loss.backward()
-
-print(f"Query gradient shape: {query.grad.shape}")
-print(f"Key gradient shape: {key.grad.shape}")
-print(f"Value gradient shape: {value.grad.shape}")
-print(f"Bias gradient shape: {attn_bias.grad.shape}")
-```
 
 
 ## Benchmarking

@@ -172,7 +172,7 @@ def create_mask(
     type: str = "topk",
 ) -> torch.Tensor:
     r"""
-    This function creates a mask tensor for Flash Dynamic Mask Attention.
+    This function creates a mask tensor for Flash Sparse Attention.
 
     If attention_mask is not of shape (batch_size, seq_len), it needs to match the shape of attention_bias.
     

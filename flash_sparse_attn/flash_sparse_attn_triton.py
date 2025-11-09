@@ -888,7 +888,7 @@ def _bwd_kernel(
         )
 
 
-def _flash_dmattn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=False):
+def _flash_sparse_attn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=False):
     # shape constraints
     batch, seqlen_q, nheads, d = q.shape
     _, seqlen_k, nheads_k, _ = k.shape
@@ -980,7 +980,7 @@ def _flash_dmattn_forward(q, k, v, mask, bias, softmax_scale=None, is_causal=Fal
     return o, lse, softmax_scale  # softmax_scale could have been updated
 
 
-def _flash_dmattn_backward(
+def _flash_sparse_attn_backward(
     do, q, k, v, mask, bias, o, lse, softmax_scale=None, is_causal=False
 ):
     # Make sure that the last dimension is contiguous
@@ -1195,7 +1195,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             else:
                 attn_bias = torch.nn.functional.pad(attn_bias, [0, seqlen_k_rounded - attn_bias.shape[-1]])
 
-        o, lse, ctx.softmax_scale = _flash_dmattn_forward(
+        o, lse, ctx.softmax_scale = _flash_sparse_attn_forward(
             query,
             key,
             value,
@@ -1218,7 +1218,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if head_size_og % 8 != 0:
             do_padded = torch.nn.functional.pad(do, [0, 8 - head_size_og % 8])
 
-        dq, dk, dv, dbias = _flash_dmattn_backward(
+        dq, dk, dv, dbias = _flash_sparse_attn_backward(
             do_padded,
             query,
             key,
@@ -1242,5 +1242,5 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, dbias, None, None
 
 
-def triton_dmattn_func(query, key, value, attn_mask=None, attn_bias=None, is_causal=False, softmax_scale=None):
+def triton_sparse_attn_func(query, key, value, attn_mask=None, attn_bias=None, is_causal=False, softmax_scale=None):
     return FlashDMAttnFunc.apply(query, key, value, attn_mask, attn_bias, is_causal, softmax_scale)

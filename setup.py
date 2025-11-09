@@ -34,19 +34,19 @@ with open("README.md", "r", encoding="utf-8") as fh:
 # ninja build does not work unless include_dirs are abs path
 this_dir = os.path.dirname(os.path.abspath(__file__))
 
-PACKAGE_NAME = "flash_dmattn"
+PACKAGE_NAME = "flash_sparse_attn"
 
 BASE_WHEEL_URL = (
-    "https://github.com/SmallDoges/flash-dmattn/releases/download/{tag_name}/{wheel_name}"
+    "https://github.com/SmallDoges/flash-sparse-attention/releases/download/{tag_name}/{wheel_name}"
 )
 
 # FORCE_BUILD: Force a fresh build locally, instead of attempting to find prebuilt wheels
 # SKIP_CUDA_BUILD: Intended to allow CI to use a simple `python setup.py sdist` run to copy over raw files, without any cuda compilation
 # Also useful when user only wants Triton/Flex backends without CUDA compilation
-FORCE_BUILD = os.getenv("FLASH_DMATTN_FORCE_BUILD", "FALSE") == "TRUE"
-SKIP_CUDA_BUILD = os.getenv("FLASH_DMATTN_SKIP_CUDA_BUILD", "FALSE") == "TRUE"
+FORCE_BUILD = os.getenv("FLASH_SPARSE_ATTENTION_FORCE_BUILD", "FALSE") == "TRUE"
+SKIP_CUDA_BUILD = os.getenv("FLASH_SPARSE_ATTENTION_SKIP_CUDA_BUILD", "FALSE") == "TRUE"
 # For CI, we want the option to build with C++11 ABI since the nvcr images use C++11 ABI
-FORCE_CXX11_ABI = os.getenv("FLASH_DMATTN_FORCE_CXX11_ABI", "FALSE") == "TRUE"
+FORCE_CXX11_ABI = os.getenv("FLASH_SPARSE_ATTENTION_FORCE_CXX11_ABI", "FALSE") == "TRUE"
 
 # Auto-detect if user wants only Triton/Flex backends based on pip install command
 # This helps avoid unnecessary CUDA compilation when user only wants Python backends
@@ -69,7 +69,7 @@ def should_skip_cuda_build():
 
         if has_triton_or_flex and not has_all_or_dev:
             print("Detected Triton/Flex-only installation. Skipping CUDA compilation.")
-            print("Set FLASH_DMATTN_FORCE_BUILD=TRUE to force CUDA compilation.")
+            print("Set FLASH_SPARSE_ATTENTION_FORCE_BUILD=TRUE to force CUDA compilation.")
             return True
     
     return False
@@ -79,7 +79,7 @@ SKIP_CUDA_BUILD = should_skip_cuda_build()
 
 @functools.lru_cache(maxsize=None)
 def cuda_archs():
-    return os.getenv("FLASH_DMATTN_CUDA_ARCHS", "80;90;100").split(";")
+    return os.getenv("FLASH_SPARSE_ATTENTION_CUDA_ARCHS", "80;90;100").split(";")
 
 
 def detect_preferred_sm_arch() -> Optional[str]:
@@ -154,14 +154,14 @@ if not SKIP_CUDA_BUILD:
     TORCH_MAJOR = int(torch.__version__.split(".")[0])
     TORCH_MINOR = int(torch.__version__.split(".")[1])
 
-    check_if_cuda_home_none("flash_dmattn")
+    check_if_cuda_home_none("flash_sparse_attn")
     # Check, if CUDA11 is installed for compute capability 8.0
     cc_flag = []
     if CUDA_HOME is not None:
         _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
         if bare_metal_version < Version("11.7"):
             raise RuntimeError(
-                "Flash Dynamic Mask Attention is only supported on CUDA 11.7 and above.  "
+                "Flash Sparse Attention is only supported on CUDA 11.7 and above.  "
                 "Note: make sure nvcc has a supported version by running nvcc -V."
             )
 
@@ -218,20 +218,20 @@ if not SKIP_CUDA_BUILD:
 
     ext_modules.append(
         CUDAExtension(
-            name="flash_dmattn_cuda",
+            name="flash_sparse_attn_cuda",
             sources=(
                 [
-                    "csrc/flash_dmattn/flash_api.cpp",
+                    "csrc/flash_sparse_attn/flash_api.cpp",
                 ]
-                + sorted(glob.glob("csrc/flash_dmattn/src/instantiations/flash_*.cu"))
+                + sorted(glob.glob("csrc/flash_sparse_attn/src/instantiations/flash_*.cu"))
             ),
             extra_compile_args={
                 "cxx": compiler_c17_flag,
                 "nvcc": append_nvcc_threads(nvcc_flags + cc_flag),
             },
             include_dirs=[
-                Path(this_dir) / "csrc" / "flash_dmattn",
-                Path(this_dir) / "csrc" / "flash_dmattn" / "src",
+                Path(this_dir) / "csrc" / "flash_sparse_attn",
+                Path(this_dir) / "csrc" / "flash_sparse_attn" / "src",
                 Path(this_dir) / "csrc" / "cutlass" / "include",
             ],
         )
@@ -239,10 +239,10 @@ if not SKIP_CUDA_BUILD:
 
 
 def get_package_version():
-    with open(Path(this_dir) / "flash_dmattn" / "__init__.py", "r") as f:
+    with open(Path(this_dir) / "flash_sparse_attn" / "__init__.py", "r") as f:
         version_match = re.search(r"^__version__\s*=\s*(.*)$", f.read(), re.MULTILINE)
     public_version = ast.literal_eval(version_match.group(1))
-    local_version = os.environ.get("FLASH_DMATTN_LOCAL_VERSION")
+    local_version = os.environ.get("FLASH_SPARSE_ATTENTION_LOCAL_VERSION")
     if local_version:
         return f"{public_version}+{local_version}"
     else:

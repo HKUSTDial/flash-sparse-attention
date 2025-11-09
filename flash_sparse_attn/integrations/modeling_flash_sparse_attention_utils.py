@@ -19,7 +19,7 @@ from typing import Optional, TypedDict
 import torch
 import torch.nn.functional as F
 
-from .import_utils import is_flash_dmattn_available
+from .import_utils import is_flash_sparse_attn_available
 from transformers.utils import logging
 
 
@@ -27,15 +27,15 @@ logger = logging.get_logger(__name__)
 
 
 # `globals()` is not compatible with dynamo, hence we have do define them in global scope ourselves
-_fdma_fn = None
-_fdma_varlen_fn = None
+_fsa_fn = None
+_fsa_varlen_fn = None
 _pad_fn = None
 _unpad_fn = None
 _create_mask_fn = None
 
 # function that processes kwargs, generalized to handle any supported kwarg within the function
 _process_flash_kwargs_fn = None
-# exceptions where hf API doesn't match the original FDMA API
+# exceptions where hf API doesn't match the original FSA API
 _hf_api_to_flash_mapping = {
     "dropout": None,
     "sliding_window": None,
@@ -44,61 +44,60 @@ _hf_api_to_flash_mapping = {
 
 def _lazy_imports(implementation: Optional[str]):
     """
-    Lazy loads the respective flash dynamic mask attention implementations.
+    Lazy loads the respective flash sparse attention implementations.
 
     Return:
-        flash_attn_func: The base flash dynamic mask attention function.
-        flash_attn_varlen_func: The flash dynamic mask attention function supporting variable sequence lengths, e.g. for padding-free training.
+        flash_sparse_attn_func: The base flash sparse attention function.
+        flash_sparse_attn_varlen_func: The flash sparse attention function supporting variable sequence lengths, e.g. for padding-free training.
         pad_input: The function to pad inputs into one sequence and returning the respective kwargs.
         unpad_input: The function to unpad outputs based on the kwargs (from pad_input).
     """
-    is_fdma = is_flash_dmattn_available()
+    is_fsa = is_flash_sparse_attn_available()
 
-    if (implementation == "flash_dmattn" and is_fdma) or (implementation is None and is_fdma):
-        from flash_dmattn import flash_dmattn_func, flash_dmattn_varlen_func
-        from flash_dmattn.utils.padding import pad_input, unpad_input
-        from flash_dmattn.utils.mask import create_mask
+    if (implementation == "flash_sparse_attn" and is_fsa) or (implementation is None and is_fsa):
+        from flash_sparse_attn import flash_sparse_attn_func, flash_sparse_attn_varlen_func
+        from flash_sparse_attn.utils.padding import pad_input, unpad_input
+        from flash_sparse_attn.utils.mask import create_mask
 
-    return flash_dmattn_func, flash_dmattn_varlen_func, pad_input, unpad_input, create_mask
+    return flash_sparse_attn_func, flash_sparse_attn_varlen_func, pad_input, unpad_input, create_mask
 
 
 def _lazy_define_process_function(flash_function):
     """
     Depending on the version and kernel some features are not supported. Due to limitations in
     `torch.compile`, we opt to statically type which (optional) kwarg parameters are supported
-    within `_process_flash_dynamic_mask_attention_kwargs`.
+    within `_process_flash_sparse_attention_kwargs`.
 
     NOTE: While all supported kwargs are marked as `True`, everything else is marked as `False`.
           This might be confusing for kwargs that we use in any case, e.g. `is_causal`.
     """
 
     flash_parameters = inspect.signature(flash_function).parameters
-    process_parameters = inspect.signature(_process_flash_dynamic_mask_attention_kwargs).parameters
+    process_parameters = inspect.signature(_process_flash_sparse_attention_kwargs).parameters
 
     supports_mapping = {}
     for param in process_parameters:
-        fdma_param = _hf_api_to_flash_mapping.get(param, param)
-        supports_mapping[fdma_param] = fdma_param in flash_parameters
+        fsa_param = _hf_api_to_flash_mapping.get(param, param)
+        supports_mapping[fsa_param] = fsa_param in flash_parameters
 
-    return partial(_process_flash_dynamic_mask_attention_kwargs, supports_mapping=supports_mapping)
+    return partial(_process_flash_sparse_attention_kwargs, supports_mapping=supports_mapping)
 
 
-def lazy_import_flash_dynamic_mask_attention(implementation: Optional[str], force_import: Optional[bool] = False):
+def lazy_import_flash_sparse_attention(implementation: Optional[str], force_import: Optional[bool] = False):
     """
-    Lazily import flash dmattn and return the respective functions + flags.
+    Lazily import flash sparse attention and return the respective functions + flags.
 
     NOTE: For fullgraph, this needs to be called before compile, while no fullgraph can
     work without preloading. See `load_and_register_kernel` in `integrations.hub_kernels`.
     """
-    global _fdma_fn, _fdma_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn
-    if force_import or any(k is None for k in [_fdma_fn, _fdma_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn]):
-        _fdma_fn, _fdma_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn = _lazy_imports(implementation)
+    global _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn
+    if force_import or any(k is None for k in [_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn]):
+        _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn = _lazy_imports(implementation)
 
     global _process_flash_kwargs_fn
     if force_import or _process_flash_kwargs_fn is None:
-        _process_flash_kwargs_fn = _lazy_define_process_function(_fdma_varlen_fn)
-
-    return (_fdma_fn, _fdma_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn), _process_flash_kwargs_fn
+        _process_flash_kwargs_fn = _lazy_define_process_function(_fsa_varlen_fn)
+    return (_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn), _process_flash_kwargs_fn
 
 
 def _index_first_axis(tensor, indices):
@@ -131,7 +130,7 @@ def _get_unpad_data(attention_mask: torch.Tensor) -> tuple[torch.Tensor, torch.T
     """
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
-    # NOTE: Similar to the `.item()` in prepare_fdma_kwargs_from_position_ids, with torch compile,
+    # NOTE: Similar to the `.item()` in prepare_fsa_kwargs_from_position_ids, with torch compile,
     # this might cause a graph break
     max_seqlen_in_batch = seqlens_in_batch.max().item()
     cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
@@ -221,9 +220,9 @@ def _upad_input(
     )
 
 
-def prepare_fdma_kwargs_from_position_ids(position_ids):
+def prepare_fsa_kwargs_from_position_ids(position_ids):
     """
-    This function returns all the necessary kwargs to call `flash_attn_varlen_func` extracted from position_ids.
+    This function returns all the necessary kwargs to call `flash_sparse_attn_varlen_func` extracted from position_ids.
 
     Arguments:
         position_ids (`torch.Tensor`):
@@ -267,7 +266,7 @@ def prepare_fdma_kwargs_from_position_ids(position_ids):
 
 def _prepare_from_posids(query, key, value, position_ids):
     """
-    This function returns necessary arguments to call `flash_attn_varlen_func`.
+    This function returns necessary arguments to call `flash_sparse_attn_varlen_func`.
     All three query, key, value states will be flattened.
     Cumulative lengths of each examples in the batch will be extracted from position_ids.
     NOTE: ideally cumulative lengths should be prepared at the data collator stage
@@ -298,7 +297,7 @@ def _prepare_from_posids(query, key, value, position_ids):
     key = key.contiguous().view(-1, key.size(-2), key.size(-1))
     value = value.contiguous().view(-1, value.size(-2), value.size(-1))
 
-    (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = prepare_fdma_kwargs_from_position_ids(position_ids)
+    (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = prepare_fsa_kwargs_from_position_ids(position_ids)
 
     return (query, key, value, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k))
 
@@ -319,7 +318,7 @@ def _is_packed_sequence(position_ids, batch_size):
     return batch_size == 1 and (increasing_position_sequences - position_ids).abs().sum().bool()
 
 
-def fdma_peft_integration_check(
+def fsa_peft_integration_check(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -333,16 +332,16 @@ def fdma_peft_integration_check(
     This might slowdown training & inference so it is recommended to not cast the LayerNorms!
     """
     if target_dtype and q.dtype == torch.float32:
-        logger.warning_once(f"Casting fp32 inputs back to {target_dtype} for flash-dmattn compatibility.")
+        logger.warning_once(f"Casting fp32 inputs back to {target_dtype} for flash_sparse_attn compatibility.")
         q, k, v = q.to(target_dtype), k.to(target_dtype), v.to(target_dtype)
         if bias is not None:
             bias = bias.to(target_dtype)
     return q, k, v, bias
 
 
-class FlashDynamicMaskAttentionKwargs(TypedDict, total=False):
+class FlashSparseAttentionKwargs(TypedDict, total=False):
     """
-    Keyword arguments for Flash Dynamic Mask Attention with Compile.
+    Keyword arguments for Flash Sparse Attention with Compile.
 
     Attributes:
         cu_seq_lens_q (`torch.LongTensor`, *optional*)
@@ -361,7 +360,7 @@ class FlashDynamicMaskAttentionKwargs(TypedDict, total=False):
     max_length_k: Optional[int]
 
 
-def _process_flash_dynamic_mask_attention_kwargs(
+def _process_flash_sparse_attention_kwargs(
     query_length: int,
     key_length: int,
     is_causal: bool,
@@ -376,7 +375,7 @@ def _process_flash_dynamic_mask_attention_kwargs(
     """
     Returns a set of kwargs that are passed down to the according flash attention function based on
     requested features and whether it is supported - depends on the version and kernel implementation
-    which is dynamically configured at `lazy_import_flash_dynamic_mask_attention`. The (un)supported features can be
+    which is dynamically configured at `lazy_import_flash_sparse_attention`. The (un)supported features can be
     inspected in `supports_mapping`, see `_lazy_define_process_function` for more details.
 
     Args:
@@ -410,7 +409,7 @@ def _process_flash_dynamic_mask_attention_kwargs(
 
     if supports_mapping["deterministic"]:
         flash_kwargs["deterministic"] = (
-            deterministic if deterministic is not None else os.getenv("FLASH_DMATTN_DETERMINISTIC", "0") == "1"
+            deterministic if deterministic is not None else os.getenv("FLASH_SPARSE_ATTENTION_DETERMINISTIC", "0") == "1"
         )
 
     if supports_mapping["softcap"] and softcap is not None:
@@ -423,7 +422,7 @@ def _process_flash_dynamic_mask_attention_kwargs(
     return flash_kwargs
 
 
-def _flash_dynamic_mask_attention_forward(
+def _flash_sparse_attention_forward(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
     value_states: torch.Tensor,
@@ -446,18 +445,18 @@ def _flash_dynamic_mask_attention_forward(
     **kwargs,
 ):
     """
-    Calls the forward method of Flash Dynamic Mask Attention - if the input hidden states contain at least one padding token
+    Calls the forward method of Flash Sparse Attention - if the input hidden states contain at least one padding token
     first unpad the input, then computes the attention scores and pad the final attention scores.
 
-    (Optional) kwargs are described further in `_process_flash_dynamic_mask_attention_kwargs` and `FlashDynamicMaskAttentionKwargs`.
+    (Optional) kwargs are described further in `_process_flash_sparse_attention_kwargs` and `FlashSparseAttentionKwargs`.
 
     Args:
         query_states (`torch.Tensor`):
-            Input query states to be passed to Flash DMATTN API
+            Input query states to be passed to FSA API
         key_states (`torch.Tensor`):
-            Input key states to be passed to Flash DMATTN API
+            Input key states to be passed to FSA API
         value_states (`torch.Tensor`):
-            Input value states to be passed to Flash DMATTN API
+            Input value states to be passed to FSA API
         attention_mask (`torch.Tensor`, *optional*):
             The padding mask - corresponds to a tensor of size `(batch_size, seq_len)` where 0 stands for the
             position of padding tokens and 1 for the position of non-padding tokens.
@@ -476,10 +475,10 @@ def _flash_dynamic_mask_attention_forward(
             "If shape of attention_mask is (batch_size, seq_len), attention_bias has to be None."
         )
 
-    (fdma_fn, fdma_varlen_fn, pad_fn, unpad_fn, create_mask_fn), process_flash_kwargs_fn = lazy_import_flash_dynamic_mask_attention(implementation)
+    (fsa_fn, fsa_varlen_fn, pad_fn, unpad_fn, create_mask_fn), process_flash_kwargs_fn = lazy_import_flash_sparse_attention(implementation)
 
     # PEFT possibly silently casts tensors to fp32, this potentially reconverts to correct dtype or is a no op
-    query_states, key_states, value_states, attention_bias = fdma_peft_integration_check(
+    query_states, key_states, value_states, attention_bias = fsa_peft_integration_check(
         query_states, key_states, value_states, attention_bias, target_dtype
     )
 
@@ -495,15 +494,15 @@ def _flash_dynamic_mask_attention_forward(
         **kwargs,
     )
 
-    # We will use `fdma_varlen_fn` to prevent cross-example attention and also allow padding free approach under two cases:
+    # We will use `fsa_varlen_fn` to prevent cross-example attention and also allow padding free approach under two cases:
     # Case 1. If position ids is provided and the position ids indicate packed sequences, see `_is_packed_sequence`.
     # Case 2. Some models pass directly pre-computed `cu_seqlens` so we don't need to infer it from position ids. It is safe to
-    # use `fdma_varlen_fn` knowing we already have all necessary the kwargs.
+    # use `fsa_varlen_fn` knowing we already have all necessary the kwargs.
     #
     # NOTE: it is user's responsibility to take care of flattening `position_ids` if that's needed by the model.
     # See #39121 for more information.
-    is_fdma_with_position_ids = _is_packed_sequence(position_ids, batch_size=query_states.size(0))
-    is_fdma_with_varlen_kwargs = all(
+    is_fsa_with_position_ids = _is_packed_sequence(position_ids, batch_size=query_states.size(0))
+    is_fsa_with_varlen_kwargs = all(
         kwarg is not None for kwarg in (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
     )
 
@@ -518,7 +517,7 @@ def _flash_dynamic_mask_attention_forward(
         if "mps" in str(q.device):
             cu_seq_lens_k = cu_seq_lens_k.clone()
 
-        out_unpad = fdma_varlen_fn(
+        out_unpad = fsa_varlen_fn(
             q,
             k,
             v,
@@ -534,7 +533,7 @@ def _flash_dynamic_mask_attention_forward(
         out = pad_fn(out_unpad, indices_q, query_states.size(0), query_length)
     
     # Padding free, i.e. sequences flattened into one total sequence
-    elif is_fdma_with_varlen_kwargs or is_fdma_with_position_ids:
+    elif is_fsa_with_varlen_kwargs or is_fsa_with_position_ids:
         if cu_seq_lens_q is None or cu_seq_lens_k is None:
             q, k, v, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = _prepare_from_posids(
                 query_states, key_states, value_states, position_ids
@@ -549,7 +548,7 @@ def _flash_dynamic_mask_attention_forward(
         if "mps" in str(q.device):
             cu_seq_lens_k = cu_seq_lens_k.clone()
 
-        out = fdma_varlen_fn(
+        out = fsa_varlen_fn(
             q,
             k,
             v,
@@ -583,7 +582,7 @@ def _flash_dynamic_mask_attention_forward(
                 min_dtype=torch.finfo(attention_bias.dtype).min,
             )
     
-        out = fdma_fn(
+        out = fsa_fn(
             query_states,
             key_states,
             value_states,

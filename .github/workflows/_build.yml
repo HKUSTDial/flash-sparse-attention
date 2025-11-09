@@ -172,12 +172,12 @@ jobs:
 
           export MAX_JOBS=$([ "$MATRIX_CUDA_VERSION" == "129" ] && echo 1 || echo 2)
           export NVCC_THREADS=2
-          export FLASH_DMATTN_FORCE_BUILD="TRUE"
-          export FLASH_DMATTN_FORCE_CXX11_ABI=${{ inputs.cxx11_abi }}
+          export FLASH_SPARSE_ATTENTION_FORCE_BUILD="TRUE"
+          export FLASH_SPARSE_ATTENTION_FORCE_CXX11_ABI=${{ inputs.cxx11_abi }}
 
           # If specified, limit to a single compute capability to speed up build
           if [ -n "${MATRIX_ARCH}" ]; then
-            export FLASH_DMATTN_CUDA_ARCHS="${MATRIX_ARCH}"
+            export FLASH_SPARSE_ATTENTION_CUDA_ARCHS="${MATRIX_ARCH}"
           fi
 
           # GH allows max 6h

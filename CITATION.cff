@@ -1,8 +1,8 @@
 cff-version: "1.2.0"
 date-released: 2025-06
 message: "If you use this software, please cite it using these metadata."
-title: "Flash Dynamic Mask Attention: Trainable Dynamic Mask Sparse Attention"
-url: "https://github.com/SmallDoges/flash-dmattn"
+title: "Flash Sparse Attention: Trainable Dynamic Mask Sparse Attention"
+url: "https://github.com/SmallDoges/flash-sparse-attention"
 authors:
   - family-names: Shi
     given-names: Jingze

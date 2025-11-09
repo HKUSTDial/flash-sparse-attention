@@ -77,4 +77,4 @@ def flex_attention_forward(
 
     return attn_output
 
-flex_dmattn_func = flex_attention_forward
+flex_sparse_attn_func = flex_attention_forward

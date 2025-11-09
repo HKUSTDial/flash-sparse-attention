@@ -28,33 +28,33 @@ import gc
 
 # Import the compiled CUDA extension
 try:
-    from flash_dmattn.flash_dmattn_interface import flash_dmattn_func
-    print("✅ Successfully imported flash_dmattn interface")
+    from flash_sparse_attn.flash_sparse_attn_interface import flash_sparse_attn_func
+    print("✅ Successfully imported flash_sparse_attn interface")
 except ImportError as e:
-    print(f"❌ Failed to import flash_dmattn interface: {e}")
+    print(f"❌ Failed to import flash_sparse_attn interface: {e}")
     print("Please make sure the package is properly installed with: pip install .")
     # Don't exit here, just warn
-    flash_dmattn_func = None
+    flash_sparse_attn_func = None
 
 # Import the Triton implementation
 try:
-    from flash_dmattn.flash_dmattn_triton import triton_dmattn_func
-    print("✅ Successfully imported flash_dmattn_triton")
+    from flash_sparse_attn.flash_sparse_attn_triton import triton_sparse_attn_func
+    print("✅ Successfully imported flash_sparse_attn_triton")
 except ImportError as e:
-    print(f"❌ Failed to import flash_dmattn_triton: {e}")
+    print(f"❌ Failed to import flash_sparse_attn_triton: {e}")
     print("Please make sure the Triton implementation is available.")
     # Don't exit here, just warn
-    triton_dmattn_func = None
+    triton_sparse_attn_func = None
 
 # Import the Flex Attention implementation
 try:
-    from flash_dmattn.flash_dmattn_flex import flex_dmattn_func
-    print("✅ Successfully imported flash_dmattn_flex")
+    from flash_sparse_attn.flash_sparse_attn_flex import flex_sparse_attn_func
+    print("✅ Successfully imported flash_sparse_attn_flex")
 except ImportError as e:
-    print(f"❌ Failed to import flash_dmattn_flex: {e}")
+    print(f"❌ Failed to import flash_sparse_attn_flex: {e}")
     print("Please make sure the Flex Attention implementation is available.")
     # Don't exit here, just warn
-    flex_dmattn_func = None
+    flex_sparse_attn_func = None
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -203,7 +203,7 @@ def dynamic_mask_attention_cuda(
     Returns:
         tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
-    if flash_dmattn_func is None:
+    if flash_sparse_attn_func is None:
         return "Not Available", 0
 
     attn_bias, attn_mask = prepare_mask(
@@ -222,7 +222,7 @@ def dynamic_mask_attention_cuda(
         torch.cuda.synchronize()
         start_time = time.time()
 
-        attn_outputs = flash_dmattn_func(
+        attn_outputs = flash_sparse_attn_func(
             query_states,
             key_states,
             value_states,
@@ -269,7 +269,7 @@ def dynamic_mask_attention_triton(
     Returns:
         tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
-    if triton_dmattn_func is None:
+    if triton_sparse_attn_func is None:
         return "Not Available", 0
     
     _, num_heads, _, _ = query_states.shape
@@ -300,7 +300,7 @@ def dynamic_mask_attention_triton(
         torch.cuda.synchronize()
         start_time = time.time()
         
-        attn_outputs = triton_dmattn_func(
+        attn_outputs = triton_sparse_attn_func(
             query_states,
             key_states,
             value_states,
@@ -344,7 +344,7 @@ def dynamic_mask_attention_flex(
     Returns:
         tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
-    if flex_dmattn_func is None:
+    if flex_sparse_attn_func is None:
         return "Not Available", 0
     
     _, num_heads, _, _ = query_states.shape
@@ -376,7 +376,7 @@ def dynamic_mask_attention_flex(
         start_time = time.time()
         
         # Call the Flex Attention implementation
-        attn_outputs = flex_dmattn_func(
+        attn_outputs = flex_sparse_attn_func(
             query_states,
             key_states,
             value_states,

@@ -45,9 +45,9 @@ from transformers.utils.generic import OutputRecorder, check_model_inputs
 from .configuration_doge import DogeConfig
 
 try:
-    from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
+    from flash_sparse_attn.integrations.flash_sparse_attention import flash_dynamic_mask_attention_forward
 except ImportError:
-    print("Please install flash_dmattn to use this model: pip install flash-dmattn")
+    print("Please install flash_sparse_attn to use this model: pip install flash-sparse-attn")
 
 if is_torch_flex_attn_available():
     from torch.nn.attention.flex_attention import BlockMask

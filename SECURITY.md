@@ -13,7 +13,7 @@ We actively maintain and provide security updates for the following versions:
 
 ### CUDA Code Execution
 
-Flash Dynamic Mask Attention includes CUDA kernels and C++ extensions that execute on your GPU. When using this library:
+Flash Sparse Attention includes CUDA kernels and C++ extensions that execute on your GPU. When using this library:
 
 - Only install from trusted sources (official PyPI releases or verified builds)
 - Be cautious when building from source with modifications
@@ -46,11 +46,11 @@ If you discover a security vulnerability, please report it responsibly:
 
 **For security issues:**
 - Email: losercheems@gmail.com
-- Subject: [SECURITY] Flash-DMA Vulnerability Report
+- Subject: [SECURITY] FSA Vulnerability Report
 - Include: Detailed description, reproduction steps, and potential impact
 
 **For general bugs:**
-- Use our [GitHub Issues](https://github.com/SmallDoges/flash-dmattn/issues)
+- Use our [GitHub Issues](https://github.com/SmallDoges/flash-sparse-attention/issues)
 - Follow our [contributing guidelines](CONTRIBUTING.md)
 
 ## Response Timeline
@@ -63,21 +63,21 @@ Critical security issues will be prioritized and may result in emergency release
 
 ## Security Best Practices
 
-When using Flash Dynamic Mask Attention:
+When using Flash Sparse Attention:
 
 1. **Environment Isolation**
    ```bash
    # Use virtual environments
-   python -m venv flash_dma_env
-   source flash_dma_env/bin/activate  # Linux/Mac
+   python -m venv fsa_env
+   source fsa_env/bin/activate  # Linux/Mac
    # or
-   flash_dma_env\Scripts\activate     # Windows
+   fsa_env\Scripts\activate     # Windows
    ```
 
 2. **Dependency Management**
    ```bash
    # Keep dependencies updated
-   pip install --upgrade torch flash-dmattn
+   pip install --upgrade torch flash_sparse_attn
    ```
 
 3. **Input Validation**
@@ -108,5 +108,5 @@ For security-related questions or concerns:
 - Project maintainers: See [AUTHORS](AUTHORS) file
 
 For general support:
-- GitHub Issues: https://github.com/SmallDoges/flash-dmattn/issues
-- Documentation: https://github.com/SmallDoges/flash-dmattn/tree/main/docs/
+- GitHub Issues: https://github.com/SmallDoges/flash-sparse-attention/issues
+- Documentation: https://github.com/SmallDoges/flash-sparse-attention/tree/main/docs/

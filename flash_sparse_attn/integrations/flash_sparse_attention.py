@@ -2,14 +2,14 @@ from typing import Optional
 
 import torch
 
-from .modeling_flash_dynamic_mask_attention_utils import _flash_dynamic_mask_attention_forward
+from .modeling_flash_sparse_attention_utils import _flash_sparse_attention_forward
 from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)
 
 
-def flash_dynamic_mask_attention_forward(
+def flash_sparse_attention_forward(
     module: torch.nn.Module,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -22,8 +22,8 @@ def flash_dynamic_mask_attention_forward(
     **kwargs,
 ) -> tuple[torch.Tensor, None]:
     """
-    A wrapper around the _flash_dynamic_mask_attention_forward function to be used in
-    the FlashDynamicMaskAttention class from HuggingFace Transformers.
+    A wrapper around the _flash_sparse_attention_forward function to be used in
+    the FlashSparseAttention class from HuggingFace Transformers.
 
     Args:
         module (torch.nn.Module): The attention module.
@@ -41,7 +41,7 @@ def flash_dynamic_mask_attention_forward(
             Includes:
                 - is_causal (bool): Whether to apply a causal mask.
                 - layer_idx (int): The index of the layer (for logging purposes).
-                - implementation (str): The implementation to use ("flash_dmattn" or None).
+                - implementation (str): The implementation to use ("flash_sparse_attn" or None).
 
     Returns:
         tuple[torch.Tensor, None]: The output tensor of shape (batch_size, seq_len, num_heads, head_dim)
@@ -50,7 +50,7 @@ def flash_dynamic_mask_attention_forward(
 
     if kwargs.get("output_attentions", False) or kwargs.get("head_mask") is not None:
         logger.warning_once(
-            "`flash_dynamic_mask_attention` does not support `output_attentions=True` or `head_mask`."
+            "`flash_sparse_attention` does not support `output_attentions=True` or `head_mask`."
             " Please set your attention to `eager` if you want any of these features."
         )
 
@@ -61,11 +61,11 @@ def flash_dynamic_mask_attention_forward(
     if any(dim == 0 for dim in query.shape):
         raise ValueError(
             "Tensor query has shape  with a zero dimension.\n"
-            "FlashDynamicMaskAttention does not support inputs with dim=0.\n"
+            "FlashSparseAttention does not support inputs with dim=0.\n"
             "Please check your input shapes or use SDPA instead."
         )
 
-    # FDMA uses non-transposed inputs
+    # FSA uses non-transposed inputs
     query = query.transpose(1, 2)
     key = key.transpose(1, 2)
     value = value.transpose(1, 2)
@@ -90,7 +90,7 @@ def flash_dynamic_mask_attention_forward(
     if is_causal is None:
         is_causal = module.is_causal
 
-    attn_output = _flash_dynamic_mask_attention_forward(
+    attn_output = _flash_sparse_attention_forward(
         query,
         key,
         value,
@@ -103,7 +103,7 @@ def flash_dynamic_mask_attention_forward(
         softcap=softcap,
         window_size=window_size,
         target_dtype=target_dtype,
-        implementation="flash_dmattn",
+        implementation="flash_sparse_attn",
         layer_idx=module.layer_idx if hasattr(module, "layer_idx") else None,
         **kwargs,
     )
