@@ -4,7 +4,7 @@ Everyone is welcome to contribute, and we value everybody's contribution. Code c
 
 It also helps us if you spread the word! Reference the library in blog posts about the awesome projects it made possible, shout out on Twitter every time it has helped you, or simply ⭐️ the repository to say thank you.
 
-However you choose to contribute, please be mindful and respect our [code of conduct](https://github.com/SmallDoges/flash-dmattn/blob/main/CODE_OF_CONDUCT.md).
+However you choose to contribute, please be mindful and respect our [code of conduct](https://github.com/SmallDoges/flash-sparse-attention/blob/main/CODE_OF_CONDUCT.md).
 
 ## Ways to contribute
 
@@ -16,7 +16,7 @@ There are several ways you can contribute to Flash-DMA:
 * Contribute to the examples, benchmarks, or documentation.
 * Improve CUDA kernel performance.
 
-If you don't know where to start, there is a special [Good First Issue](https://github.com/SmallDoges/flash-dmattn/contribute) listing. It will give you a list of open issues that are beginner-friendly and help you start contributing to open-source.
+If you don't know where to start, there is a special [Good First Issue](https://github.com/SmallDoges/flash-sparse-attention/contribute) listing. It will give you a list of open issues that are beginner-friendly and help you start contributing to open-source.
 
 > All contributions are equally valuable to the community. 🥰
 
@@ -81,14 +81,14 @@ You will need basic `git` proficiency to contribute to Flash-DMA. You'll need **
 
 ### Development Setup
 
-1. Fork the [repository](https://github.com/SmallDoges/flash-dmattn) by clicking on the **Fork** button.
+1. Fork the [repository](https://github.com/SmallDoges/flash-sparse-attention) by clicking on the **Fork** button.
 
 2. Clone your fork to your local disk, and add the base repository as a remote:
 
    ```bash
-   git clone https://github.com/<your Github handle>/flash-dmattn.git
-   cd flash-dmattn
-   git remote add upstream https://github.com/SmallDoges/flash-dmattn.git
+   git clone https://github.com/<your Github handle>/flash-sparse-attention.git
+   cd flash-sparse-attention
+   git remote add upstream https://github.com/SmallDoges/flash-sparse-attention.git
    ```
 
 3. Create a new branch to hold your development changes:
@@ -157,7 +157,7 @@ You will need basic `git` proficiency to contribute to Flash-DMA. You'll need **
 
 ### Tests
 
-An extensive test suite is included to test the library behavior and performance. Tests can be found in the [tests](https://github.com/SmallDoges/flash-dmattn/tree/main/tests) folder and benchmarks in the [benchmarks](https://github.com/SmallDoges/flash-dmattn/tree/main/benchmarks) folder.
+An extensive test suite is included to test the library behavior and performance. Tests can be found in the [tests](https://github.com/SmallDoges/flash-sparse-attention/tree/main/tests) folder and benchmarks in the [benchmarks](https://github.com/SmallDoges/flash-sparse-attention/tree/main/benchmarks) folder.
 
 We use `pytest` for testing. From the root of the repository, run:
 
@@ -200,6 +200,6 @@ If you discover a security vulnerability, please send an e-mail to the maintaine
 
 ## Questions?
 
-If you have questions about contributing, feel free to ask in the [GitHub Discussions](https://github.com/SmallDoges/flash-dmattn/discussions) or open an issue.
+If you have questions about contributing, feel free to ask in the [GitHub Discussions](https://github.com/SmallDoges/flash-sparse-attention/discussions) or open an issue.
 
 Thank you for contributing to Flash Dynamic Mask Attention! 🚀
