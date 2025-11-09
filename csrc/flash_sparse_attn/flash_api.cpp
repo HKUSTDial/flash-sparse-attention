@@ -126,7 +126,7 @@ void set_params_fprop(
 
     // Set the different scale values.
     #ifdef FLASHATTENTION_DISABLE_SOFTCAP
-        TORCH_CHECK(softcap <= 0.0, "This flash dynamic mask attention build does not support softcap.");
+        TORCH_CHECK(softcap <= 0.0, "This flash sparse attention build does not support softcap.");
     #endif
     if (softcap > 0.0) {
         params.softcap = softmax_scale / softcap;
@@ -145,7 +145,7 @@ void set_params_fprop(
     params.is_seqlens_k_cumulative = true;
 
     #ifdef FLASHATTENTION_DISABLE_UNEVEN_K
-        TORCH_CHECK(d == d_rounded, "This flash dynamic mask attention build does not support headdim not being a multiple of 32.");
+        TORCH_CHECK(d == d_rounded, "This flash sparse attention build does not support headdim not being a multiple of 32.");
     #endif
 
     params.unpadded_lse = unpadded_lse;
@@ -366,10 +366,10 @@ mha_fwd(
     at::cuda::CUDAGuard device_guard{q.device()};
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
-    TORCH_CHECK(is_sm8x_min, "FlashDynamicMaskAttention only supports Ampere GPUs or newer.");
+    TORCH_CHECK(is_sm8x_min, "FlashSparseAttention only supports Ampere GPUs or newer.");
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
+    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashSparseAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
 
@@ -420,7 +420,7 @@ mha_fwd(
     const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
 
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
-    TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention forward only supports head dimension at most 256");
+    TORCH_CHECK(head_size <= 256, "FlashSparseAttention forward only supports head dimension at most 256");
     TORCH_CHECK(head_size % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
@@ -577,10 +577,10 @@ mha_varlen_fwd(
     at::cuda::CUDAGuard device_guard{q.device()};
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
-    TORCH_CHECK(is_sm8x_min, "FlashDynamicMaskAttention only supports Ampere GPUs or newer.");
+    TORCH_CHECK(is_sm8x_min, "FlashSparseAttention only supports Ampere GPUs or newer.");
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
+    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashSparseAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
     TORCH_CHECK(cu_seqlens_q.dtype() == torch::kInt32, "cu_seqlens_q must have dtype int32");
@@ -644,7 +644,7 @@ mha_varlen_fwd(
     const int total_q = q.sizes()[0];
 
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
-    TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention forward only supports head dimension at most 256");
+    TORCH_CHECK(head_size <= 256, "FlashSparseAttention forward only supports head dimension at most 256");
     TORCH_CHECK(head_size % 8 == 0, "query, key, value, and out_ must have a head_size that is a multiple of 8");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
@@ -810,19 +810,19 @@ mha_bwd(
 ) {
 
     #ifdef FLASHATTENTION_DISABLE_BACKWARD
-        TORCH_CHECK(false, "This flash dynamic mask attention build does not support backward.");
+        TORCH_CHECK(false, "This flash sparse attention build does not support backward.");
     #endif
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
-    TORCH_CHECK(is_sm8x_min, "FlashDynamicMaskAttention only supports Ampere GPUs or newer.");
+    TORCH_CHECK(is_sm8x_min, "FlashSparseAttention only supports Ampere GPUs or newer.");
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
+    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashSparseAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
     TORCH_CHECK(out.dtype() == q_dtype, "query and out must have the same dtype");
@@ -881,7 +881,7 @@ mha_bwd(
 
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size % 8 == 0, "head_size should be a multiple of 8");
-    TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention backward only supports head dimension at most 256");
+    TORCH_CHECK(head_size <= 256, "FlashSparseAttention backward only supports head dimension at most 256");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
     if (has_mask) {
@@ -1072,19 +1072,19 @@ mha_varlen_bwd(
 ) {
 
     #ifdef FLASHATTENTION_DISABLE_BACKWARD
-        TORCH_CHECK(false, "This flash dynamic mask attention build does not support backward.");
+        TORCH_CHECK(false, "This flash sparse attention build does not support backward.");
     #endif
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
-    TORCH_CHECK(is_sm8x_min, "FlashDynamicMaskAttention only supports Ampere GPUs or newer.");
+    TORCH_CHECK(is_sm8x_min, "FlashSparseAttention only supports Ampere GPUs or newer.");
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashDynamicMaskAttention only support fp16 and bf16 data type");
+    TORCH_CHECK(q_dtype == torch::kFloat16 || q_dtype == torch::kBFloat16, "FlashSparseAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
     TORCH_CHECK(out.dtype() == q_dtype, "query and out must have the same dtype");
@@ -1124,7 +1124,7 @@ mha_varlen_bwd(
     const int num_heads_bias = has_bias ? bias.size(1) : 1;
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size % 8 == 0, "head_size should be a multiple of 8");
-    TORCH_CHECK(head_size <= 256, "FlashDynamicMaskAttention backward only supports head dimension at most 256");
+    TORCH_CHECK(head_size <= 256, "FlashSparseAttention backward only supports head dimension at most 256");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
@@ -1268,7 +1268,7 @@ mha_varlen_bwd(
 } // namespace FLASH_NAMESPACE
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.doc() = "FlashDynamicMaskAttention";
+    m.doc() = "FlashSparseAttention";
     m.def("fwd", &FLASH_NAMESPACE::mha_fwd, "Forward pass");
     m.def("varlen_fwd", &FLASH_NAMESPACE::mha_varlen_fwd, "Forward pass with variable length");
     m.def("bwd", &FLASH_NAMESPACE::mha_bwd, "Backward pass");

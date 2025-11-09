@@ -23,7 +23,7 @@ namespace FLASH_NAMESPACE {
 #endif
 
 // Define a macro for unsupported architecture handling to centralize the error message
-#define FLASH_UNSUPPORTED_ARCH printf("FATAL: FlashDynamicMaskAttention requires building with sm version sm80-sm90, but was built for < 8.0!");
+#define FLASH_UNSUPPORTED_ARCH printf("FATAL: FlashSparseAttention requires building with sm version sm80-sm90, but was built for < 8.0!");
 
 // Use a macro to clean up kernel definitions
 #define DEFINE_FLASH_FORWARD_KERNEL(kernelName, ...) \
