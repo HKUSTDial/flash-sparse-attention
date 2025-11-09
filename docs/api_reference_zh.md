@@ -1,9 +1,9 @@
-# Flash Dynamic Mask Attention API 参考文档
+# Flash Sparse Attention API 参考文档
 
 
 ## 概述
 
-Flash Dynamic Mask Attention 是一个高性能注意力实现，结合了 Flash Attention 的内存效率和 Dynamic Mask Attention 的稀疏计算优势。它支持 CUDA、Triton 和 Flex Attention 后端，并支持超长序列的动态掩码。
+Flash Sparse Attention 是一个高性能注意力实现，结合了 Flash Attention 的内存效率和 Dynamic Mask Attention 的稀疏计算优势。它支持 CUDA、Triton 和 Flex Attention 后端，并支持超长序列的动态掩码。
 
 
 ## 目录
@@ -12,9 +12,9 @@ Flash Dynamic Mask Attention 是一个高性能注意力实现，结合了 Flash
 2. [快速开始](#快速开始)
 3. [后端选择与比较](#后端选择与比较)
 4. [接口函数详解](#接口函数详解)
-   - [CUDA 后端：flash_dmattn_func](#flash_dmattn_func-cuda-后端)
-   - [Triton 后端：triton_dmattn_func](#triton_dmattn_func-triton-后端)
-   - [Flex 后端：flex_dmattn_func](#flex_dmattn_func-flex-后端)
+   - [CUDA 后端：flash_sparse_attn_func](#flash_sparse_attn_func-cuda-后端)
+   - [Triton 后端：triton_sparse_attn_func](#triton_sparse_attn_func-triton-后端)
+   - [Flex 后端：flex_sparse_attn_func](#flex_sparse_attn_func-flex-后端)
 5. [集成](#集成)
    - [Transformers 集成](#transformers-集成)
 6. [常见问题与解决方案](#常见问题与解决方案)
@@ -22,27 +22,26 @@ Flash Dynamic Mask Attention 是一个高性能注意力实现，结合了 Flash
 
 ## 安装
 
-请参考 [README](https://github.com/SmallDoges/flash-dmattn/blob/main/README_zh.md#%E5%AE%89%E8%A3%85-1) 以获取详细的安装说明和依赖项。
+请参考 [README](https://github.com/SmallDoges/flash-sparse-attention/blob/main/README_zh.md#%E5%AE%89%E8%A3%85-1) 以获取详细的安装说明和依赖项。
 
 ```bash
 # 使用 CUDA 后端
-pip install flash-dmattn
-
+pip install flash-sparse-attn
 # 或从源码安装
 pip install -e .
 
 # 仅使用 Triton/Flex 后端
-FLASH_DMATTN_SKIP_CUDA_BUILD=1 pip install -e .
+FLASH_SPARSE_ATTENTION_SKIP_CUDA_BUILD=1 pip install -e .
 ```
 
 
 ## 快速开始
 
-使用 `flash_dmattn_func_auto` 可以自动选择最佳可用后端，无需手动判断。
+使用 `flash_sparse_attn_func_auto` 可以自动选择最佳可用后端，无需手动判断。
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func_auto
+from flash_sparse_attn import flash_sparse_attn_func_auto
 
 # 准备输入张量
 batch, seqlen, num_heads, head_dim = 2, 1024, 8, 64
@@ -51,19 +50,19 @@ k = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device
 v = torch.randn(batch, seqlen, num_heads, head_dim, dtype=torch.bfloat16, device='cuda')
 
 # 获取注意力函数（自动选择后端，优先级: cuda > triton > flex）
-attn_func = flash_dmattn_func_auto()
+attn_func = flash_sparse_attn_func_auto()
 
 # 调用注意力计算
 output = attn_func(q, k, v, is_causal=True)
 print(f"输出形状: {output.shape}")  # (2, 1024, 8, 64)
 
 # 也可以强制使用特定后端
-attn_func = flash_dmattn_func_auto(backend="cuda")  # 或 "triton", "flex"
+attn_func = flash_sparse_attn_func_auto(backend="cuda")  # 或 "triton", "flex"
 output = attn_func(q, k, v, is_causal=True)
 ```
 
 > [!NOTE]
-> `flash_dmattn_func_auto` 返回一个可调用的注意力函数，而不是注意力输出。
+> `flash_sparse_attn_func_auto` 返回一个可调用的注意力函数，而不是注意力输出。
 
 
 ## 后端选择与比较
@@ -71,7 +70,7 @@ output = attn_func(q, k, v, is_causal=True)
 ### 可用后端检查
 
 ```python
-from flash_dmattn import get_available_backends, CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE
+from flash_sparse_attn import get_available_backends, CUDA_AVAILABLE, TRITON_AVAILABLE, FLEX_AVAILABLE
 
 # 查看所有可用后端
 print(get_available_backends())  # 例如：["cuda", "triton", "flex"]
@@ -101,19 +100,19 @@ print(f"CUDA: {CUDA_AVAILABLE}, Triton: {TRITON_AVAILABLE}, Flex: {FLEX_AVAILABL
 
 ### 何时使用各个后端
 
-**CUDA 后端** ([详细说明](#flash_dmattn_func-cuda-后端))
+**CUDA 后端** ([详细说明](#flash_sparse_attn_func-cuda-后端))
 - ✅ 完整梯度支持的训练工作负载
 - ✅ 最大性能生产推理
 - ✅ 需要确定性行为的应用
 - ❌ 避免：无法构建自定义 CUDA 扩展时
 
-**Triton 后端** ([详细说明](#triton_dmattn_func-triton-后端))
+**Triton 后端** ([详细说明](#triton_sparse_attn_func-triton-后端))
 - ✅ CUDA 扩展不可用时的训练工作负载
 - ✅ 开发和原型设计
 - ✅ 跨平台兼容性需求
 - ✅ 性能和易安装性的良好平衡
 
-**Flex 后端** ([详细说明](#flex_dmattn_func-flex-后端))
+**Flex 后端** ([详细说明](#flex_sparse_attn_func-flex-后端))
 - ✅ 仅推理应用
 - ✅ 使用最新 PyTorch 特性的研究
 - ✅ 无需自定义构建的快速实验
@@ -123,15 +122,15 @@ print(f"CUDA: {CUDA_AVAILABLE}, Triton: {TRITON_AVAILABLE}, Flex: {FLEX_AVAILABL
 ### 导入可用函数
 
 ```python
-from flash_dmattn import (
+from flash_sparse_attn import (
     # 自动后端选择
     get_available_backends,
-    flash_dmattn_func_auto,
+    flash_sparse_attn_func_auto,
     
     # 后端特定函数
-    flash_dmattn_func,      # CUDA 后端
-    triton_dmattn_func,     # Triton 后端
-    flex_dmattn_func,       # Flex 后端
+    flash_sparse_attn_func,      # CUDA 后端
+    triton_sparse_attn_func,     # Triton 后端
+    flex_sparse_attn_func,       # Flex 后端
     
     # 后端可用性标志
     CUDA_AVAILABLE,
@@ -140,20 +139,20 @@ from flash_dmattn import (
 )
 
 # Transformers 集成
-from flash_dmattn.integrations.flash_dynamic_mask_attention import (
-    flash_dynamic_mask_attention_forward
+from flash_sparse_attn.integrations.flash_sparse_attention import (
+    flash_sparse_attention_forward
 )
 ```
 
 
 ## 接口函数详解
 
-### flash_dmattn_func (CUDA 后端)
+### flash_sparse_attn_func (CUDA 后端)
 
 主要的注意力函数。支持多头注意力和分组查询注意力（当 KV 头数少于 Q 头数时）。需要 CUDA 扩展已构建并可用。
 
 ```python
-def flash_dmattn_func(
+def flash_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_kv_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
@@ -182,12 +181,12 @@ def flash_dmattn_func(
 
 - output: (B, Q, H, D)
 
-### triton_dmattn_func (Triton 后端)
+### triton_sparse_attn_func (Triton 后端)
 
 基于 Triton 的实现，无需自定义 CUDA 内核即可提供良好性能。
 
 ```python
-def triton_dmattn_func(
+def triton_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_heads, head_dim)
@@ -198,12 +197,12 @@ def triton_dmattn_func(
 ) -> torch.Tensor
 ```
 
-### flex_dmattn_func (Flex Attention 后端)
+### flex_sparse_attn_func (Flex Attention 后端)
 
 基于 Flex Attention 的实现，使用 PyTorch 原生 flex attention 并支持动态掩码。
 
 ```python
-def flex_dmattn_func(
+def flex_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_heads, head_dim)
@@ -219,14 +218,14 @@ def flex_dmattn_func(
 
 ### Transformers 集成
 
-为 HuggingFace Transformers 模型提供的集成函数，提供无缝的 flash dynamic mask attention 支持。
+为 HuggingFace Transformers 模型提供的集成函数，提供无缝的 flash sparse attention 支持。
 
-#### flash_dynamic_mask_attention_forward
+#### flash_sparse_attention_forward
 
 ```python
-from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
+from flash_sparse_attn.integrations.flash_sparse_attention import flash_sparse_attention_forward
 
-def flash_dynamic_mask_attention_forward(
+def flash_sparse_attention_forward(
     module: torch.nn.Module,                        # 注意力模块
     query: torch.Tensor,                            # (batch_size, num_heads, query_len, head_dim)
     key: torch.Tensor,                              # (batch_size, num_kv_heads, key_len, head_dim)
@@ -253,7 +252,7 @@ def flash_dynamic_mask_attention_forward(
   - is_causal: 是否应用因果掩码
   - window_size: 保持的窗口大小
   - layer_idx: 用于日志的层索引
-  - implementation: 使用的实现（"flash_dmattn" 或 None）
+  - implementation: 使用的实现（"flash_sparse_attn" 或 None）
 
 #### 返回值
 
@@ -267,7 +266,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Callable, tuple
 from transformers.cache_utils import Cache
-from flash_dmattn.integrations.flash_dynamic_mask_attention import flash_dynamic_mask_attention_forward
+from flash_sparse_attn.integrations.flash_sparse_attention import flash_sparse_attention_forward
 
 class DynamicMaskAttention(nn.Module):
     def __init__(self, config, layer_idx: Optional[int] = None):
@@ -331,7 +330,7 @@ class DynamicMaskAttention(nn.Module):
         attn_bias = torch.exp(self.A * F.softplus(dt_states)).transpose(-1, -2).to(hidden_states.dtype)
 
         # 选择注意力实现
-        attention_interface: Callable = flash_dynamic_mask_attention_forward
+        attention_interface: Callable = flash_sparse_attention_forward
         
         attn_output, attn_weights = attention_interface(
             self,
@@ -361,7 +360,7 @@ class DynamicMaskAttention(nn.Module):
 
 ```python
 try:
-    from flash_dmattn import flash_dmattn_func_auto, get_available_backends
+    from flash_sparse_attn import flash_sparse_attn_func_auto, get_available_backends
     print("✅ 导入成功", get_available_backends())
 except ImportError as e:
     print(f"❌ 导入失败: {e}")
@@ -384,10 +383,10 @@ except ImportError as e:
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func_auto
+from flash_sparse_attn import flash_sparse_attn_func_auto
 
 torch.autograd.set_detect_anomaly(True)
-attn = flash_dmattn_func_auto()
+attn = flash_sparse_attn_func_auto()
 output = attn(q, k, v, attn_mask=attn_mask, attn_bias=attn_bias, is_causal=True)
 if torch.isnan(output).any():
     print("⚠️ 注意力输出中检测到 NaN")
@@ -403,7 +402,7 @@ def print_memory_stats():
         print(f"最大分配: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
 
 print_memory_stats()
-attn = flash_dmattn_func_auto()
+attn = flash_sparse_attn_func_auto()
 output = attn(q, k, v)
 print_memory_stats()
 ```
