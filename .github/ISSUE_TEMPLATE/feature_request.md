@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea for Flash-DMA
+about: Suggest an idea for FSA
 title: '[FEATURE REQUEST] '
 labels: ["feature"]
 assignees: 
@@ -44,4 +44,4 @@ Add any other context or screenshots about the feature request here.
 If this feature is inspired by a paper or existing implementation, please provide:
 - Link to paper/implementation
 - Brief explanation of the technique
-- Why it would be valuable for Flash-DMA users
+- Why it would be valuable for FSA users

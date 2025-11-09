@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an idea for FDMA
+description: Suggest an idea for FSA
 title: "[FEATURE REQUEST] "
 labels:
   - feature
@@ -16,7 +16,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Help us understand the feature you are proposing and why it matters for Flash-DMA workflows.
+        Help us understand the feature you are proposing and why it matters for FSA workflows.
   - type: textarea
     id: problem
     attributes:
