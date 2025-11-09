@@ -11,9 +11,9 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flash-dmattn"
+name = "flash-sparse-attn"
 dynamic = ["version"]
-description = "Flash Dynamic Mask Attention: Fast and Memory-Efficient Trainable Dynamic Mask Sparse Attention"
+description = "Flash Sparse Attention: Fast and Memory-Efficient Trainable Dynamic Mask Sparse Attention"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -40,9 +40,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SmallDoges/flash-dmattn"
-Source = "https://github.com/SmallDoges/flash-dmattn"
-Issues = "https://github.com/SmallDoges/flash-dmattn/issues"
+Homepage = "https://github.com/SmallDoges/flash-sparse-attention"
+Source = "https://github.com/SmallDoges/flash-sparse-attention"
+Issues = "https://github.com/SmallDoges/flash-sparse-attention/issues"
 
 [project.optional-dependencies]
 triton = [
@@ -69,11 +69,11 @@ dev = [
 ]
 
 [tool.setuptools.dynamic]
-version = { attr = "flash_dmattn.__version__" }
+version = { attr = "flash_sparse_attn.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["flash_dmattn*"]
+include = ["flash_sparse_attn*"]
 exclude = [
   "build",
   "csrc",
@@ -82,10 +82,10 @@ exclude = [
   "dist",
   "docs",
   "benchmarks",
-  "flash_dmattn.egg-info"
+  "flash_sparse_attn.egg-info"
 ]
 
 [tool.setuptools.package-data]
-flash_dmattn = ["*.py"]
+flash_sparse_attn = ["*.py"]
 
 [tool.setuptools]
