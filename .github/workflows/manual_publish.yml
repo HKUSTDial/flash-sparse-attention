@@ -38,7 +38,7 @@ jobs:
 
       - name: Build core package
         env:
-          FLASH_DMATTN_SKIP_CUDA_BUILD: "TRUE"
+          FLASH_SPARSE_ATTENTION_SKIP_CUDA_BUILD: "TRUE"
         run: |
           python setup.py sdist --dist-dir=dist
           ls -l dist
