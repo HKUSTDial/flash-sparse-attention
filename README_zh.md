@@ -10,38 +10,54 @@
 </div>
 
 
-![Flash-DMA Banner](assets/flash_dmattn_banner.png)
+![Flash-Sparse-Attention Banner](assets/flash_sparse_attention_banner.png)
 
-Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存效率与动态掩码注意力的稀疏计算能力相结合，用于在 Transformer 模型中处理超长序列。
+Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 Flash Attention 的内存效率与动态掩码注意力的稀疏计算能力相结合, 用于在 Transformer 模型中处理超长序列. 
+
+
+## 为什么选择 Flash-Sparse-Attention
+
+在大规模 Transformer 的训练与推理中, 注意力的主要瓶颈并不相同:
+
+- 训练侧的算力瓶颈: 全注意力的计算复杂度随着序列长度呈二次方增长, 且反向传播需重复同级别计算, 海量算力消耗在贡献极低的键值对上.
+- 推理侧的访存瓶颈: 全注意力需要反复读写 Q, K, V 与中间变量, 对 KV-cache 的访存成为计算流程的主导, 算力难以被充分利用.
+
+因此, 一个更正确的方向是稀疏注意力: 对每个查询仅与 $w$ 个最相关键交互, 把计算与访存从 $O(N^2)$ 降到 $O(N\cdot w)$，其中 $w\ll N$. 若稀疏模式能随任务自适应, 就有机会既快又准, 同时解决训练与推理的瓶颈, 具体请参考论文 [Trainable Dynamic Mask Sparse Attention](https://arxiv.org/abs/2508.02124).
 
 
 ## 主要特性
 
-### 🎯 核心内核优势
-- **Mask & Bias 支持**: 原生支持 `({1|batch_size}, {1|num_kv_heads|num_heads}, {1|query_len}, {1|key_len})` 形状的 attention_mask 和 attention_bias 张量
-- **智能计算跳过**: 基于 attention_mask 的 block-level 自动跳过机制，完全跳过全零 mask 区块的计算和内存访问
-- **完整梯度支持**: 内置 attention_bias 的完整梯度计算路径，支持端到端训练
+### 支持的功能
 
-### 🚀 性能与效率
-- **动态稀疏注意力**: 为每个查询动态选择最重要的键，将计算复杂度从 $O(N^2)$ 降低到 $O(N \cdot w)$，其中 $w \ll N$， 支持可训练的稀疏结构
-- **内存效率**: 保持 Flash Attention 的 $O(N)$ 内存复杂度，无需实例化完整的注意力矩阵
-- **CUDA 深度优化**: 自定义 CUDA 内核，含共享内存别名、流水线预取、按块跳过，实现高吞吐与低访存开销
-- **超长上下文支持**: 通过动态掩码窗口裁剪，在保持精度的前提下支撑 128K+ 令牌级别的上下文处理
+- 带有因果掩码的前向传播和反向传播
+- 任意 Q 和 KV 序列长度
+- 任意头数和小于等于256的头维度
+- 分组查询注意力和多查询注意力
+- 灵活的掩码与偏置
+- 跳过掩码区域的访存与计算
+- 偏置的梯度计算
+
+### 我们想要支持的功能
+
+- 分页注意力
+- TMA, WGMMA 和 FP8 低精度
+- 序列并行
+- 进一步提升跳过访存与计算的性能
 
 
 ## 性能
 
-我们展示了带有mask与bias条件下 Flash-DMA 相对于标准 PyTorch SDPA 的预期加速效果。
+我们展示了带有mask与bias条件下 FSA 相对于标准 PyTorch SDPA 的预期加速效果. 
 
-![Flash-DMA Performance Overview](assets/performance_overview.png)
+![FSA Performance Overview](assets/performance_overview.png)
 
 ---
 
 ### 前向传播性能
 
-以下表格是我们在NVIDIA A100-SXM4-80GB上对Flash-DMA与标准PyTorch SDPA在不同配置下的前向性能对比测试结果。结果为预热两次, 运行三次的平均值。
+以下表格是我们在NVIDIA A100-SXM4-80GB上对FSA与标准PyTorch SDPA在不同配置下的前向性能对比测试结果. 结果为预热两次, 运行三次的平均值. 
 
-| Mode   | Q len | K len  | Window W | SDPA (ms) | FDMA (ms) | Speedup |
+| Mode   | Q len | K len  | Window W | SDPA (ms) | FSA (ms) | Speedup |
 |--------|-------|--------|----------|-----------|-----------|---------|
 | Train  | 256   | 256    | 1024     | 0.29      | 0.19      | 1.58x   |
 | Train  | 512   | 512    | 1024     | 0.35      | 0.19      | 1.86x   |
@@ -91,9 +107,9 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 
 ### 反向传播性能
 
-以下表格是我们在NVIDIA A100-SXM4-80GB上对Flash-DMA与标准PyTorch SDPA在不同配置下的反向性能对比测试结果。结果为预热两次, 运行三次的平均值。
+以下表格是我们在NVIDIA A100-SXM4-80GB上对FSA与标准PyTorch SDPA在不同配置下的反向性能对比测试结果. 结果为预热两次, 运行三次的平均值. 
 
-| Mode  | Q len | K len  | Window W | SDPA-BWD (ms) | FDMA-BWD (ms) | Speedup |
+| Mode  | Q len | K len  | Window W | SDPA-BWD (ms) | FSA-BWD (ms) | Speedup |
 |-------|-------|--------|----------|---------------|---------------|---------|
 | Train | 256   | 256    | 1024     | 0.42          | 0.62          | 0.7x    |
 | Train | 512   | 512    | 1024     | 0.56          | 0.60          | 0.9x    |
@@ -131,17 +147,17 @@ Flash-DMA 是一个高性能的注意力实现，将 Flash Attention 的内存�
 
 ### 安装
 
-您可以通过预编译的轮子安装 Flash-DMA：
+您可以通过预编译的轮子安装 FSA：
 
 ```bash
-pip install flash-dmattn --no-build-isolation
+pip install flash_sparse_attn --no-build-isolation
 ```
 
-或者，您可以从源代码编译和安装：
+或者, 您可以从源代码编译和安装：
 
 ```bash
-git clone https://github.com/SmallDoges/flash-dmattn.git
-cd flash-dmattn
+git clone https://github.com/SmallDoges/flash_sparse_attn.git
+cd flash_sparse_attn
 pip install . --no-build-isolation
 ```
 
@@ -152,8 +168,8 @@ pip install . --no-build-isolation
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func_auto
-from flash_dmattn.utils.mask import create_mask
+from flash_sparse_attn import flash_sparse_attn_func_auto
+from flash_sparse_attn.utils.mask import create_mask
 import math
 
 # 设置
@@ -183,11 +199,11 @@ if seq_len > window_size:
         min_dtype=min_dtype,
     )
 
-# 选择 FDMA 内核
-flash_dmattn_func = flash_dmattn_func_auto(backend="cuda")
+# 选择 FSA 内核
+flash_sparse_attn_func = flash_sparse_attn_func_auto(backend="cuda")
 
-# 运行 FDMA
-output = flash_dmattn_func(
+# 运行 FSA
+output = flash_sparse_attn_func(
     query=query,
     key=key, 
     value=value,
@@ -210,7 +226,7 @@ value.requires_grad_(True)
 attn_bias.requires_grad_(True)
 
 # 前向传播
-output = flash_dmattn_func(
+output = flash_sparse_attn_func(
     query=query, key=key, value=value,
     attn_mask=attn_mask,
     attn_bias=attn_bias,
@@ -229,22 +245,38 @@ print(f"Bias 梯度形状: {attn_bias.grad.shape}")
 ```
 
 
-## 工作原理
+## 基准测试
 
-Flash-DMA 通过将 Flash Attention 的高效内存访问模式与动态掩码注意力的稀疏计算能力相结合，实现了高效的注意力机制。
+FSA 提供全面的基准测试工具, 用于评估不同配置下的性能：
+### 前向传播等效性
+```bash
+python benchmarks/forward_equivalence.py
+```
+验证 Python 参考实现与 CUDA 实现之间的数值一致性. 
 
-### 核心技术融合
+### 前向传播性能基准测试  
+```bash
+python benchmarks/forward_performance.py
+```
+在各种序列长度和批大小下比较 FSA 与标准 SDPA. 
 
-- **🎯 Mask & Bias 原生支持**: 内核直接处理 `({1|batch_size}, {1|num_kv_heads|num_heads}, {1|query_len}, {1|key_len})` 形状的张量
-- **⚡ Block-level 智能跳过**: 基于 mask 的统一 OR-reduction 跳过逻辑，完全避免全零区块的计算和内存访问
-- **🔄 完整梯度链路**: 内置 attention bias 梯度计算，支持端到端可微分训练
+### 反向传播等效性
+```bash
+python benchmarks/backward_equivalence.py
+```
+验证 Python 参考实现与 CUDA 实现之间的数值一致性. 
 
-### 关键优化策略
+### 反向传播性能基准测试
+```bash
+python benchmarks/backward_performance.py
+```
+比较 FSA 与标准 SDPA 在各种序列长度和批大小下的性能. 
 
-1. **统一跳过逻辑**: 前向和反向过程使用相同的 block-level 跳过决策
-2. **内存访问优化**: 只有当 `OR(mask_block) == true` 时才加载 K/V 数据
-3. **梯度路径完整性**: dbias 梯度计算完全融合在反向内核中
-4. **共享内存复用**: sMask ↔ sP, sBias ↔ sdS 智能别名化
+### 梯度计算
+```bash
+python benchmarks/grad_equivalence.py
+```
+测试反向传播实现和梯度等效性. 
 
 
 ## 文档
@@ -252,130 +284,16 @@ Flash-DMA 通过将 Flash Attention 的高效内存访问模式与动态掩码�
 📚 **完整文档可在 [docs](docs/) 目录中找到：**
 
 - **[API 参考](docs/api_reference.md)** - 完整的函数文档和使用示例
-- **[集成指南](docs/integration.md)** - Flash Attention 集成的详细技术文档
-
-
-## 从源码构建
-
-### 开发环境设置
-
-```bash
-# 克隆包含子模块
-git clone https://github.com/SmallDoges/flash-dmattn.git
-cd flash-dmattn
-
-# 在开发模式下构建
-pip install -e .
-
-# 运行测试以验证安装
-python -c "import flash_dma_cuda; print('✅ Flash DMA CUDA 扩展导入成功')"
-```
-
-### 构建要求
-
-- CUDA Toolkit 11.8+
-- CUTLASS 库
-- 支持 CUDA 的 PyTorch
-
-### 支持的架构
-
-- **SM 8.0** 
-- **SM 9.0**
-- **SM 10.0**
-- **SM 12.0**
-
-**注意**: Flash 动态掩码注意力需要 CUDA 计算能力 8.0+ 才能获得最佳性能。不支持更早的架构。
-
-## 基准测试
-
-Flash-DMA 提供全面的基准测试工具，用于评估不同配置下的性能：
-
-### 前向传播等效性
-```bash
-python benchmarks/forward_equivalence.py
-```
-验证 Python 参考实现与 CUDA 实现之间的数值一致性。
-
-### 前向传播性能基准测试  
-```bash
-python benchmarks/forward_performance.py
-```
-在各种序列长度和批大小下比较 Flash-DMA 与标准 SDPA。
-
-### 反向传播等效性
-```bash
-python benchmarks/backward_equivalence.py
-```
-验证 Python 参考实现与 CUDA 实现之间的数值一致性。
-
-### 反向传播性能基准测试
-```bash
-python benchmarks/backward_performance.py
-```
-比较 Flash-DMA 与标准 SDPA 在各种序列长度和批大小下的性能。
-
-### 梯度计算
-```bash
-python benchmarks/grad_equivalence.py
-```
-测试反向传播实现和梯度等效性。
-
-
-## 故障排除
-
-### 常见问题
-
-**编译错误**
-```bash
-# 确保 CUDA_HOME 设置正确
-echo $CUDA_HOME         # Linux/Mac
-echo $env:CUDA_HOME     # Windows PowerShell
-
-# 检查 CUDA 工具包版本
-nvcc --version
-
-# 验证 PyTorch CUDA 支持
-python -c "import torch; print(f'CUDA 可用: {torch.cuda.is_available()}')"
-```
-
-**导入错误**
-```python
-# 测试基本导入
-try:
-    from flash_dmattn import flash_dmattn_func, get_available_backends
-    print("✅ Flash 动态掩码注意力导入成功")
-    print(f"可用后端: {get_available_backends()}")
-except ImportError as e:
-    print(f"❌ 导入失败: {e}")
-    print("请确保包已正确安装，使用: pip install -e .")
-```
-
-**性能问题**
-```python
-# 监控 GPU 内存使用
-from flash_dmattn import flash_dmattn_func
-
-def print_memory_stats():
-    if torch.cuda.is_available():
-        print(f"GPU 内存: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-
-print_memory_stats()
-output = flash_dmattn_func(q=query, k=key, v=value, is_causal=True)
-print_memory_stats()
-
-# 如需要，清除缓存
-torch.cuda.empty_cache()
-```
 
 
 ## 贡献
-
-我们欢迎社区的贡献！Flash-DMA 是一个开源项目，我们重视所有类型的贡献。
+    
+我们欢迎社区的贡献！FSA 是一个开源项目, 我们重视所有类型的贡献. 
 
 ### 如何贡献
 
-- **报告错误**: 发现了错误？请[提交 issue](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
-- **功能请求**: 有改进想法？[告诉我们](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
+- **报告错误**: 发现了错误？请[提交 issue](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
+- **功能请求**: 有改进想法？[告诉我们](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
 - **提交代码**: 准备贡献代码？查看我们的[贡献指南](CONTRIBUTING.md)
 - **改进文档**: 帮助我们完善文档
 
@@ -386,19 +304,19 @@ torch.cuda.empty_cache()
 3. 进行修改并测试
 4. 提交 Pull Request
 
-详细说明请参见我们的[贡献指南](CONTRIBUTING.md)。
+详细说明请参见我们的[贡献指南](CONTRIBUTING.md). 
 
 ### 行为准则
 
-本项目遵循[贡献者公约行为准则](CODE_OF_CONDUCT.md)。参与时，您需要遵守此准则。
+本项目遵循[贡献者公约行为准则](CODE_OF_CONDUCT.md). 参与时, 您需要遵守此准则. 
 
 ## 许可证
 
-本项目采用 BSD 3-Clause 许可证。详情请参见 [LICENSE](LICENSE)。
+本项目采用 BSD 3-Clause 许可证. 详情请参见 [LICENSE](LICENSE). 
 
 ## 引用
 
-如果您在研究中使用 Flash-DMA，请引用：
+如果您在研究中使用 FSA, 请引用：
 
 ```bibtex
 @misc{shi2025trainabledynamicmasksparse,
@@ -420,4 +338,4 @@ torch.cuda.empty_cache()
 - **[Flash-Attention](https://github.com/Dao-AILab/flash-attention)** - 内存高效的注意力计算
 - **[NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass)** - 高性能矩阵运算库
 
-我们感谢开源社区对高效 Transformer 实现的贡献。🤗
+我们感谢开源社区对高效 Transformer 实现的贡献. 🤗

@@ -10,38 +10,54 @@
 </div>
 
 
-![Flash-DMA Banner](assets/flash_dmattn_banner.png)
+![Flash-Sparse-Attention Banner](assets/flash_sparse_attention_banner.png)
 
-Flash-DMA is a high-performance attention implementation that integrates Flash Attention's memory efficiency with Dynamic Mask Attention's sparse computation capabilities for processing extremely long sequences in transformer models.
+Flash-Sparse-Attention is a high-performance trainable sparse attention implementation that integrates Flash Attention's memory efficiency with Dynamic Mask Attention's sparse computation capabilities for processing extremely long sequences in transformer models.
+
+
+## Why Flash-Sparse-Attention
+
+In large-scale Transformer training and inference, the dominant bottlenecks diverge:
+
+- **Training-side compute bottleneck**: The computational complexity of full attention grows quadratically with sequence length, and backpropagation requires repeating computations of the same order, leading to massive compute consumption on key-value pairs that contribute very little.
+- **Inference-side memory bottleneck**: Full attention requires repeated reading and writing of Q, K, V, and intermediate variables, making memory access to the KV-cache the dominant factor in the computation flow, hindering full utilization of compute resources.
+
+Thus, a more effective approach is sparse attention: interacting each query with only the $w$ most relevant keys, reducing computation and memory access from $O(N^2)$ to $O(N \cdot w)$ where $w \ll N$. If the sparse pattern can adapt to the task, it has the potential to be both fast and accurate, addressing bottlenecks in both training and inference. For more details, please refer to the paper [Trainable Dynamic Mask Sparse Attention](https://arxiv.org/abs/2508.02124).
 
 
 ## Key Features
 
-### 🎯 Core Kernel Advantages
-- **Mask & Bias Support**: Native support for `({1|batch_size}, {1|num_kv_heads|num_heads}, {1|query_len}, {1|key_len})` shaped attention mask and attention bias tensors
-- **Intelligent Computation Skipping**: Block-level automatic skipping mechanism based on masks, completely bypassing computation and memory access for zero-mask blocks
-- **Complete Gradient Support**: Built-in full gradient computation path for attention bias, supporting end-to-end training
+### Supported Features
 
-### 🚀 Performance & Efficiency
-- **Dynamic Sparse Attention**: Dynamically selects the most relevant keys for each query, reducing computational complexity from $O(N^2)$ to $O(N \cdot w)$ where $w \ll N$, supporting trainable sparse structures
-- **Memory Efficiency**: Maintains Flash Attention's $O(N)$ memory complexity without instantiating the full attention matrix
-- **CUDA Deep Optimization**: Custom CUDA kernels with shared memory aliasing, pipelined prefetching, and block skipping for high throughput and low memory access overhead
-- **Extremely Long Context Support**: Handles 128K+ token sequences efficiently through dynamic mask windowing while preserving accuracy
+- Forward and backward passes with causal mask
+- Arbitrary Q and KV sequence lengths
+- Arbitrary number of heads and head dimensions up to 256
+- Grouped Query Attention and Multi Query Attention
+- Flexible Mask and Bias
+- Skipping memory access and computation for masked regions
+- Gradient computation for bias
+
+### Features We Aim to Support
+
+- Paged Attention
+- TMA, WGMMA, and FP8 low-precision
+- Sequence Parallelism
+- Further performance improvements for skipping memory access and computation
 
 
 ## Performance
 
-We present the expected speedup of Flash-DMA over standard PyTorch SDPA under mask and bias conditions.
+We present the expected speedup of FSA over standard PyTorch SDPA under mask and bias conditions.
 
-![Flash-DMA Performance Overview](assets/performance_overview.png)
+![FSA Performance Overview](assets/performance_overview.png)
 
 ---
 
 ### Forward Pass Performance
 
-The following table shows the forward pass performance comparison between Flash-DMA and standard PyTorch SDPA on an NVIDIA A100-SXM4-80GB. Results are averaged over 3 runs after 2 warmup runs.
+The following table shows the forward pass performance comparison between FSA and standard PyTorch SDPA on an NVIDIA A100-SXM4-80GB. Results are averaged over 3 runs after 2 warmup runs.
 
-| Mode   | Q len | K len  | Window W | SDPA (ms) | FDMA (ms) | Speedup |
+| Mode   | Q len | K len  | Window W | SDPA (ms) | FSA (ms) | Speedup |
 |--------|-------|--------|----------|-----------|-----------|---------|
 | Train  | 256   | 256    | 1024     | 0.29      | 0.19      | 1.58x   |
 | Train  | 512   | 512    | 1024     | 0.35      | 0.19      | 1.86x   |
@@ -91,9 +107,9 @@ The following table shows the forward pass performance comparison between Flash-
 
 ### Backward Pass Performance
 
-The following table shows the backward pass performance comparison between Flash-DMA and standard PyTorch SDPA on an NVIDIA A100-SXM4-80GB. Results are averaged over 3 runs after 2 warmup runs.
+The following table shows the backward pass performance comparison between FSA and standard PyTorch SDPA on an NVIDIA A100-SXM4-80GB. Results are averaged over 3 runs after 2 warmup runs.
 
-| Mode  | Q len | K len  | Window W | SDPA-BWD (ms) | FDMA-BWD (ms) | Speedup |
+| Mode  | Q len | K len  | Window W | SDPA-BWD (ms) | FSA-BWD (ms) | Speedup |
 |-------|-------|--------|----------|---------------|---------------|---------|
 | Train | 256   | 256    | 1024     | 0.42          | 0.62          | 0.7x    |
 | Train | 512   | 512    | 1024     | 0.56          | 0.60          | 0.9x    |
@@ -131,17 +147,17 @@ The following table shows the backward pass performance comparison between Flash
 
 ### Install
 
-You can install Flash-DMA via pre-compiled wheels:
+You can install FSA via pre-compiled wheels:
 
 ```bash
-pip install flash-dmattn --no-build-isolation
+pip install flash_sparse_attn --no-build-isolation
 ```
 
 Alternatively, you can compile and install from source:
 
 ```bash
-git clone https://github.com/SmallDoges/flash-dmattn.git
-cd flash-dmattn
+git clone https://github.com/SmallDoges/flash_sparse_attn.git
+cd flash_sparse_attn
 pip install . --no-build-isolation
 ```
 
@@ -152,8 +168,8 @@ pip install . --no-build-isolation
 
 ```python
 import torch
-from flash_dmattn import flash_dmattn_func_auto
-from flash_dmattn.utils.mask import create_mask
+from flash_sparse_attn import flash_sparse_attn_func_auto
+from flash_sparse_attn.utils.mask import create_mask
 import math
 
 # Setup
@@ -169,7 +185,7 @@ key = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dt
 value = torch.randn(batch_size, seq_len, num_kv_heads, head_dim, device=device, dtype=dtype)
 
 # Create bias for sparse attention
-attn_bias = torch.randn(batch_size, num_kv_heads, seq_len, seq_len, device=device, dtype=dtype)
+attn_bias = torch.randn(batch_size, num_kv_heads, 1, seq_len, device=device, dtype=dtype)
 
 # Generate dynamic mask based on bias
 if seq_len > window_size:
@@ -183,11 +199,11 @@ if seq_len > window_size:
         min_dtype=min_dtype,
     )
 
-# Select FDMA kernel
-flash_dmattn_func = flash_dmattn_func_auto(backend="cuda")
+# Select FSA kernel
+flash_sparse_attn_func = flash_sparse_attn_func_auto(backend="cuda")
 
-# Run Flash Dynamic Mask Attention
-output = flash_dmattn_func(
+# Run Flash-Sparse-Attention
+output = flash_sparse_attn_func(
     query=query,
     key=key,
     value=value,
@@ -210,7 +226,7 @@ value.requires_grad_(True)
 attn_bias.requires_grad_(True)
 
 # Forward pass
-output = flash_dmattn_func(
+output = flash_sparse_attn_func(
     query=query, key=key, value=value,
     attn_mask=attn_mask,
     attn_bias=attn_bias,
@@ -229,67 +245,9 @@ print(f"Bias gradient shape: {attn_bias.grad.shape}")
 ```
 
 
-## How It Works
-
-Flash-DMA integrates the efficient memory access patterns of Flash Attention with the sparse computation capabilities of dynamic mask attention to achieve an efficient attention mechanism.
-
-### Core Technology Integration
-
-- **🎯 Native Mask & Bias Support**: Kernels directly process `({1|batch_size}, {1|num_kv_heads|num_heads}, {1|query_len}, {1|key_len})` shaped tensors
-- **⚡ Block-level Intelligent Skipping**: Unified OR-reduction skipping logic based on masks, completely avoiding computation and memory access for zero blocks
-- **🔄 Complete Gradient Chain**: Built-in attention bias gradient computation supporting end-to-end differentiable training
-
-### Key Optimization Strategies
-
-1. **Unified Skip Logic**: Forward and backward passes use the same block-level skip decisions
-2. **Memory Access Optimization**: K/V data loaded only when `OR(mask_block) == true`
-3. **Gradient Path Completeness**: dbias gradient computation fully fused in backward kernels
-4. **Shared Memory Reuse**: sMask ↔ sP, sBias ↔ sdS intelligent aliasing
-
-
-## Documentation
-
-📚 **Complete documentation is available in the [docs](docs/) directory:**
-
-- **[API Reference](docs/api_reference.md)** - Complete function documentation and usage examples
-- **[Integration Guide](docs/integration.md)** - Detailed technical documentation of the Flash Attention integration
-
-
-## Building from Source
-
-### Development Setup
-
-```bash
-# Clone with submodules
-git clone https://github.com/SmallDoges/flash-dmattn.git
-cd flash-dmattn
-
-# Build in development mode
-pip install -e .
-
-# Run tests to verify installation
-python -c "import flash_dma_cuda; print('✅ Flash DMA CUDA extension imported successfully')"
-```
-
-### Build Requirements
-
-- CUDA Toolkit 11.8+
-- CUTLASS library
-- PyTorch with CUDA support
-
-### Supported Architectures
-
-- **SM 8.0** 
-- **SM 9.0**
-- **SM 10.0**
-- **SM 12.0**
-
-**Note**: Flash Dynamic Mask Attention requires CUDA compute capability 8.0+ for optimal performance. Earlier architectures are not supported.
-
-
 ## Benchmarking
 
-Flash-DMA provides comprehensive benchmarking tools to evaluate performance across different configurations:
+FSA provides comprehensive benchmarking tools to evaluate performance across different configurations:
 
 ### Forward Pass Equivalence
 ```bash
@@ -301,7 +259,7 @@ Validates numerical consistency between Python reference and CUDA implementation
 ```bash
 python benchmarks/forward_performance.py
 ```
-Compares Flash-DMA against standard SDPA across various sequence lengths and batch sizes.
+Compares FSA against standard SDPA across various sequence lengths and batch sizes.
 
 ### Backward Pass Equivalence
 ```bash
@@ -313,7 +271,7 @@ Validates numerical consistency between Python reference and CUDA implementation
 ```bash
 python benchmarks/backward_performance.py
 ```
-Compares Flash-DMA against standard SDPA across various sequence lengths and batch sizes.
+Compares FSA against standard SDPA across various sequence lengths and batch sizes.
 
 ### Gradient Computation
 ```bash
@@ -322,61 +280,21 @@ python benchmarks/grad_equivalence.py
 Tests backward pass implementation and gradient equivalence.
 
 
-## Troubleshooting
+## Documentation
 
-### Common Issues
+📚 **Complete documentation is available in the [docs](docs/) directory:**
 
-**Compilation Errors**
-```bash
-# Ensure CUDA_HOME is set correctly
-echo $CUDA_HOME         # Linux/Mac
-echo $env:CUDA_HOME     # Windows PowerShell
-
-# Check CUDA toolkit version
-nvcc --version
-
-# Verify PyTorch CUDA support
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
-```
-
-**Import Errors**
-```python
-# Test basic import
-try:
-    from flash_dmattn import flash_dmattn_func, get_available_backends
-    print("✅ Flash Dynamic Mask Attention imported successfully")
-    print(f"Available backends: {get_available_backends()}")
-except ImportError as e:
-    print(f"❌ Import failed: {e}")
-    print("Please ensure the package is properly installed with: pip install -e .")
-```
-
-**Performance Issues**
-```python
-# Monitor GPU memory usage
-from flash_dmattn import flash_dmattn_func
-
-def print_memory_stats():
-    if torch.cuda.is_available():
-        print(f"GPU Memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-
-print_memory_stats()
-output = flash_dmattn_func(q=query, k=key, v=value, is_causal=True)
-print_memory_stats()
-
-# Clear cache if needed
-torch.cuda.empty_cache()
-```
+- **[API Reference](docs/api_reference.md)** - Complete function documentation and usage examples
 
 
 ## Contributing
 
-We welcome contributions from the community! Flash-DMA is an open-source project and we value all types of contributions.
+We welcome contributions from the community! FSA is an open-source project and we value all types of contributions.
 
 ### How to Contribute
 
-- **Report bugs**: Found a bug? Please [open an issue](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
-- **Request features**: Have an idea for improvement? [Let us know](https://github.com/SmallDoges/flash-dmattn/issues/new/choose)
+- **Report bugs**: Found a bug? Please [open an issue](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
+- **Request features**: Have an idea for improvement? [Let us know](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
 - **Submit code**: Ready to contribute code? Check our [Contributing Guide](CONTRIBUTING.md)
 - **Improve docs**: Help us make the documentation better
 
@@ -401,7 +319,7 @@ This project is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) 
 
 ## Citation
 
-If you use Flash-DMA in your research, please cite:
+If you use FSA in your research, please cite:
 
 ```bibtex
 @misc{shi2025trainabledynamicmasksparse,
