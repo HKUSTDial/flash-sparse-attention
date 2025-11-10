@@ -45,7 +45,7 @@ from transformers.utils.generic import OutputRecorder, check_model_inputs
 from .configuration_doge import DogeConfig
 
 try:
-    from flash_sparse_attn.integrations.flash_sparse_attention import flash_dynamic_mask_attention_forward
+    from flash_sparse_attn.integrations.flash_sparse_attention import flash_sparse_attention_forward
 except ImportError:
     print("Please install flash_sparse_attn to use this model: pip install flash-sparse-attn")
 
@@ -220,7 +220,7 @@ class DogeAttention(nn.Module):
         # original formula is exp(A * softplus(delta V)), but for numerical stability, it is changed to A * softplus(delta V)
         attn_bias = (self.A * F.softplus(dt_states)).transpose(-1, -2).unsqueeze(-2).to(hidden_states.dtype)
 
-        attention_interface: Callable = flash_dynamic_mask_attention_forward
+        attention_interface: Callable = flash_sparse_attention_forward
 
         attn_output, attn_weights = attention_interface(
             self,
