@@ -1,5 +1,5 @@
 <!-- <div align="center">
-  <img src="./assets/logo.png" alt="SmallDoges" width="100%">
+  <img src="./assets/logo.png" alt="flash-algo" width="100%">
 </div> -->
 
 <div align="center">
@@ -67,7 +67,7 @@ pip install flash-sparse-attn --no-build-isolation
 Alternatively, you can compile and install from source:
 
 ```bash
-git clone https://github.com/SmallDoges/flash-sparse-attn.git
+git clone https://github.com/flash-algo/flash-sparse-attn.git
 cd flash-sparse-attn
 pip install . --no-build-isolation
 ```
@@ -293,8 +293,8 @@ We welcome contributions from the community! FSA is an open-source project and w
 
 ### How to Contribute
 
-- **Report bugs**: Found a bug? Please [open an issue](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
-- **Request features**: Have an idea for improvement? [Let us know](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
+- **Report bugs**: Found a bug? Please [open an issue](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
+- **Request features**: Have an idea for improvement? [Let us know](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
 - **Submit code**: Ready to contribute code? Check our [Contributing Guide](CONTRIBUTING.md)
 - **Improve docs**: Help us make the documentation better
 
