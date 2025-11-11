@@ -40,9 +40,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SmallDoges/flash-sparse-attention"
-Source = "https://github.com/SmallDoges/flash-sparse-attention"
-Issues = "https://github.com/SmallDoges/flash-sparse-attention/issues"
+Homepage = "https://github.com/flash-algo/flash-sparse-attention"
+Source = "https://github.com/flash-algo/flash-sparse-attention"
+Issues = "https://github.com/flash-algo/flash-sparse-attention/issues"
 
 [project.optional-dependencies]
 triton = [
