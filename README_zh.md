@@ -1,5 +1,5 @@
 <!-- <div align="center">
-  <img src="./assets/logo.png" alt="SmallDoges" width="100%">
+  <img src="./assets/logo.png" alt="flash-algo" width="100%">
 </div> -->
 
 <div align="center">
@@ -67,7 +67,7 @@ pip install flash-sparse-attn --no-build-isolation
 或者, 您可以从源代码编译和安装：
 
 ```bash
-git clone https://github.com/SmallDoges/flash-sparse-attn.git
+git clone https://github.com/flash-algo/flash-sparse-attn.git
 cd flash-sparse-attn
 pip install . --no-build-isolation
 ```
@@ -292,8 +292,8 @@ python benchmarks/grad_equivalence.py
 
 ### 如何贡献
 
-- **报告错误**: 发现了错误？请[提交 issue](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
-- **功能请求**: 有改进想法？[告诉我们](https://github.com/SmallDoges/flash_sparse_attn/issues/new/choose)
+- **报告错误**: 发现了错误？请[提交 issue](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
+- **功能请求**: 有改进想法？[告诉我们](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
 - **提交代码**: 准备贡献代码？查看我们的[贡献指南](CONTRIBUTING.md)
 - **改进文档**: 帮助我们完善文档
 

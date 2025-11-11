@@ -50,7 +50,7 @@ If you discover a security vulnerability, please report it responsibly:
 - Include: Detailed description, reproduction steps, and potential impact
 
 **For general bugs:**
-- Use our [GitHub Issues](https://github.com/SmallDoges/flash-sparse-attention/issues)
+- Use our [GitHub Issues](https://github.com/flash-algo/flash-sparse-attention/issues)
 - Follow our [contributing guidelines](CONTRIBUTING.md)
 
 ## Response Timeline
@@ -108,5 +108,5 @@ For security-related questions or concerns:
 - Project maintainers: See [AUTHORS](AUTHORS) file
 
 For general support:
-- GitHub Issues: https://github.com/SmallDoges/flash-sparse-attention/issues
-- Documentation: https://github.com/SmallDoges/flash-sparse-attention/tree/main/docs/
+- GitHub Issues: https://github.com/flash-algo/flash-sparse-attention/issues
+- Documentation: https://github.com/flash-algo/flash-sparse-attention/tree/main/docs/
