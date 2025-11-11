@@ -463,6 +463,7 @@ def _fwd_kernel(
             lse_i = m_ij + tl.log(l_i_new)
 
     o_scale = tl.exp(m_i - lse_i)
+    o_scale = tl.where(lse_i > float("-inf"), o_scale, 0.0)
     acc_o = acc_o * o_scale[:, None]
     # Rematerialize offsets to save registers
     start_m = tl.program_id(0)
