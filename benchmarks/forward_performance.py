@@ -26,7 +26,7 @@ import argparse
 import time
 import gc
 
-from flash_sparse_attn.utils.mask import create_mask, topk_indices
+from flash_sparse_attn.utils.mask import create_mask
 
 # Import the compiled CUDA extension
 try:
