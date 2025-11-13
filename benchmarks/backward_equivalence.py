@@ -597,7 +597,7 @@ def test_cuda_backward_equivalence(accuracy_threshold=0.95):
             device=device, dtype=dtype, requires_grad=True
         )
         attn_bias = torch.randn(
-            batch_size, num_kv_heads, query_len, key_len,
+            batch_size, num_kv_heads, 1, key_len,
             device=device, dtype=torch.bfloat16
         )
         cache_position = torch.arange(key_len - query_len, key_len, device=device)
@@ -831,7 +831,7 @@ def test_triton_backward_equivalence(accuracy_threshold=0.95):
             device=device, dtype=dtype, requires_grad=True
         )
         attn_bias = torch.randn(
-            batch_size, num_kv_heads, query_len, key_len,
+            batch_size, num_kv_heads, 1, key_len,
             device=device, dtype=torch.bfloat16
         )
         cache_position = torch.arange(key_len - query_len, key_len, device=device)
