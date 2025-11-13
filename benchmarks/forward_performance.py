@@ -26,6 +26,8 @@ import argparse
 import time
 import gc
 
+from flash_sparse_attn.utils.mask import create_mask, topk_indices
+
 # Import the compiled CUDA extension
 try:
     from flash_sparse_attn.flash_sparse_attn_interface import flash_sparse_attn_func
@@ -72,42 +74,6 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-def prepare_mask(
-    hidden_states: torch.Tensor,
-    attn_bias: torch.Tensor,
-    causal_mask: torch.Tensor = None,
-    window_size: int = None,
-):
-    """
-    Args:
-        hidden_states: Input hidden states to determine dtype minimum value
-        attn_bias: Attention bias of shape (batch_size, num_heads, query_length, key_length)
-        causal_mask: Optional causal mask to apply
-        window_size: Window size of tokens not masked
-    
-    Returns:
-        tuple: (attn_bias, attn_mask)
-    """
-    dtype = hidden_states.dtype
-    min_dtype = torch.finfo(dtype).min
-
-    if attn_bias.shape[-1] > window_size:
-        if causal_mask is not None:
-            topk_values, topk_indices = torch.topk(
-                attn_bias.masked_fill(~causal_mask, min_dtype).detach(),
-                window_size, dim=-1, largest=True, sorted=False
-            )
-        else:
-            topk_values, topk_indices = torch.topk(
-                attn_bias,
-                window_size, dim=-1, largest=True, sorted=False
-            )
-        attn_mask = torch.zeros_like(attn_bias, dtype=torch.bool, device=attn_bias.device).scatter_(-1, topk_indices, topk_values != min_dtype)
-    else:
-        attn_mask = causal_mask.expand_as(attn_bias) if causal_mask is not None else torch.ones_like(attn_bias, dtype=torch.bool, device=attn_bias.device)
-    return attn_bias, attn_mask
-
-
 def scaled_dot_product_attention_cuda(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
@@ -134,19 +100,24 @@ def scaled_dot_product_attention_cuda(
     Returns:
         tuple: (output_tensor, timing_ms) or ("OOM", 0) or ("Not Available", 0)
     """
-    _, num_heads, _, _ = query_states.shape
-    _, num_kv_heads, _, _ = key_states.shape
+    batch_size, num_heads, query_len, _ = query_states.shape
+    _, num_kv_heads, key_len, _ = key_states.shape
+
     num_queries_per_kv = num_heads // num_kv_heads
- 
-    attn_bias, attn_mask = prepare_mask(
-        query_states,
-        attn_bias,
-        causal_mask if is_causal else None,
-        window_size,
+
+    attn_mask = create_mask(
+        attention_bias=attn_bias,
+        attention_mask=causal_mask if is_causal else None,
+        batch_size=batch_size,
+        query_len=query_len,
+        key_len=key_len,
+        window_size=window_size,
+        min_dtype=torch.finfo(query_states.dtype).min,
+        type="topk"
     )
 
     # Repeat KV for multi-head attention (GQA support)
-    attn_mask = repeat_kv(attn_mask, num_queries_per_kv)
+    attn_mask = repeat_kv(attn_mask, num_queries_per_kv) if attn_mask is not None else None
     attn_bias = repeat_kv(attn_bias, num_queries_per_kv)
 
     query_states = query_states.contiguous()
@@ -167,7 +138,7 @@ def scaled_dot_product_attention_cuda(
             # is_causal=is_causal,
             enable_gqa=True,
         )
-        
+
         torch.cuda.synchronize()
         end_time = time.time()
         
@@ -206,11 +177,21 @@ def dynamic_mask_attention_cuda(
     if flash_sparse_attn_func is None:
         return "Not Available", 0
 
-    attn_bias, attn_mask = prepare_mask(
-        query_states,
-        attn_bias,
-        causal_mask if is_causal else None,
-        window_size,
+    batch_size, num_heads, query_len, _ = query_states.shape
+    _, num_kv_heads, key_len, _ = key_states.shape
+
+    num_queries_per_kv = num_heads // num_kv_heads
+
+    attn_mask = create_mask(
+        attention_bias=attn_bias,
+        attention_mask=causal_mask if is_causal else None,
+        batch_size=batch_size,
+        query_len=query_len,
+        key_len=key_len,
+        window_size=window_size,
+        min_dtype=torch.finfo(query_states.dtype).min,
+        block_size=64,
+        type="topk"
     )
     
     # Ensure correct data types and memory layout for CUDA function
@@ -272,15 +253,20 @@ def dynamic_mask_attention_triton(
     if triton_sparse_attn_func is None:
         return "Not Available", 0
     
-    _, num_heads, _, _ = query_states.shape
-    _, num_kv_heads, _, _ = key_states.shape
+    batch_size, num_heads, query_len, _ = query_states.shape
+    _, num_kv_heads, key_len, _ = key_states.shape
+
     num_queries_per_kv = num_heads // num_kv_heads
 
-    attn_bias, attn_mask = prepare_mask(
-        query_states,
-        attn_bias,
-        causal_mask if is_causal else None,
-        window_size,
+    attn_mask = create_mask(
+        attention_bias=attn_bias,
+        attention_mask=causal_mask if is_causal else None,
+        batch_size=batch_size,
+        query_len=query_len,
+        key_len=key_len,
+        window_size=window_size,
+        min_dtype=torch.finfo(query_states.dtype).min,
+        type="topk"
     )
 
     # Repeat KV for multi-head attention (GQA support)
@@ -347,15 +333,20 @@ def dynamic_mask_attention_flex(
     if flex_sparse_attn_func is None:
         return "Not Available", 0
     
-    _, num_heads, _, _ = query_states.shape
-    _, num_kv_heads, _, _ = key_states.shape
+    batch_size, num_heads, query_len, _ = query_states.shape
+    _, num_kv_heads, key_len, _ = key_states.shape
+
     num_queries_per_kv = num_heads // num_kv_heads
 
-    attn_bias, attn_mask = prepare_mask(
-        query_states,
-        attn_bias,
-        causal_mask if is_causal else None,
-        window_size,
+    attn_mask = create_mask(
+        attention_bias=attn_bias,
+        attention_mask=causal_mask if is_causal else None,
+        batch_size=batch_size,
+        query_len=query_len,
+        key_len=key_len,
+        window_size=window_size,
+        min_dtype=torch.finfo(query_states.dtype).min,
+        type="topk"
     )
 
     # Repeat KV for multi-head attention (GQA support)
@@ -437,7 +428,7 @@ def benchmark_attention_performance(config, test_type='all', num_runs=5, warmup_
         device=device, dtype=torch.bfloat16
     )
     attn_bias = torch.randn(
-        batch_size, num_kv_heads, query_len, key_len,
+        batch_size, num_kv_heads, 1, key_len,
         device=device, dtype=torch.bfloat16
     )
     cache_position = torch.arange(key_len - query_len, key_len, device=device)
