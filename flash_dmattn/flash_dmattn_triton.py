@@ -237,6 +237,7 @@ def _fwd_kernel(
 
             # Compute p
             m_ij = tl.maximum(tl.max(acc_s, 1), lse_i)
+            m_ij = tl.where(m_ij > float("-inf"), m_ij, 0.0)
             p = tl.exp(acc_s - m_ij[:, None])
             l_ij = tl.sum(p, 1)
 
@@ -272,6 +273,7 @@ def _fwd_kernel(
             # Update statistics
             m_i = m_ij
             l_i_new = tl.exp(lse_i - m_ij) + l_ij
+            l_i_new = tl.where(lse_i > float("-inf"), l_i_new, l_ij)
             lse_i = m_ij + tl.log(l_i_new)
 
     o_scale = tl.exp(m_i - lse_i)
