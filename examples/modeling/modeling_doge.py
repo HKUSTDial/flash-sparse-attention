@@ -43,6 +43,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import OutputRecorder, check_model_inputs
 from .configuration_doge import DogeConfig
+from transformers.models.doge.modeling_doge import DogeAttention
 
 try:
     from flash_sparse_attn.integrations.flash_sparse_attention import flash_sparse_attention_forward
@@ -372,10 +373,10 @@ class DogePreTrainedModel(PreTrainedModel):
     _no_split_modules = ["DogeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = False
-    _supports_sdpa = False
+    _supports_sdpa = True
     _supports_flex_attn = False
     _can_compile_fullgraph = False
-    _supports_attention_backend = False
+    _supports_attention_backend = True
     _can_record_outputs = {
         "router_logits": OutputRecorder(DogeCDMoE, index=1),
         "hidden_states": DogeDecoderLayer,
