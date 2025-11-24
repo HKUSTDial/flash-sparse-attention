@@ -220,7 +220,7 @@ class DogeAttention(nn.Module):
             value_states.transpose(1, 2).reshape(value_states.shape[0], value_states.shape[-2], -1)
         )
         # original formula is exp(A * softplus(delta V)), but for numerical stability, it is changed to A * softplus(delta V)
-        attn_bias = (self.A * F.softplus(dt_states)).transpose(-1, -2).to(hidden_states.dtype)
+        attn_bias = (self.A * F.softplus(dt_states)).transpose(-1, -2).unsqueeze(-2).to(hidden_states.dtype)
 
         if attn_bias.shape[-1] > self.window_size:
             attn_mask = create_mask(
@@ -237,7 +237,7 @@ class DogeAttention(nn.Module):
 
         attention_interface: Callable = triton_dmattn_func
 
-        attn_output, attn_weights = attention_interface(
+        attn_output = attention_interface(
             query_states.transpose(1, 2),
             key_states.transpose(1, 2),
             value_states.transpose(1, 2),
@@ -249,7 +249,7 @@ class DogeAttention(nn.Module):
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
+        return attn_output, None
 
 
 class DogeMLP(nn.Module):
