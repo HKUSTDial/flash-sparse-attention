@@ -238,11 +238,7 @@ def _fwd_kernel(
                         float("-inf"),
                     )
                 else:
-                    acc_s += tl.where(
-                        offs_m[:, None] >= (start_n + offs_n)[None, :] + (seqlen_q - seqlen_k),
-                        0.0,
-                        float("-inf"),
-                    )
+                    acc_s += tl.where(offs_m[:, None] >= (start_n + offs_n)[None, :], 0.0, float("-inf"))
             if HAS_MASK:
                 acc_s += tl.where(mask, 0, float("-inf"))
 
