@@ -1188,7 +1188,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         seqlen_k_rounded = round_multiple(key.shape[2], 128)
         if attn_bias.shape[-1] != seqlen_k_rounded:
                 attn_bias = torch.nn.functional.pad(attn_bias, [0, seqlen_k_rounded - attn_bias.shape[-1]])
-        window_size = attn_indices.shape[-1]
+        window_size = attn_indices.shape[-1] if attn_indices is not None else key.size(2)
 
         o, lse, ctx.softmax_scale, cu_key, cu_value, cu_attn_bias, cu_attn_mask = _flash_dmattn_forward(
             query,
