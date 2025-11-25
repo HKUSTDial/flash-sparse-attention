@@ -292,8 +292,8 @@ python benchmarks/grad_equivalence.py
 
 ### 如何贡献
 
-- **报告错误**: 发现了错误？请[提交 issue](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
-- **功能请求**: 有改进想法？[告诉我们](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
+- **报告错误**: 发现了错误？请[提交 issue](https://github.com/flash-algo/flash-sparse-attention/issues/new?template=bug_report.yml)
+- **功能请求**: 有改进想法？[告诉我们](https://github.com/flash-algo/flash-sparse-attention/issues/new?template=feature_request.yml)
 - **提交代码**: 准备贡献代码？查看我们的[贡献指南](CONTRIBUTING.md)
 - **改进文档**: 帮助我们完善文档
 
