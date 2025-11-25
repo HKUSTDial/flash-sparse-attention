@@ -293,8 +293,8 @@ We welcome contributions from the community! FSA is an open-source project and w
 
 ### How to Contribute
 
-- **Report bugs**: Found a bug? Please [open an issue](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
-- **Request features**: Have an idea for improvement? [Let us know](https://github.com/flash-algo/flash_sparse_attn/issues/new/choose)
+- **Report bugs**: Found a bug? Please [open an issue](https://github.com/flash-algo/flash-sparse-attention/issues/new?template=bug_report.yml)
+- **Request features**: Have an idea for improvement? [Let us know](https://github.com/flash-algo/flash-sparse-attention/issues/new?template=feature_request.yml)
 - **Submit code**: Ready to contribute code? Check our [Contributing Guide](CONTRIBUTING.md)
 - **Improve docs**: Help us make the documentation better
 
