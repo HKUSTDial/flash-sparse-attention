@@ -156,8 +156,8 @@ def flash_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_kv_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
-    attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
-    attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
+    attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 1}, seqlen_k)
+    attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 1}, seqlen_k)
     softmax_scale: Optional[float] = None,                  # 分数缩放，默认为 1/sqrt(head_dim)
     is_causal: Optional[bool] = None,               # 因果掩码
     softcap: Optional[float] = None,                # 仅 CUDA 支持
@@ -171,8 +171,8 @@ def flash_sparse_attn_func(
 - query: (B, Q, H, D). CUDA 张量，fp16/bf16，最后一维连续
 - key: (B, K, H_kv, D). 与 query 相同的数据类型/设备；当 H_kv <= H 时为 GQA
 - value: (B, K, H_kv, D). 与 query 相同的数据类型/设备；当 H_kv <= H 时为 GQA
-- attn_mask: (B, {H, H_kv, 1}, {Q, 0}, K). 1.0 = 可见，0.0 = 被掩码。None 表示禁用
-- attn_bias: (B, {H, H_kv, 1}, {Q, 0}, K). 在 softmax 前加到分数上。None 表示禁用
+- attn_mask: (B, {H, H_kv, 1}, {Q, 1}, K). 1 = 可见，0 = 被掩码。None 表示禁用
+- attn_bias: (B, {H, H_kv, 1}, {Q, 1}, K). 在 softmax 前加到分数上。None 表示禁用
 - softmax_scale: 分数缩放；默认为 1/sqrt(D)
 - is_causal: 应用因果掩码
 - softcap, deterministic, return_attn_probs: 仅在 CUDA 后端有效；在其他后端被忽略
@@ -230,8 +230,8 @@ def flash_sparse_attention_forward(
     query: torch.Tensor,                            # (batch_size, num_heads, query_len, head_dim)
     key: torch.Tensor,                              # (batch_size, num_kv_heads, key_len, head_dim)
     value: torch.Tensor,                            # (batch_size, num_kv_heads, key_len, head_dim)
-    attention_mask: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 0}, key_len)
-    attention_bias: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 0}, key_len)
+    attention_mask: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 1}, key_len)
+    attention_bias: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 1}, key_len)
     scaling: Optional[float] = None,                # 分数缩放
     softcap: Optional[float] = None,                # softcap 值
     **kwargs,
@@ -244,8 +244,8 @@ def flash_sparse_attention_forward(
 - query: 查询张量 (B, H, Q, D)
 - key: 键张量 (B, H_kv, K, D)
 - value: 值张量 (B, H_kv, K, D)
-- attention_mask: 布尔注意力掩码 (B, {H, H_kv, 1}, {Q, 0}, K)
-- attention_bias: 加到分数上的注意力偏置 (B, {H, H_kv, 1}, {Q, 0}, K)
+- attention_mask: 布尔注意力掩码 (B, {H, H_kv, 1}, {Q, 1}, K)
+- attention_bias: 加到分数上的注意力偏置 (B, {H, H_kv, 1}, {Q, 1}, K)
 - scaling: 分数缩放因子
 - softcap: 注意力分数的 softcap 值
 - **kwargs: 额外参数，包括：

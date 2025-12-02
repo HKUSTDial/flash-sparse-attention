@@ -157,8 +157,8 @@ def flash_sparse_attn_func(
     query: torch.Tensor,                            # (batch, seqlen_q, num_heads, head_dim)
     key: torch.Tensor,                              # (batch, seqlen_k, num_kv_heads, head_dim)
     value: torch.Tensor,                            # (batch, seqlen_k, num_kv_heads, head_dim)
-    attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
-    attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 0}, seqlen_k)
+    attn_mask: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 1}, seqlen_k)
+    attn_bias: Optional[torch.Tensor] = None,       # (batch, {num_heads, num_kv_heads, 1}, {seqlen_q, 1}, seqlen_k)
     softmax_scale: Optional[float] = None,                  # score scaling, defaults to 1/sqrt(head_dim)
     is_causal: Optional[bool] = None,               # causal mask
     softcap: Optional[float] = None,                # CUDA-only
@@ -172,8 +172,8 @@ def flash_sparse_attn_func(
 - query: (B, Q, H, D). CUDA tensor, fp16/bf16, last dim contiguous
 - key: (B, K, H_kv, D). Same dtype/device as query; GQA when H_kv <= H
 - value: (B, K, H_kv, D). Same dtype/device as query; GQA when H_kv <= H
-- attn_mask: (B, {H, H_kv, 1}, {Q, 0}, K). 1.0 = visible, 0.0 = masked. None to disable
-- attn_bias: (B, {H, H_kv, 1}, {Q, 0}, K). Added to scores before softmax. None to disable
+- attn_mask: (B, {H, H_kv, 1}, {Q, 1}, K). 1 = visible, 0 = masked. None to disable
+- attn_bias: (B, {H, H_kv, 1}, {Q, 1}, K). Added to scores before softmax. None to disable
 - softmax_scale: score scaling; default 1/sqrt(D)
 - is_causal: apply lower-triangular mask
 - softcap, deterministic, return_attn_probs: only effective on the CUDA backend; ignored on others
@@ -232,8 +232,8 @@ def flash_sparse_attention_forward(
     query: torch.Tensor,                            # (batch_size, num_heads, query_len, head_dim)
     key: torch.Tensor,                              # (batch_size, num_kv_heads, key_len, head_dim)
     value: torch.Tensor,                            # (batch_size, num_kv_heads, key_len, head_dim)
-    attention_mask: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 0}, key_len)
-    attention_bias: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 0}, key_len)
+    attention_mask: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 1}, key_len)
+    attention_bias: Optional[torch.Tensor],         # (batch_size, {num_heads, num_kv_heads, 1}, {query_len, 1}, key_len)
     scaling: Optional[float] = None,                # score scaling
     softcap: Optional[float] = None,                # softcap value
     **kwargs,
@@ -246,8 +246,8 @@ def flash_sparse_attention_forward(
 - query: Query tensor with head-first layout (B, H, Q, D)
 - key: Key tensor with head-first layout (B, H_kv, K, D)
 - value: Value tensor with head-first layout (B, H_kv, K, D)
-- attention_mask: Boolean attention mask (B, {H, H_kv, 1}, {Q, 0}, K)
-- attention_bias: Attention bias to add to scores (B, {H, H_kv, 1}, {Q, 0}, K)
+- attention_mask: Boolean attention mask (B, {H, H_kv, 1}, {Q, 1}, K)
+- attention_bias: Attention bias to add to scores (B, {H, H_kv, 1}, {Q, 1}, K)
 - scaling: Score scaling factor
 - softcap: Softcap value for attention scores
 - **kwargs: Additional arguments including:
