@@ -35,7 +35,8 @@ Thus, a more effective approach is sparse attention: interacting each query with
 - Grouped Query Attention and Multi Query Attention
 - Flexible Mask and Bias
 - Skipping memory access and computation for masked regions
-- Gradient computation for bias
+- Gradient computation for bias to support learnable attention sink
+- Token-level KV sparsity for each Q
 
 ### Features We Aim to Support
 
