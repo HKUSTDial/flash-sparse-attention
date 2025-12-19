@@ -90,4 +90,4 @@ class DynamicMaskAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, seq_len, -1).contiguous()
         attn_output = self.o_proj(attn_output)
 
-        return attn_output
+        return attn_output, (key_states, value_states)
