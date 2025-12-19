@@ -7,7 +7,11 @@ __version__ = "1.2.3"
 
 # Import CUDA functions when available
 try:
-    from flash_sparse_attn.flash_sparse_attn_interface import flash_sparse_attn_func, flash_sparse_attn_varlen_func
+    from flash_sparse_attn.flash_sparse_attn_interface import (
+        flash_sparse_attn_func,
+        flash_sparse_attn_varlen_func,
+    )
+
     CUDA_AVAILABLE = True
 except ImportError:
     CUDA_AVAILABLE = False
@@ -16,6 +20,7 @@ except ImportError:
 # Import Triton functions when available
 try:
     from flash_sparse_attn.flash_sparse_attn_triton import triton_sparse_attn_func
+
     TRITON_AVAILABLE = True
 except ImportError:
     TRITON_AVAILABLE = False
@@ -24,6 +29,7 @@ except ImportError:
 # Import Flex functions when available
 try:
     from flash_sparse_attn.flash_sparse_attn_flex import flex_sparse_attn_func
+
     FLEX_AVAILABLE = True
 except ImportError:
     FLEX_AVAILABLE = False
@@ -45,12 +51,12 @@ def get_available_backends():
 def flash_sparse_attn_func_auto(backend: Optional[str] = None, **kwargs):
     """
     Flash Sparse Attention function with automatic backend selection.
-    
+
     Args:
-        backend (str, optional): Backend to use ('cuda', 'triton', 'flex'). 
+        backend (str, optional): Backend to use ('cuda', 'triton', 'flex').
             If None, will use the first available backend in order: cuda, triton, flex.
         **kwargs: Arguments to pass to the attention function.
-    
+
     Returns:
         The attention function for the specified or auto-selected backend.
     """
@@ -63,25 +69,35 @@ def flash_sparse_attn_func_auto(backend: Optional[str] = None, **kwargs):
         elif FLEX_AVAILABLE:
             backend = "flex"
         else:
-            raise RuntimeError("No flash attention backend is available. Please install at least one of: triton, transformers, or build the CUDA extension.")
-    
+            raise RuntimeError(
+                "No flash attention backend is available. Please install at least one of: triton, transformers, or build the CUDA extension."
+            )
+
     if backend == "cuda":
         if not CUDA_AVAILABLE:
-            raise RuntimeError("CUDA backend is not available. Please build the CUDA extension.")
+            raise RuntimeError(
+                "CUDA backend is not available. Please build the CUDA extension."
+            )
         return flash_sparse_attn_func
-    
+
     elif backend == "triton":
         if not TRITON_AVAILABLE:
-            raise RuntimeError("Triton backend is not available. Please install triton: pip install triton")
+            raise RuntimeError(
+                "Triton backend is not available. Please install triton: pip install triton"
+            )
         return triton_sparse_attn_func
-    
+
     elif backend == "flex":
         if not FLEX_AVAILABLE:
-            raise RuntimeError("Flex backend is not available. Please install transformers: pip install transformers")
+            raise RuntimeError(
+                "Flex backend is not available. Please install transformers: pip install transformers"
+            )
         return flex_sparse_attn_func
-    
+
     else:
-        raise ValueError(f"Unknown backend: {backend}. Available backends: {get_available_backends()}")
+        raise ValueError(
+            f"Unknown backend: {backend}. Available backends: {get_available_backends()}"
+        )
 
 
 __all__ = [
