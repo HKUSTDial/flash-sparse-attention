@@ -65,11 +65,12 @@ class DynamicMaskAttention(nn.Module):
 
         gate_states = self.g_proj(query_states)
         delta_states = self.d_proj(value_states)
-        attn_bias = (torch.sigmoid(gate_states) * delta_states).transpose(-1, -2).unsqueeze(-2)
+        attn_bias = torch.sigmoid(gate_states) * delta_states
 
         query_states = query_states.view(bsz, seq_len, -1, self.head_dim)
         key_states = key_states.view(bsz, key_len, -1, self.head_dim)
         value_states = value_states.view(bsz, key_len, -1, self.head_dim)
+        attn_bias = attn_bias.transpose(-1, -2).unsqueeze(-2)
 
         attn_mask = create_mask(
             attention_bias=attn_bias,
