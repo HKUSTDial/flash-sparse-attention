@@ -29,7 +29,9 @@ def unpad_input(hidden_states, attention_mask, unused_mask=None):
         max_seqlen_in_batch: int
         seqused: (batch), returns the number of tokens selected in attention_mask + unused_mask.
     """
-    all_masks = (attention_mask + unused_mask) if unused_mask is not None else attention_mask
+    all_masks = (
+        (attention_mask + unused_mask) if unused_mask is not None else attention_mask
+    )
     seqlens_in_batch = all_masks.sum(dim=-1, dtype=torch.int32)
     used_seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(all_masks.flatten(), as_tuple=False).flatten()
@@ -57,12 +59,16 @@ def pad_input(hidden_states, indices, batch, seqlen):
         hidden_states: (batch, seqlen, ...)
     """
     dim = hidden_states.shape[1:]
-    output = torch.zeros((batch * seqlen), *dim, device=hidden_states.device, dtype=hidden_states.dtype)
+    output = torch.zeros(
+        (batch * seqlen), *dim, device=hidden_states.device, dtype=hidden_states.dtype
+    )
     output[indices] = hidden_states
     return output.view(batch, seqlen, *dim)
 
 
-def get_unpad_data(attention_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
+def get_unpad_data(
+    attention_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
     """
     Retrieves indexing data required to repad unpadded (ragged) tensors.
 
@@ -137,7 +143,10 @@ def upad_input(
     # With static caches, the k/v states may be larger than the mask -> we need to slice them to avoid generating garbage
     # It's a bit of an anti-pattern, but otherwise we silently compute wrong attentions scores
     if key_layer.shape[1] > (seq_len := attention_mask.shape[-1]):
-        key_layer, value_layer = key_layer[:, :seq_len, :, :], value_layer[:, :seq_len, :, :]
+        key_layer, value_layer = (
+            key_layer[:, :seq_len, :, :],
+            value_layer[:, :seq_len, :, :],
+        )
 
     batch_size, kv_seq_len, num_key_value_heads, head_dim = key_layer.shape
 
@@ -158,7 +167,9 @@ def upad_input(
     else:
         # The -q_len: slice assumes left padding.
         attention_mask = attention_mask[:, -query_length:]
-        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = unpad_input_func(query_layer, attention_mask)
+        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = (
+            unpad_input_func(query_layer, attention_mask)
+        )
 
     return (
         query_layer,
