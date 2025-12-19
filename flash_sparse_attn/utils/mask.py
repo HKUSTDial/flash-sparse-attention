@@ -30,15 +30,14 @@ def topk_indices(
             (batch_size, num_kv_heads, key_len).
         window_size (int): The number of top elements to consider for the mask.
         **kwargs: Additional keyword arguments.
-    
+
     Returns:
         topk_indices (Tensor): The top-k indices tensor of shape
             (batch_size, num_kv_heads, window_size).
     """
     attention_bias = attention_bias.detach()
     topk_indices = torch.topk(
-        attention_bias,
-        window_size, dim=-1, largest=True, sorted=False
+        attention_bias, window_size, dim=-1, largest=True, sorted=False
     ).indices
     topk_indices = torch.sort(topk_indices, dim=-1).values
     return topk_indices
@@ -51,7 +50,7 @@ def block_smooth(
 ):
     if block_size <= 0:
         raise ValueError(f"block_size must be a positive integer, got {block_size}.")
- 
+
     if block_size > 1:
         full_len = (key_len // block_size) * block_size
 
@@ -71,7 +70,7 @@ def block_smooth(
             tail_slice.copy_(tail_keep.expand_as(tail_slice))
 
     return attention_mask
-    
+
 
 def topk_mask(
     attention_bias: torch.Tensor,
@@ -87,23 +86,26 @@ def topk_mask(
     Args:
         attention_bias (torch.Tensor): The attention bias tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
-        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape 
+        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
         window_size (int): The number of top elements to consider for the mask.
         min_dtype (float): The minimum value to use for masking.
         block_size (Optional[int]): Optional size of aggregation blocks to smooth the
             resulting mask along the key dimension.
-    
+
     Returns:
         attention_mask (Tensor): The attention mask tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
     """
 
     attention_bias = attention_bias.detach()
-    attention_bias = attention_bias.masked_fill(~attention_mask, min_dtype) if attention_mask is not None else attention_bias
+    attention_bias = (
+        attention_bias.masked_fill(~attention_mask, min_dtype)
+        if attention_mask is not None
+        else attention_bias
+    )
     topk_values, topk_indices = torch.topk(
-        attention_bias,
-        window_size, dim=-1, largest=True, sorted=False
+        attention_bias, window_size, dim=-1, largest=True, sorted=False
     )
     attention_mask = torch.zeros_like(
         attention_bias, dtype=torch.bool, device=attention_bias.device
@@ -112,9 +114,7 @@ def topk_mask(
     if block_size is not None and block_size > 1:
         key_len = attention_mask.shape[-1]
         attention_mask = block_smooth(
-            attention_mask=attention_mask,
-            key_len=key_len,
-            block_size=block_size
+            attention_mask=attention_mask, key_len=key_len, block_size=block_size
         )
 
     return attention_mask
@@ -125,7 +125,7 @@ def relu_mask(
     attention_mask: Optional[torch.Tensor],
     min_dtype: float,
     block_size: Optional[int] = None,
-    **kwargs
+    **kwargs,
 ):
     r"""
     This function generates a dynamic mask based on the ReLU of attention bias.
@@ -133,31 +133,32 @@ def relu_mask(
     Args:
         attention_bias (torch.Tensor): The attention bias tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
-        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape 
+        attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
         min_dtype (float): The minimum value to use for masking.
         block_size (Optional[int]): Optional size of aggregation blocks to smooth the
             resulting mask along the key dimension.
-    
+
     Returns:
         attention_mask (Tensor): The attention mask tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
     """
 
     attention_bias = attention_bias.detach()
-    attention_bias = attention_bias.masked_fill(~attention_mask, min_dtype) if attention_mask is not None else attention_bias
+    attention_bias = (
+        attention_bias.masked_fill(~attention_mask, min_dtype)
+        if attention_mask is not None
+        else attention_bias
+    )
     attention_mask = attention_bias > 0
 
     if block_size is not None and block_size > 1:
         key_len = attention_mask.shape[-1]
         attention_mask = block_smooth(
-            attention_mask=attention_mask,
-            key_len=key_len,
-            block_size=block_size
+            attention_mask=attention_mask, key_len=key_len, block_size=block_size
         )
 
     return attention_mask
-
 
 
 def create_mask(
@@ -166,16 +167,16 @@ def create_mask(
     batch_size: int,
     query_len: int,
     key_len: int,
-    window_size: int,
-    min_dtype: float,
-    block_size: Optional[int] = None,
+    window_size: Optional[int],
+    min_dtype: Optional[float],
+    block_size: Optional[int],
     type: str = "topk",
 ) -> torch.Tensor:
     r"""
     This function creates a mask tensor for Flash Sparse Attention.
 
     If attention_mask is not of shape (batch_size, seq_len), it needs to match the shape of attention_bias.
-    
+
     Args:
         attention_bias (torch.Tensor): The attention bias tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
@@ -184,8 +185,8 @@ def create_mask(
         batch_size (int): The batch size.
         query_len (int): The sequence length of the query.
         key_len (int): The sequence length of the key.
-        window_size (int): The number of top elements to consider for the attention mask.
-        min_dtype (float): The minimum value to use for masking.
+        window_size (Optional[int]): The number of top elements to consider for the attention mask.
+        min_dtype (Optional[float]): The minimum value to use for masking.
         block_size (Optional[int]): Optional size of aggregation blocks after top-k masking.
         type (str): The type of mask to create. Options are "topk" and "relu".
 
@@ -193,6 +194,9 @@ def create_mask(
         attention (Tensor): The attention mask tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
     """
+
+    if min_dtype is None:
+        min_dtype = torch.finfo(attention_bias.dtype).min
 
     # If attention_mask is of shape (batch_size, seq_len), reshape it to (batch_size, 1, 1, key_len)
     if attention_mask is not None and attention_mask.dim() == 2:
@@ -216,7 +220,7 @@ def create_mask(
             raise ValueError(
                 f"attention_mask shape {attention_mask.shape} is not compatible with key_len {key_len} or query_len {query_len}."
             )
-    
+
     # Generate dynamic mask based on attention_bias and attention_mask
     if type == "topk":
         attention_mask = topk_mask(
@@ -230,11 +234,12 @@ def create_mask(
         attention_mask = relu_mask(
             attention_bias=attention_bias,
             attention_mask=attention_mask,
-            window_size=window_size,
             min_dtype=min_dtype,
             block_size=block_size,
         )
     else:
-        raise ValueError(f"Unsupported mask type: {type}. Supported types are 'topk' and 'relu'.")
+        raise ValueError(
+            f"Unsupported mask type: {type}. Supported types are 'topk' and 'relu'."
+        )
 
     return attention_mask
