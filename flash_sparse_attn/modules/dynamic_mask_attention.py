@@ -1,9 +1,7 @@
 from typing import Optional, Tuple
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from transformers.cache_utils import Cache
 
 from flash_sparse_attn.flash_sparse_attn_interface import flash_sparse_attn_func
 from flash_sparse_attn.utils.mask import create_mask
@@ -67,7 +65,9 @@ class DynamicMaskAttention(nn.Module):
 
         gate_states = self.g_proj(query_states)
         delta_states = self.d_proj(value_states)
-        attn_bias = (torch.sigmoid(gate_states) * delta_states).transpose(-1, -2).unsqueeze(-2)
+        attn_bias = (
+            (torch.sigmoid(gate_states) * delta_states).transpose(-1, -2).unsqueeze(-2)
+        )
 
         query_states = query_states.view(bsz, seq_len, -1, self.head_dim)
         key_states = key_states.view(bsz, key_len, -1, self.head_dim)
