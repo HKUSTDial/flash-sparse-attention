@@ -54,12 +54,23 @@ def _lazy_imports(implementation: Optional[str]):
     """
     is_fsa = is_flash_sparse_attn_available()
 
-    if (implementation == "flash_sparse_attn" and is_fsa) or (implementation is None and is_fsa):
-        from flash_sparse_attn import flash_sparse_attn_func, flash_sparse_attn_varlen_func
+    if (implementation == "flash_sparse_attn" and is_fsa) or (
+        implementation is None and is_fsa
+    ):
+        from flash_sparse_attn import (
+            flash_sparse_attn_func,
+            flash_sparse_attn_varlen_func,
+        )
         from flash_sparse_attn.utils.padding import pad_input, unpad_input
         from flash_sparse_attn.utils.mask import create_mask
 
-    return flash_sparse_attn_func, flash_sparse_attn_varlen_func, pad_input, unpad_input, create_mask
+    return (
+        flash_sparse_attn_func,
+        flash_sparse_attn_varlen_func,
+        pad_input,
+        unpad_input,
+        create_mask,
+    )
 
 
 def _lazy_define_process_function(flash_function):
@@ -73,17 +84,23 @@ def _lazy_define_process_function(flash_function):
     """
 
     flash_parameters = inspect.signature(flash_function).parameters
-    process_parameters = inspect.signature(_process_flash_sparse_attention_kwargs).parameters
+    process_parameters = inspect.signature(
+        _process_flash_sparse_attention_kwargs
+    ).parameters
 
     supports_mapping = {}
     for param in process_parameters:
         fsa_param = _hf_api_to_flash_mapping.get(param, param)
         supports_mapping[fsa_param] = fsa_param in flash_parameters
 
-    return partial(_process_flash_sparse_attention_kwargs, supports_mapping=supports_mapping)
+    return partial(
+        _process_flash_sparse_attention_kwargs, supports_mapping=supports_mapping
+    )
 
 
-def lazy_import_flash_sparse_attention(implementation: Optional[str], force_import: Optional[bool] = False):
+def lazy_import_flash_sparse_attention(
+    implementation: Optional[str], force_import: Optional[bool] = False
+):
     """
     Lazily import flash sparse attention and return the respective functions + flags.
 
@@ -91,13 +108,24 @@ def lazy_import_flash_sparse_attention(implementation: Optional[str], force_impo
     work without preloading. See `load_and_register_kernel` in `integrations.hub_kernels`.
     """
     global _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn
-    if force_import or any(k is None for k in [_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn]):
-        _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn = _lazy_imports(implementation)
+    if force_import or any(
+        k is None
+        for k in [_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn]
+    ):
+        _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn = _lazy_imports(
+            implementation
+        )
 
     global _process_flash_kwargs_fn
     if force_import or _process_flash_kwargs_fn is None:
         _process_flash_kwargs_fn = _lazy_define_process_function(_fsa_varlen_fn)
-    return (_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn), _process_flash_kwargs_fn
+    return (
+        _fsa_fn,
+        _fsa_varlen_fn,
+        _pad_fn,
+        _unpad_fn,
+        _create_mask_fn,
+    ), _process_flash_kwargs_fn
 
 
 def _index_first_axis(tensor, indices):
@@ -112,7 +140,9 @@ def _index_first_axis(tensor, indices):
     return reshaped_tensor[indices]
 
 
-def _get_unpad_data(attention_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, int]:
+def _get_unpad_data(
+    attention_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
     """
     Retrieves indexing data required to repad unpadded (ragged) tensors.
 
@@ -187,7 +217,10 @@ def _upad_input(
     # With static caches, the k/v states may be larger than the mask -> we need to slice them to avoid generating garbage
     # It's a bit of an anti-pattern, but otherwise we silently compute wrong attentions scores
     if key_layer.shape[1] > (seq_len := attention_mask.shape[-1]):
-        key_layer, value_layer = key_layer[:, :seq_len, :, :], value_layer[:, :seq_len, :, :]
+        key_layer, value_layer = (
+            key_layer[:, :seq_len, :, :],
+            value_layer[:, :seq_len, :, :],
+        )
 
     batch_size, kv_seq_len, num_key_value_heads, head_dim = key_layer.shape
 
@@ -208,7 +241,9 @@ def _upad_input(
     else:
         # The -q_len: slice assumes left padding.
         attention_mask = attention_mask[:, -query_length:]
-        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = unpad_input_func(query_layer, attention_mask)
+        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = (
+            unpad_input_func(query_layer, attention_mask)
+        )
 
     return (
         query_layer,
@@ -297,9 +332,17 @@ def _prepare_from_posids(query, key, value, position_ids):
     key = key.contiguous().view(-1, key.size(-2), key.size(-1))
     value = value.contiguous().view(-1, value.size(-2), value.size(-1))
 
-    (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = prepare_fsa_kwargs_from_position_ids(position_ids)
+    (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = (
+        prepare_fsa_kwargs_from_position_ids(position_ids)
+    )
 
-    return (query, key, value, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k))
+    return (
+        query,
+        key,
+        value,
+        (cu_seq_lens_q, cu_seq_lens_k),
+        (max_length_q, max_length_k),
+    )
 
 
 def _is_packed_sequence(position_ids, batch_size):
@@ -313,9 +356,13 @@ def _is_packed_sequence(position_ids, batch_size):
         return False
 
     increasing_position_sequences = (
-        torch.arange(position_ids.shape[1], device=position_ids.device) + position_ids.min()
+        torch.arange(position_ids.shape[1], device=position_ids.device)
+        + position_ids.min()
     )
-    return batch_size == 1 and (increasing_position_sequences - position_ids).abs().sum().bool()
+    return (
+        batch_size == 1
+        and (increasing_position_sequences - position_ids).abs().sum().bool()
+    )
 
 
 def fsa_peft_integration_check(
@@ -323,7 +370,7 @@ def fsa_peft_integration_check(
     k: torch.Tensor,
     v: torch.Tensor,
     bias: Optional[torch.Tensor],
-    target_dtype: Optional[torch.dtype] = None
+    target_dtype: Optional[torch.dtype] = None,
 ):
     """
     PEFT usually casts the layer norms in float32 for training stability reasons
@@ -332,7 +379,9 @@ def fsa_peft_integration_check(
     This might slowdown training & inference so it is recommended to not cast the LayerNorms!
     """
     if target_dtype and q.dtype == torch.float32:
-        logger.warning_once(f"Casting fp32 inputs back to {target_dtype} for flash_sparse_attn compatibility.")
+        logger.warning_once(
+            f"Casting fp32 inputs back to {target_dtype} for flash_sparse_attn compatibility."
+        )
         q, k, v = q.to(target_dtype), k.to(target_dtype), v.to(target_dtype)
         if bias is not None:
             bias = bias.to(target_dtype)
@@ -404,12 +453,18 @@ def _process_flash_sparse_attention_kwargs(
         "softmax_scale": softmax_scale,
     }
 
-    if supports_mapping["window_size"] and window_size is not None and key_length > window_size:
+    if (
+        supports_mapping["window_size"]
+        and window_size is not None
+        and key_length > window_size
+    ):
         flash_kwargs["window_size"] = window_size
 
     if supports_mapping["deterministic"]:
         flash_kwargs["deterministic"] = (
-            deterministic if deterministic is not None else os.getenv("FLASH_SPARSE_ATTENTION_DETERMINISTIC", "0") == "1"
+            deterministic
+            if deterministic is not None
+            else os.getenv("FLASH_SPARSE_ATTENTION_DETERMINISTIC", "0") == "1"
         )
 
     if supports_mapping["softcap"] and softcap is not None:
@@ -475,7 +530,10 @@ def _flash_sparse_attention_forward(
             "If shape of attention_mask is (batch_size, seq_len), attention_bias has to be None."
         )
 
-    (fsa_fn, fsa_varlen_fn, pad_fn, unpad_fn, create_mask_fn), process_flash_kwargs_fn = lazy_import_flash_sparse_attention(implementation)
+    (
+        (fsa_fn, fsa_varlen_fn, pad_fn, unpad_fn, create_mask_fn),
+        process_flash_kwargs_fn,
+    ) = lazy_import_flash_sparse_attention(implementation)
 
     # PEFT possibly silently casts tensors to fp32, this potentially reconverts to correct dtype or is a no op
     query_states, key_states, value_states, attention_bias = fsa_peft_integration_check(
@@ -501,15 +559,30 @@ def _flash_sparse_attention_forward(
     #
     # NOTE: it is user's responsibility to take care of flattening `position_ids` if that's needed by the model.
     # See #39121 for more information.
-    is_fsa_with_position_ids = _is_packed_sequence(position_ids, batch_size=query_states.size(0))
+    is_fsa_with_position_ids = _is_packed_sequence(
+        position_ids, batch_size=query_states.size(0)
+    )
     is_fsa_with_varlen_kwargs = all(
-        kwarg is not None for kwarg in (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
+        kwarg is not None
+        for kwarg in (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
     )
 
     # Contains at least one padding token in the sequence
     if attention_mask is not None and attention_mask.dim() == 2:
-        q, k, v, indices_q, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = _upad_input(
-            query_states, key_states, value_states, attention_mask, query_length, unpad_fn
+        (
+            q,
+            k,
+            v,
+            indices_q,
+            (cu_seq_lens_q, cu_seq_lens_k),
+            (max_length_q, max_length_k),
+        ) = _upad_input(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            query_length,
+            unpad_fn,
         )
 
         # TODO for now this is required to work with
@@ -531,12 +604,14 @@ def _flash_sparse_attention_forward(
             out_unpad = out_unpad[0]
 
         out = pad_fn(out_unpad, indices_q, query_states.size(0), query_length)
-    
+
     # Padding free, i.e. sequences flattened into one total sequence
     elif is_fsa_with_varlen_kwargs or is_fsa_with_position_ids:
         if cu_seq_lens_q is None or cu_seq_lens_k is None:
-            q, k, v, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = _prepare_from_posids(
-                query_states, key_states, value_states, position_ids
+            q, k, v, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = (
+                _prepare_from_posids(
+                    query_states, key_states, value_states, position_ids
+                )
             )
         else:
             q = query_states.reshape(-1, query_states.size(-2), query_states.size(-1))
@@ -562,10 +637,9 @@ def _flash_sparse_attention_forward(
             out = out[0]
 
         out = out.view(query_states.size(0), -1, out.size(-2), out.size(-1))
-    
+
     # No padding
     else:
-        
         # Generate a combined attention mask if `attention_bias` are provided
         if (
             attention_bias is not None
@@ -581,7 +655,7 @@ def _flash_sparse_attention_forward(
                 window_size=window_size,
                 min_dtype=torch.finfo(attention_bias.dtype).min,
             )
-    
+
         out = fsa_fn(
             query_states,
             key_states,
