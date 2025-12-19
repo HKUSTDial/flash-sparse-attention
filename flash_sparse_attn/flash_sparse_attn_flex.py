@@ -18,16 +18,20 @@ def flex_attention_forward(
     batch, seqlen_q, nheads, dhead = query.shape
     _, seqlen_k, _, _ = key.shape
     query = query.transpose(1, 2).contiguous()  # [B, H, Q_LEN, D]
-    key = key.transpose(1, 2).contiguous()      # [B, H, KV_LEN, D]
+    key = key.transpose(1, 2).contiguous()  # [B, H, KV_LEN, D]
     value = value.transpose(1, 2).contiguous()  # [B, H, KV_LEN, D]
     if attn_mask is not None:
         attn_mask = attn_mask[:, :, :, : key.shape[-2]]
     else:
-        attn_mask = torch.ones((batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype)
+        attn_mask = torch.ones(
+            (batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype
+        )
     if attn_bias is not None:
         attn_bias = attn_bias[:, :, :, : key.shape[-2]]
     else:
-        attn_bias = torch.zeros((batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype)
+        attn_bias = torch.zeros(
+            (batch, nheads, seqlen_q, seqlen_k), device=query.device, dtype=query.dtype
+        )
     if is_causal is None:
         is_causal = True
     if softmax_scale is None:
@@ -42,7 +46,7 @@ def flex_attention_forward(
         # We don't support that yet, please shout over at https://github.com/pytorch/functorch/issues/257 .
         # return q_idx >= kv_idx and attn_mask[batch_idx][head_idx][q_idx][kv_idx] > 0
         return q_idx >= kv_idx
-    
+
     block_mask = create_block_mask(
         mask_mod=causal_mask_mod,
         B=query.shape[0],
@@ -57,7 +61,7 @@ def flex_attention_forward(
         "BLOCK_M": 64,
         "BLOCK_N": 64,
         "BLOCK_DMODEL": 32,
-        "num_stages": 1, 
+        "num_stages": 1,
         "num_warps": 8,
     }
     attn_output = compile_friendly_flex_attention(
@@ -76,5 +80,6 @@ def flex_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output
+
 
 flex_sparse_attn_func = flex_attention_forward
