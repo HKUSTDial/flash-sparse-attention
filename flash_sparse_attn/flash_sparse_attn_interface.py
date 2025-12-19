@@ -4,14 +4,19 @@ from typing import Optional, Tuple, Any
 from packaging import version
 import torch
 
-import flash_sparse_attn_cuda as flash_sparse_attn_gpu    # type: ignore
+import flash_sparse_attn_cuda as flash_sparse_attn_gpu  # type: ignore
 
 
 def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
 
 
-def _sanitize_tensors(*tensors: Optional[torch.Tensor], nan: float = 0.0, posinf: float = 1e6, neginf: float = -1e6) -> None:
+def _sanitize_tensors(
+    *tensors: Optional[torch.Tensor],
+    nan: float = 0.0,
+    posinf: float = 1e6,
+    neginf: float = -1e6,
+) -> None:
     for t in tensors:
         if t is not None and isinstance(t, torch.Tensor):
             torch.nan_to_num_(t, nan=nan, posinf=posinf, neginf=neginf)
@@ -21,9 +26,11 @@ def _get_block_size_n(device, head_dim, is_causal):
     # This should match the block sizes in the CUDA kernel
     assert head_dim <= 256
     major, minor = torch.cuda.get_device_capability(device)
-    is_sm8x = major == 8 and minor > 0  # Only include sm86 and sm89, exclude sm80 (A100)
-    is_sm80 = major == 8 and minor == 0
-    is_sm90 = major == 9 and minor == 0
+    is_sm8x = (
+        major == 8 and minor > 0
+    )  # Only include sm86 and sm89, exclude sm80 (A100)
+    # is_sm80 = major == 8 and minor == 0
+    # is_sm90 = major == 9 and minor == 0
     if head_dim <= 32:
         return 128
     if head_dim <= 64:
@@ -54,23 +61,34 @@ if version.parse(torch.__version__) >= version.parse("2.4.0"):
     _torch_custom_op_wrapper = torch.library.custom_op
     _torch_register_fake_wrapper = torch.library.register_fake
 else:
-    def noop_custom_op_wrapper(name, fn=None, /, *, mutates_args, device_types=None, schema=None):
+
+    def noop_custom_op_wrapper(
+        name, fn=None, /, *, mutates_args, device_types=None, schema=None
+    ):
         def wrap(func):
             return func
+
         if fn is None:
             return wrap
         return fn
+
     def noop_register_fake_wrapper(op, fn=None, /, *, lib=None, _stacklevel=1):
         def wrap(func):
             return func
+
         if fn is None:
             return wrap
         return fn
+
     _torch_custom_op_wrapper = noop_custom_op_wrapper
     _torch_register_fake_wrapper = noop_register_fake_wrapper
 
 
-@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_forward", mutates_args=(), device_types="cuda")
+@_torch_custom_op_wrapper(
+    "flash_sparse_attn::_flash_sparse_attn_forward",
+    mutates_args=(),
+    device_types="cuda",
+)
 def _flash_sparse_attn_forward(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -80,7 +98,7 @@ def _flash_sparse_attn_forward(
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
-    return_softmax: bool
+    return_softmax: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
     out, softmax_lse, S_dmask = flash_sparse_attn_gpu.fwd(
@@ -109,16 +127,31 @@ def _flash_sparse_attn_forward_fake(
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
-    return_softmax: bool
+    return_softmax: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
     batch_size, seqlen_q, num_heads, head_size = q.shape
     seqlen_k = k.shape[1]
     out = torch.empty_like(q)
-    softmax_lse = torch.empty((batch_size, num_heads, seqlen_q), dtype=torch.float32, device=q.device, layout=q.layout)
+    softmax_lse = torch.empty(
+        (batch_size, num_heads, seqlen_q),
+        dtype=torch.float32,
+        device=q.device,
+        layout=q.layout,
+    )
     p = torch.empty((0,), dtype=q.dtype, device=q.device, layout=q.layout)
     if return_softmax:
-        p = torch.empty((batch_size, num_heads, round_multiple(seqlen_q, 128), round_multiple(seqlen_k, 128)), dtype=q.dtype, device=q.device, layout=q.layout)
+        p = torch.empty(
+            (
+                batch_size,
+                num_heads,
+                round_multiple(seqlen_q, 128),
+                round_multiple(seqlen_k, 128),
+            ),
+            dtype=q.dtype,
+            device=q.device,
+            layout=q.layout,
+        )
 
     return out, softmax_lse, p
 
@@ -126,7 +159,11 @@ def _flash_sparse_attn_forward_fake(
 _wrapped_flash_sparse_attn_forward = _flash_sparse_attn_forward
 
 
-@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_forward", mutates_args=(), device_types="cuda")
+@_torch_custom_op_wrapper(
+    "flash_sparse_attn::_flash_sparse_attn_varlen_forward",
+    mutates_args=(),
+    device_types="cuda",
+)
 def _flash_sparse_attn_varlen_forward(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -186,24 +223,35 @@ def _flash_sparse_attn_varlen_forward_fake(
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    paged_kv = block_table is not None
+    # paged_kv = block_table is not None
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
-    
+
     out = torch.empty_like(q)
-    softmax_lse = torch.empty((num_heads, total_q), dtype=torch.float32, device=q.device, layout=q.layout)
+    softmax_lse = torch.empty(
+        (num_heads, total_q), dtype=torch.float32, device=q.device, layout=q.layout
+    )
     p = torch.empty((0,), dtype=q.dtype, device=q.device, layout=q.layout)
     seqlen_q_rounded = round_multiple(max_seqlen_q, 128)
     seqlen_k_rounded = round_multiple(max_seqlen_k, 128)
     if return_softmax:
-        p = torch.empty((batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded), dtype=q.dtype, device=q.device, layout=q.layout)
+        p = torch.empty(
+            (batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded),
+            dtype=q.dtype,
+            device=q.device,
+            layout=q.layout,
+        )
     return out, softmax_lse, p
 
 
 _wrapped_flash_sparse_attn_varlen_forward = _flash_sparse_attn_varlen_forward
 
 
-@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_backward", mutates_args=("dq", "dk", "dv", "dbias"), device_types="cuda")
+@_torch_custom_op_wrapper(
+    "flash_sparse_attn::_flash_sparse_attn_backward",
+    mutates_args=("dq", "dk", "dv", "dbias"),
+    device_types="cuda",
+)
 def _flash_sparse_attn_backward(
     dout: torch.Tensor,
     q: torch.Tensor,
@@ -222,7 +270,9 @@ def _flash_sparse_attn_backward(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, q, k, v, mask, bias, out = [
+        maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)
+    ]
     (
         dq,
         dk,
@@ -270,7 +320,9 @@ def _flash_sparse_attn_backward_fake(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)]
+    dout, q, k, v, mask, bias, out = [
+        maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)
+    ]
     if dq is None:
         dq = torch.empty_like(q)
     if dk is None:
@@ -280,15 +332,23 @@ def _flash_sparse_attn_backward_fake(
     if dbias is None:
         dbias = torch.empty_like(bias)
     batch_size, seqlen_q, num_heads, _ = q.shape
-    softmax_d = torch.empty((batch_size, num_heads, round_multiple(seqlen_q, 128)), device=q.device, dtype=torch.float32)
-    
+    softmax_d = torch.empty(
+        (batch_size, num_heads, round_multiple(seqlen_q, 128)),
+        device=q.device,
+        dtype=torch.float32,
+    )
+
     return softmax_d
 
 
 _wrapped_flash_sparse_attn_backward = _flash_sparse_attn_backward
 
 
-@_torch_custom_op_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_backward", mutates_args=("dq", "dk", "dv"), device_types="cuda")
+@_torch_custom_op_wrapper(
+    "flash_sparse_attn::_flash_sparse_attn_varlen_backward",
+    mutates_args=("dq", "dk", "dv"),
+    device_types="cuda",
+)
 def _flash_sparse_attn_varlen_backward(
     dout: torch.Tensor,
     q: torch.Tensor,
@@ -371,7 +431,9 @@ def _flash_sparse_attn_varlen_backward_fake(
         dk = torch.empty_like(k)
     if dv is None:
         dv = torch.empty_like(v)
-    softmax_d = torch.empty((num_heads, total_q + 128 * batch_size), device=q.device, dtype=torch.float32)
+    softmax_d = torch.empty(
+        (num_heads, total_q + 128 * batch_size), device=q.device, dtype=torch.float32
+    )
 
     return softmax_d
 
@@ -380,7 +442,6 @@ _wrapped_flash_sparse_attn_varlen_backward = _flash_sparse_attn_varlen_backward
 
 
 class FlashDMAttnFunc(torch.autograd.Function):
-
     @staticmethod
     def forward(
         ctx: torch.autograd.function.FunctionCtx,
@@ -396,9 +457,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return_softmax: Optional[bool],
         is_grad_enabled: bool = True,
     ):
-        is_grad = is_grad_enabled and any(
-            x.requires_grad for x in [q, k, v]
-        )
+        is_grad = is_grad_enabled and any(x.requires_grad for x in [q, k, v])
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -422,12 +481,16 @@ class FlashDMAttnFunc(torch.autograd.Function):
             if mask.shape[-1] == 1:
                 mask = mask.expand(*mask.shape[:-1], seqlen_k_rounded)
             else:
-                mask = torch.nn.functional.pad(mask, [0, seqlen_k_rounded - mask.shape[-1]])
+                mask = torch.nn.functional.pad(
+                    mask, [0, seqlen_k_rounded - mask.shape[-1]]
+                )
         if bias is not None and bias.shape[-1] != seqlen_k_rounded:
             if bias.shape[-1] == 1:
                 bias = bias.expand(*bias.shape[:-1], seqlen_k_rounded)
             else:
-                bias = torch.nn.functional.pad(bias, [0, seqlen_k_rounded - bias.shape[-1]])
+                bias = torch.nn.functional.pad(
+                    bias, [0, seqlen_k_rounded - bias.shape[-1]]
+                )
 
         out_padded, softmax_lse, S_dmask = _wrapped_flash_sparse_attn_forward(
             q,
@@ -488,18 +551,21 @@ class FlashDMAttnFunc(torch.autograd.Function):
         )
 
         # We could have padded the head dimension
-        dq = dq[..., : dout.shape[-1]]  
+        dq = dq[..., : dout.shape[-1]]
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
 
         if dbias is not None:
-            dbias = dbias[..., :k.shape[1]].sum(dim=-1, keepdim=True) if ctx.seqlen_k_bias_og == 1 else dbias[..., : k.shape[1]]
+            dbias = (
+                dbias[..., : k.shape[1]].sum(dim=-1, keepdim=True)
+                if ctx.seqlen_k_bias_og == 1
+                else dbias[..., : k.shape[1]]
+            )
 
         return dq, dk, dv, None, dbias, None, None, None, None, None, None
 
 
 class FlashAttnVarlenFunc(torch.autograd.Function):
-
     @staticmethod
     def forward(
         ctx: torch.autograd.function.FunctionCtx,
@@ -518,9 +584,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         block_table: Optional[torch.Tensor],
         is_grad_enabled: bool = True,
     ):
-        is_grad = is_grad_enabled and any(
-            x.requires_grad for x in [q, k, v]
-        )
+        is_grad = is_grad_enabled and any(x.requires_grad for x in [q, k, v])
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -531,7 +595,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             deterministic = False
         if return_softmax is None:
             return_softmax = False
-        
+
         # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = q.size(2)
         if head_size_og % 8 != 0:
@@ -600,11 +664,26 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         )
 
         # We could have padded the head dimension
-        dq = dq[..., : dout.shape[-1]] 
+        dq = dq[..., : dout.shape[-1]]
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
 
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
+        return (
+            dq,
+            dk,
+            dv,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 def flash_sparse_attn_func(
