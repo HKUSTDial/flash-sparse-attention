@@ -97,9 +97,9 @@ class MultiHeadAttention(nn.Module):
             )
 
         attn_output, attn_weights = flash_attn_func(
-            query_states,
-            key_states,
-            value_states,
+            query_states.transpose(1, 2).contiguous(),
+            key_states.transpose(1, 2).contiguous(),
+            value_states.transpose(1, 2).contiguous(),
             softmax_scale=self.scaling,
             causal=self.is_causal,
         )

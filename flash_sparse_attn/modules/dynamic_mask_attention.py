@@ -136,9 +136,9 @@ class DynamicMaskAttention(nn.Module):
         )
         attn_output, attn_weights = flash_sparse_attn_func(
             self,
-            query_states,
-            key_states,
-            value_states,
+            query_states.transpose(1, 2).contiguous(),
+            key_states.transpose(1, 2).contiguous(),
+            value_states.transpose(1, 2).contiguous(),
             attn_mask,
             attn_bias,
             softmax_scale=self.scaling,
