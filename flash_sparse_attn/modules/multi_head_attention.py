@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from transformers.cache_utils import Cache
 
-from flash_atton.flash_attn_interface import flash_attn_func
+from flash_attn.flash_attn_interface import flash_attn_func
 
 
 def rotate_half(x):
