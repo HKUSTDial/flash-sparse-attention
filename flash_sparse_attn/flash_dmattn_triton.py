@@ -39,7 +39,7 @@ import triton.language as tl
             num_stages=1,
         ),
     ],
-    key=['IS_CAUSAL', 'BLOCK_HEADDIM']
+    key=["IS_CAUSAL", "BLOCK_HEADDIM"],
 )
 @triton.heuristics(
     {
@@ -51,7 +51,7 @@ def _fwd_preprocess(
     K,
     V,
     B,
-    I,
+    Indices,
     CuK,
     CuV,
     CuB,
@@ -100,31 +100,15 @@ def _fwd_preprocess(
     offs_n = tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, BLOCK_HEADDIM)
 
-    # Initialize base pointers to K, V, B, I, CuK, CuV, CuB
-    k_base_ptrs = (
-        K + off_b * stride_kb + off_hk * stride_kh
-    )
-    v_base_ptrs = (
-        V + off_b * stride_vb + off_hk * stride_vh
-    )
-    b_base_ptrs = (
-        B + off_b * stride_bb + off_hk * stride_bh
-    )
-    i_base_ptrs = (
-        I + off_b * stride_ib + off_hk * stride_ih
-    )
-    cuk_base_ptrs = (
-        CuK + off_b * stride_ckb + off_hk * stride_ckh
-    )
-    cuv_base_ptrs = (
-        CuV + off_b * stride_cvb + off_hk * stride_cvh
-    )
-    cub_base_ptrs = (
-        CuB + off_b * stride_cbb + off_hk * stride_cbh
-    )
-    cum_base_ptrs = (
-        CuM + off_b * stride_cmb + off_hk * stride_cmh
-    )
+    # Initialize base pointers to K, V, B, Indices, CuK, CuV, CuB
+    k_base_ptrs = K + off_b * stride_kb + off_hk * stride_kh
+    v_base_ptrs = V + off_b * stride_vb + off_hk * stride_vh
+    b_base_ptrs = B + off_b * stride_bb + off_hk * stride_bh
+    i_base_ptrs = Indices + off_b * stride_ib + off_hk * stride_ih
+    cuk_base_ptrs = CuK + off_b * stride_ckb + off_hk * stride_ckh
+    cuv_base_ptrs = CuV + off_b * stride_cvb + off_hk * stride_cvh
+    cub_base_ptrs = CuB + off_b * stride_cbb + off_hk * stride_cbh
+    cum_base_ptrs = CuM + off_b * stride_cmb + off_hk * stride_cmh
 
     # Loop over blocks of window_size
     for start_k in range(0, window_size, BLOCK_N):
@@ -132,61 +116,45 @@ def _fwd_preprocess(
         offs_k = start_k + offs_n
 
         # Load I
-        i_ptrs = (
-            i_base_ptrs + offs_k * stride_ik
-        )
+        i_ptrs = i_base_ptrs + offs_k * stride_ik
         gather_idx = tl.load(i_ptrs, mask=offs_k < window_size, other=0).to(tl.int64)
         valid_idx = (offs_k < window_size) & (gather_idx >= 0) & (gather_idx < seqlen_k)
         gather_idx = tl.where(valid_idx, gather_idx, 0)
 
         # Load K, V, B
-        k_ptrs = (
-            k_base_ptrs + gather_idx[:, None] * stride_kn + offs_d[None, :]
-        )
-        v_ptrs = (
-            v_base_ptrs + gather_idx[:, None] * stride_vn + offs_d[None, :]
-        )
+        k_ptrs = k_base_ptrs + gather_idx[:, None] * stride_kn + offs_d[None, :]
+        v_ptrs = v_base_ptrs + gather_idx[:, None] * stride_vn + offs_d[None, :]
         if EVEN_HEADDIM:
             k = tl.load(k_ptrs, mask=valid_idx[:, None], other=0.0)
             v = tl.load(v_ptrs, mask=valid_idx[:, None], other=0.0)
         else:
             k = tl.load(
-                k_ptrs,
-                mask=valid_idx[:, None] & (offs_d[None, :] < headdim),
-                other=0.0
+                k_ptrs, mask=valid_idx[:, None] & (offs_d[None, :] < headdim), other=0.0
             )
             v = tl.load(
-                v_ptrs,
-                mask=valid_idx[:, None] & (offs_d[None, :] < headdim),
-                other=0.0
+                v_ptrs, mask=valid_idx[:, None] & (offs_d[None, :] < headdim), other=0.0
             )
-        b_ptrs = (
-            b_base_ptrs + gather_idx * stride_bn
-        )
+        b_ptrs = b_base_ptrs + gather_idx * stride_bn
         b = tl.load(b_ptrs, mask=valid_idx, other=0.0)
-        
+
         # Store to CuK, CuV, CuB
-        cuk_ptrs = (
-            cuk_base_ptrs + offs_k[:, None] * stride_ckk + offs_d[None, :]
-        )
-        cuv_ptrs = (
-            cuv_base_ptrs + offs_k[:, None] * stride_cvk + offs_d[None, :]
-        )
+        cuk_ptrs = cuk_base_ptrs + offs_k[:, None] * stride_ckk + offs_d[None, :]
+        cuv_ptrs = cuv_base_ptrs + offs_k[:, None] * stride_cvk + offs_d[None, :]
         if EVEN_HEADDIM:
             tl.store(cuk_ptrs, k, mask=valid_idx[:, None])
             tl.store(cuv_ptrs, v, mask=valid_idx[:, None])
         else:
             tl.store(
-                cuk_ptrs, k,
+                cuk_ptrs,
+                k,
                 mask=valid_idx[:, None] & (offs_d[None, :] < headdim),
             )
             tl.store(
-                cuv_ptrs, v,
+                cuv_ptrs,
+                v,
                 mask=valid_idx[:, None] & (offs_d[None, :] < headdim),
             )
-        cub_ptrs = (
-            cub_base_ptrs + offs_k * stride_cbk
-        )
+        cub_ptrs = cub_base_ptrs + offs_k * stride_cbk
         tl.store(cub_ptrs, b, mask=valid_idx)
 
         # Store mask to CuM
@@ -195,7 +163,9 @@ def _fwd_preprocess(
             offs_m = start_m + tl.arange(0, BLOCK_M)
 
             cum_ptrs = (
-                cum_base_ptrs + offs_m[:, None] * stride_cmm + offs_k[None, :] * stride_cmk
+                cum_base_ptrs
+                + offs_m[:, None] * stride_cmm
+                + offs_k[None, :] * stride_cmk
             )
 
             col_mask = offs_k < window_size
@@ -244,7 +214,7 @@ def _fwd_preprocess(
             num_stages=1,
         ),
     ],
-    key=['CACHE_KEY_SEQLEN_Q', 'CACHE_KEY_SEQLEN_K', 'BLOCK_HEADDIM']
+    key=["CACHE_KEY_SEQLEN_Q", "CACHE_KEY_SEQLEN_K", "BLOCK_HEADDIM"],
 )
 @triton.heuristics(
     {
@@ -310,20 +280,15 @@ def _fwd_kernel(
 
     # Initialize pointers to Q, CuK, CuV, CuM, CuB
     q_ptrs = (
-        Q + off_b * stride_qb + off_hq * stride_qh + (offs_m[:, None] * stride_qm + offs_d[None, :])
+        Q
+        + off_b * stride_qb
+        + off_hq * stride_qh
+        + (offs_m[:, None] * stride_qm + offs_d[None, :])
     )
-    cuk_base_ptrs = (
-        CuK + off_b * stride_ckb + off_hk * stride_ckh
-    )
-    cv_base_ptrs = (
-        CuV + off_b * stride_cvb + off_hk * stride_cvh
-    )
-    cub_base_ptrs = (
-        CuB + off_b * stride_cbb + off_hk * stride_cbh
-    )
-    cum_base_ptrs = (
-        CuM + off_b * stride_cmb + off_hk * stride_cmh
-    )
+    cuk_base_ptrs = CuK + off_b * stride_ckb + off_hk * stride_ckh
+    cv_base_ptrs = CuV + off_b * stride_cvb + off_hk * stride_cvh
+    cub_base_ptrs = CuB + off_b * stride_cbb + off_hk * stride_cbh
+    cum_base_ptrs = CuM + off_b * stride_cmb + off_hk * stride_cmh
 
     # Initialize pointer to m and l
     lse_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
@@ -343,7 +308,7 @@ def _fwd_kernel(
             q = tl.load(
                 q_ptrs,
                 mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
-                other=0.0
+                other=0.0,
             )
 
     # Scale q
@@ -354,7 +319,9 @@ def _fwd_kernel(
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
         cum_ptrs = (
-            cum_base_ptrs + offs_m[:, None] * stride_cmm + (start_n + offs_n)[None, :] * stride_cmk
+            cum_base_ptrs
+            + offs_m[:, None] * stride_cmm
+            + (start_n + offs_n)[None, :] * stride_cmk
         )
         # Load mask
         if EVEN_M & EVEN_N:
@@ -362,7 +329,8 @@ def _fwd_kernel(
         else:
             m = tl.load(
                 cum_ptrs,
-                mask=(offs_m[:, None] < seqlen_q) & ((start_n + offs_n)[None, :] < window_size),
+                mask=(offs_m[:, None] < seqlen_q)
+                & ((start_n + offs_n)[None, :] < window_size),
                 other=False,
             )
 
@@ -371,10 +339,11 @@ def _fwd_kernel(
 
         # Skip this iteration if no active elements
         if any_active:
-
             # Load k
             cuk_ptrs = (
-                cuk_base_ptrs + (start_n + offs_n)[:, None] * stride_ckk + offs_d[None, :]
+                cuk_base_ptrs
+                + (start_n + offs_n)[:, None] * stride_ckk
+                + offs_d[None, :]
             )
             if EVEN_N:
                 if EVEN_HEADDIM:
@@ -391,14 +360,13 @@ def _fwd_kernel(
                 else:
                     k = tl.load(
                         cuk_ptrs,
-                        mask=((start_n + offs_n)[:, None] < window_size) & (offs_d[None, :] < headdim),
+                        mask=((start_n + offs_n)[:, None] < window_size)
+                        & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
             # Load bias
-            cub_ptrs = (
-                cub_base_ptrs + (start_n + offs_n) * stride_cbk
-            )
+            cub_ptrs = cub_base_ptrs + (start_n + offs_n) * stride_cbk
             if EVEN_M & EVEN_N:
                 b = tl.load(cub_ptrs)
             else:
@@ -407,7 +375,7 @@ def _fwd_kernel(
                     mask=(start_n + offs_n) < window_size,
                     other=0.0,
                 )
-            
+
             # Initialize acc_s
             acc_s = b[None, :].to(tl.float32)
 
@@ -417,7 +385,9 @@ def _fwd_kernel(
             # Apply masks
             # Trying to combine the two masks seem to make the result wrong
             if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
-                acc_s += tl.where((start_n + offs_n)[None, :] < window_size, 0, float("-inf"))
+                acc_s += tl.where(
+                    (start_n + offs_n)[None, :] < window_size, 0, float("-inf")
+                )
             acc_s += tl.where(m, 0, float("-inf"))
 
             # Compute p
@@ -433,7 +403,9 @@ def _fwd_kernel(
 
             # Load v
             cuv_ptrs = (
-                cv_base_ptrs + (start_n + offs_n)[:, None] * stride_cvk + offs_d[None, :]
+                cv_base_ptrs
+                + (start_n + offs_n)[:, None] * stride_cvk
+                + offs_d[None, :]
             )
             if EVEN_N:
                 if EVEN_HEADDIM:
@@ -450,7 +422,8 @@ def _fwd_kernel(
                 else:
                     v = tl.load(
                         cuv_ptrs,
-                        mask=((start_n + offs_n)[:, None] < window_size) & (offs_d[None, :] < headdim),
+                        mask=((start_n + offs_n)[:, None] < window_size)
+                        & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
@@ -488,8 +461,9 @@ def _fwd_kernel(
             tl.store(out_ptrs, acc_o, mask=offs_m[:, None] < seqlen_q)
         else:
             tl.store(
-                out_ptrs, acc_o,
-                mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim)
+                out_ptrs,
+                acc_o,
+                mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
             )
 
 
@@ -520,7 +494,11 @@ def _bwd_preprocess_do_o_dot(
     offs_d = tl.arange(0, BLOCK_HEADDIM)
     # Load o
     o = tl.load(
-        Out + off_b * stride_ob + off_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :],
+        Out
+        + off_b * stride_ob
+        + off_h * stride_oh
+        + offs_m[:, None] * stride_om
+        + offs_d[None, :],
         mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
         other=0.0,
     ).to(tl.float32)
@@ -613,12 +591,12 @@ def _bwd_kernel_one_col_block(
             k = tl.load(
                 cuk_ptrs,
                 mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim),
-                other=0.0
+                other=0.0,
             )
             v = tl.load(
                 cuv_ptrs,
                 mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim),
-                other=0.0
+                other=0.0,
             )
     if EVEN_N:
         b = tl.load(cub_ptrs)
@@ -643,7 +621,8 @@ def _bwd_kernel_one_col_block(
         else:
             m = tl.load(
                 cum_ptrs,
-                mask=(offs_m_curr[:, None] < seqlen_q) & (offs_n[None, :] < window_size),
+                mask=(offs_m_curr[:, None] < seqlen_q)
+                & (offs_n[None, :] < window_size),
                 other=False,
             )
 
@@ -661,7 +640,8 @@ def _bwd_kernel_one_col_block(
                 else:
                     q = tl.load(
                         q_ptrs,
-                        mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
+                        mask=(offs_m_curr[:, None] < seqlen_q)
+                        & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
@@ -688,7 +668,8 @@ def _bwd_kernel_one_col_block(
                 # There's a race condition if we just use m_mask and not d_mask.
                 do = tl.load(
                     do_ptrs,
-                    mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
+                    mask=(offs_m_curr[:, None] < seqlen_q)
+                    & (offs_d[None, :] < headdim),
                     other=0.0,
                 )
 
@@ -697,7 +678,7 @@ def _bwd_kernel_one_col_block(
 
             # Compute dp
             dp = tl.dot(do, tl.trans(v))
-            
+
             # Putting the subtraction after the dp matmul (instead of before) is slightly faster
             Di = tl.load(D + offs_m_curr)
 
@@ -736,7 +717,8 @@ def _bwd_kernel_one_col_block(
                     else:
                         dq = tl.load(
                             dq_ptrs,
-                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q)
+                            & (offs_d[None, :] < headdim),
                             other=0.0,
                             eviction_policy="evict_last",
                         )
@@ -744,7 +726,8 @@ def _bwd_kernel_one_col_block(
                         tl.store(
                             dq_ptrs,
                             dq,
-                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q)
+                            & (offs_d[None, :] < headdim),
                             eviction_policy="evict_last",
                         )
             else:  # If we're parallelizing across the seqlen_k dimension
@@ -758,7 +741,8 @@ def _bwd_kernel_one_col_block(
                         tl.atomic_add(
                             dq_ptrs,
                             dq,
-                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q)
+                            & (offs_d[None, :] < headdim),
                         )
 
             # Increment pointers
@@ -787,8 +771,16 @@ def _bwd_kernel_one_col_block(
             tl.store(dcuk_ptrs, dk, mask=offs_n[:, None] < window_size)
             tl.store(dcuv_ptrs, dv, mask=offs_n[:, None] < window_size)
         else:
-            tl.store(dcuk_ptrs, dk, mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim))
-            tl.store(dcuv_ptrs, dv, mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim))
+            tl.store(
+                dcuk_ptrs,
+                dk,
+                mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim),
+            )
+            tl.store(
+                dcuv_ptrs,
+                dv,
+                mask=(offs_n[:, None] < window_size) & (offs_d[None, :] < headdim),
+            )
 
     if EVEN_N:
         tl.store(dcub_ptrs, db)
@@ -799,9 +791,11 @@ def _bwd_kernel_one_col_block(
 def init_to_zero(names):
     if isinstance(names, str):
         names = [names]
+
     def init_func(nargs):
         for name in names:
             nargs[name].zero_()
+
     return init_func
 
 
@@ -992,57 +986,133 @@ def _bwd_kernel(
         )
 
 
-def _flash_dmattn_forward(q, k, v, b, i, softmax_scale=None, is_causal=False, window_size=None):
+def _flash_dmattn_forward(
+    q, k, v, b, i, softmax_scale=None, is_causal=False, window_size=None
+):
     # shape constraints
     batch, nheads, seqlen_q, d = q.shape
     _, nheads_k, seqlen_k, _ = k.shape
 
-    assert nheads % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
+    assert nheads % nheads_k == 0, (
+        "Number of Q heads must be divisible by KV heads for GQA/MQA"
+    )
     assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
-    assert q.dtype == k.dtype == v.dtype == b.dtype, "All tensors must have the same type"
+    assert q.dtype == k.dtype == v.dtype == b.dtype, (
+        "All tensors must have the same type"
+    )
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert i.dtype == torch.int64, "Indices must be int64"
-    assert q.is_cuda and k.is_cuda and v.is_cuda and b.is_cuda, "All tensors must be on GPU"
+    assert q.is_cuda and k.is_cuda and v.is_cuda and b.is_cuda, (
+        "All tensors must be on GPU"
+    )
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
-    cu_k = torch.empty((batch, nheads_k, window_size, d), device=q.device, dtype=k.dtype)
-    cu_v = torch.empty((batch, nheads_k, window_size, d), device=q.device, dtype=v.dtype)
+    cu_k = torch.empty(
+        (batch, nheads_k, window_size, d), device=q.device, dtype=k.dtype
+    )
+    cu_v = torch.empty(
+        (batch, nheads_k, window_size, d), device=q.device, dtype=v.dtype
+    )
     cu_b = torch.empty((batch, nheads_k, window_size), device=q.device, dtype=b.dtype)
-    cu_m = torch.zeros((batch, nheads_k, seqlen_q, window_size), device=q.device, dtype=torch.bool)
+    cu_m = torch.zeros(
+        (batch, nheads_k, seqlen_q, window_size), device=q.device, dtype=torch.bool
+    )
 
-    lse = torch.empty((batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32)
+    lse = torch.empty(
+        (batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32
+    )
     o = torch.empty_like(q)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
-    grid = (batch * nheads_k,)
+
+    def grid():
+        return (batch * nheads_k,)
+
     _fwd_preprocess[grid](
-        k, v, b, i,
-        cu_k, cu_v, cu_b, cu_m,
-        k.stride(0), k.stride(1), k.stride(2),
-        v.stride(0), v.stride(1), v.stride(2),
-        b.stride(0), b.stride(1), b.stride(2),
-        i.stride(0), i.stride(1), i.stride(2),
-        cu_k.stride(0), cu_k.stride(1), cu_k.stride(2),
-        cu_v.stride(0), cu_v.stride(1), cu_v.stride(2),
-        cu_b.stride(0), cu_b.stride(1), cu_b.stride(2),
-        cu_m.stride(0), cu_m.stride(1), cu_m.stride(2), cu_m.stride(3),
-        nheads_k, seqlen_q, seqlen_k, window_size, d, is_causal, BLOCK_HEADDIM
+        k,
+        v,
+        b,
+        i,
+        cu_k,
+        cu_v,
+        cu_b,
+        cu_m,
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        v.stride(0),
+        v.stride(1),
+        v.stride(2),
+        b.stride(0),
+        b.stride(1),
+        b.stride(2),
+        i.stride(0),
+        i.stride(1),
+        i.stride(2),
+        cu_k.stride(0),
+        cu_k.stride(1),
+        cu_k.stride(2),
+        cu_v.stride(0),
+        cu_v.stride(1),
+        cu_v.stride(2),
+        cu_b.stride(0),
+        cu_b.stride(1),
+        cu_b.stride(2),
+        cu_m.stride(0),
+        cu_m.stride(1),
+        cu_m.stride(2),
+        cu_m.stride(3),
+        nheads_k,
+        seqlen_q,
+        seqlen_k,
+        window_size,
+        d,
+        is_causal,
+        BLOCK_HEADDIM,
     )
 
-    grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads)
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["BLOCK_M"]),
+            batch * nheads,
+        )
+
     _fwd_kernel[grid](
         q,
-        cu_k, cu_v, cu_b, cu_m,
-        o, lse, softmax_scale,
-        q.stride(0), q.stride(1), q.stride(2),
-        cu_k.stride(0), cu_k.stride(1), cu_k.stride(2),
-        cu_v.stride(0), cu_v.stride(1), cu_v.stride(2),
-        cu_b.stride(0), cu_b.stride(1), cu_b.stride(2),
-        cu_m.stride(0), cu_m.stride(1), cu_m.stride(2), cu_m.stride(3),
-        o.stride(0), o.stride(1), o.stride(2),
-        nheads, nheads // nheads_k, seqlen_q, window_size, seqlen_q_rounded, d,
+        cu_k,
+        cu_v,
+        cu_b,
+        cu_m,
+        o,
+        lse,
+        softmax_scale,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        cu_k.stride(0),
+        cu_k.stride(1),
+        cu_k.stride(2),
+        cu_v.stride(0),
+        cu_v.stride(1),
+        cu_v.stride(2),
+        cu_b.stride(0),
+        cu_b.stride(1),
+        cu_b.stride(2),
+        cu_m.stride(0),
+        cu_m.stride(1),
+        cu_m.stride(2),
+        cu_m.stride(3),
+        o.stride(0),
+        o.stride(1),
+        o.stride(2),
+        nheads,
+        nheads // nheads_k,
+        seqlen_q,
+        window_size,
+        seqlen_q_rounded,
+        d,
         seqlen_q // 32,
         window_size // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
@@ -1065,10 +1135,12 @@ def _flash_dmattn_backward(
     batch, nheads, _, d = q.shape
     _, nheads_k, _, _ = cuk.shape
 
-    assert nheads % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
+    assert nheads % nheads_k == 0, (
+        "Number of Q heads must be divisible by KV heads for GQA/MQA"
+    )
     assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
-    seqlen_k_rounded = math.ceil(seqlen_k / 128) * 128
+    # seqlen_k_rounded = math.ceil(seqlen_k / 128) * 128
     assert lse.shape == (batch, nheads, seqlen_q_rounded)
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
@@ -1080,17 +1152,38 @@ def _flash_dmattn_backward(
     dv = torch.zeros(batch, nheads_k, seqlen_k, d, device=q.device, dtype=q.dtype)
     db = torch.zeros(batch, nheads_k, seqlen_k, device=q.device, dtype=q.dtype)
 
-    dk_expanded = torch.empty(batch, nheads, window_size, d, device=q.device, dtype=q.dtype)
-    dv_expanded = torch.empty(batch, nheads, window_size, d, device=q.device, dtype=q.dtype)
-    db_expanded = torch.empty(batch, nheads, window_size, device=q.device, dtype=q.dtype)
+    dk_expanded = torch.empty(
+        batch, nheads, window_size, d, device=q.device, dtype=q.dtype
+    )
+    dv_expanded = torch.empty(
+        batch, nheads, window_size, d, device=q.device, dtype=q.dtype
+    )
+    db_expanded = torch.empty(
+        batch, nheads, window_size, device=q.device, dtype=q.dtype
+    )
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
-    grid = lambda META: (triton.cdiv(seqlen_q, META["BLOCK_M"]), batch * nheads)
+
+    def grid(META):
+        (
+            triton.cdiv(seqlen_q, META["BLOCK_M"]),
+            batch * nheads,
+        )
+
     _bwd_preprocess_do_o_dot[grid](
-        o, do, delta,
-        o.stride(0), o.stride(1), o.stride(2),
-        do.stride(0), do.stride(1), do.stride(2),
-        nheads, seqlen_q, seqlen_q_rounded, d,
+        o,
+        do,
+        delta,
+        o.stride(0),
+        o.stride(1),
+        o.stride(2),
+        do.stride(0),
+        do.stride(1),
+        do.stride(2),
+        nheads,
+        seqlen_q,
+        seqlen_q_rounded,
+        d,
         BLOCK_M=64,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
@@ -1098,25 +1191,65 @@ def _flash_dmattn_backward(
     # BLOCK_M = 128
     # BLOCK_N = 64
     # num_warps = 4
-    grid = lambda META: (
-        triton.cdiv(window_size, META["BLOCK_N"]) if META["SEQUENCE_PARALLEL"] else 1,
-        batch * nheads,
-    )
+    def grid(META):
+        return (
+            triton.cdiv(window_size, META["BLOCK_N"])
+            if META["SEQUENCE_PARALLEL"]
+            else 1,
+            batch * nheads,
+        )
+
     _bwd_kernel[grid](
-        q, cuk, cuv, cub, cum, do,
-        dq_accum, dk_expanded, dv_expanded, db_expanded,
-        lse, delta, softmax_scale,
-        q.stride(0), q.stride(1), q.stride(2),
-        cuk.stride(0), cuk.stride(1), cuk.stride(2),
-        cuv.stride(0), cuv.stride(1), cuv.stride(2),
-        cub.stride(0), cub.stride(1), cub.stride(2),
-        cum.stride(0), cum.stride(1), cum.stride(2), cum.stride(3),
-        do.stride(0), do.stride(1), do.stride(2),
-        dq_accum.stride(0), dq_accum.stride(1), dq_accum.stride(2),
-        dk_expanded.stride(0), dk_expanded.stride(1), dk_expanded.stride(2),
-        dv_expanded.stride(0), dv_expanded.stride(1), dv_expanded.stride(2),
-        db_expanded.stride(0), db_expanded.stride(1), db_expanded.stride(2),
-        nheads, nheads // nheads_k, seqlen_q, window_size, seqlen_q_rounded, d,
+        q,
+        cuk,
+        cuv,
+        cub,
+        cum,
+        do,
+        dq_accum,
+        dk_expanded,
+        dv_expanded,
+        db_expanded,
+        lse,
+        delta,
+        softmax_scale,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        cuk.stride(0),
+        cuk.stride(1),
+        cuk.stride(2),
+        cuv.stride(0),
+        cuv.stride(1),
+        cuv.stride(2),
+        cub.stride(0),
+        cub.stride(1),
+        cub.stride(2),
+        cum.stride(0),
+        cum.stride(1),
+        cum.stride(2),
+        cum.stride(3),
+        do.stride(0),
+        do.stride(1),
+        do.stride(2),
+        dq_accum.stride(0),
+        dq_accum.stride(1),
+        dq_accum.stride(2),
+        dk_expanded.stride(0),
+        dk_expanded.stride(1),
+        dk_expanded.stride(2),
+        dv_expanded.stride(0),
+        dv_expanded.stride(1),
+        dv_expanded.stride(2),
+        db_expanded.stride(0),
+        db_expanded.stride(1),
+        db_expanded.stride(2),
+        nheads,
+        nheads // nheads_k,
+        seqlen_q,
+        window_size,
+        seqlen_q_rounded,
+        d,
         seqlen_q // 32,
         window_size // 32,  # key for triton cache (limit number of compilations)
         # Can't use kwargs here because triton autotune expects key to be args, not kwargs
@@ -1131,9 +1264,15 @@ def _flash_dmattn_backward(
     dq = dq_accum.to(q.dtype)
 
     if nheads != nheads_k:
-        dk_expanded = dk_expanded.view(batch, nheads_k, nheads // nheads_k, window_size, d).sum(dim=2)
-        dv_expanded = dv_expanded.view(batch, nheads_k, nheads // nheads_k, window_size, d).sum(dim=2)
-        db_expanded = db_expanded.view(batch, nheads_k, nheads // nheads_k, window_size).sum(dim=2)
+        dk_expanded = dk_expanded.view(
+            batch, nheads_k, nheads // nheads_k, window_size, d
+        ).sum(dim=2)
+        dv_expanded = dv_expanded.view(
+            batch, nheads_k, nheads // nheads_k, window_size, d
+        ).sum(dim=2)
+        db_expanded = db_expanded.view(
+            batch, nheads_k, nheads // nheads_k, window_size
+        ).sum(dim=2)
 
     dk.scatter_add_(
         dim=2,
@@ -1164,7 +1303,16 @@ def round_multiple(x, m):
 
 class FlashDMAttnFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, query, key, value, attn_bias, attn_indices, is_causal=False, softmax_scale=None):
+    def forward(
+        ctx,
+        query,
+        key,
+        value,
+        attn_bias,
+        attn_indices,
+        is_causal=False,
+        softmax_scale=None,
+    ):
         """
         query: (batch_size, nheads, seqlen_q, headdim)
         key: (batch_size, nheads_k, seqlen_k, headdim)
@@ -1176,7 +1324,9 @@ class FlashDMAttnFunc(torch.autograd.Function):
         """
 
         # Make sure that the last dimension is contiguous
-        query, key, value, attn_bias, attn_indices = [maybe_contiguous(x) for x in [query, key, value, attn_bias, attn_indices]]
+        query, key, value, attn_bias, attn_indices = [
+            maybe_contiguous(x) for x in [query, key, value, attn_bias, attn_indices]
+        ]
 
         # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = query.size(3)
@@ -1186,30 +1336,38 @@ class FlashDMAttnFunc(torch.autograd.Function):
             value = torch.nn.functional.pad(value, [0, 8 - head_size_og % 8])
         seqlen_k_rounded = round_multiple(key.shape[2], 128)
         if attn_bias.shape[-1] != seqlen_k_rounded:
-                attn_bias = torch.nn.functional.pad(attn_bias, [0, seqlen_k_rounded - attn_bias.shape[-1]])
+            attn_bias = torch.nn.functional.pad(
+                attn_bias, [0, seqlen_k_rounded - attn_bias.shape[-1]]
+            )
         window_size = attn_indices.shape[-1]
 
-        o, lse, ctx.softmax_scale, cu_key, cu_value, cu_attn_bias, cu_attn_mask = _flash_dmattn_forward(
-            query,
-            key,
-            value,
-            attn_bias,
-            attn_indices,
-            softmax_scale=softmax_scale,
-            is_causal=is_causal,
-            window_size=window_size,
+        o, lse, ctx.softmax_scale, cu_key, cu_value, cu_attn_bias, cu_attn_mask = (
+            _flash_dmattn_forward(
+                query,
+                key,
+                value,
+                attn_bias,
+                attn_indices,
+                softmax_scale=softmax_scale,
+                is_causal=is_causal,
+                window_size=window_size,
+            )
         )
-        ctx.save_for_backward(query, cu_key, cu_value, cu_attn_bias, cu_attn_mask, attn_indices, o, lse)
+        ctx.save_for_backward(
+            query, cu_key, cu_value, cu_attn_bias, cu_attn_mask, attn_indices, o, lse
+        )
         ctx.seqlen_q = query.size(2)
         ctx.seqlen_k = key.size(2)
         ctx.window_size = window_size
 
-        o = o[..., : head_size_og]
+        o = o[..., :head_size_og]
         return o
 
     @staticmethod
     def backward(ctx, do):
-        query, cu_key, cu_value, cu_attn_bias, cu_attn_mask, attn_indices, o, lse = ctx.saved_tensors
+        query, cu_key, cu_value, cu_attn_bias, cu_attn_mask, attn_indices, o, lse = (
+            ctx.saved_tensors
+        )
 
         head_size_og = do.size(3)
         do_padded = do
@@ -1233,12 +1391,16 @@ class FlashDMAttnFunc(torch.autograd.Function):
         )
 
         # We could have padded the head dimension
-        dq = dq[..., : do.shape[-1]]  
+        dq = dq[..., : do.shape[-1]]
         dk = dk[..., : do.shape[-1]]
         dv = dv[..., : do.shape[-1]]
 
         return dq, dk, dv, db, None, None, None
 
 
-def triton_dmattn_func(query, key, value, attn_bias, attn_indices, is_causal=False, softmax_scale=None):
-    return FlashDMAttnFunc.apply(query, key, value, attn_bias, attn_indices, is_causal, softmax_scale)
+def triton_dmattn_func(
+    query, key, value, attn_bias, attn_indices, is_causal=False, softmax_scale=None
+):
+    return FlashDMAttnFunc.apply(
+        query, key, value, attn_bias, attn_indices, is_causal, softmax_scale
+    )
