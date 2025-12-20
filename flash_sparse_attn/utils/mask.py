@@ -163,14 +163,12 @@ def relu_mask(
 
 def create_mask(
     attention_bias: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    batch_size: int,
     query_len: int,
-    key_len: int,
-    window_size: Optional[int],
-    min_dtype: Optional[float],
-    block_size: Optional[int],
     type: str = "topk",
+    attention_mask: Optional[torch.Tensor] = None,
+    window_size: Optional[int] = None,
+    min_dtype: Optional[float] = None,
+    block_size: Optional[int] = None,
 ) -> torch.Tensor:
     r"""
     This function creates a mask tensor for Flash Sparse Attention.
@@ -180,15 +178,13 @@ def create_mask(
     Args:
         attention_bias (torch.Tensor): The attention bias tensor of shape
             ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
+        query_len (int): The sequence length of the query.
+        type (str): The type of mask to create. Options are "topk" and "relu".
         attention_mask (Optional[torch.Tensor]): The attention mask boolean tensor of shape
             (batch_size, seq_len) or ({batch_size|1}, {num_heads|num_kv_heads|1}, {query_len|1}, key_len).
-        batch_size (int): The batch size.
-        query_len (int): The sequence length of the query.
-        key_len (int): The sequence length of the key.
         window_size (Optional[int]): The number of top elements to consider for the attention mask.
         min_dtype (Optional[float]): The minimum value to use for masking.
         block_size (Optional[int]): Optional size of aggregation blocks after top-k masking.
-        type (str): The type of mask to create. Options are "topk" and "relu".
 
     Returns:
         attention (Tensor): The attention mask tensor of shape
@@ -200,6 +196,7 @@ def create_mask(
 
     # If attention_mask is of shape (batch_size, seq_len), reshape it to (batch_size, 1, 1, key_len)
     if attention_mask is not None and attention_mask.dim() == 2:
+        batch_size, key_len = attention_bias.shape[0], attention_bias.shape[-1]
         if attention_mask.shape[-1] == key_len:
             attention_mask = attention_mask.view(batch_size, 1, 1, key_len)
         elif attention_mask.shape[-1] == query_len:
