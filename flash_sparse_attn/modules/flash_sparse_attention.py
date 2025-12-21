@@ -4,10 +4,9 @@ import torch.nn as nn
 
 
 from flash_sparse_attn.flash_sparse_attn_interface import flash_sparse_attn_func
-from flash_sparse_attn.utils.mask import create_mask
 
 
-class DynamicMaskAttention(nn.Module):
+class FlashSparseAttention(nn.Module):
     def __init__(self, config, layer_idx: Optional[int] = None):
         super().__init__()
         self.config = config
@@ -72,17 +71,10 @@ class DynamicMaskAttention(nn.Module):
         value_states = value_states.view(bsz, key_len, -1, self.head_dim)
         attn_bias = attn_bias.transpose(-1, -2).unsqueeze(-2)
 
-        attn_mask = create_mask(
-            attention_bias=attn_bias,
-            query_len=query_states.shape[2],
-            type="relu",
-        )
-
         attn_output = flash_sparse_attn_func(
             query_states,
             key_states,
             value_states,
-            attn_mask,
             attn_bias,
             softmax_scale=self.scaling,
             is_causal=self.is_causal,
