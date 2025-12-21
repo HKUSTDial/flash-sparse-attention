@@ -59,9 +59,9 @@
 
 #define FLASH_NAMESPACE_ALIAS(name) FLASH_NAMESPACE::name
 
-#define FLASH_NAMESPACE_SCOPE(content)                                         \
-  namespace FLASH_NAMESPACE {                                                  \
-  content                                                                      \
-  }
+#define FLASH_NAMESPACE_SCOPE(content)                                                 \
+    namespace FLASH_NAMESPACE {                                                        \
+    content                                                                            \
+    }
 
 #endif // FLASH_NAMESPACE_CONFIG_H
