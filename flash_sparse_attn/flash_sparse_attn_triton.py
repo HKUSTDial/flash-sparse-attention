@@ -1318,4 +1318,6 @@ def triton_sparse_attn_func(
     is_causal=False,
     softmax_scale=None,
 ):
-    return FlashSparseAttnFunc.apply(query, key, value, attn_bias, is_causal, softmax_scale)
+    return FlashSparseAttnFunc.apply(
+        query, key, value, attn_bias, is_causal, softmax_scale
+    )
