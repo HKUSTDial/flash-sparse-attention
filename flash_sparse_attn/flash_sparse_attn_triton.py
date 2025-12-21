@@ -248,8 +248,8 @@ def _fwd_kernel(
 
             # Compute p
             m_ij = tl.maximum(tl.max(acc_s, 1), lse_i)
-            # p = tl.exp(acc_s - m_ij[:, None])
-            p = tl.exp(acc_s - tl.where(lse_i > float("-inf"), lse_i, 0.0)[:, None])
+            m_ij = tl.where(m_ij > float("-inf"), m_ij, 0.0)
+            p = tl.exp(acc_s - m_ij[:, None])
             l_ij = tl.sum(p, 1)
 
             # Scale acc_o
