@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flash-sparse-attn"
 dynamic = ["version"]
-description = "Flash Sparse Attention: Fast and Memory-Efficient Trainable Dynamic Mask Sparse Attention"
+description = "Flash Sparse Attention: Fast and Memory-Efficient Trainable Sparse Attention"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
