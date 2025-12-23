@@ -99,7 +99,6 @@ inline __device__ void compute_dq_dk_dv_1colblock(
 ) {
 
     using Element = typename Kernel_traits::Element;
-    using ElementMask = typename Kernel_traits::ElementMask;
     using ElementAccum = typename Kernel_traits::ElementAccum;
     using index_t = typename Kernel_traits::index_t;
 
@@ -113,7 +112,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(
     constexpr int kBlockN = Kernel_traits::kBlockN;
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int MMA_N_SdP = kBlockN / decltype(typename Kernel_traits::TiledMmaBSP{}.template tile_size_mnk<1>())::value;
-    constexpr int AtomLayoutMS = Kernel_traits::AtomLayoutMSdP;
+    constexpr int AtomLayoutMS = Kernel_traits::AtomLayoutMBSP;
     constexpr bool Double_buffer = !Kernel_traits::No_double_buffer;
 
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
@@ -684,11 +683,11 @@ inline __device__ void compute_dq_dk_dv_1colblock(
 
     if (Is_first) {
         cute::copy(tdOrdO, tdOsdO);
-        dot_do_o<Kernel_traits::kGmemThreadsPerRowQKVO>(
+        dot_do_o<Kernel_traits::kGmemThreadsPerRowQKV>(
             tdOrdO,
             tdOrO,
             gdPsum,
-            Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKVO)
+            Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKV)
         );
     }
 
@@ -1075,11 +1074,11 @@ inline __device__ void compute_dq_dk_dv_1colblock(
 
         if (Is_first && m_block > m_block_min) {
             cute::copy(tdOrdO, tdOsdO);
-            dot_do_o<Kernel_traits::kGmemThreadsPerRowQKVO>(
+            dot_do_o<Kernel_traits::kGmemThreadsPerRowQKV>(
                 tdOrdO,
                 tdOrO,
                 gdPsum,
-                Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKVO)
+                Kernel_traits::kNThreads / (Kernel_traits::kGmemThreadsPerRowQKV)
             );
         }
 
