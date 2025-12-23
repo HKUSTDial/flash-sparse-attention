@@ -1,7 +1,7 @@
 cff-version: "1.2.0"
 date-released: 2025-06
 message: "If you use this software, please cite it using these metadata."
-title: "Flash Sparse Attention: Trainable Dynamic Mask Sparse Attention"
+title: "Trainable Flash Sparse Attention"
 url: "https://github.com/flash-algo/flash-sparse-attention"
 authors:
   - family-names: Shi
@@ -42,7 +42,7 @@ preferred-citation:
       given-names: Guang
     - family-names: Luo
       given-names: Yuyu
-  title: "Trainable Dynamic Mask Sparse Attention"
+  title: "Trainable Flash Sparse Attention"
   year: 2025
   url: "https://arxiv.org/abs/2508.02124"
   doi: "10.48550/arXiv.2508.02124"
