@@ -44,7 +44,7 @@ body:
     attributes:
       label: Implementation details
       description: Call out potential CUDA/Python changes, performance implications, or compatibility considerations.
-      placeholder: Requires updates to flash_dmattn_interface and CUDA op...
+      placeholder: Requires updates to flash_sparse_attn_interface and CUDA op...
   - type: textarea
     id: use-case
     attributes:
