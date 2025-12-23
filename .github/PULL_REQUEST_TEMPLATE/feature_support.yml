@@ -27,7 +27,7 @@ body:
     attributes:
       label: Changes
       description: Describe new or changed public APIs, configuration, or CLI behaviour.
-      placeholder: Adds flash_dmattn.feature_flag...
+      placeholder: Adds flash_sparse_attn.feature_flag...
     validations:
       required: true
   - type: textarea
