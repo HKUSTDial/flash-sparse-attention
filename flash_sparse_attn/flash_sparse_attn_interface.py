@@ -105,8 +105,8 @@ def _flash_sparse_attn_forward(
         maybe_contiguous(x) for x in (q, k, v, mask, bias, s_aux)
     ]
     if s_aux is not None:
-        if s_aux.dtype is not torch.float32:
-            raise TypeError("s_aux must be float32")
+        if s_aux.dtype != torch.float32:
+            s_aux = s_aux.float()
         if s_aux.ndim != 1:
             raise ValueError("s_aux must be 1D with shape (num_heads,)")
     out, softmax_lse, S_dmask = flash_sparse_attn_gpu.fwd(
@@ -196,8 +196,8 @@ def _flash_sparse_attn_varlen_forward(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     q, k, v, s_aux = [maybe_contiguous(x) for x in (q, k, v, s_aux)]
     if s_aux is not None:
-        if s_aux.dtype is not torch.float32:
-            raise TypeError("s_aux must be float32")
+        if s_aux.dtype != torch.float32:
+            s_aux = s_aux.float()
         if s_aux.ndim != 1:
             raise ValueError("s_aux must be 1D with shape (num_heads,)")
     out, softmax_lse, S_dmask = flash_sparse_attn_gpu.varlen_fwd(
@@ -295,8 +295,8 @@ def _flash_sparse_attn_backward(
         maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, s_aux, out)
     ]
     if s_aux is not None:
-        if s_aux.dtype is not torch.float32:
-            raise TypeError("s_aux must be float32")
+        if s_aux.dtype != torch.float32:
+            s_aux = s_aux.float()
         if s_aux.ndim != 1:
             raise ValueError("s_aux must be 1D with shape (num_heads,)")
     (
@@ -404,8 +404,8 @@ def _flash_sparse_attn_varlen_backward(
         maybe_contiguous(x) for x in (dout, q, k, v, out, s_aux)
     ]
     if s_aux is not None:
-        if s_aux.dtype is not torch.float32:
-            raise TypeError("s_aux must be float32")
+        if s_aux.dtype != torch.float32:
+            s_aux = s_aux.float()
         if s_aux.ndim != 1:
             raise ValueError("s_aux must be 1D with shape (num_heads,)")
     (
@@ -805,6 +805,10 @@ def flash_sparse_attn_func(
         attn_bias: torch.Tensor, optional. The attention bias float tensor of
             shape ({batch_size|1}, {nheads|nheads_k|1}, {seqlen_q|1}, {seqlen_k|1}) to add to the attention scores.
             If None, no bias is applied.
+        s_aux: torch.Tensor, optional. The auxiliary sink logit tensor of shape (nheads,). This is
+            added as an extra "sink" position in the softmax computation. The sink probability is
+            computed but dropped from the output, allowing other attention weights to be reduced.
+            Useful for attention sinks or learnable sparsity. If None, no sink is applied.
         softmax_scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
@@ -842,11 +846,11 @@ def flash_sparse_attn_varlen_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    s_aux: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
+    s_aux: Optional[torch.Tensor] = None,
     softmax_scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
@@ -880,6 +884,10 @@ def flash_sparse_attn_varlen_func(
         cu_seqlens_k: torch.Tensor. The cumulative sequence lengths of the sequences in the batch, used to index into kv.
         max_seqlen_q: int. Maximum query sequence length in the batch.
         max_seqlen_k: int. Maximum key sequence length in the batch.
+        s_aux: torch.Tensor, optional. The auxiliary sink logit tensor of shape (nheads,). This is
+            added as an extra "sink" position in the softmax computation. The sink probability is
+            computed but dropped from the output, allowing other attention weights to be reduced.
+            Useful for attention sinks or learnable sparsity. If None, no sink is applied.
         softmax_scale: float. The scaling of QK^T before applying softmax.
             Default to 1 / sqrt(headdim).
         is_causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
