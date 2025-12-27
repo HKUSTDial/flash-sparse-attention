@@ -330,8 +330,6 @@ def _fwd_kernel(
             l_i_new = tl.exp(lse_i - m_ij) + l_ij
             lse_i = m_ij + tl.log(l_i_new)
 
-    # Optionally include sink / auxiliary logit (one scalar per head) in the softmax normalization.
-    # This matches: softmax([scores, s_aux]) then dropping the sink column from the output.
     if HAS_SAUX:
         s = tl.load(Saux + off_hq).to(tl.float32)
         if not EVEN_M:
@@ -339,7 +337,7 @@ def _fwd_kernel(
         m_ext = tl.maximum(m_i, s)
         # Move accumulator into the m_ext reference frame for numerical stability
         acc_o = acc_o * tl.exp(m_i - m_ext)[:, None]
-        # lse_i is logsumexp(scores); convert into m_ext frame and add sink term
+        # lse_i is logsumexp(scores), convert into m_ext frame and add sink term
         sum_scores = tl.exp(lse_i - m_ext)
         denom_ext = sum_scores + tl.exp(s - m_ext)
         lse_i = m_ext + tl.log(denom_ext)
@@ -447,7 +445,7 @@ def _bwd_saux_kernel(
     Di = tl.load(D + off_hb * seqlen_q_rounded + offs_m, mask=mask_m, other=0.0).to(tl.float32)
     s = tl.load(Saux + off_h).to(tl.float32)
 
-    # p_sink = exp(s - lse), ds_sink = p_sink * (dp_sink - Di), and dp_sink = 0 (sink is dropped from output)
+    # sink is dropped from output
     p_sink = tl.where(lse > float("-inf"), tl.exp(s - lse), 0.0)
     ds_sink = -p_sink * Di
     ds_sum = tl.sum(ds_sink, axis=0)
@@ -1469,9 +1467,9 @@ class FlashDMAttnFunc(torch.autograd.Function):
         value,
         attn_mask=None,
         attn_bias=None,
+        s_aux=None,
         is_causal=False,
         softmax_scale=None,
-        s_aux=None,
     ):
         """
         query: (batch_size, seqlen_q, nheads, headdim)
@@ -1479,15 +1477,15 @@ class FlashDMAttnFunc(torch.autograd.Function):
         value: (batch_size, seqlen_k, nheads, headdim)
         attn_mask: optional, (batch, nheads, seqlen_q, seqlen_k)
         attn_bias: optional, (batch, nheads, seqlen_q, seqlen_k)
+        s_aux: optional, (nheads,)
         is_causal: bool, whether to apply causal masking
         softmax_scale: float, scaling factor for attention scores
         """
 
         # Make sure that the last dimension is contiguous
-        query, key, value, attn_mask, attn_bias = [
-            maybe_contiguous(x) for x in [query, key, value, attn_mask, attn_bias]
+        query, key, value, attn_mask, attn_bias, s_aux = [
+            maybe_contiguous(x) for x in [query, key, value, attn_mask, attn_bias, s_aux]
         ]
-        s_aux = maybe_contiguous(s_aux)
 
         # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = query.size(3)
@@ -1561,7 +1559,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
                 else dbias[..., : key.shape[1]]
             )
 
-        return dq, dk, dv, None, dbias, None, None, ds_aux
+        return dq, dk, dv, None, dbias, ds_aux, None, None
 
 
 def triton_sparse_attn_func(
@@ -1570,10 +1568,10 @@ def triton_sparse_attn_func(
     value,
     attn_mask=None,
     attn_bias=None,
+    s_aux=None,
     is_causal=False,
     softmax_scale=None,
-    s_aux=None,
 ):
     return FlashDMAttnFunc.apply(
-        query, key, value, attn_mask, attn_bias, is_causal, softmax_scale, s_aux
+        query, key, value, attn_mask, attn_bias, s_aux, is_causal, softmax_scale
     )
