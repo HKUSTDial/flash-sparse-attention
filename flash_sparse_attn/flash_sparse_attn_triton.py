@@ -45,6 +45,7 @@ import triton.language as tl
         "IS_CAUSAL",
         "HAS_MASK",
         "HAS_BIAS",
+        "HAS_SAUX",
         "BLOCK_HEADDIM",
     ],
 )
@@ -62,6 +63,7 @@ def _fwd_kernel(
     V,
     Mask,
     Bias,
+    Saux,
     Out,
     Lse,
     softmax_scale,
@@ -97,6 +99,7 @@ def _fwd_kernel(
     IS_CAUSAL: tl.constexpr,
     HAS_MASK: tl.constexpr,
     HAS_BIAS: tl.constexpr,
+    HAS_SAUX: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
@@ -327,8 +330,21 @@ def _fwd_kernel(
             l_i_new = tl.exp(lse_i - m_ij) + l_ij
             lse_i = m_ij + tl.log(l_i_new)
 
-    o_scale = tl.exp(m_i - lse_i)
-    acc_o = acc_o * o_scale[:, None]
+    if HAS_SAUX:
+        s = tl.load(Saux + off_hq).to(tl.float32)
+        if not EVEN_M:
+            s = tl.where(offs_m < seqlen_q, s, float("-inf"))
+        m_ext = tl.maximum(m_i, s)
+        # Move accumulator into the m_ext reference frame for numerical stability
+        acc_o = acc_o * tl.exp(m_i - m_ext)[:, None]
+        # lse_i is logsumexp(scores), convert into m_ext frame and add sink term
+        sum_scores = tl.exp(lse_i - m_ext)
+        denom_ext = sum_scores + tl.exp(s - m_ext)
+        lse_i = m_ext + tl.log(denom_ext)
+        acc_o = acc_o * (1.0 / denom_ext)[:, None]
+    else:
+        o_scale = tl.exp(m_i - lse_i)
+        acc_o = acc_o * o_scale[:, None]
     # Rematerialize offsets to save registers
     start_m = tl.program_id(0)
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -406,6 +422,34 @@ def _bwd_preprocess_do_o_dot(
     delta = tl.sum(o * do, axis=1)
     # Write back
     tl.store(Delta + off_hb * seqlen_q_rounded + offs_m, delta)
+
+
+@triton.jit
+def _bwd_saux_kernel(
+    Saux,
+    DSaux,
+    LSE,
+    D,
+    nheads,
+    seqlen_q,
+    seqlen_q_rounded,
+    BLOCK_M: tl.constexpr,
+):
+    start_m = tl.program_id(0)
+    off_hb = tl.program_id(1)
+    off_h = off_hb % nheads
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    mask_m = offs_m < seqlen_q
+
+    lse = tl.load(LSE + off_hb * seqlen_q_rounded + offs_m, mask=mask_m, other=float("-inf"))
+    Di = tl.load(D + off_hb * seqlen_q_rounded + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+    s = tl.load(Saux + off_h).to(tl.float32)
+
+    # sink is dropped from output
+    p_sink = tl.where(lse > float("-inf"), tl.exp(s - lse), 0.0)
+    ds_sink = -p_sink * Di
+    ds_sum = tl.sum(ds_sink, axis=0)
+    tl.atomic_add(DSaux + off_h, ds_sum)
 
 
 @triton.jit
@@ -992,7 +1036,7 @@ def _bwd_kernel(
 
 
 def _flash_sparse_attn_forward(
-    q, k, v, mask, bias, softmax_scale=None, is_causal=False
+    q, k, v, mask, bias, s_aux=None, softmax_scale=None, is_causal=False
 ):
     # shape constraints
     batch, seqlen_q, nheads, d = q.shape
@@ -1026,6 +1070,14 @@ def _flash_sparse_attn_forward(
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
+    has_saux = s_aux is not None
+    if has_saux:
+        assert s_aux.is_cuda, "s_aux must be on CUDA"
+        assert s_aux.dim() == 1 and s_aux.shape[0] == nheads, "s_aux must have shape (nheads,)"
+    else:
+        # Dummy tensor to satisfy kernel signature
+        s_aux = torch.empty(0, device=q.device, dtype=torch.float32)
+
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     lse = torch.empty(
         (batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32
@@ -1049,6 +1101,7 @@ def _flash_sparse_attn_forward(
         v,
         mask,
         bias,
+        s_aux,
         o,
         lse,
         softmax_scale,
@@ -1110,6 +1163,7 @@ def _flash_sparse_attn_forward(
         is_causal,
         has_mask,
         has_bias,
+        has_saux,
         BLOCK_HEADDIM,
         # BLOCK_M=BLOCK_M,
         # BLOCK_N=BLOCK_N,
@@ -1120,7 +1174,7 @@ def _flash_sparse_attn_forward(
 
 
 def _flash_sparse_attn_backward(
-    do, q, k, v, mask, bias, o, lse, softmax_scale=None, is_causal=False
+    do, q, k, v, mask, bias, s_aux, o, lse, softmax_scale=None, is_causal=False
 ):
     # Make sure that the last dimension is contiguous
     if do.stride(-1) != 1:
@@ -1206,6 +1260,14 @@ def _flash_sparse_attn_backward(
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
 
+    has_saux = s_aux is not None and s_aux.numel() > 0
+    if has_saux:
+        assert s_aux.is_cuda, "s_aux must be on CUDA"
+        assert s_aux.dim() == 1 and s_aux.shape[0] == nheads, "s_aux must have shape (nheads,)"
+        ds_aux = torch.zeros((nheads,), device=q.device, dtype=torch.float32)
+    else:
+        ds_aux = None
+
     def grid(META):
         return (
             triton.cdiv(seqlen_q, META["BLOCK_M"]),
@@ -1229,6 +1291,24 @@ def _flash_sparse_attn_backward(
         BLOCK_M=64,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
+
+    if has_saux:
+        def grid_saux(META):
+            return (
+                triton.cdiv(seqlen_q, META["BLOCK_M"]),
+                batch * nheads,
+            )
+
+        _bwd_saux_kernel[grid_saux](
+            s_aux,
+            ds_aux,
+            lse,
+            delta,
+            nheads,
+            seqlen_q,
+            seqlen_q_rounded,
+            BLOCK_M=128,
+        )
 
     # BLOCK_M = 128
     # BLOCK_N = 64
@@ -1367,7 +1447,7 @@ def _flash_sparse_attn_backward(
             if bias.shape[0] == 1:
                 dbias_expanded = dbias_expanded.sum(dim=0, keepdim=True)
             dbias.copy_(dbias_expanded)
-    return dq, dk, dv, dbias if has_bias else None
+    return dq, dk, dv, dbias if has_bias else None, (ds_aux.to(s_aux.dtype) if has_saux else None)
 
 
 def maybe_contiguous(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -1387,6 +1467,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         value,
         attn_mask=None,
         attn_bias=None,
+        s_aux=None,
         is_causal=False,
         softmax_scale=None,
     ):
@@ -1396,13 +1477,14 @@ class FlashDMAttnFunc(torch.autograd.Function):
         value: (batch_size, seqlen_k, nheads, headdim)
         attn_mask: optional, (batch, nheads, seqlen_q, seqlen_k)
         attn_bias: optional, (batch, nheads, seqlen_q, seqlen_k)
+        s_aux: optional, (nheads,)
         is_causal: bool, whether to apply causal masking
         softmax_scale: float, scaling factor for attention scores
         """
 
         # Make sure that the last dimension is contiguous
-        query, key, value, attn_mask, attn_bias = [
-            maybe_contiguous(x) for x in [query, key, value, attn_mask, attn_bias]
+        query, key, value, attn_mask, attn_bias, s_aux = [
+            maybe_contiguous(x) for x in [query, key, value, attn_mask, attn_bias, s_aux]
         ]
 
         # Padding to multiple of 8 for 16-bit memory allocations
@@ -1433,30 +1515,32 @@ class FlashDMAttnFunc(torch.autograd.Function):
             value,
             attn_mask,
             attn_bias,
+            s_aux,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
         )
-        ctx.save_for_backward(query, key, value, o, lse, attn_mask, attn_bias)
+        ctx.save_for_backward(query, key, value, o, lse, attn_mask, attn_bias, s_aux if s_aux is not None else torch.empty(0, device=query.device))
         ctx.is_causal = is_causal
         ctx.seqlen_k_bias_og = attn_bias.shape[-1] if attn_bias is not None else 0
         return o
 
     @staticmethod
     def backward(ctx, do):
-        query, key, value, o, lse, attn_mask, attn_bias = ctx.saved_tensors
+        query, key, value, o, lse, attn_mask, attn_bias, s_aux = ctx.saved_tensors
 
         head_size_og = do.size(3)
         do_padded = do
         if head_size_og % 8 != 0:
             do_padded = torch.nn.functional.pad(do, [0, 8 - head_size_og % 8])
 
-        dq, dk, dv, dbias = _flash_sparse_attn_backward(
+        dq, dk, dv, dbias, ds_aux = _flash_sparse_attn_backward(
             do_padded,
             query,
             key,
             value,
             attn_mask,
             attn_bias,
+            (s_aux if s_aux.numel() > 0 else None),
             o,
             lse,
             softmax_scale=ctx.softmax_scale,
@@ -1475,7 +1559,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
                 else dbias[..., : key.shape[1]]
             )
 
-        return dq, dk, dv, None, dbias, None, None
+        return dq, dk, dv, None, dbias, ds_aux, None, None
 
 
 def triton_sparse_attn_func(
@@ -1484,9 +1568,10 @@ def triton_sparse_attn_func(
     value,
     attn_mask=None,
     attn_bias=None,
+    s_aux=None,
     is_causal=False,
     softmax_scale=None,
 ):
     return FlashDMAttnFunc.apply(
-        query, key, value, attn_mask, attn_bias, is_causal, softmax_scale
+        query, key, value, attn_mask, attn_bias, s_aux, is_causal, softmax_scale
     )

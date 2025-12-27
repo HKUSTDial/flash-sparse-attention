@@ -733,7 +733,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     // Epilogue
 
-    Tensor lse = softmax.template normalize_softmax_lse(acc_o, params.scale_softmax);
+    const float s_aux = reinterpret_cast<const float *>(params.saux_ptr)[bidh];
+    Tensor lse = softmax.template normalize_softmax_lse(acc_o, params.scale_softmax, s_aux);
 
     // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = FLASH_NAMESPACE::convert_type<Element>(acc_o);
@@ -1506,7 +1507,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     // Epilogue
 
-    Tensor lse = softmax.template normalize_softmax_lse<Split>(acc_o, params.scale_softmax);
+    const float s_aux = reinterpret_cast<const float *>(params.saux_ptr)[bidh];
+    Tensor lse = softmax.template normalize_softmax_lse<Split>(acc_o, params.scale_softmax, s_aux);
     // if (cute::thread0()) { print(lse); }
 
     Tensor sOaccum = make_tensor(make_smem_ptr(reinterpret_cast<ElementO *>(smem_)), typename Kernel_traits::SmemLayoutO{});    // (SMEM_M, SMEM_N)

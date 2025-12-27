@@ -679,6 +679,24 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
             #pragma unroll
             for (int mi = 0; mi < size(lse); ++mi) { dP_sum(mi) = gdPsum(get<0>(taccScS_row(mi))); }
 
+            // d(s_aux) contribution for this m-block and (bidb, bidh):
+            // dp_sink = 0 (sink is dropped from output), so ds_sink = p_sink * (dp_sink - dP_sum) = -p_sink * dP_sum.
+            // p_sink = exp(s_aux - LSE), where LSE already includes the sink term from forward.
+            {
+                const float s_aux = reinterpret_cast<const float *>(params.saux_ptr)[bidh];
+                float ds_aux_partial = 0.f;
+                #pragma unroll
+                for (int mi = 0; mi < size(lse); ++mi) {
+                    // If lse == inf (OOB row), exp(s_aux - inf) = 0 so this contributes 0.
+                    ds_aux_partial += -expf(s_aux - float(lse(mi))) * float(dP_sum(mi));
+                }
+                FLASH_NAMESPACE::SumOp<float> sum_op;
+                ds_aux_partial = FLASH_NAMESPACE::Allreduce<32>::run(ds_aux_partial, sum_op);
+                if ((tidx & 31) == 0) {
+                    atomicAdd(&reinterpret_cast<float *>(params.dsaux_ptr)[bidh], ds_aux_partial);
+                }
+            }
+
             // if (cute::thread0()) { print(sK); }
             // Tensor tSrK_copy_view = smem_thr_copy_KV.retile_D(tSrK);
             // #pragma unroll
