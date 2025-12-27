@@ -79,6 +79,11 @@ struct Bias_params {
 
 struct Flash_fwd_params : public QKV_params, public Mask_params, public Bias_params {
 
+    // Optional per-head auxiliary logit ("sink"), shape [h].
+    // The kernels always assume this pointer is valid; callers should pass a tensor
+    // filled with -inf when the feature is not used.
+    void * __restrict__ saux_ptr;
+
     // The O matrix.
     void * __restrict__ o_ptr;
     void * __restrict__ oaccum_ptr;
@@ -192,6 +197,11 @@ struct Flash_bwd_params : public Flash_fwd_params {
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;
+
+    // Gradient w.r.t. saux (per-head), shape [h].
+    // The kernels always assume this pointer is valid; callers should pass a tensor
+    // to accumulate into (typically float32 zeros) and ignore it if unused.
+    void * __restrict__ dsaux_ptr;
 
     bool deterministic;
     index_t dq_accum_split_stride;
