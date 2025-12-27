@@ -47,6 +47,7 @@ void set_params_fprop(
     void *seqused_k,
     void *p_d,
     void *softmax_lse_d,
+    void *saux_d,
     float softmax_scale,
     bool is_causal,
     const float softcap,
@@ -107,6 +108,9 @@ void set_params_fprop(
 
     // Softmax sum
     params.softmax_lse_ptr = softmax_lse_d;
+
+    // Per-head sink logits (float32[h]). Must be a valid pointer.
+    params.saux_ptr = saux_d;
 
     // Set the dimensions.
     params.b = b;
@@ -185,6 +189,8 @@ void set_params_dgrad(
     void *dv_accum_d,
     void *softmax_lse_d,
     void *dsoftmax_sum_d,
+    void *saux_d,
+    void *dsaux_d,
     float softmax_scale,
     bool is_causal,
     const float softcap,
@@ -202,6 +208,7 @@ void set_params_dgrad(
         nullptr,
         nullptr,
         softmax_lse_d,
+        saux_d,
         softmax_scale,
         is_causal,
         softcap,
@@ -244,6 +251,9 @@ void set_params_dgrad(
 
     // Softmax sum
     params.dsoftmax_sum = dsoftmax_sum_d;
+
+    // Per-head sink gradient (float32[h]). Must be a valid pointer.
+    params.dsaux_ptr = dsaux_d;
 
     params.deterministic = deterministic;
 }
@@ -355,6 +365,7 @@ mha_fwd(
     const at::Tensor &v,                            // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
     std::optional<at::Tensor> &mask_,               // {batch_size|1} x {num_heads|num_heads_k|1} x {seqlen_q|1} x round_multiple(seqlen_k, 128)
     std::optional<at::Tensor> &bias_,               // {batch_size|1} x {num_heads|num_heads_k|1} x {seqlen_q|1} x round_multiple(seqlen_k, 128)
+    std::optional<at::Tensor> &saux_,               // num_heads (float32)
     std::optional<at::Tensor> &out_,                // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
     const float softmax_scale,
     bool is_causal,
@@ -442,7 +453,12 @@ mha_fwd(
 
     // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
     // H/t Daniel Haziza
-    const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && head_size % 8 == 0;
+    const bool has_saux = saux_.has_value();
+    bool seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && head_size % 8 == 0;
+    // The seqlenq-ngroups swap changes the meaning of the "head" dimension; disable it when s_aux is provided.
+    if (has_saux && seqlenq_ngroups_swapped) {
+        seqlenq_ngroups_swapped = false;
+    }
     const int ngroups = num_heads / num_heads_k;
     const int batch_size_mask_og = has_mask ? mask.size(0) : batch_size;
     const int batch_size_bias_og = has_bias ? bias.size(0) : batch_size;
@@ -472,6 +488,18 @@ mha_fwd(
         num_heads_bias = has_bias ? ((num_heads_bias == num_heads) ? num_heads_k : num_heads_bias) : 1;
         seqlen_q = ngroups;
         num_heads = num_heads_k;
+    }
+
+    at::Tensor saux;
+    if (saux_.has_value()) {
+        saux = saux_.value();
+        TORCH_CHECK(saux.dtype() == torch::kFloat32, "s_aux must have dtype float32");
+        CHECK_DEVICE(saux);
+        TORCH_CHECK(saux.dim() == 1, "s_aux must be 1D with shape (num_heads,)");
+        TORCH_CHECK(saux.size(0) == num_heads, "s_aux must have shape (num_heads,)");
+        TORCH_CHECK(saux.is_contiguous(), "s_aux must be contiguous");
+    } else {
+        saux = torch::full({num_heads}, -std::numeric_limits<float>::infinity(), opts.dtype(at::kFloat));
     }
 
     CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
@@ -515,11 +543,13 @@ mha_fwd(
         /*seqused_k=*/nullptr,
         return_softmax ? p.data_ptr() : nullptr,
         softmax_lse.data_ptr(),
+        saux.data_ptr(),
         softmax_scale,
         is_causal,
         softcap,
         has_mask,
-        has_bias
+        has_bias,
+        seqlenq_ngroups_swapped
     );
 
     // Keep references to these tensors to extend their lifetime
@@ -558,6 +588,7 @@ mha_varlen_fwd(
     at::Tensor &q,                                  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
     const at::Tensor &k,                            // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
     const at::Tensor &v,                            // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+    std::optional<at::Tensor> &saux_,               // num_heads (float32)
     std::optional<at::Tensor> &out_,                // total_q x num_heads x head_size
     const at::Tensor &cu_seqlens_q,                 // b+1
     const at::Tensor &cu_seqlens_k,                 // b+1
@@ -632,13 +663,29 @@ mha_varlen_fwd(
 
     // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
     // H/t Daniel Haziza
-    const int seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && head_size % 8 == 0;
+    const bool has_saux = saux_.has_value();
+    bool seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && head_size % 8 == 0;
+    if (has_saux && seqlenq_ngroups_swapped) {
+        seqlenq_ngroups_swapped = false;
+    }
     const int ngroups = num_heads / num_heads_k;
     if (seqlenq_ngroups_swapped) {
         q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size});
         max_seqlen_q = ngroups;
         num_heads = num_heads_k;
         cu_seqlens_q_d = nullptr;
+    }
+
+    at::Tensor saux;
+    if (saux_.has_value()) {
+        saux = saux_.value();
+        TORCH_CHECK(saux.dtype() == torch::kFloat32, "s_aux must have dtype float32");
+        CHECK_DEVICE(saux);
+        TORCH_CHECK(saux.dim() == 1, "s_aux must be 1D with shape (num_heads,)");
+        TORCH_CHECK(saux.size(0) == num_heads, "s_aux must have shape (num_heads,)");
+        TORCH_CHECK(saux.is_contiguous(), "s_aux must be contiguous");
+    } else {
+        saux = torch::full({num_heads}, -std::numeric_limits<float>::infinity(), opts.dtype(at::kFloat));
     }
 
     const int total_q = q.sizes()[0];
@@ -716,6 +763,7 @@ mha_varlen_fwd(
         seqused_k.has_value() ? seqused_k.value().data_ptr() : nullptr,
         return_softmax ? p.data_ptr() : nullptr,
         softmax_lse.data_ptr(),
+        saux.data_ptr(),
         softmax_scale,
         is_causal,
         softcap,
@@ -797,6 +845,7 @@ mha_bwd(
     const at::Tensor &v,                            // batch_size x seqlen_k x num_heads_k x head_size
     const std::optional<at::Tensor> &mask_,         // {batch_size|1} x {num_heads|num_heads_k|1} x {seqlen_q|1} x {seqlen_k|1}
     const std::optional<at::Tensor> &bias_,         // {batch_size|1} x {num_heads|num_heads_k|1} x {seqlen_q|1} x {seqlen_k|1}
+    const std::optional<at::Tensor> &saux_,         // num_heads (float32)
     const at::Tensor &out,                          // batch_size x seqlen_q x num_heads x head_size
     const at::Tensor &softmax_lse,                  // b x h x seqlen_q
     std::optional<at::Tensor> &dq_,                 // batch_size x seqlen_q x num_heads x head_size
@@ -954,6 +1003,19 @@ mha_bwd(
     bool loop = true;
 
     auto softmax_d = torch::empty({batch_size, num_heads, seqlen_q_rounded}, opts.dtype(at::kFloat));
+
+    at::Tensor saux;
+    if (saux_.has_value()) {
+        saux = saux_.value();
+        TORCH_CHECK(saux.dtype() == torch::kFloat32, "s_aux must have dtype float32");
+        CHECK_DEVICE(saux);
+        TORCH_CHECK(saux.dim() == 1, "s_aux must be 1D with shape (num_heads,)");
+        TORCH_CHECK(saux.size(0) == num_heads, "s_aux must have shape (num_heads,)");
+        TORCH_CHECK(saux.is_contiguous(), "s_aux must be contiguous");
+    } else {
+        saux = torch::full({num_heads}, -std::numeric_limits<float>::infinity(), opts.dtype(at::kFloat));
+    }
+    auto dsaux = torch::zeros({num_heads}, opts.dtype(at::kFloat));
     at::Tensor dq_accum;
     at::Tensor dk_accum, dv_accum;
     if (loop) {
@@ -1002,6 +1064,8 @@ mha_bwd(
         nullptr,
         softmax_lse.data_ptr(),
         softmax_d.data_ptr(),
+        saux.data_ptr(),
+        dsaux.data_ptr(),
         softmax_scale,
         is_causal,
         softcap,
@@ -1046,7 +1110,7 @@ mha_bwd(
         }
     }
 
-    return {dq, dk, dv, dbias, softmax_d};
+    return {dq, dk, dv, dbias, softmax_d, dsaux};
 }
 
 std::vector<at::Tensor>
@@ -1057,6 +1121,7 @@ mha_varlen_bwd(
     const at::Tensor &v,                            // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
     const at::Tensor &out,                          // total_q x num_heads x head_size
     const at::Tensor &softmax_lse,                  // h x total_q, softmax logsumexp
+    const std::optional<at::Tensor> &saux_,         // num_heads (float32)
     std::optional<at::Tensor> &dq_,                 // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
     std::optional<at::Tensor> &dk_,                 // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
     std::optional<at::Tensor> &dv_,                 // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
@@ -1175,6 +1240,19 @@ mha_varlen_bwd(
     bool loop = true;
 
     auto softmax_d = torch::empty({num_heads, total_q + 128 * batch_size}, opts.dtype(at::kFloat));
+
+    at::Tensor saux;
+    if (saux_.has_value()) {
+        saux = saux_.value();
+        TORCH_CHECK(saux.dtype() == torch::kFloat32, "s_aux must have dtype float32");
+        CHECK_DEVICE(saux);
+        TORCH_CHECK(saux.dim() == 1, "s_aux must be 1D with shape (num_heads,)");
+        TORCH_CHECK(saux.size(0) == num_heads, "s_aux must have shape (num_heads,)");
+        TORCH_CHECK(saux.is_contiguous(), "s_aux must be contiguous");
+    } else {
+        saux = torch::full({num_heads}, -std::numeric_limits<float>::infinity(), opts.dtype(at::kFloat));
+    }
+    auto dsaux = torch::zeros({num_heads}, opts.dtype(at::kFloat));
     at::Tensor dq_accum;
     if (loop) {
         // We don't want to allocate dq_accum of size (batch, seqlen_q_rounded, num_heads, head_size_rounded)
@@ -1232,6 +1310,8 @@ mha_varlen_bwd(
         nullptr,
         softmax_lse.data_ptr(),
         softmax_d.data_ptr(),
+        saux.data_ptr(),
+        dsaux.data_ptr(),
         softmax_scale,
         is_causal,
         softcap,
@@ -1262,7 +1342,7 @@ mha_varlen_bwd(
         // at::sum_out(dbias, at::reshape(dbias_expanded, {total_q, num_heads_k, num_heads / num_heads_k, max_seqlen_k}), {2});
     }
 
-    return { dq, dk, dv, softmax_d };
+    return { dq, dk, dv, softmax_d, dsaux };
 }
 
 } // namespace FLASH_NAMESPACE
