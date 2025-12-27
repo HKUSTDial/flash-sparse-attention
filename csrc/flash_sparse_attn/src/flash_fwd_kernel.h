@@ -733,7 +733,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     // Epilogue
 
-    Tensor lse = softmax.template normalize_softmax_lse(acc_o, params.scale_softmax);
+    const float s_aux = reinterpret_cast<const float *>(params.saux_ptr)[bidh];
+    Tensor lse = softmax.template normalize_softmax_lse(acc_o, params.scale_softmax, s_aux);
 
     // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = FLASH_NAMESPACE::convert_type<Element>(acc_o);
