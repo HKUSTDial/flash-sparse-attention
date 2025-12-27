@@ -95,18 +95,27 @@ def _flash_sparse_attn_forward(
     v: torch.Tensor,
     mask: Optional[torch.Tensor],
     bias: Optional[torch.Tensor],
+    s_aux: Optional[torch.Tensor],
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     return_softmax: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
+    q, k, v, mask, bias, s_aux = [
+        maybe_contiguous(x) for x in (q, k, v, mask, bias, s_aux)
+    ]
+    if s_aux is not None:
+        if s_aux.dtype is not torch.float32:
+            raise TypeError("s_aux must be float32")
+        if s_aux.ndim != 1:
+            raise ValueError("s_aux must be 1D with shape (num_heads,)")
     out, softmax_lse, S_dmask = flash_sparse_attn_gpu.fwd(
         q,
         k,
         v,
         mask,
         bias,
+        s_aux,
         None,
         softmax_scale,
         is_causal,
@@ -124,12 +133,15 @@ def _flash_sparse_attn_forward_fake(
     v: torch.Tensor,
     mask: Optional[torch.Tensor],
     bias: Optional[torch.Tensor],
+    s_aux: Optional[torch.Tensor],
     softmax_scale: float,
     is_causal: bool,
     softcap: float,
     return_softmax: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v, mask, bias = [maybe_contiguous(x) for x in (q, k, v, mask, bias)]
+    q, k, v, mask, bias, s_aux = [
+        maybe_contiguous(x) for x in (q, k, v, mask, bias, s_aux)
+    ]
     batch_size, seqlen_q, num_heads, head_size = q.shape
     seqlen_k = k.shape[1]
     out = torch.empty_like(q)
@@ -168,6 +180,7 @@ def _flash_sparse_attn_varlen_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    s_aux: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -181,11 +194,17 @@ def _flash_sparse_attn_varlen_forward(
     seqused_k: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    q, k, v, s_aux = [maybe_contiguous(x) for x in (q, k, v, s_aux)]
+    if s_aux is not None:
+        if s_aux.dtype is not torch.float32:
+            raise TypeError("s_aux must be float32")
+        if s_aux.ndim != 1:
+            raise ValueError("s_aux must be 1D with shape (num_heads,)")
     out, softmax_lse, S_dmask = flash_sparse_attn_gpu.varlen_fwd(
         q,
         k,
         v,
+        s_aux,
         None,
         cu_seqlens_q,
         cu_seqlens_k,
@@ -209,6 +228,7 @@ def _flash_sparse_attn_varlen_forward_fake(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    s_aux: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -222,7 +242,7 @@ def _flash_sparse_attn_varlen_forward_fake(
     seqused_k: Optional[torch.Tensor] = None,
     zero_tensors: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    q, k, v, s_aux = [maybe_contiguous(x) for x in (q, k, v, s_aux)]
     # paged_kv = block_table is not None
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
@@ -259,6 +279,7 @@ def _flash_sparse_attn_backward(
     v: torch.Tensor,
     mask: Optional[torch.Tensor],
     bias: Optional[torch.Tensor],
+    s_aux: Optional[torch.Tensor],
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
     dq: Optional[torch.Tensor],
@@ -269,16 +290,22 @@ def _flash_sparse_attn_backward(
     is_causal: bool,
     softcap: float,
     deterministic: bool,
-) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [
-        maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    dout, q, k, v, mask, bias, s_aux, out = [
+        maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, s_aux, out)
     ]
+    if s_aux is not None:
+        if s_aux.dtype is not torch.float32:
+            raise TypeError("s_aux must be float32")
+        if s_aux.ndim != 1:
+            raise ValueError("s_aux must be 1D with shape (num_heads,)")
     (
         dq,
         dk,
         dv,
         dbias,
         softmax_d,
+        ds_aux,
     ) = flash_sparse_attn_gpu.bwd(
         dout,
         q,
@@ -286,6 +313,7 @@ def _flash_sparse_attn_backward(
         v,
         mask,
         bias,
+        s_aux,
         out,
         softmax_lse,
         dq,
@@ -298,7 +326,7 @@ def _flash_sparse_attn_backward(
         deterministic,
     )
     # _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=0.0, neginf=0.0)
-    return softmax_d
+    return softmax_d, ds_aux
 
 
 @_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_backward")
@@ -309,6 +337,7 @@ def _flash_sparse_attn_backward_fake(
     v: torch.Tensor,
     mask: Optional[torch.Tensor],
     bias: Optional[torch.Tensor],
+    s_aux: Optional[torch.Tensor],
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
     dq: Optional[torch.Tensor],
@@ -319,9 +348,9 @@ def _flash_sparse_attn_backward_fake(
     is_causal: bool,
     softcap: float,
     deterministic: bool,
-) -> torch.Tensor:
-    dout, q, k, v, mask, bias, out = [
-        maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, out)
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    dout, q, k, v, mask, bias, s_aux, out = [
+        maybe_contiguous(x) for x in (dout, q, k, v, mask, bias, s_aux, out)
     ]
     if dq is None:
         dq = torch.empty_like(q)
@@ -337,8 +366,9 @@ def _flash_sparse_attn_backward_fake(
         device=q.device,
         dtype=torch.float32,
     )
+    ds_aux = torch.empty((num_heads,), device=q.device, dtype=torch.float32)
 
-    return softmax_d
+    return softmax_d, ds_aux
 
 
 _wrapped_flash_sparse_attn_backward = _flash_sparse_attn_backward
@@ -356,6 +386,7 @@ def _flash_sparse_attn_varlen_backward(
     v: torch.Tensor,
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
+    s_aux: Optional[torch.Tensor],
     dq: Optional[torch.Tensor],
     dk: Optional[torch.Tensor],
     dv: Optional[torch.Tensor],
@@ -368,13 +399,21 @@ def _flash_sparse_attn_varlen_backward(
     softcap: float,
     deterministic: bool,
     zero_tensors: bool = False,
-) -> torch.Tensor:
-    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    dout, q, k, v, out, s_aux = [
+        maybe_contiguous(x) for x in (dout, q, k, v, out, s_aux)
+    ]
+    if s_aux is not None:
+        if s_aux.dtype is not torch.float32:
+            raise TypeError("s_aux must be float32")
+        if s_aux.ndim != 1:
+            raise ValueError("s_aux must be 1D with shape (num_heads,)")
     (
         dq,
         dk,
         dv,
         softmax_d,
+        ds_aux,
     ) = flash_sparse_attn_gpu.varlen_bwd(
         dout,
         q,
@@ -382,6 +421,7 @@ def _flash_sparse_attn_varlen_backward(
         v,
         out,
         softmax_lse,
+        s_aux,
         dq,
         dk,
         dv,
@@ -396,7 +436,7 @@ def _flash_sparse_attn_varlen_backward(
         deterministic,
     )
     # _sanitize_tensors(dq, dk, dv, nan=0.0, posinf=0.0, neginf=0.0)
-    return softmax_d
+    return softmax_d, ds_aux
 
 
 @_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_varlen_backward")
@@ -407,10 +447,10 @@ def _flash_sparse_attn_varlen_backward_fake(
     v: torch.Tensor,
     out: torch.Tensor,
     softmax_lse: torch.Tensor,
+    s_aux: Optional[torch.Tensor],
     dq: Optional[torch.Tensor],
     dk: Optional[torch.Tensor],
     dv: Optional[torch.Tensor],
-    dbias: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -420,8 +460,10 @@ def _flash_sparse_attn_varlen_backward_fake(
     softcap: float,
     deterministic: bool,
     zero_tensors: bool = False,
-) -> torch.Tensor:
-    dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    dout, q, k, v, out, s_aux = [
+        maybe_contiguous(x) for x in (dout, q, k, v, out, s_aux)
+    ]
     batch_size = cu_seqlens_q.numel() - 1
     total_q, num_heads, _ = q.shape
 
@@ -434,8 +476,9 @@ def _flash_sparse_attn_varlen_backward_fake(
     softmax_d = torch.empty(
         (num_heads, total_q + 128 * batch_size), device=q.device, dtype=torch.float32
     )
+    ds_aux = torch.empty((num_heads,), device=q.device, dtype=torch.float32)
 
-    return softmax_d
+    return softmax_d, ds_aux
 
 
 _wrapped_flash_sparse_attn_varlen_backward = _flash_sparse_attn_varlen_backward
@@ -450,6 +493,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         v: torch.Tensor,
         mask: Optional[torch.Tensor],
         bias: Optional[torch.Tensor],
+        s_aux: Optional[torch.Tensor],
         softmax_scale: Optional[float],
         is_causal: Optional[bool],
         softcap: Optional[float],
@@ -457,7 +501,9 @@ class FlashDMAttnFunc(torch.autograd.Function):
         return_softmax: Optional[bool],
         is_grad_enabled: bool = True,
     ):
-        is_grad = is_grad_enabled and any(x.requires_grad for x in [q, k, v])
+        is_grad = is_grad_enabled and any(
+            (x is not None and getattr(x, "requires_grad", False)) for x in [q, k, v, s_aux]
+        )
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -498,6 +544,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
             v,
             mask,
             bias,
+            s_aux,
             softmax_scale,
             is_causal=is_causal,
             softcap=softcap,
@@ -505,12 +552,18 @@ class FlashDMAttnFunc(torch.autograd.Function):
         )
 
         if is_grad:
-            ctx.save_for_backward(q, k, v, mask, bias, out_padded, softmax_lse)
+            s_aux_saved = (
+                s_aux
+                if s_aux is not None
+                else torch.empty((0,), device=q.device, dtype=torch.float32)
+            )
+            ctx.save_for_backward(q, k, v, mask, bias, s_aux_saved, out_padded, softmax_lse)
             ctx.softmax_scale = softmax_scale
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
             ctx.seqlen_k_bias_og = seqlen_k_bias_og
+            ctx.has_saux = s_aux is not None
 
         out = out_padded[..., :head_size_og]
 
@@ -522,7 +575,7 @@ class FlashDMAttnFunc(torch.autograd.Function):
         dout: torch.Tensor,
         *args: Any,
     ):
-        q, k, v, mask, bias, out, softmax_lse = ctx.saved_tensors
+        q, k, v, mask, bias, s_aux, out, softmax_lse = ctx.saved_tensors
         dq, dk, dv = torch.zeros_like(q), torch.zeros_like(k), torch.zeros_like(v)
         dbias = torch.zeros_like(bias).contiguous() if bias is not None else None
 
@@ -531,13 +584,14 @@ class FlashDMAttnFunc(torch.autograd.Function):
         if head_size_og % 8 != 0:
             dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
 
-        _wrapped_flash_sparse_attn_backward(
+        softmax_d, ds_aux = _wrapped_flash_sparse_attn_backward(
             dout_padded,
             q,
             k,
             v,
             mask,
             bias,
+            s_aux if getattr(ctx, "has_saux", False) else None,
             out,
             softmax_lse,
             dq,
@@ -562,7 +616,8 @@ class FlashDMAttnFunc(torch.autograd.Function):
                 else dbias[..., : k.shape[1]]
             )
 
-        return dq, dk, dv, None, dbias, None, None, None, None, None, None
+        ds_aux_out = ds_aux if getattr(ctx, "has_saux", False) else None
+        return dq, dk, dv, None, dbias, ds_aux_out, None, None, None, None, None, None
 
 
 class FlashAttnVarlenFunc(torch.autograd.Function):
@@ -572,6 +627,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        s_aux: Optional[torch.Tensor],
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
@@ -584,7 +640,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         block_table: Optional[torch.Tensor],
         is_grad_enabled: bool = True,
     ):
-        is_grad = is_grad_enabled and any(x.requires_grad for x in [q, k, v])
+        is_grad = is_grad_enabled and any(
+            (x is not None and getattr(x, "requires_grad", False)) for x in [q, k, v, s_aux]
+        )
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         if is_causal is None:
@@ -607,6 +665,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             q,
             k,
             v,
+            s_aux,
             cu_seqlens_q,
             cu_seqlens_k,
             max_seqlen_q,
@@ -620,7 +679,18 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
 
         if is_grad:
             ctx.save_for_backward(
-                q, k, v, out_padded, softmax_lse, cu_seqlens_q, cu_seqlens_k
+                q,
+                k,
+                v,
+                (
+                    s_aux
+                    if s_aux is not None
+                    else torch.empty((0,), device=q.device, dtype=torch.float32)
+                ),
+                out_padded,
+                softmax_lse,
+                cu_seqlens_q,
+                cu_seqlens_k,
             )
             ctx.max_seqlen_q = max_seqlen_q
             ctx.max_seqlen_k = max_seqlen_k
@@ -628,6 +698,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             ctx.is_causal = is_causal
             ctx.softcap = softcap
             ctx.deterministic = deterministic
+            ctx.has_saux = s_aux is not None
 
         out = out_padded[..., :head_size_og]
 
@@ -635,7 +706,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *args):
-        q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
+        q, k, v, s_aux, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
         head_size_og = dout.size(2)
@@ -643,13 +714,14 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         if head_size_og % 8 != 0:
             dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
 
-        _wrapped_flash_sparse_attn_varlen_backward(
+        softmax_d, ds_aux = _wrapped_flash_sparse_attn_varlen_backward(
             dout_padded,
             q,
             k,
             v,
             out,
             softmax_lse,
+            s_aux if getattr(ctx, "has_saux", False) else None,
             dq,
             dk,
             dv,
@@ -672,6 +744,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             dq,
             dk,
             dv,
+            (ds_aux if getattr(ctx, "has_saux", False) else None),
             None,
             None,
             None,
@@ -692,6 +765,7 @@ def flash_sparse_attn_func(
     value: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     attn_bias: Optional[torch.Tensor] = None,
+    s_aux: Optional[torch.Tensor] = None,
     softmax_scale: Optional[float] = None,
     is_causal: Optional[bool] = None,
     softcap: Optional[float] = None,
@@ -754,6 +828,7 @@ def flash_sparse_attn_func(
         value,
         attn_mask,
         attn_bias,
+        s_aux,
         softmax_scale,
         is_causal,
         softcap,
@@ -767,6 +842,7 @@ def flash_sparse_attn_varlen_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    s_aux: Optional[torch.Tensor],
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -825,6 +901,7 @@ def flash_sparse_attn_varlen_func(
         query,
         key,
         value,
+        s_aux,
         cu_seqlens_q,
         cu_seqlens_k,
         max_seqlen_q,
