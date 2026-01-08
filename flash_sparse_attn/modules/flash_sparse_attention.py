@@ -64,7 +64,7 @@ class FlashSparseAttention(nn.Module):
 
         gate_states = self.g_proj(query_states)
         delta_states = self.d_proj(key_states)
-        attn_bias = torch.sigmoid(gate_states) * delta_states
+        attn_bias = gate_states *  torch.sigmoid(delta_states)
 
         query_states = query_states.view(bsz, seq_len, -1, self.head_dim)
         key_states = key_states.view(bsz, key_len, -1, self.head_dim)
