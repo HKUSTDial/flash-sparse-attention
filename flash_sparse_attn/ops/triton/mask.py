@@ -4,14 +4,29 @@ import triton.language as tl
 
 @triton.jit
 def apply_mask(
-    acc_s,  # [BLOCK_M, BLOCK_N]
-    m_idx,  # [BLOCK_M]
-    n_idx,  # [BLOCK_N]
-    seqlen_k,  # int
-    causal_offset,  # int
+    acc_s,
+    m_idx,
+    n_idx,
+    seqlen_k,
+    causal_offset,
     IS_CAUSAL: tl.constexpr,
     EVEN_N: tl.constexpr,
 ):
+    """
+    Apply causal and padding mask to the attention scores.
+
+    Args:
+        acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
+        m_idx: Row indices corresponding to BLOCK_M.
+        n_idx: Column indices corresponding to BLOCK_N.
+        seqlen_k: The sequence length of the key.
+        causal_offset: Offset used for causal masking.
+        IS_CAUSAL: Boolean flag indicating if causal masking should be applied.
+        EVEN_N: Boolean flag indicating if BLOCK_N is even.
+
+    Returns:
+        Masked attention scores tensor of shape [BLOCK_M, BLOCK_N].
+    """
     # Trying to combine the two masks seem to make the result wrong
     if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
         acc_s = tl.where(
