@@ -12,7 +12,6 @@ def online_softmax(
     acc_s,
     row_max,
     row_sum,
-    IS_FIRST: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
     """
@@ -20,42 +19,32 @@ def online_softmax(
 
     Args:
         acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-        row_max: Current maximum values per row of shape [BLOCK_M].
-        row_sum: Current sum values per row of shape [BLOCK_M].
-        IS_FIRST: Boolean flag indicating if this is the first block.
-        CHECK_INF: Boolean flag indicating if inf values should be checked.
+        row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
+        row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
+        CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
 
     Returns:
         p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
-        row_max_cur: Updated maximum values per row of shape [BLOCK_M].
+        row_max_new: Updated maximum values per row of shape [BLOCK_M].
         row_sum_new: Updated sum values per row of shape [BLOCK_M].
         row_scale: Scaling factors per row of shape [BLOCK_M].
     """
-    # compute the current row max
-    row_max_cur = tl.max(acc_s, axis=1)
+    # combine current block max with previous row max
+    row_max_new = tl.maximum(tl.max(acc_s, axis=1), row_max)
 
-    # if not the first block, combine with previous row max
-    if not IS_FIRST:
-        row_max_cur = tl.maximum(row_max_cur, row_max)
-
-    # avoid exp(0) by checking for -inf
+    # avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
     if CHECK_INF:
-        row_max_cur = check_inf(row_max_cur)
+        row_max_new = check_inf(row_max_new)
 
     # compute the exponentials and current row sum
-    p = tl.exp(acc_s - row_max_cur[:, None])
+    p = tl.exp(acc_s - row_max_new[:, None])
     row_sum_cur = tl.sum(p, axis=1)
 
-    if IS_FIRST:
-        # no rescaling needed
-        row_scale = tl.full(row_sum_cur.shape, 1.0)
-        row_sum_new = row_sum_cur
-    else:
-        # compute rescaling factor and update row sum
-        row_scale = tl.exp(row_max - row_max_cur)
-        row_sum_new = row_sum * row_scale + row_sum_cur
+    # compute rescaling factor, exp(-inf - x) = 0 on first iteration
+    row_scale = tl.exp(row_max - row_max_new)
+    row_sum_new = row_sum * row_scale + row_sum_cur
 
-    return p, row_max_cur, row_sum_new, row_scale
+    return p, row_max_new, row_sum_new, row_scale
 
 
 @triton.jit
