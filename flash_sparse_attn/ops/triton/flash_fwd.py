@@ -1,8 +1,9 @@
+from typing import Optional
 import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import block_info, mask, softmax
+from flash_sparse_attn.ops.triton import seqlen_info, block_info, mask, softmax
 
 
 @triton.autotune(
@@ -38,6 +39,10 @@ def _fwd_base_kernel(
     stride_om,
     stride_lb,
     stride_lh,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    seqused_q,
+    seqused_k,
     qhead_per_kvhead,
     seqlen_q,
     seqlen_k,
@@ -49,25 +54,98 @@ def _fwd_base_kernel(
     IS_LOCAL: tl.constexpr,
     WINDOW_SIZE_LEFT: tl.constexpr,
     WINDOW_SIZE_RIGHT: tl.constexpr,
+    HAS_CU_SEQLENS_Q: tl.constexpr,
+    HAS_CU_SEQLENS_K: tl.constexpr,
+    HAS_SEQUSED_Q: tl.constexpr,
+    HAS_SEQUSED_K: tl.constexpr,
 ):
     m_block = tl.program_id(0)
-    num_head = tl.program_id(1)
-    batch_size = tl.program_id(2)
-    num_head_kv = num_head // qhead_per_kvhead
+    head_idx = tl.program_id(1)
+    batch_idx = tl.program_id(2)
+    head_kv_idx = head_idx // qhead_per_kvhead
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
     offs_nb = tl.arange(0, TILE_N)
 
+    # Get seqlen info for this batch
+    (
+        offset_q,
+        offset_k,
+        padded_offset_q,
+        padded_offset_k,
+        actual_seqlen_q,
+        actual_seqlen_k,
+    ) = seqlen_info.get_seqlen_info_qk(
+        batch_idx=batch_idx,
+        seqlen_q_static=seqlen_q,
+        seqlen_k_static=seqlen_k,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        seqused_q=seqused_q,
+        seqused_k=seqused_k,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
+        HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
+        HAS_SEQUSED_Q=HAS_SEQUSED_Q,
+        HAS_SEQUSED_K=HAS_SEQUSED_K,
+    )
+
     # Initialize base pointers
-    q_base = Q + batch_size * stride_qb + num_head * stride_qh
-    k_base = K + batch_size * stride_kb + num_head_kv * stride_kh
-    v_base = V + batch_size * stride_vb + num_head_kv * stride_vh
-    lse_base = Lse + batch_size * stride_lb + num_head * stride_lh
-    out_base = Out + batch_size * stride_ob + num_head * stride_oh
+    q_base = seqlen_info.offset_batch_Q(
+        Q + head_idx * stride_qh,
+        batch_idx,
+        offset_q,
+        padded_offset_q,
+        stride_qb,
+        stride_qm,
+        HAS_CU_SEQLENS_Q,
+        USE_PADDED=False,
+    )
+    k_base = seqlen_info.offset_batch_K(
+        K + head_kv_idx * stride_kh,
+        batch_idx,
+        offset_k,
+        padded_offset_k,
+        stride_kb,
+        stride_kn,
+        HAS_CU_SEQLENS_K,
+        USE_PADDED=False,
+    )
+    v_base = seqlen_info.offset_batch_K(
+        V + head_kv_idx * stride_vh,
+        batch_idx,
+        offset_k,
+        padded_offset_k,
+        stride_vb,
+        stride_vn,
+        HAS_CU_SEQLENS_K,
+        USE_PADDED=False,
+    )
+    out_base = seqlen_info.offset_batch_Q(
+        Out + head_idx * stride_oh,
+        batch_idx,
+        offset_q,
+        padded_offset_q,
+        stride_ob,
+        stride_om,
+        HAS_CU_SEQLENS_Q,
+        USE_PADDED=False,
+    )
+    lse_base = seqlen_info.offset_batch_Q(
+        Lse + head_idx * stride_lh,
+        batch_idx,
+        offset_q,
+        padded_offset_q,
+        stride_lb,
+        1,
+        HAS_CU_SEQLENS_Q,
+        USE_PADDED=False,
+    )
 
     # Compute n_block range for this m_block
     n_block_min, n_block_max = block_info.get_n_block_min_max(
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
+        seqlen_q=actual_seqlen_q,
+        seqlen_k=actual_seqlen_k,
         m_block=m_block,
         split_idx=0,
         num_splits=1,
@@ -83,7 +161,7 @@ def _fwd_base_kernel(
 
     lse_ptrs = tl.make_block_ptr(
         base=lse_base,
-        shape=(seqlen_q,),
+        shape=(actual_seqlen_q,),
         strides=(1,),
         offsets=(m_block * TILE_M,),
         block_shape=(TILE_M,),
@@ -92,7 +170,7 @@ def _fwd_base_kernel(
 
     out_ptrs = tl.make_block_ptr(
         base=out_base,
-        shape=(seqlen_q, head_dim),
+        shape=(actual_seqlen_q, head_dim),
         strides=(stride_om, 1),
         offsets=(m_block * TILE_M, 0),
         block_shape=(TILE_M, TILE_K),
@@ -109,7 +187,7 @@ def _fwd_base_kernel(
     # Create query pointers
     q_ptrs = tl.make_block_ptr(
         base=q_base,
-        shape=(seqlen_q, head_dim),
+        shape=(actual_seqlen_q, head_dim),
         strides=(stride_qm, 1),
         offsets=(m_block * TILE_M, 0),
         block_shape=(TILE_M, TILE_K),
@@ -117,7 +195,7 @@ def _fwd_base_kernel(
     )
     k_ptrs = tl.make_block_ptr(
         base=k_base,
-        shape=(seqlen_k, head_dim),
+        shape=(actual_seqlen_k, head_dim),
         strides=(stride_kn, 1),
         offsets=((n_block_max - 1) * TILE_N, 0),
         block_shape=(TILE_N, TILE_K),
@@ -125,7 +203,7 @@ def _fwd_base_kernel(
     )
     v_ptrs = tl.make_block_ptr(
         base=v_base,
-        shape=(seqlen_k, head_dim),
+        shape=(actual_seqlen_k, head_dim),
         strides=(stride_vn, 1),
         offsets=((n_block_max - 1) * TILE_N, 0),
         block_shape=(TILE_N, TILE_K),
@@ -149,8 +227,8 @@ def _fwd_base_kernel(
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
         n_block_min_causal_local = block_info.get_n_block_min_causal_local_mask(
-            seqlen_q=seqlen_q,
-            seqlen_k=seqlen_k,
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
             m_block=m_block,
             n_block_min=n_block_min,
             TILE_N=TILE_N,
@@ -180,8 +258,8 @@ def _fwd_base_kernel(
                 acc_s=acc_s,
                 m_idx=offs_m,
                 n_idx=offs_n,
-                seqlen_k=seqlen_k,
-                causal_offset=seqlen_k - seqlen_q,
+                seqlen_k=actual_seqlen_k,
+                causal_offset=actual_seqlen_k - actual_seqlen_q,
                 IS_CAUSAL=IS_CAUSAL,
                 EVEN_N=True,
             )
@@ -258,9 +336,21 @@ def _flash_attn_forward(
     value: torch.Tensor,
     softmax_scale: float,
     is_causal: bool = False,
+    cu_seqlens_q: Optional[torch.Tensor] = None,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    max_seqlen_q: Optional[int] = None,
+    max_seqlen_k: Optional[int] = None,
 ):
-    batch_size, seqlen_q, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
+    is_varlen = cu_seqlens_q is not None and cu_seqlens_k is not None
+    if not is_varlen:
+        batch_size, seqlen_q, num_heads_q, head_dim = query.shape
+        _, seqlen_k, num_heads_kv, _ = key.shape
+    else:
+        total_seqlen_q, num_heads_q, head_dim = query.shape
+        _, num_heads_kv, _ = key.shape
+        batch_size = cu_seqlens_q.shape[0] - 1
+        seqlen_q = max_seqlen_q
+        seqlen_k = max_seqlen_k
 
     assert query.is_cuda and key.is_cuda and value.is_cuda, (
         "All inputs must be on CUDA device"
@@ -278,13 +368,24 @@ def _flash_attn_forward(
         "head_dim must be a multiple of 16 for efficient memory access"
     )
     assert head_dim <= 256, "head_dim must be less than or equal to 256"
+    if is_varlen:
+        assert (
+            cu_seqlens_q.dtype == torch.int32 and cu_seqlens_k.dtype == torch.int32
+        ), "cu_seqlens_q and cu_seqlens_k must be of int32"
 
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     out = torch.zeros_like(query)
-    lse = torch.empty(
-        (batch_size, num_heads_q, seqlen_q), device=query.device, dtype=torch.float32
-    )
+    if not is_varlen:
+        lse = torch.empty(
+            (batch_size, num_heads_q, seqlen_q),
+            device=query.device,
+            dtype=torch.float32,
+        )
+    else:
+        lse = torch.empty(
+            (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
+        )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
@@ -302,20 +403,24 @@ def _flash_attn_forward(
         out,
         lse,
         softmax_scale,
-        query.stride(0),
-        query.stride(2),
-        query.stride(1),
-        key.stride(0),
-        key.stride(2),
-        key.stride(1),
-        value.stride(0),
-        value.stride(2),
-        value.stride(1),
-        out.stride(0),
-        out.stride(2),
-        out.stride(1),
+        query.stride(0) if not is_varlen else 0,
+        query.stride(-2),
+        query.stride(-3) if not is_varlen else query.stride(0),
+        key.stride(0) if not is_varlen else 0,
+        key.stride(-2),
+        key.stride(-3) if not is_varlen else key.stride(0),
+        value.stride(0) if not is_varlen else 0,
+        value.stride(-2),
+        value.stride(-3) if not is_varlen else value.stride(0),
+        out.stride(0) if not is_varlen else 0,
+        out.stride(-2),
+        out.stride(-3) if not is_varlen else out.stride(0),
         lse.stride(0),
         lse.stride(1),
+        cu_seqlens_q,
+        cu_seqlens_k,
+        None,
+        None,
         num_heads_q // num_heads_kv,
         seqlen_q,
         seqlen_k,
@@ -325,5 +430,9 @@ def _flash_attn_forward(
         IS_LOCAL=False,
         WINDOW_SIZE_LEFT=None,
         WINDOW_SIZE_RIGHT=None,
+        HAS_CU_SEQLENS_Q=is_varlen,
+        HAS_CU_SEQLENS_K=is_varlen,
+        HAS_SEQUSED_Q=False,
+        HAS_SEQUSED_K=False,
     )
     return out, lse, softmax_scale
