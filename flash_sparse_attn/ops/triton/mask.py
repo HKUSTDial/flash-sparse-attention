@@ -15,17 +15,15 @@ def apply_mask(
     """
     Apply causal and padding mask to the attention scores.
 
-    Args:
-        acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-        m_idx: Row indices corresponding to BLOCK_M.
-        n_idx: Column indices corresponding to BLOCK_N.
-        seqlen_k: The sequence length of the key.
-        causal_offset: Offset used for causal masking.
-        IS_CAUSAL: Boolean flag indicating if causal masking should be applied.
-        EVEN_N: Boolean flag indicating if BLOCK_N is even.
+    :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
+    :param m_idx: Row indices corresponding to BLOCK_M.
+    :param n_idx: Column indices corresponding to BLOCK_N.
+    :param seqlen_k: The sequence length of the key.
+    :param causal_offset: Offset used for causal masking.
+    :param IS_CAUSAL: Boolean flag indicating if causal masking should be applied.
+    :param EVEN_N: Boolean flag indicating if BLOCK_N is even.
 
-    Returns:
-        Masked attention scores tensor of shape [BLOCK_M, BLOCK_N].
+    :return acc_s: Masked attention scores tensor of shape [BLOCK_M, BLOCK_N].
     """
     # Trying to combine the two masks seem to make the result wrong
     if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
