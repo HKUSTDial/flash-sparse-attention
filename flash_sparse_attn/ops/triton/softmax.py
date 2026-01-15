@@ -17,17 +17,15 @@ def online_softmax(
     """
     Apply online softmax to acc_s, and update row_max and row_sum.
 
-    Args:
-        acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-        row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
-        row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
-        CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
+    :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
+    :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
+    :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
+    :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
 
-    Returns:
-        p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
-        row_max_new: Updated maximum values per row of shape [BLOCK_M].
-        row_sum_new: Updated sum values per row of shape [BLOCK_M].
-        row_scale: Scaling factors per row of shape [BLOCK_M].
+    :return p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
+    :return row_max_new: Updated maximum values per row of shape [BLOCK_M].
+    :return row_sum_new: Updated sum values per row of shape [BLOCK_M].
+    :return row_scale: Scaling factors per row of shape [BLOCK_M].
     """
     # combine current block max with previous row max
     row_max_new = tl.maximum(tl.max(acc_s, axis=1), row_max)
@@ -56,14 +54,12 @@ def finalize(
     """
     Finalize online softmax by computing output scale and logsumexp.
 
-    Args:
-        row_max: Final maximum values per row of shape [BLOCK_M].
-        row_sum: Final sum values per row of shape [BLOCK_M].
-        final_scale: Scaling factor to be applied to the output.
+    :param row_max: Final maximum values per row of shape [BLOCK_M].
+    :param row_sum: Final sum values per row of shape [BLOCK_M].
+    :param final_scale: Scaling factor to be applied to the output.
 
-    Returns:
-        o_scale: Output scaling factors per row of shape [BLOCK_M].
-        lse: Logsumexp values per row of shape [BLOCK_M].
+    :return o_scale: Output scaling factors per row of shape [BLOCK_M].
+    :return lse: Logsumexp values per row of shape [BLOCK_M].
     """
     # if row_sum is zero or nan, set it to 1 to avoid division by zero
     acc_o_is_zero_or_nan = (row_sum == 0.0) | (row_sum != row_sum)
