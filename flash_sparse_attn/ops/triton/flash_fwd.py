@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 import torch
 import triton
 import triton.language as tl
@@ -336,6 +336,7 @@ def _flash_attn_forward(
     value: torch.Tensor,
     softmax_scale: float,
     is_causal: bool = False,
+    window_size: Optional[Tuple[int, int]] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
@@ -351,6 +352,12 @@ def _flash_attn_forward(
         batch_size = cu_seqlens_q.shape[0] - 1
         seqlen_q = max_seqlen_q
         seqlen_k = max_seqlen_k
+    
+    is_local = window_size is not None
+    if is_local:
+        window_size_left, window_size_right = window_size
+    else:
+        window_size_left, window_size_right = None, None
 
     assert query.is_cuda and key.is_cuda and value.is_cuda, (
         "All inputs must be on CUDA device"
@@ -427,9 +434,9 @@ def _flash_attn_forward(
         head_dim,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
-        IS_LOCAL=False,
-        WINDOW_SIZE_LEFT=None,
-        WINDOW_SIZE_RIGHT=None,
+        IS_LOCAL=is_local,
+        WINDOW_SIZE_LEFT=window_size_left,
+        WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=is_varlen,
         HAS_CU_SEQLENS_K=is_varlen,
         HAS_SEQUSED_Q=False,
