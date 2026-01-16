@@ -48,6 +48,9 @@ struct QKVB_params {
 
 struct Flash_fwd_params : public QKVB_params {
 
+    // filled with -inf when the feature is not used.
+    void * __restrict__ saux_ptr;
+
     // The O matrix.
     void *__restrict__ o_ptr;
     void *__restrict__ oaccum_ptr;
@@ -161,6 +164,8 @@ struct Flash_bwd_params : public Flash_fwd_params {
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;
+
+    void * __restrict__ dsaux_ptr;
 
     bool deterministic;
     index_t dq_accum_split_stride;
