@@ -27,6 +27,9 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 
 ## 主要特性
 
+> [!NOTE]
+> 支持任意形状的mask和bias的版本为[这个分支](https://github.com/flash-algo/flash-sparse-attention/tree/final_mask_version), 主分支将不再维护该功能.
+
 ### 支持的功能
 
 - 带有因果掩码的前向传播和反向传播
