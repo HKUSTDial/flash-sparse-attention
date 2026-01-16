@@ -5,9 +5,8 @@
 
 namespace FLASH_NAMESPACE {
 
-template<>
-void run_mha_bwd_<cutlass::half_t, 96, false, false, false>(Flash_bwd_params &params, cudaStream_t stream) {
-    run_mha_bwd_hdim96<cutlass::half_t, false, false, false>(params, stream);
+template <> void run_mha_bwd_<cutlass::half_t, 96, false>(Flash_bwd_params &params, cudaStream_t stream) {
+    run_mha_bwd_hdim96<cutlass::half_t, false>(params, stream);
 }
 
 } // namespace FLASH_NAMESPACE

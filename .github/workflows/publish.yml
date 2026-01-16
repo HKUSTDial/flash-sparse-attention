@@ -93,7 +93,7 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Build core package
         env:
-          FLASH_DMATTN_SKIP_CUDA_BUILD: "TRUE"
+          FLASH_SPARSE_ATTENTION_SKIP_CUDA_BUILD: "TRUE"
         run: |
           python setup.py sdist --dist-dir=dist
       - name: Deploy

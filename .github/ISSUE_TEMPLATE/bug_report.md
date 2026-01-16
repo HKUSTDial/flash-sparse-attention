@@ -20,7 +20,7 @@ A clear and concise description of what the bug is.
 
 **To Reproduce**
 Steps to reproduce the behavior:
-1. Import flash_dmattn
+1. Import flash_sparse_attn
 2. Run the following code:
 ```python
 # Paste your code here
