@@ -12,59 +12,65 @@
 
 using namespace cute;
 
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=cutlass::half_t>
+template <
+    int kHeadDim_,
+    int kBlockM_,
+    int kBlockN_,
+    int kNWarps_,
+    typename elem_type = cutlass::half_t
+>
 struct Flash_kernel_traits {
 
-#if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 800
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     using Element = elem_type;
     static constexpr bool Has_cp_async = true;
-#else
+    #else
     using Element = cutlass::half_t;
     static constexpr bool Has_cp_async = false;
-#endif
+    #endif
 
-    using ElementMask = uint8_t;
     using ElementAccum = float;
     using index_t = int64_t;
 
-#if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 800
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     using MMA_Atom_Arch = std::conditional_t<
         std::is_same_v<elem_type, cutlass::half_t>,
         MMA_Atom<SM80_16x8x16_F32F16F16F32_TN>,
-        MMA_Atom<SM80_16x8x16_F32BF16BF16F32_TN>
-    >;
-#else
+        MMA_Atom<SM80_16x8x16_F32BF16BF16F32_TN>>;
+    #else
     using MMA_Atom_Arch = MMA_Atom<SM75_16x8x8_F32F16F16F32_TN>;
-#endif
+    #endif
 
-#if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 750
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
     using SmemCopyAtom = Copy_Atom<SM75_U32x4_LDSM_N, elem_type>;
     using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, elem_type>;
-#else
+    #else
     using SmemCopyAtom = Copy_Atom<DefaultCopy, elem_type>;
     using SmemCopyAtomTransposed = Copy_Atom<DefaultCopy, elem_type>;
 #endif
 };
 
 // If Share_Q_K_smem is true, that forces Is_Q_in_regs to be true
-template<
-    int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_,
-    bool Is_Q_in_regs_=false, bool Share_Q_K_smem_=false, bool Has_mask_=false, bool Has_bias_=false, typename elem_type=cutlass::half_t,
-    typename Base=Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type>
+template <
+    int kHeadDim_,
+    int kBlockM_,
+    int kBlockN_,
+    int kNWarps_,
+    bool Is_Q_in_regs_ = false,
+    bool Share_Q_K_smem_ = false,
+    typename elem_type = cutlass::half_t,
+    typename Base = Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type>
 >
 struct Flash_fwd_kernel_traits : public Base {
     using Element = typename Base::Element;
     using ElementAccum = typename Base::ElementAccum;
     using index_t = typename Base::index_t;
-    using ElementMask = typename Base::ElementMask;
     static constexpr bool Has_cp_async = Base::Has_cp_async;
     using SmemCopyAtom = typename Base::SmemCopyAtom;
     using SmemCopyAtomTransposed = typename Base::SmemCopyAtomTransposed;
 
     static constexpr bool Share_Q_K_smem = Share_Q_K_smem_;
     static constexpr bool Is_Q_in_regs = Is_Q_in_regs_ || Share_Q_K_smem;
-    static constexpr bool Has_mask = Has_mask_;
-    static constexpr bool Has_bias = Has_bias_;
 
     // The number of threads.
     static constexpr int kNWarps = kNWarps_;
@@ -81,113 +87,97 @@ struct Flash_fwd_kernel_traits : public Base {
 
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<kNWarps>, _1, _1>>,  // 4x1x1 or 8x1x1 thread group
+        Layout<Shape<Int<kNWarps>, _1, _1>>, // 4x1x1 or 8x1x1 thread group
         Tile<Int<16 * kNWarps>, _16, _16>
     >;
 
     // Shared memory layout for Q matrix
-    using SmemLayoutAtomQ = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
-            Layout<Shape<_8, Int<kBlockKSmem>>,
-            Stride<Int<kBlockKSmem>, _1>>{}
-        )
-    );
-    using SmemLayoutQ = decltype(
-        tile_to_shape(
-            SmemLayoutAtomQ{},
-            Shape<Int<kBlockM>, Int<kHeadDim>>{}
-        )
-    );
+    using SmemLayoutAtomQ = decltype(composition(
+        Swizzle<kSwizzle, 3, 3>{},
+        // This has to be kBlockKSmem, using kHeadDim gives wrong results for d=128
+        Layout<Shape<_8, Int<kBlockKSmem>>, Stride<Int<kBlockKSmem>, _1>>{}
+    ));
+    using SmemLayoutQ = decltype(tile_to_shape(
+        SmemLayoutAtomQ{},
+        Shape<Int<kBlockM>, Int<kHeadDim>>{}
+    ));
 
-    using SmemLayoutKV = decltype(
-        tile_to_shape(
-            SmemLayoutAtomQ{},
-            Shape<Int<kBlockN>, Int<kHeadDim>>{}
-        )
-    );
+    using SmemLayoutKV = decltype(tile_to_shape(
+        SmemLayoutAtomQ{},
+        Shape<Int<kBlockN>, Int<kHeadDim>>{}
+    ));
 
     // https://github.com/ColfaxResearch/cutlass-kernels/blob/a222587e6d59b93ba704853d3946fb686d8b8892/src/fmha/fmha_forward.cu#L434
-    using SmemLayoutVtransposed = decltype(
-        composition(
-            SmemLayoutKV{},
-            make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})
-        )
+    using SmemLayoutVtransposed = decltype(composition(
+        SmemLayoutKV{},
+        make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})
+    ));
+    using SmemLayoutVtransposedNoSwizzle =
+        decltype(get_nonswizzle_portion(SmemLayoutVtransposed{})
     );
-    using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
 
-    // Shared memory layout for Mask and Bias matrices
-    using SmemLayoutAtomPS = decltype(
-        composition(
-            Swizzle<kSwizzlePS, 3, 3>{},
-            Layout<Shape<Int<kBlockM>, Int<kBlockN>>,
-            Stride<Int<kBlockN>, _1>>{}
-        )
-    );
-    using SmemLayoutPS = decltype(
-        tile_to_shape(
-            SmemLayoutAtomPS{},
-            Shape<Int<kBlockM>, Int<kBlockN>>{}
-        )
-    );
-    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementMask>;
-    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
-
+    // Shared memory layout for BSP matrices
+    using SmemLayoutAtomBSP = decltype(composition(
+        Swizzle<kSwizzlePS, 3, 3>{},
+        Layout<Shape<Int<kBlockM>, Int<kBlockN>>, Stride<Int<kBlockN>, _1>>{}
+    ));
+    using SmemLayoutBSP = decltype(tile_to_shape(
+        SmemLayoutAtomBSP{},
+        Shape<Int<kBlockM>, Int<kBlockN>>{}
+    ));
+    using SmemCopyAtomBSP = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
     // Shared memory layout for output
-    using SmemLayoutAtomO = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<Int<8>, Int<kBlockKSmem>>,
-            Stride<Int<kBlockKSmem>, _1>>{}
-        )
-    );
-    using SmemLayoutO = decltype(
-        tile_to_shape(
-            SmemLayoutAtomO{},
-            Shape<Int<kBlockM>, Int<kHeadDim>>{}
-        )
-    );
+    using SmemLayoutAtomO = decltype(composition(
+        Swizzle<kSwizzle, 3, 3>{},
+        Layout<Shape<Int<8>, Int<kBlockKSmem>>, Stride<Int<kBlockKSmem>, _1>>{}
+    ));
+    using SmemLayoutO = decltype(tile_to_shape(
+        SmemLayoutAtomO{},
+        Shape<Int<kBlockM>, Int<kHeadDim>>{}
+    ));
     using SmemCopyAtomO = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>;
     using SmemCopyAtomOaccum = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>;
 
     // Shared memory size calculations
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemMaskSize = size(SmemLayoutPS{}) * sizeof(Element);
-    static constexpr int kSmemBiasSize = size(SmemLayoutPS{}) * sizeof(Element);
+    static constexpr int kSmemBSPSize = size(SmemLayoutBSP{}) * sizeof(Element);
 
-    // Shared memory size with QKV matrices and mask/bias matrices
-    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + (Has_mask ? kSmemMaskSize : 0) + (Has_bias ? kSmemBiasSize : 0);
+    // Shared memory size with QKVB matrices
+    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + (kSmemBSPSize);
 
-    static constexpr int kGmemElemsPerLoadQKVO = sizeof(cute::uint128_t) / sizeof(Element);
-    static constexpr int kGmemElemsPerLoadMask = sizeof(cute::uint128_t) / sizeof(ElementMask);
-    static constexpr int kGmemElemsPerLoadBias = sizeof(cute::uint128_t) / sizeof(Element);
-    static_assert(kHeadDim % kGmemElemsPerLoadQKVO == 0, "kHeadDim must be a multiple of kGmemElemsPerLoadQKVO");
-    static_assert(kBlockN % kGmemElemsPerLoadMask == 0, "kBlockN must be a multiple of kGmemElemsPerLoadMask");
-    static_assert(kBlockN % kGmemElemsPerLoadBias == 0, "kBlockN must be a multiple of kGmemElemsPerLoadBias");
+    static constexpr int kGmemElemsPerLoadQKV = sizeof(cute::uint128_t) / sizeof(Element);
+    static constexpr int kGmemElemsPerLoadBSP = sizeof(cute::uint128_t) / sizeof(Element);
+    static_assert(
+        kHeadDim % kGmemElemsPerLoadQKV == 0,
+        "kHeadDim must be a multiple of kGmemElemsPerLoadQKV"
+    );
+    static_assert(
+        kBlockN % kGmemElemsPerLoadBSP == 0,
+        "kBlockN must be a multiple of kGmemElemsPerLoadBSP"
+    );
     // Using kBlockKSmem here is 6-10% faster than kBlockKGmem for d=128 because of bank conflicts.
     // For example, for d=128, smem is split into 2 "pages", each page takes care of columns
     // 0-63 and 64-127. If we have 16 threads per row for gmem read, when we write to smem,
     // thread 0 - 7 will write to the first page and thread 8 - 15 will write to the second page,
     // to the same banks.
-    static constexpr int kGmemThreadsPerRowQKVO = kBlockKSmem / kGmemElemsPerLoadQKVO;
-    static constexpr int kGmemThreadsPerRowMask = kBlockN / kGmemElemsPerLoadMask;
-    static constexpr int kGmemThreadsPerRowBias = kBlockN / kGmemElemsPerLoadBias;
-    static_assert(kNThreads % kGmemThreadsPerRowQKVO == 0, "kNThreads must be a multiple of kGmemThreadsPerRowQKVO");
-    static_assert(kNThreads % kGmemThreadsPerRowMask == 0, "kNThreads must be a multiple of kGmemThreadsPerRowMask");
-    static_assert(kNThreads % kGmemThreadsPerRowBias == 0, "kNThreads must be a multiple of kGmemThreadsPerRowBias");
-    using GmemLayoutAtomQKVO = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRowQKVO>, Int<kGmemThreadsPerRowQKVO>>,
-        Stride<Int<kGmemThreadsPerRowQKVO>, _1>
+    static constexpr int kGmemThreadsPerRowQKV = kBlockKSmem / kGmemElemsPerLoadQKV;
+    static constexpr int kGmemThreadsPerRowBSP = kBlockN / kGmemElemsPerLoadBSP;
+    static_assert(
+        kNThreads % kGmemThreadsPerRowQKV == 0,
+        "kNThreads must be a multiple of kGmemThreadsPerRowQKV"
+    );
+    static_assert(
+        kNThreads % kGmemThreadsPerRowBSP == 0,
+        "kNThreads must be a multiple of kGmemThreadsPerRowBSP"
+    );
+    using GmemLayoutAtomQKV = Layout<
+        Shape<Int<kNThreads / kGmemThreadsPerRowQKV>, Int<kGmemThreadsPerRowQKV>>,
+        Stride<Int<kGmemThreadsPerRowQKV>, _1>
     >;
-    using GmemLayoutAtomMask = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRowMask>, Int<kGmemThreadsPerRowMask>>,
-        Stride<Int<kGmemThreadsPerRowMask>, _1>
-    >;
-    using GmemLayoutAtomBias = Layout<
-        Shape <Int<kNThreads / kGmemThreadsPerRowBias>, Int<kGmemThreadsPerRowBias>>,
-        Stride<Int<kGmemThreadsPerRowBias>, _1>
+    using GmemLayoutAtomBSP = Layout<
+        Shape<Int<kNThreads / kGmemThreadsPerRowBSP>, Int<kGmemThreadsPerRowBSP>>,
+        Stride<Int<kGmemThreadsPerRowBSP>, _1>
     >;
 
     // We use CACHEGLOBAL instead of CACHEALWAYS for both Q and K/V, since we won't be reading
@@ -197,62 +187,53 @@ struct Flash_fwd_kernel_traits : public Base {
         SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,
         AutoVectorizingCopyWithAssumedAlignment<128>
     >;
-    using GmemTiledCopyQKV = decltype(
-        make_tiled_copy(
-            Copy_Atom<Gmem_copy_struct, Element>{},
-            GmemLayoutAtomQKVO{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per read
-    using GmemTiledCopyMask = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementMask>{},
-            GmemLayoutAtomMask{},
-            Layout<Shape<_1, _16>>{}
-        )
-    );      // Val layout, 16 vals per read
-    using GmemTiledCopyBias = decltype(
-        make_tiled_copy(
-            Copy_Atom<Gmem_copy_struct, Element>{},
-            GmemLayoutAtomBias{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per read
-    using GmemTiledCopyO = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
-            GmemLayoutAtomQKVO{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per store
+    using GmemTiledCopyQKV = decltype(make_tiled_copy(
+        Copy_Atom<Gmem_copy_struct, Element>{},
+        GmemLayoutAtomQKV{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per read
+    using GmemTiledCopyBSP = decltype(make_tiled_copy(
+        Copy_Atom<Gmem_copy_struct, Element>{},
+        GmemLayoutAtomBSP{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per read
+    using GmemTiledCopyO = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
+        GmemLayoutAtomQKV{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per store
 
     // Accumulator layout for output
     using GmemLayoutAtomOaccum = std::conditional_t<
         kBlockKSmem == 32,
-        Layout<Shape<_16, _8>, Stride<_8, _1>>,     // Thread layout, 8 threads per row
-        Layout<Shape<_8, _16>, Stride<_16, _1>>     // Thread layout, 16 threads per row
+        Layout<Shape<_16, _8>, Stride<_8, _1>>, // Thread layout, 8 threads per row
+        Layout<Shape<_8, _16>, Stride<_16, _1>> // Thread layout, 16 threads per row
     >;
 
-    using GmemTiledCopyOaccum = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
-            GmemLayoutAtomOaccum{},
-            Layout<Shape<_1, _4>>{}
-        )
-    );  // Val layout, 4 vals per store
+    using GmemTiledCopyOaccum = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
+        GmemLayoutAtomOaccum{},
+        Layout<Shape<_1, _4>>{}
+    )); // Val layout, 4 vals per store
 };
 
 // Is_V_in_regs is an option to reduce smem usage, but will increase register pressue.
 // No_double_buffer is another option to reduce smem usage, but will slow things down.
-template<
-    int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_,
-    int AtomLayoutMSdP_=1, int AtomLayoutNdKV=2, int AtomLayoutMdQ=2,
-    bool Is_V_in_regs_=false, bool No_double_buffer_=false, typename elem_type=cutlass::half_t,
-    typename Base=Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type>
+template <
+    int kHeadDim_,
+    int kBlockM_,
+    int kBlockN_,
+    int kNWarps_,
+    int AtomLayoutMBSP_ = 1,
+    int AtomLayoutNdKV = 2,
+    int AtomLayoutMdQ = 2,
+    bool Is_V_in_regs_ = false,
+    bool No_double_buffer_ = false,
+    typename elem_type = cutlass::half_t,
+    typename Base = Flash_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_, elem_type>
 >
 struct Flash_bwd_kernel_traits : public Base {
     using Element = typename Base::Element;
-    using ElementMask = typename Base::ElementMask;
     using ElementAccum = typename Base::ElementAccum;
     using index_t = typename Base::index_t;
     static constexpr bool Has_cp_async = Base::Has_cp_async;
@@ -274,15 +255,15 @@ struct Flash_bwd_kernel_traits : public Base {
     static constexpr int kBlockKGmem = kHeadDim % 128 == 0 ? 128 : (kHeadDim % 64 == 0 ? 64 : 32);
     static constexpr int kSwizzle = kBlockKSmem == 32 ? 2 : 3;
 
-    static constexpr int AtomLayoutMSdP = AtomLayoutMSdP_;
-    static_assert(kNWarps % AtomLayoutMSdP == 0);
+    static constexpr int AtomLayoutMBSP = AtomLayoutMBSP_;
+    static_assert(kNWarps % AtomLayoutMBSP == 0);
     static_assert(kNWarps % AtomLayoutNdKV == 0);
     static_assert(kNWarps % AtomLayoutMdQ == 0);
 
-    using TiledMmaSdP = TiledMMA<
+    using TiledMmaBSP = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<AtomLayoutMSdP>, Int<kNWarps / AtomLayoutMSdP>, _1>>,
-        Tile<Int<16 * AtomLayoutMSdP>, Int<16 * kNWarps / AtomLayoutMSdP>, _16>
+        Layout<Shape<Int<AtomLayoutMBSP>, Int<kNWarps / AtomLayoutMBSP>, _1>>,
+        Tile<Int<16 * AtomLayoutMBSP>, Int<16 * kNWarps / AtomLayoutMBSP>, _16>
     >;
 
     using TiledMmadKV = TiledMMA<
@@ -293,46 +274,43 @@ struct Flash_bwd_kernel_traits : public Base {
 
     using TiledMmadQ = TiledMMA<
         typename Base::MMA_Atom_Arch,
-        Layout<Shape<Int<AtomLayoutMdQ>, Int<kNWarps / AtomLayoutMdQ>, _1>>,    // 2x4x1 or 4x2x1 thread group
+        Layout<Shape<
+            Int<AtomLayoutMdQ>,
+            Int<kNWarps / AtomLayoutMdQ>,
+            _1>
+        >, // 2x4x1 or 4x2x1 thread group
         Tile<Int<16 * AtomLayoutMdQ>, Int<16 * kNWarps / AtomLayoutMdQ>, _16>
     >;
 
-    using SmemLayoutAtomQdO = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, Int<kBlockKSmem>>,
-            Stride<Int<kBlockKSmem>, _1>>{}
-        )
-    );
-    using SmemLayoutQdO = decltype(
-        tile_to_shape(
-            SmemLayoutAtomQdO{},
-            make_shape(Int<kBlockM>{}, Int<kHeadDim>{})
-        )
-    );
+    using SmemLayoutAtomQdO = decltype(composition(
+        Swizzle<kSwizzle, 3, 3>{},
+        Layout<Shape<_8, Int<kBlockKSmem>>, Stride<Int<kBlockKSmem>, _1>>{}
+    ));
+    using SmemLayoutQdO = decltype(tile_to_shape(
+        SmemLayoutAtomQdO{},
+        make_shape(Int<kBlockM>{}, Int<kHeadDim>{})
+    ));
 
-    using SmemLayoutAtomKV = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<Int<kBlockM / kNWarps>, Int<kBlockKSmem>>,
-            Stride<Int<kBlockKSmem>, _1>>{}
-        )
-    );
-    using SmemLayoutKV = decltype(
-        tile_to_shape(
-            // SmemLayoutAtomQdO{},
-            SmemLayoutAtomKV{},
-            make_shape(Int<kBlockN>{}, Int<kHeadDim>{})
-        )
-    );
+    using SmemLayoutAtomKV = decltype(composition(
+        Swizzle<kSwizzle, 3, 3>{},
+        Layout<
+            Shape<Int<kBlockM / kNWarps>, Int<kBlockKSmem>>,
+            Stride<Int<kBlockKSmem>, _1>
+        >{}
+    ));
+    using SmemLayoutKV = decltype(tile_to_shape(
+        // SmemLayoutAtomQdO{},
+        SmemLayoutAtomKV{},
+        make_shape(Int<kBlockN>{}, Int<kHeadDim>{})
+    ));
 
-    using SmemLayoutKtransposed = decltype(
-        composition(
-            SmemLayoutKV{},
-            make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})
-        )
+    using SmemLayoutKtransposed = decltype(composition(
+        SmemLayoutKV{},
+        make_layout(Shape<Int<kHeadDim>, Int<kBlockN>>{}, GenRowMajor{})
+    ));
+    using SmemLayoutKtransposedNoSwizzle =
+        decltype(get_nonswizzle_portion(SmemLayoutKtransposed{})
     );
-    using SmemLayoutKtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutKtransposed{}));
 
     // TODO: generalize to other values of kBlockN
     // TODO: what should be the Swizzle here? 3 is faster than 1, and 1 is faster than 2
@@ -345,113 +323,98 @@ struct Flash_bwd_kernel_traits : public Base {
     static_assert(kPBlockN == 16 || kPBlockN == 32 || kPBlockN == 64);
     // static constexpr int kSwizzlePdS = kPBlockN == 16 ? 1 : (kPBlockN == 32 ? 2 : 3);
     static constexpr int kSwizzlePdS = 3;
-    using SmemLayoutAtomMaskBiasPdS = decltype(
-        composition(
-            Swizzle<kSwizzlePdS, 3, 3>{},
-            Layout<Shape<Int<kBlockM>, Int<kPBlockN>>,
-            Stride<Int<kPBlockN>, _1>>{}
-        )
+    using SmemLayoutAtomBSP = decltype(composition(
+        Swizzle<kSwizzlePdS, 3, 3>{},
+        Layout<Shape<Int<kBlockM>, Int<kPBlockN>>, Stride<Int<kPBlockN>, _1>>{}
+    ));
+    using SmemLayoutBSP = decltype(tile_to_shape(
+        SmemLayoutAtomBSP{},
+        make_shape(Int<kBlockM>{}, Int<kBlockN>{})
+    ));
+    using SmemLayoutBSPtransposed = decltype(composition(
+        SmemLayoutBSP{},
+        make_layout(Shape<Int<kBlockN>, Int<kBlockM>>{}, GenRowMajor{})
+    ));
+    using SmemLayoutBSPtransposedNoSwizzle =
+        decltype(get_nonswizzle_portion(SmemLayoutBSPtransposed{})
     );
-    using SmemLayoutMaskBiasPdS = decltype(
-        tile_to_shape(
-            SmemLayoutAtomMaskBiasPdS{},
-            make_shape(Int<kBlockM>{}, Int<kBlockN>{})
-        )
-    );
-    using SmemLayoutPdStransposed = decltype(
-        composition(
-            SmemLayoutMaskBiasPdS{},
-            make_layout(Shape<Int<kBlockN>, Int<kBlockM>>{}, GenRowMajor{})
-        )
-    );
-    using SmemLayoutPdStransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutPdStransposed{}));
+    using SmemCopyAtomBSP = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
 
-    using SmemCopyAtomPdS = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
-    using SmemCopyAtomMask = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementMask>;
-    using SmemCopyAtomBias = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
-
-    using SmemLayoutQdOtransposed = decltype(
-        composition(
-            SmemLayoutQdO{},
-            make_layout(Shape<Int<kHeadDim>, Int<kBlockM>>{}, GenRowMajor{})
-        )
-    );
+    using SmemLayoutQdOtransposed = decltype(composition(
+        SmemLayoutQdO{},
+        make_layout(Shape<Int<kHeadDim>, Int<kBlockM>>{}, GenRowMajor{})
+    ));
     using SmemLayoutQdOtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutQdOtransposed{}));
 
-    using SmemLayoutAtomdKV = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, Int<kBlockKSmem>>,
-            Stride<Int<kBlockKSmem>, _1>>{}
-        )
-    );
-    using SmemLayoutdKV = decltype(
-        tile_to_shape(
-            SmemLayoutAtomdKV{},
-            make_shape(Int<kBlockN>{}, Int<kHeadDim>{})
-        )
-    );
+    using SmemLayoutAtomdKV = decltype(composition(
+        Swizzle<kSwizzle, 3, 3>{},
+        Layout<Shape<_8, Int<kBlockKSmem>>, Stride<Int<kBlockKSmem>, _1>>{}
+    ));
+    using SmemLayoutdKV = decltype(tile_to_shape(
+        SmemLayoutAtomdKV{},
+        make_shape(Int<kBlockN>{}, Int<kHeadDim>{})
+    ));
     using SmemCopyAtomdKV = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
 
-    using SmemLayoutAtomdQ = decltype(
-        composition(
-            Swizzle<kSwizzle, 3, 3>{},
-            Layout<Shape<_8, Int<kBlockKSmem>>,
-            Stride<Int<kBlockKSmem>, _1>>{}
-        )
-    );
-    using SmemLayoutdQ = decltype(
-        tile_to_shape(
-            SmemLayoutAtomdQ{},
-            make_shape(Int<kBlockM>{}, Int<kHeadDim>{})
-        )
-    );
+    using SmemLayoutAtomdQ = decltype(composition(
+        Swizzle<kSwizzle, 3, 3>{},
+        Layout<Shape<_8, Int<kBlockKSmem>>, Stride<Int<kBlockKSmem>, _1>>{}
+    ));
+    using SmemLayoutdQ = decltype(tile_to_shape(
+        SmemLayoutAtomdQ{},
+        make_shape(Int<kBlockM>{}, Int<kHeadDim>{})
+    ));
     using SmemCopyAtomdQ = Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>;
 
     // Double buffer for sQ
     static constexpr int kSmemQdOSize = size(SmemLayoutQdO{}) * (No_double_buffer ? 2 : 3) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemBiasdSSize = size(SmemLayoutMaskBiasPdS{}) * sizeof(Element);
-    static constexpr int kSmemPMaskSize = size(SmemLayoutMaskBiasPdS{}) * sizeof(Element);
+    static constexpr int kSmemdSSize = size(SmemLayoutBSP{}) * sizeof(Element);
+    static constexpr int kSmemPSize = size(SmemLayoutBSP{}) * sizeof(Element);
     static constexpr int kSmemdQSize = size(SmemLayoutdQ{}) * sizeof(Element);
-    static constexpr int kSmemSize = kSmemQdOSize
-        + (
-            !Is_V_in_regs
-            ? kSmemKVSize + kSmemBiasdSSize + std::max(kSmemPMaskSize, kSmemdQSize)
-            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemBiasdSSize + std::max(kSmemPMaskSize, kSmemdQSize))
-        );
-    static constexpr int kSmemSize1colblock = kSmemQdOSize
-        + (
-            !Is_V_in_regs
-            ? kSmemKVSize + kSmemBiasdSSize + kSmemPMaskSize
-            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemBiasdSSize + kSmemPMaskSize)
-        );
+    static constexpr int kSmemSize = kSmemQdOSize + (
+        !Is_V_in_regs
+            ? kSmemKVSize + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize)
+            : std::max(
+                kSmemKVSize,
+                kSmemKVSize / 2 + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize)
+            )
+    );
+    static constexpr int kSmemSize1colblock = kSmemQdOSize + (
+        !Is_V_in_regs
+            ? kSmemKVSize + kSmemdSSize + kSmemPSize
+            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemdSSize + kSmemPSize)
+    );
 
-    static constexpr int kGmemElemsPerLoadQKVO = sizeof(cute::uint128_t) / sizeof(Element);
-    static constexpr int kGmemElemsPerLoadMask = sizeof(cute::uint128_t) / sizeof(ElementMask);
-    static constexpr int kGmemElemsPerLoadBias = sizeof(cute::uint128_t) / sizeof(Element);
-    static_assert(kHeadDim % kGmemElemsPerLoadQKVO == 0, "kHeadDim must be a multiple of kGmemElemsPerLoadQKVO");
-    static_assert(kBlockN % kGmemElemsPerLoadMask == 0, "kBlockN must be a multiple of kGmemElemsPerLoadMask");
-    static_assert(kBlockN % kGmemElemsPerLoadBias == 0, "kBlockN must be a multiple of kGmemElemsPerLoadBias");
+    static constexpr int kGmemElemsPerLoadQKV = sizeof(cute::uint128_t) / sizeof(Element);
+    static constexpr int kGmemElemsPerLoadBSP = sizeof(cute::uint128_t) / sizeof(Element);
+    static_assert(
+        kHeadDim % kGmemElemsPerLoadQKV == 0,
+        "kHeadDim must be a multiple of kGmemElemsPerLoadQKV"
+    );
+    static_assert(
+        kBlockN % kGmemElemsPerLoadBSP == 0,
+        "kBlockN must be a multiple of kGmemElemsPerLoadBSP"
+    );
     // Using kBlockKSmem instead of kHeadDim here to avoid bank conflicts, but doesn't seem
     // to affect speed in practice.
-    static constexpr int kGmemThreadsPerRowQKVO = kBlockKSmem / kGmemElemsPerLoadQKVO;
-    static constexpr int kGmemThreadsPerRowMask = kBlockN / kGmemElemsPerLoadMask;
-    static constexpr int kGmemThreadsPerRowBias = kBlockN / kGmemElemsPerLoadBias;
-    static_assert(kNThreads % kGmemThreadsPerRowQKVO == 0, "kNThreads must be a multiple of kGmemThreadsPerRowQKVO");
-    static_assert(kNThreads % kGmemThreadsPerRowMask == 0, "kNThreads must be a multiple of kGmemThreadsPerRowMask");
-    static_assert(kNThreads % kGmemThreadsPerRowBias == 0, "kNThreads must be a multiple of kGmemThreadsPerRowBias");
-    using GmemLayoutAtomQKVO = Layout<
-        Shape<Int<kNThreads / kGmemThreadsPerRowQKVO>, Int<kGmemThreadsPerRowQKVO>>,
-        Stride<Int<kGmemThreadsPerRowQKVO>, _1>
+    static constexpr int kGmemThreadsPerRowQKV = kBlockKSmem / kGmemElemsPerLoadQKV;
+    static constexpr int kGmemThreadsPerRowBSP = kBlockN / kGmemElemsPerLoadBSP;
+    static_assert(
+        kNThreads % kGmemThreadsPerRowQKV == 0,
+        "kNThreads must be a multiple of kGmemThreadsPerRowQKV"
+    );
+    static_assert(
+        kNThreads % kGmemThreadsPerRowBSP == 0,
+        "kNThreads must be a multiple of kGmemThreadsPerRowBSP"
+    );
+    using GmemLayoutAtomQKV = Layout<
+        Shape<Int<kNThreads / kGmemThreadsPerRowQKV>, Int<kGmemThreadsPerRowQKV>>,
+        Stride<Int<kGmemThreadsPerRowQKV>, _1>
     >;
-    using GmemLayoutAtomMask = Layout<
-        Shape<Int<kNThreads / kGmemThreadsPerRowMask>, Int<kGmemThreadsPerRowMask>>,
-        Stride<Int<kGmemThreadsPerRowMask>, _1>
-    >;
-    using GmemLayoutAtomBias = Layout<
-        Shape<Int<kNThreads / kGmemThreadsPerRowBias>, Int<kGmemThreadsPerRowBias>>,
-        Stride<Int<kGmemThreadsPerRowBias>, _1>
+    using GmemLayoutAtomBSP = Layout<
+        Shape<Int<kNThreads / kGmemThreadsPerRowBSP>, Int<kGmemThreadsPerRowBSP>>,
+        Stride<Int<kGmemThreadsPerRowBSP>, _1>
     >;
 
     // We use CACHEGLOBAL instead of CACHEALWAYS for both Q and K/V, since we won't be reading
@@ -461,76 +424,55 @@ struct Flash_bwd_kernel_traits : public Base {
         SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>,
         AutoVectorizingCopyWithAssumedAlignment<128>
     >;
-    using GmemTiledCopyQKV = decltype(
-        make_tiled_copy(
-            Copy_Atom<Gmem_copy_struct, elem_type>{},
-            GmemLayoutAtomQKVO{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per read
-    using GmemTiledCopyMask = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementMask>{},
-            GmemLayoutAtomMask{},
-            Layout<Shape<_1, _16>>{}
-        )
-    );      // Val layout, 16 vals per read
-    using GmemTiledCopyBias = decltype(
-        make_tiled_copy(
-            Copy_Atom<Gmem_copy_struct, elem_type>{},
-            GmemLayoutAtomBias{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per read
-    using GmemTiledCopydO = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
-            GmemLayoutAtomQKVO{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per store
-    using GmemTiledCopydBias = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
-            GmemLayoutAtomBias{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per read
-    using GmemTiledCopydKV = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
-            GmemLayoutAtomQKVO{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per store
-    using GmemTiledCopydQ = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
-            GmemLayoutAtomQKVO{},
-            Layout<Shape<_1, _8>>{}
-        )
-    );      // Val layout, 8 vals per store
+    using GmemTiledCopyQKV = decltype(make_tiled_copy(
+        Copy_Atom<Gmem_copy_struct, elem_type>{},
+        GmemLayoutAtomQKV{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per read
+    using GmemTiledCopyBSP = decltype(make_tiled_copy(
+        Copy_Atom<Gmem_copy_struct, elem_type>{},
+        GmemLayoutAtomBSP{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per read
+    using GmemTiledCopydO = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
+        GmemLayoutAtomQKV{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per store
+    using GmemTiledCopydB = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
+        GmemLayoutAtomBSP{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per read
+    using GmemTiledCopydKV = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
+        GmemLayoutAtomQKV{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per store
+    using GmemTiledCopydQ = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, elem_type>{},
+        GmemLayoutAtomQKV{},
+        Layout<Shape<_1, _8>>{}
+    )); // Val layout, 8 vals per store
     using GmemLayoutAtomdQaccum = std::conditional_t<
         kBlockKSmem == 32,
-        Layout<Shape<_32, _8>, Stride<_8, _1>>,         // Thread layout, 8 threads per row
-        Layout<Shape<_16, _16>, Stride<_16, _1>>        // Thread layout, 16 threads per row
+        Layout<Shape<_32, _8>, Stride<_8, _1>>,  // Thread layout, 8 threads per row
+        Layout<Shape<_16, _16>, Stride<_16, _1>> // Thread layout, 16 threads per row
     >;
-    using GmemTiledCopydQaccum = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
-            GmemLayoutAtomdQaccum{},
-            Layout<Shape<_1, _4>>{}
-        )
-    );      // Val layout, 4 vals per store
+    using GmemTiledCopydQaccum = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
+        GmemLayoutAtomdQaccum{},
+        Layout<Shape<_1, _4>>{}
+    )); // Val layout, 4 vals per store
 
-    using GmemTiledCopydQaccumAtomicAdd = decltype(
-        make_tiled_copy(
-            Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
-            Layout<Shape<_8, _32>,                      // Thread layout, 8 threads per row
-            Stride<_32, _1>>{},
-            Layout<Shape<_1, _1>>{}
-        )
-    );      // Val layout, 1 val per store
+    using GmemTiledCopydQaccumAtomicAdd = decltype(make_tiled_copy(
+        Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, ElementAccum>{},
+        Layout<
+            Shape<_8, _32>, // Thread layout, 8 threads per row
+            Stride<_32, _1>
+        >{},
+        Layout<Shape<_1, _1>>{}
+    ));                     // Val layout, 1 val per store
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

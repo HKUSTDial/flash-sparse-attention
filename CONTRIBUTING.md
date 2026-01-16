@@ -1,4 +1,4 @@
-# Contributing to Flash Dynamic Mask Attention
+# Contributing to Flash Sparse Attention
 
 Everyone is welcome to contribute, and we value everybody's contribution. Code contributions are not the only way to help the community. Answering questions, helping others, and improving the documentation are also immensely valuable.
 
@@ -8,7 +8,7 @@ However you choose to contribute, please be mindful and respect our [code of con
 
 ## Ways to contribute
 
-There are several ways you can contribute to Flash-DMA:
+There are several ways you can contribute to FSA:
 
 * Fix outstanding issues with the existing code.
 * Submit issues related to bugs or desired new features.
@@ -30,7 +30,7 @@ Do your best to follow these guidelines when submitting a bug-related issue or a
 
 ### Did you find a bug?
 
-The Flash-DMA library is robust and reliable thanks to users who report the problems they encounter.
+The FSA library is robust and reliable thanks to users who report the problems they encounter.
 
 Before you report an issue, we would really appreciate it if you could **make sure the bug was not already reported** (use the search bar on GitHub under Issues). Your issue should also be related to bugs in the library itself, and not your code.
 
@@ -50,7 +50,7 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {
 
 ### Do you want a new feature?
 
-If there is a new feature you'd like to see in Flash-DMA, please open an issue and describe:
+If there is a new feature you'd like to see in FSA, please open an issue and describe:
 
 1. What is the *motivation* behind this feature? Is it related to performance optimization, memory efficiency, or new attention mechanisms?
 
@@ -77,7 +77,7 @@ We're always looking for improvements to the documentation that make it more cle
 
 Before writing any code, we strongly advise you to search through the existing PRs or issues to make sure nobody is already working on the same thing.
 
-You will need basic `git` proficiency to contribute to Flash-DMA. You'll need **Python 3.8+** and **CUDA 11.8+** to contribute.
+You will need basic `git` proficiency to contribute to FSA. You'll need **Python 3.8+** and **CUDA 11.8+** to contribute.
 
 ### Development Setup
 
@@ -120,7 +120,7 @@ You will need basic `git` proficiency to contribute to Flash-DMA. You'll need **
    python -m pytest tests/ -v
    ```
 
-   Flash-DMA also includes performance benchmarks. Run them to ensure your changes don't regress performance:
+   FSA also includes performance benchmarks. Run them to ensure your changes don't regress performance:
 
    ```bash
    python benchmarks/forward_performance.py

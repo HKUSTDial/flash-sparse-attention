@@ -27,7 +27,7 @@ body:
     attributes:
       label: Changes
       description: Highlight the notable code-level modifications.
-      placeholder: Updated flash_dmattn_interface to...
+      placeholder: Updated flash_sparse_attn_interface to...
     validations:
       required: true
   - type: textarea

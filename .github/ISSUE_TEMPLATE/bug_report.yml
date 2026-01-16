@@ -22,7 +22,7 @@ body:
     attributes:
       label: Describe the bug
       description: Provide a concise description of the incorrect behaviour.
-      placeholder: Unexpected error when calling flash_dmattn(...)
+      placeholder: Unexpected error when calling flash_sparse_attn(...)
     validations:
       required: true
   - type: textarea
@@ -31,7 +31,7 @@ body:
       label: Steps to reproduce
       description: Share the minimal steps or code necessary for us to see the failure.
       placeholder: |
-        1. Import flash_dmattn
+        1. Import flash_sparse_attn
         2. Run the snippet below
         3. Observe the error
       render: python
