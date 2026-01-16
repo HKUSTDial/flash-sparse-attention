@@ -27,6 +27,9 @@ Thus, a more effective approach is sparse attention: interacting each query with
 
 ## Key Features
 
+> [!NOTE]
+> Support for flexible mask and bias is available in [this branch](https://github.com/flash-algo/flash-sparse-attention/tree/final_mask_version), the main branch will no longer maintain this feature.
+
 ### Supported Features
 
 - Forward and backward passes with causal mask
