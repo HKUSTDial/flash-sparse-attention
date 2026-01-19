@@ -47,6 +47,7 @@ def _fwd_base_kernel(
     seqlen_q,
     seqlen_k,
     head_dim,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
@@ -58,13 +59,18 @@ def _fwd_base_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
+    PACK_GQA: tl.constexpr,
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
     batch_idx = tl.program_id(2)
-    head_kv_idx = head_idx // qhead_per_kvhead
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-    offs_nb = tl.arange(0, TILE_N)
+    offs_kb = tl.arange(0, TILE_K)
+
+    if PACK_GQA:
+        head_kv_idx = head_idx
+    else:
+        head_kv_idx = head_idx // qhead_per_kvhead
 
     # Get seqlen info for this batch
     (
@@ -92,7 +98,7 @@ def _fwd_base_kernel(
 
     # Initialize base pointers
     q_base = seqlen_info.offset_batch_Q(
-        Q + head_idx * stride_qh,
+        Q + head_idx * stride_qh if not PACK_GQA else Q,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -122,7 +128,7 @@ def _fwd_base_kernel(
         USE_PADDED=False,
     )
     out_base = seqlen_info.offset_batch_Q(
-        Out + head_idx * stride_oh,
+        Out + head_idx * stride_oh if not PACK_GQA else Out,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -132,7 +138,7 @@ def _fwd_base_kernel(
         USE_PADDED=False,
     )
     lse_base = seqlen_info.offset_batch_Q(
-        Lse + head_idx * stride_lh,
+        Lse + head_idx * stride_lh if not PACK_GQA else Lse,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -156,43 +162,83 @@ def _fwd_base_kernel(
         IS_SPLIT_KV=False,
         WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
         WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEAD_PER_KVHEAD_PACKGQA=1,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
     )
 
-    lse_ptrs = tl.make_block_ptr(
-        base=lse_base,
-        shape=(actual_seqlen_q,),
-        strides=(1,),
-        offsets=(m_block * TILE_M,),
-        block_shape=(TILE_M,),
-        order=(0,),
-    )
-
-    out_ptrs = tl.make_block_ptr(
-        base=out_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_om, 1),
-        offsets=(m_block * TILE_M, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
-    )
+    if not PACK_GQA:
+        lse_ptrs = tl.make_block_ptr(
+            base=lse_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(m_block * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        out_ptrs = tl.make_block_ptr(
+            base=out_base,
+            shape=(actual_seqlen_q, head_dim),
+            strides=(stride_om, 1),
+            offsets=(m_block * TILE_M, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+    else:
+        lse_ptrs = seqlen_info.make_pack_gqa_ptrs(
+            lse_base,
+            m_block,
+            head_idx,
+            stride_lh,
+            stride_lb,
+            TILE_M=TILE_M,
+            TILE_K=1,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        )
+        out_ptrs = seqlen_info.make_pack_gqa_ptrs(
+            out_base,
+            m_block,
+            head_idx,
+            stride_oh,
+            stride_om,
+            TILE_M=TILE_M,
+            TILE_K=TILE_K,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        )
 
     # Early exit if no n_blocks to process
     if n_block_min >= n_block_max:
         # Write LSE as -inf for proper handling
         lse_tile = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+        if PACK_GQA:
+            tl.store(
+                lse_ptrs,
+                lse_tile,
+                mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+            )
+        else:
+            tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
         return
 
     # Create query pointers
-    q_ptrs = tl.make_block_ptr(
-        base=q_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_qm, 1),
-        offsets=(m_block * TILE_M, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
-    )
+    if not PACK_GQA:
+        q_ptrs = tl.make_block_ptr(
+            base=q_base,
+            shape=(actual_seqlen_q, head_dim),
+            strides=(stride_qm, 1),
+            offsets=(m_block * TILE_M, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+    else:
+        q_ptrs = seqlen_info.make_pack_gqa_ptrs(
+            q_base,
+            m_block,
+            head_idx,
+            stride_qh,
+            stride_qm,
+            TILE_M=TILE_M,
+            TILE_K=TILE_K,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        )
     k_ptrs = tl.make_block_ptr(
         base=k_base,
         shape=(actual_seqlen_k, head_dim),
@@ -211,7 +257,15 @@ def _fwd_base_kernel(
     )
 
     # Load query tile
-    q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+    if PACK_GQA:
+        q_tile = tl.load(
+            q_ptrs,
+            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+            & (offs_kb < head_dim)[None, :],
+            other=0.0,
+        )
+    else:
+        q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
 
     # Scale query
     q_tile = (q_tile * softmax_scale).to(q_tile.dtype)
@@ -235,12 +289,10 @@ def _fwd_base_kernel(
             TILE_M=TILE_M,
             IS_LOCAL=IS_LOCAL,
             WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEAD_PER_KVHEAD_PACKGQA=1,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
         )
 
         for n_block in range(n_block_max - 1, n_block_min_causal_local - 1, -1):
-            offs_n = n_block * TILE_N + offs_nb
-
             # Load value tile
             v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
@@ -256,12 +308,19 @@ def _fwd_base_kernel(
             # Apply mask
             acc_s = mask.apply_mask(
                 acc_s=acc_s,
-                m_idx=offs_m,
-                n_idx=offs_n,
+                m_block=m_block,
+                n_block=n_block,
+                seqlen_q=actual_seqlen_q,
                 seqlen_k=actual_seqlen_k,
-                causal_offset=actual_seqlen_k - actual_seqlen_q,
-                IS_CAUSAL=IS_CAUSAL,
-                EVEN_N=True,
+                MASK_SEQLEN=True,
+                MASK_CAUSAL=IS_CAUSAL,
+                MASK_LOCAL=IS_LOCAL,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                SWAP_AB=False,
             )
 
             # Apply online softmax
@@ -283,7 +342,57 @@ def _fwd_base_kernel(
 
         n_block_max_no_mask = n_block_min_causal_local
     else:
-        n_block_max_no_mask = n_block_max
+        # First iteration with seqlen masking
+        n_block = n_block_max - 1
+
+        # Load value tile
+        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+
+        # Compute attention scores
+        acc_s = tl.dot(q_tile, tl.trans(k_tile))
+
+        # Advance key pointers
+        k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+        if n_block > n_block_min:
+            # Load next key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+        # Apply seqlen mask only
+        acc_s = mask.apply_mask(
+            acc_s=acc_s,
+            m_block=m_block,
+            n_block=n_block,
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            MASK_SEQLEN=True,
+            MASK_CAUSAL=False,
+            MASK_LOCAL=False,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            SWAP_AB=False,
+        )
+
+        # Apply online softmax
+        p, row_max, row_sum, row_scale = softmax.online_softmax(
+            acc_s=acc_s,
+            row_max=row_max,
+            row_sum=row_sum,
+            CHECK_INF=True,
+        )
+
+        # Rescale output accumulator
+        acc_o = softmax.rescale_o(acc_o, row_scale)
+
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+
+        # Advance value pointers
+        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+
+        n_block_max_no_mask = n_block_max - 1
 
     # Process n_blocks without masking
     for n_block in range(n_block_max_no_mask - 1, n_block_min - 1, -1):
@@ -325,9 +434,24 @@ def _fwd_base_kernel(
     acc_o = softmax.rescale_o(acc_o, o_scale)
 
     # Store LSE
-    tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+    if PACK_GQA:
+        tl.store(
+            lse_ptrs,
+            lse_tile,
+            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+        )
+    else:
+        tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
     # Store output
-    tl.store(out_ptrs, acc_o.to(q_tile.dtype), boundary_check=(0, 1))
+    if PACK_GQA:
+        tl.store(
+            out_ptrs,
+            acc_o.to(q_tile.dtype),
+            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+            & (offs_kb < head_dim)[None, :],
+        )
+    else:
+        tl.store(out_ptrs, acc_o.to(q_tile.dtype), boundary_check=(0, 1))
 
 
 def _flash_attn_forward(
@@ -341,6 +465,7 @@ def _flash_attn_forward(
     cu_seqlens_k: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
     max_seqlen_k: Optional[int] = None,
+    pack_gqa: bool = False,
 ):
     is_varlen = cu_seqlens_q is not None and cu_seqlens_k is not None
     if not is_varlen:
@@ -352,8 +477,8 @@ def _flash_attn_forward(
         batch_size = cu_seqlens_q.shape[0] - 1
         seqlen_q = max_seqlen_q
         seqlen_k = max_seqlen_k
-    
-    is_local = window_size is not None
+
+    is_local = window_size[0] is not None or window_size[1] is not None
     if is_local:
         window_size_left, window_size_right = window_size
     else:
@@ -398,8 +523,11 @@ def _flash_attn_forward(
 
     def grid(META):
         return (
-            triton.cdiv(seqlen_q, META["TILE_M"]),
-            num_heads_q,
+            triton.cdiv(
+                seqlen_q * (num_heads_q // num_heads_kv) if pack_gqa else seqlen_q,
+                META["TILE_M"],
+            ),
+            num_heads_kv if pack_gqa else num_heads_q,
             batch_size,
         )
 
@@ -432,6 +560,7 @@ def _flash_attn_forward(
         seqlen_q,
         seqlen_k,
         head_dim,
+        QHEADS_PER_KVHEAD_PACKGQA=(num_heads_q // num_heads_kv) if pack_gqa else 1,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
@@ -441,5 +570,6 @@ def _flash_attn_forward(
         HAS_CU_SEQLENS_K=is_varlen,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
+        PACK_GQA=pack_gqa,
     )
     return out, lse, softmax_scale

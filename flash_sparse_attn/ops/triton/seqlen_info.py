@@ -149,3 +149,32 @@ def offset_batch_K(
         return base_ptr + actual_offset * stride_seq
     else:
         return base_ptr + batch_idx * stride_batch
+
+
+@triton.jit
+def make_pack_gqa_ptrs(
+    base_ptrs,
+    m_block,
+    head_idx,
+    stride_head,
+    stride_seq,
+    TILE_M: tl.constexpr,
+    TILE_K: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+):
+    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
+    m_idx = offs_m // QHEADS_PER_KVHEAD_PACKGQA
+    q_head_offset = offs_m - m_idx * QHEADS_PER_KVHEAD_PACKGQA
+    q_head = head_idx * QHEADS_PER_KVHEAD_PACKGQA + q_head_offset
+
+    offs_k = tl.arange(0, TILE_K)
+    if TILE_K > 1:
+        ptrs = (
+            base_ptrs
+            + m_idx[:, None] * stride_seq
+            + q_head[:, None] * stride_head
+            + offs_k[None, :]
+        )
+    else:
+        ptrs = base_ptrs + m_idx * stride_seq + q_head * stride_head
+    return ptrs
