@@ -300,16 +300,11 @@ template <int kNRows> struct Softmax {
         static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
         #pragma unroll
         for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
-            float max_scores = row_max(mi);
-            float max_ext = max_scores > s_aux ? max_scores : s_aux;
-            // Rescale existing sum / accumulator into the max_ext reference frame.
-            float scores_scale = expf(max_scores - max_ext);
-            float sum = row_sum(mi) * scores_scale;
-            sum += expf(s_aux - max_ext);
-
+            float sum = row_sum(mi);
             float inv_sum = (sum == 0.f || sum != sum) ? 1.f : 1.f / sum;
-            lse(mi) = (sum == 0.f || sum != sum) ? (Split ? -INFINITY : INFINITY)
-                                                 : (row_max(mi) + __logf(sum));
+            lse(mi) = (sum == 0.f || sum != sum)
+                    ? (Split ? -INFINITY : INFINITY)
+                    : (row_max(mi) + __logf(sum));
             float scale = inv_sum;
             #pragma unroll
             for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) {
