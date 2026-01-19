@@ -181,18 +181,13 @@ def _flash_sparse_attn_backward(
     dout, q, k, v, b, db, out = [
         maybe_contiguous(x) for x in (dout, q, k, v, b, db, out)
     ]
-    if s_aux is not None:
-        if s_aux.dtype != torch.float32:
-            s_aux = s_aux.float()
-        if s_aux.ndim != 1:
-            raise ValueError("s_aux must be 1D with shape (num_heads,)")
+
     (
         dq,
         dk,
         dv,
         db,
         softmax_d,
-        ds_aux,
     ) = flash_sparse_attn_gpu.bwd(
         dout,
         q,
@@ -211,7 +206,7 @@ def _flash_sparse_attn_backward(
         deterministic,
     )
     # _sanitize_tensors(dq, dk, dv, dbias, nan=0.0, posinf=0.0, neginf=0.0)
-    return softmax_d, ds_aux
+    return softmax_d
 
 
 @_torch_register_fake_wrapper("flash_sparse_attn::_flash_sparse_attn_backward")
@@ -247,9 +242,8 @@ def _flash_sparse_attn_backward_fake(
         device=q.device,
         dtype=torch.float32,
     )
-    ds_aux = torch.empty((num_heads,), device=q.device, dtype=torch.float32)
 
-    return softmax_d, ds_aux
+    return softmax_d
 
 
 _wrapped_flash_sparse_attn_backward = _flash_sparse_attn_backward
@@ -271,7 +265,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         is_grad_enabled: bool = True,
     ):
         is_grad = is_grad_enabled and any(
-            (x is not None and getattr(x, "requires_grad", False)) for x in [q, k, v, s_aux]
+            (x is not None and getattr(x, "requires_grad", False)) for x in [q, k, v]
         )
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
@@ -340,7 +334,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         if head_size_og % 8 != 0:
             dout_padded = torch.nn.functional.pad(dout, [0, 8 - head_size_og % 8])
 
-        softmax_d, ds_aux = _wrapped_flash_sparse_attn_backward(
+        _wrapped_flash_sparse_attn_backward(
             dout_padded,
             q,
             k,
@@ -435,7 +429,6 @@ def flash_sparse_attn_func(
         key,
         value,
         attn_bias,
-        s_aux,
         softmax_scale,
         is_causal,
         softcap,
