@@ -44,7 +44,6 @@ import triton.language as tl
         "CACHE_KEY_SEQLEN_K",
         "IS_CAUSAL",
         "HAS_BIAS",
-        "HAS_SAUX",
         "BLOCK_HEADDIM",
     ],
 )
@@ -91,7 +90,6 @@ def _fwd_kernel(
     CACHE_KEY_SEQLEN_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     HAS_BIAS: tl.constexpr,
-    HAS_SAUX: tl.constexpr,
     BLOCK_HEADDIM: tl.constexpr,
     EVEN_M: tl.constexpr,
     EVEN_N: tl.constexpr,
@@ -373,34 +371,6 @@ def _bwd_preprocess_do_o_dot(
     delta = tl.sum(o * do, axis=1)
     # Write back
     tl.store(Delta + off_bh * seqlen_q_rounded + offs_m, delta)
-
-
-@triton.jit
-def _bwd_saux_kernel(
-    Saux,
-    DSaux,
-    LSE,
-    D,
-    nheads,
-    seqlen_q,
-    seqlen_q_rounded,
-    BLOCK_M: tl.constexpr,
-):
-    start_m = tl.program_id(0)
-    off_hb = tl.program_id(1)
-    off_h = off_hb % nheads
-    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    mask_m = offs_m < seqlen_q
-
-    lse = tl.load(LSE + off_hb * seqlen_q_rounded + offs_m, mask=mask_m, other=float("-inf"))
-    Di = tl.load(D + off_hb * seqlen_q_rounded + offs_m, mask=mask_m, other=0.0).to(tl.float32)
-    s = tl.load(Saux + off_h).to(tl.float32)
-
-    # sink is dropped from output
-    p_sink = tl.where(lse > float("-inf"), tl.exp(s - lse), 0.0)
-    ds_sink = -p_sink * Di
-    ds_sum = tl.sum(ds_sink, axis=0)
-    tl.atomic_add(DSaux + off_h, ds_sum)
 
 
 @triton.jit
@@ -971,14 +941,6 @@ def _flash_sparse_attn_forward(q, k, v, b, softmax_scale=None, is_causal=False):
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
-    has_saux = s_aux is not None
-    if has_saux:
-        assert s_aux.is_cuda, "s_aux must be on CUDA"
-        assert s_aux.dim() == 1 and s_aux.shape[0] == nheads, "s_aux must have shape (nheads,)"
-    else:
-        # Dummy tensor to satisfy kernel signature
-        s_aux = torch.empty(0, device=q.device, dtype=torch.float32)
-
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     lse = torch.empty(
         (batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32
@@ -1033,7 +995,6 @@ def _flash_sparse_attn_forward(q, k, v, b, softmax_scale=None, is_causal=False):
         # IS_CAUSAL=is_causal, HAS_MASK=has_mask, HAS_BIAS=has_bias, BLOCK_HEADDIM=d,
         is_causal,
         has_bias,
-        has_saux,
         BLOCK_HEADDIM,
         # BLOCK_M=BLOCK_M,
         # BLOCK_N=BLOCK_N,
@@ -1122,14 +1083,6 @@ def _flash_sparse_attn_backward(
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
 
-    has_saux = s_aux is not None and s_aux.numel() > 0
-    if has_saux:
-        assert s_aux.is_cuda, "s_aux must be on CUDA"
-        assert s_aux.dim() == 1 and s_aux.shape[0] == nheads, "s_aux must have shape (nheads,)"
-        ds_aux = torch.zeros((nheads,), device=q.device, dtype=torch.float32)
-    else:
-        ds_aux = None
-
     def grid(META):
         return (
             triton.cdiv(seqlen_q, META["BLOCK_M"]),
@@ -1153,24 +1106,6 @@ def _flash_sparse_attn_backward(
         BLOCK_M=64,
         BLOCK_HEADDIM=BLOCK_HEADDIM,
     )
-
-    if has_saux:
-        def grid_saux(META):
-            return (
-                triton.cdiv(seqlen_q, META["BLOCK_M"]),
-                batch * nheads,
-            )
-
-        _bwd_saux_kernel[grid_saux](
-            s_aux,
-            ds_aux,
-            lse,
-            delta,
-            nheads,
-            seqlen_q,
-            seqlen_q_rounded,
-            BLOCK_M=128,
-        )
 
     # BLOCK_M = 128
     # BLOCK_N = 64
@@ -1294,7 +1229,6 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         key,
         value,
         attn_bias=None,
-        s_aux=None,
         is_causal=False,
         softmax_scale=None,
     ):
@@ -1332,7 +1266,6 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             key,
             value,
             attn_bias,
-            s_aux,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
         )
@@ -1356,7 +1289,6 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             key,
             value,
             attn_bias,
-            (s_aux if s_aux.numel() > 0 else None),
             o,
             lse,
             softmax_scale=ctx.softmax_scale,
@@ -1383,7 +1315,6 @@ def triton_sparse_attn_func(
     key,
     value,
     attn_bias=None,
-    s_aux=None,
     is_causal=False,
     softmax_scale=None,
 ):
