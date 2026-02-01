@@ -463,29 +463,17 @@ def _fwd_base_kernel(
         tl.store(out_ptrs, acc_o.to(q_tile.dtype), boundary_check=(0, 1))
 
 
-def _flash_attn_forward(
+def _flash_attn_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     softmax_scale: float,
     is_causal: bool = False,
     window_size: Optional[Tuple[int, int]] = None,
-    cu_seqlens_q: Optional[torch.Tensor] = None,
-    cu_seqlens_k: Optional[torch.Tensor] = None,
-    max_seqlen_q: Optional[int] = None,
-    max_seqlen_k: Optional[int] = None,
     pack_gqa: bool = False,
 ):
-    is_varlen = cu_seqlens_q is not None and cu_seqlens_k is not None
-    if not is_varlen:
-        batch_size, seqlen_q, num_heads_q, head_dim = query.shape
-        _, seqlen_k, num_heads_kv, _ = key.shape
-    else:
-        total_seqlen_q, num_heads_q, head_dim = query.shape
-        _, num_heads_kv, _ = key.shape
-        batch_size = cu_seqlens_q.shape[0] - 1
-        seqlen_q = max_seqlen_q
-        seqlen_k = max_seqlen_k
+    batch_size, seqlen_q, num_heads_q, head_dim = query.shape
+    _, seqlen_k, num_heads_kv, _ = key.shape
 
     is_local = window_size[0] is not None or window_size[1] is not None
     if is_local:
@@ -493,52 +481,35 @@ def _flash_attn_forward(
     else:
         window_size_left, window_size_right = None, None
 
-    assert query.is_cuda and key.is_cuda and value.is_cuda, (
-        "All inputs must be on CUDA device"
+    utils.assert_fwd_base_inputs(
+        query,
+        key,
+        value,
+        cu_seqlens_q=None,
+        cu_seqlens_k=None,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        head_dim=head_dim,
     )
-    assert query.dtype in [torch.float16, torch.bfloat16], (
-        "Input dtype must be float16 or bfloat16"
-    )
-    assert query.dtype == key.dtype == value.dtype, (
-        "All inputs must have the same dtype"
-    )
-    assert num_heads_q % num_heads_kv == 0, (
-        "num_heads_q must be divisible by num_heads_kv"
-    )
-    assert head_dim % 16 == 0, (
-        "head_dim must be a multiple of 16 for efficient memory access"
-    )
-    assert head_dim <= 256, "head_dim must be less than or equal to 256"
-    if is_varlen:
-        assert (
-            cu_seqlens_q.dtype == torch.int32 and cu_seqlens_k.dtype == torch.int32
-        ), "cu_seqlens_q and cu_seqlens_k must be of int32"
 
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     out = torch.zeros_like(query)
-    if not is_varlen:
-        lse = torch.empty(
-            (batch_size, num_heads_q, seqlen_q),
-            device=query.device,
-            dtype=torch.float32,
-        )
-    else:
-        lse = torch.empty(
-            (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
-        )
+    lse = torch.empty(
+        (batch_size, num_heads_q, seqlen_q),
+        device=query.device,
+        dtype=torch.float32,
+    )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    def grid(META):
-        return (
-            triton.cdiv(
-                seqlen_q * (num_heads_q // num_heads_kv) if pack_gqa else seqlen_q,
-                META["TILE_M"],
-            ),
-            num_heads_kv if pack_gqa else num_heads_q,
-            batch_size,
-        )
+    grid = utils.get_fwd_base_grid(
+        batch_size=batch_size,
+        seqlen_q=seqlen_q,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        pack_gqa=pack_gqa,
+    )
 
     _fwd_base_kernel[grid](
         query,
@@ -547,18 +518,116 @@ def _flash_attn_forward(
         out,
         lse,
         softmax_scale,
-        query.stride(0) if not is_varlen else 0,
+        query.stride(0),
         query.stride(-2),
-        query.stride(-3) if not is_varlen else query.stride(0),
-        key.stride(0) if not is_varlen else 0,
+        query.stride(-3),
+        key.stride(0),
         key.stride(-2),
-        key.stride(-3) if not is_varlen else key.stride(0),
-        value.stride(0) if not is_varlen else 0,
+        key.stride(-3),
+        value.stride(0),
         value.stride(-2),
-        value.stride(-3) if not is_varlen else value.stride(0),
-        out.stride(0) if not is_varlen else 0,
+        value.stride(-3),
+        out.stride(0),
         out.stride(-2),
-        out.stride(-3) if not is_varlen else out.stride(0),
+        out.stride(-3),
+        lse.stride(0),
+        lse.stride(1),
+        None,
+        None,
+        None,
+        None,
+        num_heads_q // num_heads_kv,
+        seqlen_q,
+        seqlen_k,
+        head_dim,
+        QHEADS_PER_KVHEAD_PACKGQA=(num_heads_q // num_heads_kv) if pack_gqa else 1,
+        TILE_K=TILE_K,
+        IS_CAUSAL=is_causal,
+        IS_LOCAL=is_local,
+        WINDOW_SIZE_LEFT=window_size_left,
+        WINDOW_SIZE_RIGHT=window_size_right,
+        HAS_CU_SEQLENS_Q=False,
+        HAS_CU_SEQLENS_K=False,
+        HAS_SEQUSED_Q=False,
+        HAS_SEQUSED_K=False,
+        PACK_GQA=pack_gqa,
+    )
+
+    return out, lse, softmax_scale
+
+
+def _flash_attn_varlen_base_forward(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    softmax_scale: float,
+    is_causal: bool = False,
+    window_size: Optional[Tuple[int, int]] = None,
+    pack_gqa: bool = False,
+):
+    total_seqlen_q, num_heads_q, head_dim = query.shape
+    _, num_heads_kv, _ = key.shape
+    batch_size = cu_seqlens_q.shape[0] - 1
+    seqlen_q = max_seqlen_q
+    seqlen_k = max_seqlen_k
+
+    is_local = window_size[0] is not None or window_size[1] is not None
+    if is_local:
+        window_size_left, window_size_right = window_size
+    else:
+        window_size_left, window_size_right = None, None
+
+    utils.assert_fwd_base_inputs(
+        query,
+        key,
+        value,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        head_dim=head_dim,
+    )
+
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+
+    out = torch.zeros_like(query)
+    lse = torch.empty(
+        (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
+    )
+
+    TILE_K = max(torch.next_power_of_2(head_dim), 16)
+
+    grid = utils.get_fwd_base_grid(
+        batch_size=batch_size,
+        seqlen_q=seqlen_q,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        pack_gqa=pack_gqa,
+    )
+
+    _fwd_base_kernel[grid](
+        query,
+        key,
+        value,
+        out,
+        lse,
+        softmax_scale,
+        0,
+        query.stride(-2),
+        query.stride(0),
+        0,
+        key.stride(-2),
+        key.stride(0),
+        0,
+        value.stride(-2),
+        value.stride(0),
+        0,
+        out.stride(-2),
+        out.stride(0),
         lse.stride(0),
         lse.stride(1),
         cu_seqlens_q,
@@ -575,10 +644,11 @@ def _flash_attn_forward(
         IS_LOCAL=is_local,
         WINDOW_SIZE_LEFT=window_size_left,
         WINDOW_SIZE_RIGHT=window_size_right,
-        HAS_CU_SEQLENS_Q=is_varlen,
-        HAS_CU_SEQLENS_K=is_varlen,
+        HAS_CU_SEQLENS_Q=True,
+        HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
     )
+
     return out, lse, softmax_scale
