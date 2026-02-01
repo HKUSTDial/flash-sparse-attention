@@ -213,6 +213,18 @@ def _fwd_base_kernel(
             )
         else:
             tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+
+        # We can't get dtype of query for output here, so we initalize output to zero
+        # # Write output as zero for proper handling
+        # if PACK_GQA:
+        #     tl.store(
+        #         out_ptrs,
+        #         o_tile,
+        #         mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+        #         & (offs_kb < head_dim)[None, :],
+        #     )
+        # else:
+        #     tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
         return
 
     # Create query pointers
