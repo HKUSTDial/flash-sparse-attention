@@ -66,7 +66,7 @@ def ensure_contiguous(fn):
     return wrapper
 
 
-FWD_BASE_AUTOTUNE_KAYS = ["IS_CAUSAL", "IS_LOCAL", "TILE_K"]
+FWD_BASE_AUTOTUNE_KEYS = ["seqlen_q", "seqlen_k", "IS_CAUSAL", "IS_LOCAL", "TILE_K"]
 
 
 def get_fwd_base_autotune_configs(autotune: bool):
@@ -121,14 +121,14 @@ def get_fwd_base_autotune_configs(autotune: bool):
 
     configs = []
     BLOCK_M_OPTIONS = [256, 128, 64, 32]
-    BLCOK_N_OPTIONS = [256, 128, 64, 32]
-    NUM_WARPS_OPTIONS = [2, 4, 8]
-    NUM_STAGES_OPTION = [1, 2]
+    BLOCK_N_OPTIONS = [256, 128, 64, 32]
+    NUM_WARPS_OPTIONS = [4, 8]
+    NUM_STAGES_OPTIONS = [1, 2]
 
     for bm in BLOCK_M_OPTIONS:
-        for bn in BLCOK_N_OPTIONS:
+        for bn in BLOCK_N_OPTIONS:
             for nw in NUM_WARPS_OPTIONS:
-                for ns in NUM_STAGES_OPTION:
+                for ns in NUM_STAGES_OPTIONS:
                     configs.append(
                         triton.Config(
                             {
@@ -214,7 +214,7 @@ def assert_fwd_base_inputs(
         "head_dim must be a multiple of 16 for efficient memory access"
     )
     assert head_dim <= 256, (
-        "head_dim must be less than or equal to 256 for efficient memory access`"
+        "head_dim must be less than or equal to 256 for efficient memory access"
     )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert cu_seqlens_q.is_cuda and cu_seqlens_k.is_cuda, (
