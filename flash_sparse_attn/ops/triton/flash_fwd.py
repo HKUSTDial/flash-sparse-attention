@@ -11,7 +11,7 @@ fwd_base_autotune_configs = utils.get_fwd_base_autotune_configs(True)
 
 @triton.autotune(
     configs=fwd_base_autotune_configs,
-    key=utils.FWD_BASE_AUTOTUNE_KAYS,
+    key=utils.FWD_BASE_AUTOTUNE_KEYS,
     use_cuda_graph=True,
 )
 @triton.jit
