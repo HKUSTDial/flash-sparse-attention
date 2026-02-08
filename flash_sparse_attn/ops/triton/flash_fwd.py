@@ -214,7 +214,7 @@ def _fwd_base_kernel(
         else:
             tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
 
-        # We can't get dtype of query for output here, so we initalize output to zero
+        # We can't get dtype of query for output here, so we initialize output to zero
         # # Write output as zero for proper handling
         # if PACK_GQA:
         #     tl.store(
@@ -599,7 +599,7 @@ def _flash_attn_varlen_base_forward(
         (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
     )
 
-    TILE_K = max(torch.next_power_of_2(head_dim), 16)
+    TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     grid = utils.get_fwd_base_grid(
         batch_size=batch_size,
