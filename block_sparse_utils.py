@@ -704,7 +704,7 @@ def handle_block_sparse_empty_tile_correction_sm100(
     stats: list,
     correction_epilogue: Callable,
     thr_mma_pv: cute.core.ThrMma,
-    tOtOs: tuple[cute.Tensor],
+    tOtO: cute.Tensor,
     sO: cute.Tensor,
     mbar_ptr,
     mbar_softmax_corr_full_offset: Int32,
@@ -782,7 +782,7 @@ def handle_block_sparse_empty_tile_correction_sm100(
             )
         correction_epilogue(
             thr_mma_pv,
-            tOtOs[stage],
+            tOtO[None, None, None, stage],
             tidx,
             stage,
             m_block,
