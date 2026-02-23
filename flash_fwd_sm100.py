@@ -212,13 +212,17 @@ class FlashAttentionForwardSm100:
             self.num_regs_correction = 64
             self.num_regs_other = 48 if not paged_kv_non_tma else 80
         else:
-            # self.num_regs_softmax = 192 if self.is_causal or self.is_local else 184
-            self.num_regs_softmax = 200 if not paged_kv_non_tma else 184
+            if not self.enable_e2e:
+                self.num_regs_softmax = 192 if self.is_causal or self.is_local else 184
+            else:
+                self.num_regs_softmax = 200 if not paged_kv_non_tma else 184
             # self.num_regs_softmax = 176
             # self.num_regs_correction = 96
-            # self.num_regs_correction = 80
             # self.num_regs_correction = 64 if self.is_causal or self.is_local else 80
-            self.num_regs_correction = 64
+            if not self.enable_e2e:
+                self.num_regs_correction = 80
+            else:
+                self.num_regs_correction = 64
             # self.num_regs_other = 32
             # self.num_regs_other = 64
             # self.num_regs_other = 80
@@ -1348,14 +1352,15 @@ class FlashAttentionForwardSm100:
                     # 2. wait for K0
                     if const_expr(stage == 0):
                         pipeline_kv.consumer_wait(mma_kv_consumer_state)
-                    tSrKi = tSrK[None, None, None, mma_kv_consumer_state.index]
+                    Ki_index, Ki_phase = mma_kv_consumer_state.index, mma_kv_consumer_state.phase
+                    tSrKi = tSrK[None, None, None, Ki_index]
                     # We don't need to acquire empty S0 / S1.
                     # For the first iteration, we don't need to wait as we're guaranteed S0 / S1
                     # are empty. For subsequent iterations, the wait happened at the end
                     # of the while loop.
                     # 3. gemm
-                    # tiled_mma_qk = sm100_utils.gemm(tiled_mma_qk, tStS[None, None, None, stage], tSrQs[stage], tSrKi, zero_init=True)
-                    sK_cur = sK[None, None, None, mma_kv_consumer_state.index]
+                    # sm100_utils.gemm(tiled_mma_qk, tStS[None, None, None, stage], tSrQ[None, None, None, stage], tSrKi, zero_init=True)
+                    sK_cur = sK[None, None, None, Ki_index]
                     if const_expr(self.uneven_kv_smem):
                         sK_cur = self.offset_kv_smem(
                             sK_cur, mma_kv_consumer_state.index, mma_kv_consumer_state.phase
@@ -1427,7 +1432,7 @@ class FlashAttentionForwardSm100:
                         # Don't need to wait for the softmax warp to have finished reading the previous
                         # Si, since this gemm is scheduled after the PV gemm, which guaranteed that Si
                         # has been read and Pi has been written.
-                        # tiled_mma_qk = sm100_utils.gemm(tiled_mma_qk, tStS[None, None, None, stage], tSrQs[stage], tSrK[None, None, None, Ki_index], zero_init=True)
+                        # sm100_utils.gemm(tiled_mma_qk, tStS[None, None, None, stage], tSrQ[None, None, None, stage], tSrK[None, None, None, Ki_index], zero_init=True)
                         sK_cur = sK[None, None, None, Ki_index]
                         if const_expr(self.uneven_kv_smem):
                             sK_cur = self.offset_kv_smem(sK_cur, Ki_index, Ki_phase)
@@ -2339,7 +2344,7 @@ class FlashAttentionForwardSm100:
         tiled_smem_store = cute.make_tiled_copy_D(smem_copy_atom, tiled_tmem_load)
 
         tOtO_t2r = thr_tmem_load.partition_S(tOtO_i[(None, None), None])
-        tOsO_s2r = thr_tmem_load.partition_D(tOsO_i[(None, None), None])
+        tOsO_s2r = copy_utils.partition_D_position_independent(thr_tmem_load, tOsO_i[(None, None), None])
         tOcO_t2r = thr_tmem_load.partition_D(tOcO_i[(None, None), None])
         for i in cutlass.range(self.head_dim_v_padded // corr_tile_size, unroll_full=True):
             tOtO_t2r_i = tOtO_t2r[None, 0, 0, i]

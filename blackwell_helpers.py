@@ -80,11 +80,11 @@ def gemm(
     tCrA: cute.Tensor,
     tCrB: cute.Tensor,
     zero_init: bool | Boolean = False,
-) -> cute.TiledMma:
+) -> None:
+    mma_atom = cute.make_mma_atom(tiled_mma.op)
     for k in cutlass.range_constexpr(cute.size(tCrA.shape[2])):
-        tiled_mma.set(tcgen05.Field.ACCUMULATE, not zero_init or k != 0)
-        cute.gemm(tiled_mma, acc, tCrA[None, None, k], tCrB[None, None, k], acc)
-    return tiled_mma
+        mma_atom.set(tcgen05.Field.ACCUMULATE, not zero_init or k != 0)
+        cute.gemm(mma_atom, acc, tCrA[None, None, k], tCrB[None, None, k], acc)
 
 
 def i64_to_i32x2(i: int) -> Tuple[int, int]:

@@ -285,3 +285,12 @@ def make_smem_desc_base(layout: cute.Layout, swizzle: cute.Swizzle, major: Major
 def make_smem_desc_start_addr(start_addr: cute.Pointer) -> cutlass.Int32:
     # 14 bits, remove 4 LSB (bits 0-13 in desc)
     return (start_addr.toint() & 0x3FFFF) >> 4
+
+
+def smem_desc_base_from_tensor(sA: cute.Tensor, major: Major) -> int:
+    sA_swizzle = sA.iterator.type.swizzle_type
+    return make_smem_desc_base(
+        cute.recast_layout(128, sA.element_type.width, sA.layout[0]),
+        sA_swizzle,
+        major,
+    )
