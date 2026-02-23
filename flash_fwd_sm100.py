@@ -26,15 +26,15 @@ from cutlass import Float32, Int32, const_expr
 from cutlass.cute.nvgpu import cpasync
 import cutlass.cute.nvgpu.tcgen05 as tcgen05
 import cutlass.utils.blackwell_helpers as sm100_utils_basic
+from cutlass import pipeline
 from cutlass.base_dsl.arch import Arch
 from cutlass.cutlass_dsl import BaseDSL
 
 from quack import copy_utils
 
 from flash_attn.cute.paged_kv import PagedKVManager
-import flash_attn.cute.utils as utils
 from flash_attn.cute.cute_dsl_utils import assume_tensor_aligned
-import flash_attn.cute.pipeline as pipeline
+import flash_attn.cute.pipeline as pipeline_custom
 from flash_attn.cute.mask import AttentionMask
 from flash_attn.cute.softmax import SoftmaxSm100, apply_score_mod_inner
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
@@ -1078,7 +1078,7 @@ class FlashAttentionForwardSm100:
         tma_atom_Q: cute.CopyAtom,
         tma_atom_K: Optional[cute.CopyAtom],
         tma_atom_V: Optional[cute.CopyAtom],
-        pipeline_kv: cutlass.pipeline.PipelineAsync,
+        pipeline_kv: pipeline.PipelineAsync,
         mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
         num_splits: Int32,
@@ -1089,8 +1089,8 @@ class FlashAttentionForwardSm100:
         num_load_threads = len(self.load_warp_ids) * cute.arch.WARP_SIZE
         tidx = cute.arch.thread_idx()[0] % num_load_threads
         q_producer_phase = Int32(1)
-        kv_producer_state = cutlass.pipeline.make_pipeline_state(
-            cutlass.pipeline.PipelineUserType.Producer, self.kv_stage
+        kv_producer_state = pipeline.make_pipeline_state(
+            pipeline.PipelineUserType.Producer, self.kv_stage
         )
         tile_scheduler = TileSchedulerCls()
         work_tile = tile_scheduler.initial_work_tile_info()
@@ -1180,8 +1180,7 @@ class FlashAttentionForwardSm100:
                 tKsK,
                 paged_kv_manager,
                 sK,
-                mbar_ptr + self.mbar_load_kv_full_offset,
-                mbar_ptr + self.mbar_load_kv_empty_offset,
+                pipeline=pipeline_kv,
                 K_or_V="K",
             )
             load_V = partial(
@@ -1191,8 +1190,7 @@ class FlashAttentionForwardSm100:
                 tVsV,
                 paged_kv_manager,
                 sV,
-                mbar_ptr + self.mbar_load_kv_full_offset,
-                mbar_ptr + self.mbar_load_kv_empty_offset,
+                pipeline=pipeline_kv,
                 K_or_V="V",
             )
 
@@ -1267,7 +1265,7 @@ class FlashAttentionForwardSm100:
         tStS: cute.Tensor,
         tOtO: cute.Tensor,
         tOrP: cute.Tensor,
-        pipeline_kv: cutlass.pipeline.PipelineAsync,
+        pipeline_kv: pipeline.PipelineAsync,
         mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
         num_splits: Int32,
@@ -1308,8 +1306,8 @@ class FlashAttentionForwardSm100:
         ]
 
         mma_q_consumer_phase = Int32(0)
-        mma_kv_consumer_state = cutlass.pipeline.make_pipeline_state(
-            cutlass.pipeline.PipelineUserType.Consumer, self.kv_stage
+        mma_kv_consumer_state = pipeline.make_pipeline_state(
+            pipeline.PipelineUserType.Consumer, self.kv_stage
         )
         P_full_O_rescaled_phase = Int32(0)
 
@@ -2383,7 +2381,7 @@ class FlashAttentionForwardSm100:
         tOgO = gmem_thr_copy_O.partition_D(gO)
         tOcO = gmem_thr_copy_O.partition_S(cO)
         t0OcO = gmem_tiled_copy_O.get_slice(0).partition_S(cO)
-        tOpO = utils.predicate_k(tOcO, limit=mO_cur.shape[1])
+        tOpO = copy_utils.predicate_k(tOcO, limit=mO_cur.shape[1])
         pack_gqa = PackGQA(
             self.m_block_size,
             self.head_dim_v_padded,
@@ -2505,44 +2503,37 @@ class FlashAttentionForwardSm100:
         tXsX: Optional[cute.Tensor],
         paged_kv_manager: Optional[PagedKVManager],
         sX: cute.Tensor,
-        mbar_full_ptr: cute.Pointer,
-        mbar_empty_ptr: cute.Pointer,
         block: Int32,
-        producer_state: cutlass.pipeline.PipelineState,
+        pipeline: pipeline.PipelineAsync,
+        producer_state: pipeline.PipelineState,
         K_or_V: Literal["K", "V"],
         page_idx: Optional[Int32] = None,
     ):
         assert K_or_V in ("K", "V")
         stage, phase = producer_state.index, producer_state.phase
-        cute.arch.mbarrier_wait(mbar_empty_ptr + stage, phase)
+        extra_tx_count = self.tma_copy_bytes[K_or_V] - self.tma_copy_bytes["K"]
+        extra_kwargs = {"extra_tx_count": extra_tx_count} if const_expr(self.use_tma_KV) else {}
+        pipeline.producer_acquire(producer_state, **extra_kwargs)
         if const_expr(K_or_V == "K" and self.uneven_kv_smem):
             # Before this round, the smem location was occupied by V, which is smaller than
             # K. So we need to wait for the stage after that (stage 1) to be empty as well.
             if stage == 0:
-                cute.arch.mbarrier_wait(mbar_empty_ptr + 1, phase)
+                pipeline.sync_object_empty.wait(1, phase)
 
         if const_expr(self.use_tma_KV):
-            assert (
-                tXgX is not None and
-                tXsX is not None and
-                tma_atom is not None
-            )
-            with cute.arch.elect_one():
-                cute.arch.mbarrier_arrive_and_expect_tx(
-                    mbar_full_ptr + stage, self.tma_copy_bytes[K_or_V],
-                )
+            assert tXgX is not None and tXsX is not None and tma_atom is not None
             tXsX_cur = tXsX[None, stage]
             if const_expr(self.uneven_kv_smem):
                 # Since this is the producer_state, the phase starts at 1, so we have to invert it
                 tXsX_cur = self.offset_kv_smem(tXsX_cur, stage, phase ^ 1)
             # Currently we assume that page_size == n_block_size so we index into tXgX with block = 0
             tXgX_cur = tXgX[None, block] if const_expr(page_idx is None) else tXgX[None, 0, page_idx]
-            cute.copy(tma_atom, tXgX_cur, tXsX_cur, tma_bar_ptr=mbar_full_ptr + stage)
+            cute.copy(tma_atom, tXgX_cur, tXsX_cur, tma_bar_ptr=pipeline.producer_get_barrier(producer_state))
         else:
             assert paged_kv_manager is not None
             paged_kv_manager.load_KV(block, sX[None, None, None, stage], K_or_V)
             cute.arch.cp_async_commit_group()
-            cute.arch.cp_async_mbarrier_arrive_noinc(mbar_full_ptr + stage)
+            pipeline.sync_object_full.arrive_cp_async_mbarrier(stage)
 
     @cute.jit
     def offset_kv_smem(self, sX: cute.Tensor, stage: Int32, phase: Int32):
@@ -2556,14 +2547,14 @@ class FlashAttentionForwardSm100:
             return sX
 
     def make_and_init_load_kv_pipeline(self, load_kv_mbar_ptr):
-        load_kv_consumer_group = cutlass.pipeline.CooperativeGroup(
-            cutlass.pipeline.Agent.Thread, len([self.mma_warp_id])
+        load_kv_consumer_group = pipeline.CooperativeGroup(
+            pipeline.Agent.Thread, len([self.mma_warp_id])
         )
         if self.use_tma_KV:
-            load_kv_producer_group = cutlass.pipeline.CooperativeGroup(
-                cutlass.pipeline.Agent.Thread, len(self.load_warp_ids)
+            load_kv_producer_group = pipeline.CooperativeGroup(
+                pipeline.Agent.Thread, len(self.load_warp_ids)
             )
-            return cutlass.pipeline.PipelineTmaUmma.create(
+            return pipeline_custom.PipelineTmaUmma.create(
                 barrier_storage=load_kv_mbar_ptr,
                 num_stages=self.kv_stage,
                 producer_group=load_kv_producer_group,
@@ -2571,10 +2562,10 @@ class FlashAttentionForwardSm100:
                 tx_count=self.tma_copy_bytes["K"],
             )
         else:
-            load_kv_producer_group = cutlass.pipeline.CooperativeGroup(
-                cutlass.pipeline.Agent.Thread, len(self.load_warp_ids) * cute.arch.WARP_SIZE
+            load_kv_producer_group = pipeline.CooperativeGroup(
+                pipeline.Agent.Thread, len(self.load_warp_ids) * cute.arch.WARP_SIZE
             )
-            return cutlass.pipeline.PipelineAsyncUmma.create(
+            return pipeline.PipelineAsyncUmma.create(
                 num_stages=self.kv_stage,
                 producer_group=load_kv_producer_group,
                 consumer_group=load_kv_consumer_group,
