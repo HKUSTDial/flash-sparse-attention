@@ -189,11 +189,7 @@ class LayoutType(IntEnum):  # occupies the top-3 bits [61:64)
 
 
 def _layout_type(swizzle: cute.Swizzle) -> LayoutType:
-    # No idea what the right way to get B, M, S is – so we're just parsing it from the __str__
-    # Swizzle string has the form "S<B,M,S>"
-    swz_str = str(swizzle)
-    inside = swz_str[swz_str.index("<") + 1 : swz_str.index(">")]  # '3,4,3'
-    B, M, S = [int(x) for x in inside.split(",")]  # [3, 4, 3]
+    B, M, S = swizzle.num_bits, swizzle.num_base, swizzle.num_shift
 
     if M == 4:  # Swizzle<*,4,3>
         if S != 3:

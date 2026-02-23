@@ -8,7 +8,6 @@ from cutlass.cute.nvgpu import tcgen05
 from cutlass._mlir.dialects import llvm
 
 import flash_attn.cute.mma_sm100_desc as sm100_desc
-from flash_attn.cute.utils import parse_swizzle_from_pointer
 
 
 @cute.jit
@@ -110,7 +109,7 @@ def gemm_ptx(
     sB_layout = sB.layout
     idesc: int = const_expr(sm100_desc.mma_op_to_idesc(op))
     if const_expr(not is_ts):
-        sA_swizzle = parse_swizzle_from_pointer(sA.iterator)
+        sA_swizzle = sA.iterator.type.swizzle_type
         smem_desc_base_a: int = const_expr(
             sm100_desc.make_smem_desc_base(
                 cute.recast_layout(128, op.a_dtype.width, sA_layout[0]),
@@ -126,7 +125,7 @@ def gemm_ptx(
     else:
         smem_desc_base_a = None
         smem_desc_base_a_lo, smem_desc_a_hi = None, None
-    sB_swizzle = parse_swizzle_from_pointer(sB.iterator)
+    sB_swizzle = sB.iterator.type.swizzle_type
     smem_desc_base_b: int = const_expr(
         sm100_desc.make_smem_desc_base(
             cute.recast_layout(128, op.b_dtype.width, sB_layout[0]),
@@ -225,7 +224,7 @@ def gemm_ptx_loop(
     sB_layout = sB.layout
     idesc: int = const_expr(sm100_desc.mma_op_to_idesc(op))
     if const_expr(not is_ts):
-        sA_swizzle = parse_swizzle_from_pointer(sA.iterator)
+        sA_swizzle = sA.iterator.type.swizzle_type
         smem_desc_base_a: int = const_expr(
             sm100_desc.make_smem_desc_base(
                 cute.recast_layout(128, op.a_dtype.width, sA_layout[0]),
@@ -241,7 +240,7 @@ def gemm_ptx_loop(
     else:
         smem_desc_base_a = None
         smem_desc_base_a_lo, smem_desc_a_hi = None, None
-    sB_swizzle = parse_swizzle_from_pointer(sB.iterator)
+    sB_swizzle = sB.iterator.type.swizzle_type
     smem_desc_base_b: int = const_expr(
         sm100_desc.make_smem_desc_base(
             cute.recast_layout(128, op.b_dtype.width, sB_layout[0]),
@@ -395,7 +394,7 @@ def gemm_ptx_partial(
     sB_layout = sB.layout
     idesc: int = const_expr(sm100_desc.mma_op_to_idesc(op))
     if const_expr(not is_ts):
-        sA_swizzle = parse_swizzle_from_pointer(sA.iterator)
+        sA_swizzle = sA.iterator.type.swizzle_type
         smem_desc_base_a: int = const_expr(
             sm100_desc.make_smem_desc_base(
                 cute.recast_layout(128, op.a_dtype.width, sA_layout[0]),
@@ -411,7 +410,7 @@ def gemm_ptx_partial(
     else:
         smem_desc_base_a = None
         smem_desc_base_a_lo, smem_desc_a_hi = None, None
-    sB_swizzle = parse_swizzle_from_pointer(sB.iterator)
+    sB_swizzle = sB.iterator.type.swizzle_type
     smem_desc_base_b: int = const_expr(
         sm100_desc.make_smem_desc_base(
             cute.recast_layout(128, op.b_dtype.width, sB_layout[0]),
