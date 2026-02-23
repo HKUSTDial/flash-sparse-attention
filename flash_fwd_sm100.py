@@ -576,11 +576,7 @@ class FlashAttentionForwardSm100:
         self.tile_scheduler_cls = TileScheduler
         grid_dim = TileScheduler.get_grid_shape(tile_sched_params)
 
-        self.mbar_load_q_full_offset = 0
-        self.mbar_load_q_empty_offset = self.mbar_load_q_full_offset + self.q_stage
-        self.mbar_load_kv_full_offset = self.mbar_load_q_empty_offset + self.q_stage
-        self.mbar_load_kv_empty_offset = self.mbar_load_kv_full_offset + self.kv_stage
-        self.mbar_P_full_O_rescaled_offset = self.mbar_load_kv_empty_offset + self.kv_stage
+        self.mbar_P_full_O_rescaled_offset = 0
         self.mbar_S_full_offset = self.mbar_P_full_O_rescaled_offset + self.q_stage
         self.mbar_O_full_offset = self.mbar_S_full_offset + self.q_stage
         self.mbar_softmax_corr_full_offset = self.mbar_O_full_offset + self.q_stage
@@ -601,6 +597,8 @@ class FlashAttentionForwardSm100:
         @cute.struct
         class SharedStorage:
             # m_barriers for pipelines
+            mbar_load_q: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
+            mbar_load_kv: cute.struct.MemRange[cutlass.Int64, self.kv_stage * 2]
             mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.mbar_total]
             # Tmem holding buffer
             tmem_holding_buf: Int32
@@ -771,13 +769,7 @@ class FlashAttentionForwardSm100:
 
         mbar_ptr = storage.mbar_ptr.data_ptr()
         # Use the first N warps to initialize barriers
-        if warp_idx == 1:
-            # Init "full" barrier with number of producers, "empty" barrier with number of consumers
-            for i in cutlass.range(self.q_stage):
-                cute.arch.mbarrier_init(mbar_ptr + self.mbar_load_q_full_offset + i, 1)
-                cute.arch.mbarrier_init(
-                    mbar_ptr + self.mbar_load_q_empty_offset + i, len([self.mma_warp_id])
-                )
+        # Init "full" barrier with number of producers, "empty" barrier with number of consumers
         if warp_idx == 2:
             for i in cutlass.range(self.q_stage):
                 cute.arch.mbarrier_init(
@@ -833,8 +825,35 @@ class FlashAttentionForwardSm100:
                     )
                 ),
             )
+        mma_thread = pipeline.CooperativeGroup(pipeline.Agent.Thread, len([self.mma_warp_id]))
+        tma_thread = pipeline.CooperativeGroup(pipeline.Agent.Thread, len(self.load_warp_ids))
+        pipeline_q = pipeline_custom.PipelineTmaUmma.create(
+            barrier_storage=storage.mbar_load_q.data_ptr(),
+            num_stages=self.q_stage,
+            producer_group=tma_thread,
+            consumer_group=mma_thread,
+            tx_count=self.tma_copy_bytes["Q"],
+            defer_sync=True,
+        )
         # Relying on pipeline_kv constructor to call mbarrier_init_fence and sync
-        pipeline_kv = self.make_and_init_load_kv_pipeline(mbar_ptr + self.mbar_load_kv_full_offset)
+        if const_expr(self.use_tma_KV):
+            pipeline_kv = pipeline_custom.PipelineTmaUmma.create(
+                barrier_storage=storage.mbar_load_kv.data_ptr(),
+                num_stages=self.kv_stage,
+                producer_group=tma_thread,
+                consumer_group=mma_thread,
+                tx_count=self.tma_copy_bytes["K"],
+            )
+        else:
+            cpasync_producer_group = pipeline.CooperativeGroup(
+                pipeline.Agent.Thread, len(self.load_warp_ids) * cute.arch.WARP_SIZE
+            )
+            pipeline_kv = pipeline.PipelineAsyncUmma.create(
+                barrier_storage=storage.mbar_load_kv.data_ptr(),
+                num_stages=self.kv_stage,
+                producer_group=cpasync_producer_group,
+                consumer_group=mma_thread,
+            )
 
         #  Generate smem tensor Q/K/V/O
         # (MMA, MMA_Q, MMA_D, PIPE)
@@ -929,6 +948,7 @@ class FlashAttentionForwardSm100:
                 tma_atom_Q,
                 tma_atom_K,
                 tma_atom_V,
+                pipeline_q,
                 pipeline_kv,
                 mbar_ptr,
                 block_info,
@@ -957,6 +977,7 @@ class FlashAttentionForwardSm100:
                 tStS,
                 tOtO,
                 tOrP,
+                pipeline_q,
                 pipeline_kv,
                 mbar_ptr,
                 block_info,
@@ -1082,6 +1103,7 @@ class FlashAttentionForwardSm100:
         tma_atom_Q: cute.CopyAtom,
         tma_atom_K: Optional[cute.CopyAtom],
         tma_atom_V: Optional[cute.CopyAtom],
+        pipeline_q: pipeline.PipelineAsync,
         pipeline_kv: pipeline.PipelineAsync,
         mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
@@ -1168,13 +1190,7 @@ class FlashAttentionForwardSm100:
                 tKsK, tKgK = None, None
                 tVsV, tVgV = None, None
 
-            load_Q = partial(
-                self.load_Q,
-                load_Q_fn,
-                mbar_ptr + self.mbar_load_q_full_offset,
-                mbar_ptr + self.mbar_load_q_empty_offset,
-                phase=q_producer_phase,
-            )
+            load_Q = partial(self.load_Q, load_Q_fn, pipeline_q=pipeline_q, phase=q_producer_phase)
             # We have to use mbarrier directly in the load for KV instead of replying on
             # pipeline_kv, because we could have different number of TMA bytes for K and V
             load_K = partial(
@@ -1184,7 +1200,7 @@ class FlashAttentionForwardSm100:
                 tKsK,
                 paged_kv_manager,
                 sK,
-                pipeline=pipeline_kv,
+                pipeline_kv=pipeline_kv,
                 K_or_V="K",
             )
             load_V = partial(
@@ -1194,7 +1210,7 @@ class FlashAttentionForwardSm100:
                 tVsV,
                 paged_kv_manager,
                 sV,
-                pipeline=pipeline_kv,
+                pipeline_kv=pipeline_kv,
                 K_or_V="V",
             )
 
@@ -1269,6 +1285,7 @@ class FlashAttentionForwardSm100:
         tStS: cute.Tensor,
         tOtO: cute.Tensor,
         tOrP: cute.Tensor,
+        pipeline_q: pipeline.PipelineAsync,
         pipeline_kv: pipeline.PipelineAsync,
         mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
@@ -1346,9 +1363,7 @@ class FlashAttentionForwardSm100:
                 for stage in cutlass.range_constexpr(self.q_stage):
                     # GEMM_QK00 (Q0 * K0 -> S0) or GEMM_QK01 (Q1 * K0 -> S1)
                     # 1. wait for Q0 / Q1
-                    cute.arch.mbarrier_wait(
-                        mbar_ptr + self.mbar_load_q_full_offset + stage, mma_q_consumer_phase
-                    )
+                    pipeline_q.consumer_wait_w_index_phase(stage, mma_q_consumer_phase)
                     # 2. wait for K0
                     if const_expr(stage == 0):
                         pipeline_kv.consumer_wait(mma_kv_consumer_state)
@@ -1449,9 +1464,8 @@ class FlashAttentionForwardSm100:
                 # End of seqlen_kv loop
 
                 # release Q0 & Q1
-                with cute.arch.elect_one():
-                    for stage in cutlass.range(self.q_stage):
-                        tcgen05.commit(mbar_ptr + self.mbar_load_q_empty_offset + stage)
+                for stage in cutlass.range(self.q_stage):
+                    pipeline_q.consumer_release_w_index(stage)
 
                 # GEMM_PV00 (P0 * V0 -> O0_partial), O0 needs to be accumulated in the seqlen_kv loop
                 # 1. wait for V0
@@ -2489,16 +2503,13 @@ class FlashAttentionForwardSm100:
     def load_Q(
         self,
         load_Q_fn: Callable,
-        mbar_full_ptr: cute.Pointer,
-        mbar_empty_ptr: cute.Pointer,
+        pipeline_q: pipeline.PipelineAsync,
         block: Int32,
         stage: int,
         phase: Int32,
     ):
-        cute.arch.mbarrier_wait(mbar_empty_ptr + stage, phase)
-        with cute.arch.elect_one():
-            cute.arch.mbarrier_arrive_and_expect_tx(mbar_full_ptr + stage, self.tma_copy_bytes["Q"])
-        load_Q_fn(src_idx=block, dst_idx=stage, tma_bar_ptr=mbar_full_ptr + stage)
+        pipeline_q.producer_acquire_w_index_phase(stage, phase)
+        load_Q_fn(src_idx=block, dst_idx=stage, tma_bar_ptr=pipeline_q.sync_object_full.get_barrier(stage))
 
     @cute.jit
     def load_KV(
@@ -2509,7 +2520,7 @@ class FlashAttentionForwardSm100:
         paged_kv_manager: Optional[PagedKVManager],
         sX: cute.Tensor,
         block: Int32,
-        pipeline: pipeline.PipelineAsync,
+        pipeline_kv: pipeline.PipelineAsync,
         producer_state: pipeline.PipelineState,
         K_or_V: Literal["K", "V"],
         page_idx: Optional[Int32] = None,
@@ -2518,12 +2529,12 @@ class FlashAttentionForwardSm100:
         stage, phase = producer_state.index, producer_state.phase
         extra_tx_count = self.tma_copy_bytes[K_or_V] - self.tma_copy_bytes["K"]
         extra_kwargs = {"extra_tx_count": extra_tx_count} if const_expr(self.use_tma_KV) else {}
-        pipeline.producer_acquire(producer_state, **extra_kwargs)
+        pipeline_kv.producer_acquire(producer_state, **extra_kwargs)
         if const_expr(K_or_V == "K" and self.uneven_kv_smem):
             # Before this round, the smem location was occupied by V, which is smaller than
             # K. So we need to wait for the stage after that (stage 1) to be empty as well.
             if stage == 0:
-                pipeline.sync_object_empty.wait(1, phase)
+                pipeline_kv.sync_object_empty.wait(1, phase)
 
         if const_expr(self.use_tma_KV):
             assert tXgX is not None and tXsX is not None and tma_atom is not None
@@ -2533,12 +2544,12 @@ class FlashAttentionForwardSm100:
                 tXsX_cur = self.offset_kv_smem(tXsX_cur, stage, phase ^ 1)
             # Currently we assume that page_size == n_block_size so we index into tXgX with block = 0
             tXgX_cur = tXgX[None, block] if const_expr(page_idx is None) else tXgX[None, 0, page_idx]
-            cute.copy(tma_atom, tXgX_cur, tXsX_cur, tma_bar_ptr=pipeline.producer_get_barrier(producer_state))
+            cute.copy(tma_atom, tXgX_cur, tXsX_cur, tma_bar_ptr=pipeline_kv.producer_get_barrier(producer_state))
         else:
             assert paged_kv_manager is not None
             paged_kv_manager.load_KV(block, sX[None, None, None, stage], K_or_V)
             cute.arch.cp_async_commit_group()
-            pipeline.sync_object_full.arrive_cp_async_mbarrier(stage)
+            pipeline_kv.sync_object_full.arrive_cp_async_mbarrier(stage)
 
     @cute.jit
     def offset_kv_smem(self, sX: cute.Tensor, stage: Int32, phase: Int32):
