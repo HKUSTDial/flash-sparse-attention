@@ -250,6 +250,7 @@ class FlashAttentionForwardSm100:
             else 3
         )
         self.s_stage = 2
+        assert self.s_stage >= self.q_stage
         # For hdim 192,128, we don't have enough smem to store all 3 stages of KV:
         # 128 x 192 x 2 bytes x 3 stages = 144KB, and we need 96KB for Q.
         # Instead we store smem as [smem_large, smem_small, smem_large], where smem_large is
@@ -810,8 +811,7 @@ class FlashAttentionForwardSm100:
         if warp_idx == 6:
             for i in cutlass.range(self.q_stage):
                 cute.arch.mbarrier_init(
-                    mbar_ptr + self.mbar_P_full_2_offset + i,
-                    cute.arch.WARP_SIZE * len(self.softmax0_warp_ids),
+                    mbar_ptr + self.mbar_P_full_2_offset + i, len(self.softmax0_warp_ids)
                 )
         if warp_idx == 7:
             cute.arch.mbarrier_init(
@@ -825,13 +825,13 @@ class FlashAttentionForwardSm100:
                     )
                 ),
             )
-        mma_thread = pipeline.CooperativeGroup(pipeline.Agent.Thread, len([self.mma_warp_id]))
-        tma_thread = pipeline.CooperativeGroup(pipeline.Agent.Thread, len(self.load_warp_ids))
+        mma_warp = pipeline.CooperativeGroup(pipeline.Agent.Thread, len([self.mma_warp_id]))
+        tma_warp = pipeline.CooperativeGroup(pipeline.Agent.Thread, len(self.load_warp_ids))
         pipeline_q = pipeline_custom.PipelineTmaUmma.create(
             barrier_storage=storage.mbar_load_q.data_ptr(),
             num_stages=self.q_stage,
-            producer_group=tma_thread,
-            consumer_group=mma_thread,
+            producer_group=tma_warp,
+            consumer_group=mma_warp,
             tx_count=self.tma_copy_bytes["Q"],
             defer_sync=True,
         )
@@ -840,8 +840,8 @@ class FlashAttentionForwardSm100:
             pipeline_kv = pipeline_custom.PipelineTmaUmma.create(
                 barrier_storage=storage.mbar_load_kv.data_ptr(),
                 num_stages=self.kv_stage,
-                producer_group=tma_thread,
-                consumer_group=mma_thread,
+                producer_group=tma_warp,
+                consumer_group=mma_warp,
                 tx_count=self.tma_copy_bytes["K"],
             )
         else:
@@ -852,7 +852,7 @@ class FlashAttentionForwardSm100:
                 barrier_storage=storage.mbar_load_kv.data_ptr(),
                 num_stages=self.kv_stage,
                 producer_group=cpasync_producer_group,
-                consumer_group=mma_thread,
+                consumer_group=mma_warp,
             )
 
         #  Generate smem tensor Q/K/V/O
@@ -1492,9 +1492,9 @@ class FlashAttentionForwardSm100:
                     )
                     # 4. release accumulated O0_partial
                     # We do need O_full here since for the last tile, by the time the softmax warp
-                    # has signaled to the correction warps, the softmax warp has just finished compute
-                    # the row sum of the current tile. It does not guarantee that the 1st tile
-                    # of the next work tile has been computed yet.
+                    # has signaled to the correction warps, the softmax warp has just finished
+                    # computing the row sum of the current tile. It does not guarantee that the 1st
+                    # tile of the next work tile has been computed yet.
                     with cute.arch.elect_one():
                         tcgen05.commit(mbar_ptr + self.mbar_O_full_offset + stage)
                     # End of GEMM_PV00 (P0 * V0 -> O0_partial)
@@ -1959,7 +1959,9 @@ class FlashAttentionForwardSm100:
                 cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_P_full_O_rescaled_offset + stage)
         # Notify mma warp that the 2nd half of P is ready
         cute.arch.fence_view_async_tmem_store()
-        cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_P_full_2_offset + stage)
+        cute.arch.sync_warp()
+        with cute.arch.elect_one():
+            cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_P_full_2_offset + stage)
         cute.arch.mbarrier_wait(
             mbar_ptr + self.mbar_softmax_corr_empty_offset + stage, si_corr_producer_phase
         )
