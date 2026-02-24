@@ -677,7 +677,7 @@ def _fwd_sparse_base_kernel(
                 acc_s=acc_s,
                 row_max=row_max,
                 row_sum=row_sum,
-                CHECK_INF=False,
+                CHECK_INF=True,
             )
 
             # Rescale output accumulator
@@ -766,11 +766,18 @@ def _flash_sparse_attn_base_forward(
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
 
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
+    if window_size is None:
+        is_local = False
         window_size_left, window_size_right = None, None
+    else:
+        is_local = window_size[0] is not None or window_size[1] is not None
+        if is_local:
+            window_size_left, window_size_right = window_size
+        else:
+            window_size_left, window_size_right = None, None
+
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
 
     utils.assert_fwd_sparse_base_inputs(
         query,
@@ -787,11 +794,8 @@ def _flash_sparse_attn_base_forward(
         gate_scale=gate_scale,
     )
 
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
-    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
-
-    out = torch.empty_like(query)
-    lse = torch.empty(
+    out = torch.zeros_like(query)
+    lse = torch.zeros(
         (batch_size, num_heads_q, seqlen_q),
         device=query.device,
         dtype=torch.float32,
@@ -881,11 +885,18 @@ def _flash_sparse_attn_varlen_base_forward(
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
 
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
+    if window_size is None:
+        is_local = False
         window_size_left, window_size_right = None, None
+    else:
+        is_local = window_size[0] is not None or window_size[1] is not None
+        if is_local:
+            window_size_left, window_size_right = window_size
+        else:
+            window_size_left, window_size_right = None, None
+
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
 
     utils.assert_fwd_sparse_base_inputs(
         query,
@@ -902,11 +913,8 @@ def _flash_sparse_attn_varlen_base_forward(
         gate_scale=gate_scale,
     )
 
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
-    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
-
-    out = torch.empty_like(query)
-    lse = torch.empty(
+    out = torch.zeros_like(query)
+    lse = torch.zeros(
         (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
     )
 
