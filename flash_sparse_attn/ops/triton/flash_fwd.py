@@ -481,11 +481,17 @@ def _flash_attn_base_forward(
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
 
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
+    if window_size is None:
+        is_local = False
         window_size_left, window_size_right = None, None
+    else:
+        is_local = window_size[0] is not None or window_size[1] is not None
+        if is_local:
+            window_size_left, window_size_right = window_size
+        else:
+            window_size_left, window_size_right = None, None
+
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     utils.assert_fwd_base_inputs(
         query,
@@ -497,8 +503,6 @@ def _flash_attn_base_forward(
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
     )
-
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     out = torch.zeros_like(query)
     lse = torch.empty(
@@ -581,11 +585,17 @@ def _flash_attn_varlen_base_forward(
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
 
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
+    if window_size is None:
+        is_local = False
         window_size_left, window_size_right = None, None
+    else:
+        is_local = window_size[0] is not None or window_size[1] is not None
+        if is_local:
+            window_size_left, window_size_right = window_size
+        else:
+            window_size_left, window_size_right = None, None
+
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     utils.assert_fwd_base_inputs(
         query,
@@ -597,8 +607,6 @@ def _flash_attn_varlen_base_forward(
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
     )
-
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     out = torch.zeros_like(query)
     lse = torch.empty(
