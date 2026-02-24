@@ -339,7 +339,7 @@ def _fwd_base_kernel(
             )
 
             # Apply online softmax
-            p, row_max, row_sum, row_scale = softmax.online_softmax(
+            p, row_max, row_sum, row_scale = activations.online_softmax(
                 acc_s=acc_s,
                 row_max=row_max,
                 row_sum=row_sum,
@@ -347,7 +347,7 @@ def _fwd_base_kernel(
             )
 
             # Rescale output accumulator
-            acc_o = softmax.rescale_o(acc_o, row_scale)
+            acc_o = activations.rescale_o(acc_o, row_scale)
 
             # Update output accumulator
             acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -391,7 +391,7 @@ def _fwd_base_kernel(
         )
 
         # Apply online softmax
-        p, row_max, row_sum, row_scale = softmax.online_softmax(
+        p, row_max, row_sum, row_scale = activations.online_softmax(
             acc_s=acc_s,
             row_max=row_max,
             row_sum=row_sum,
@@ -399,7 +399,7 @@ def _fwd_base_kernel(
         )
 
         # Rescale output accumulator
-        acc_o = softmax.rescale_o(acc_o, row_scale)
+        acc_o = activations.rescale_o(acc_o, row_scale)
 
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -424,7 +424,7 @@ def _fwd_base_kernel(
             k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
         # Apply online softmax
-        p, row_max, row_sum, row_scale = softmax.online_softmax(
+        p, row_max, row_sum, row_scale = activations.online_softmax(
             acc_s=acc_s,
             row_max=row_max,
             row_sum=row_sum,
@@ -432,7 +432,7 @@ def _fwd_base_kernel(
         )
 
         # Rescale output accumulator
-        acc_o = softmax.rescale_o(acc_o, row_scale)
+        acc_o = activations.rescale_o(acc_o, row_scale)
 
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -441,12 +441,12 @@ def _fwd_base_kernel(
         v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
 
     # Finalize softmax
-    o_scale, lse_tile = softmax.finalize(
+    o_scale, lse_tile = activations.finalize(
         row_max=row_max,
         row_sum=row_sum,
         final_scale=1.0,
     )
-    acc_o = softmax.rescale_o(acc_o, o_scale)
+    acc_o = activations.rescale_o(acc_o, o_scale)
 
     # Store LSE
     if PACK_GQA:
