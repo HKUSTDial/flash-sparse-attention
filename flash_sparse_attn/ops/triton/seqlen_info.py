@@ -116,6 +116,55 @@ def get_seqlen_info_qk(
 
 
 @triton.jit
+def get_gate_threshold(
+    gate_scale,
+    m_block,
+    seqlen_q,
+    seqlen_k,
+    IS_CAUSAL: tl.constexpr,
+    TILE_M: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+    SWAP_AB: tl.constexpr,
+):
+    """
+    Compute the gate threshold for a given block.
+
+    :param gate_scale: Scaling factor for the gate threshold.
+    :param m_block: Current block index along the M dimension.
+    :param seqlen_q: Sequence length of the query.
+    :param seqlen_k: Sequence length of the key.
+    :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
+    :param TILE_M: Tile size along the M dimension.
+    :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
+    :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
+    """
+    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
+
+    if SWAP_AB:
+        q_idx = offs_m[None, :]
+    else:
+        q_idx = offs_m[:, None]
+        if QHEADS_PER_KVHEAD_PACKGQA > 1:
+            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
+
+    causal_offset = seqlen_k - seqlen_q
+
+    if IS_CAUSAL:
+        g_thr = tl.log(gate_scale * (q_idx + causal_offset + 1.0))
+    else:
+        if SWAP_AB:
+            g_thr = tl.full(
+                (1, TILE_M), tl.log(gate_scale * seqlen_k), dtype=tl.float32
+            )
+        else:
+            g_thr = tl.full(
+                (TILE_M, 1), tl.log(gate_scale * seqlen_k), dtype=tl.float32
+            )
+    g_thr += -tl.log(1.0 - tl.exp(g_thr))
+    return g_thr
+
+
+@triton.jit
 def offset_batch_Q(
     base_ptr,
     batch_idx,

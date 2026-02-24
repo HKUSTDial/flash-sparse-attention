@@ -76,3 +76,21 @@ def rescale_o(
     row_scale,
 ):
     return acc_o * row_scale[:, None]
+
+
+@triton.jit
+def log_sigmoid(x, mask):
+    x = x.to(tl.float32)
+    neg_abs_x = -tl.abs(x)
+    # return tl.where(mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(neg_abs_x)), float("-inf"))
+    correction = tl.where(neg_abs_x < -8.0, 0.0, tl.log(1.0 + tl.exp(neg_abs_x)))
+    return tl.where(mask, tl.minimum(x, 0.0) - correction, float("-inf"))
+
+
+@triton.jit
+def gate_skip(a_max, a_min, d_max, d_min, g_thr_min):
+    g_upper = tl.maximum(
+        tl.maximum(a_max * d_max, a_max * d_min),
+        tl.maximum(a_min * d_max, a_min * d_min),
+    )
+    return g_upper >= g_thr_min
