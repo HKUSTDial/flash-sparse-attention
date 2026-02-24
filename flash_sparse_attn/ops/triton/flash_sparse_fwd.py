@@ -21,13 +21,16 @@ fwd_base_autotune_configs = utils.get_fwd_base_autotune_configs(True)
     use_cuda_graph=True,
 )
 @triton.jit
-def _fwd_base_kernel(
+def _fwd_sparse_base_kernel(
     Q,
     K,
     V,
+    A,
+    D,
     Out,
     Lse,
     softmax_scale,
+    gate_scale,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -37,6 +40,10 @@ def _fwd_base_kernel(
     stride_vb,
     stride_vh,
     stride_vn,
+    stride_ab,
+    stride_ah,
+    stride_db,
+    stride_dh,
     stride_ob,
     stride_oh,
     stride_om,
@@ -127,6 +134,26 @@ def _fwd_base_kernel(
         padded_offset_k,
         stride_vb,
         stride_vn,
+        HAS_CU_SEQLENS_K,
+        USE_PADDED=False,
+    )
+    a_base = seqlen_info.offset_batch_Q(
+        A + head_idx * stride_ah if not PACK_GQA else A,
+        batch_idx,
+        offset_q,
+        padded_offset_q,
+        stride_ab,
+        1,
+        HAS_CU_SEQLENS_Q,
+        USE_PADDED=False,
+    )
+    d_base = seqlen_info.offset_batch_K(
+        D + head_kv_idx * stride_dh,
+        batch_idx,
+        offset_k,
+        padded_offset_k,
+        stride_db,
+        1,
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
@@ -233,7 +260,7 @@ def _fwd_base_kernel(
         #     tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
         return
 
-    # Create query pointers
+    # Create query and alpha pointers
     if not PACK_GQA:
         q_ptrs = tl.make_block_ptr(
             base=q_base,
@@ -242,6 +269,14 @@ def _fwd_base_kernel(
             offsets=(m_block * TILE_M, 0),
             block_shape=(TILE_M, TILE_K),
             order=(1, 0),
+        )
+        a_ptrs = tl.make_block_ptr(
+            base=a_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(m_block * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
         )
     else:
         q_ptrs = seqlen_info.make_pack_gqa_ptrs(
@@ -252,6 +287,16 @@ def _fwd_base_kernel(
             stride_qm,
             TILE_M=TILE_M,
             TILE_K=TILE_K,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        )
+        a_ptrs = seqlen_info.make_pack_gqa_ptrs(
+            a_base,
+            m_block,
+            head_idx,
+            stride_ah,
+            stride_ab,
+            TILE_M=TILE_M,
+            TILE_K=1,
             QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
         )
     k_ptrs = tl.make_block_ptr(
@@ -270,6 +315,27 @@ def _fwd_base_kernel(
         block_shape=(TILE_N, TILE_K),
         order=(1, 0),
     )
+    d_ptrs = tl.make_block_ptr(
+        base=d_base,
+        shape=(actual_seqlen_k,),
+        strides=(1,),
+        offsets=((n_block_max - 1) * TILE_N,),
+        block_shape=(TILE_N,),
+        order=(0,),
+    )
+
+    # Get attention gate threshold
+    g_thr = seqlen_info.get_gate_threshold(
+        gate_scale=gate_scale,
+        m_block=m_block,
+        seqlen_q=actual_seqlen_q,
+        seqlen_k=actual_seqlen_k,
+        IS_CAUSAL=IS_CAUSAL,
+        TILE_M=TILE_M,
+        QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        SWAP_AB=False,
+    )
+    g_thr_min = tl.min(g_thr)
 
     # Load query tile
     if PACK_GQA:
@@ -290,6 +356,28 @@ def _fwd_base_kernel(
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
+    # Load alpha tile
+    if PACK_GQA:
+        a_tile = tl.load(
+            a_ptrs,
+            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+            other=0.0,
+        )
+    else:
+        a_tile = tl.load(a_ptrs, boundary_check=(0,))
+    a_max = tl.max(a_tile)
+    a_min = tl.min(a_tile)
+
+    # Load delta tile
+    d_tile = tl.load(d_ptrs, boundary_check=(0,))
+
+    # Compute attention gates
+    g = a_tile[:, None] * d_tile[None, :]
+    gate_mask = g >= g_thr
+
+    # Check if any gates are active for current tile
+    active_curr = tl.reduce_or(gate_mask, axis=None)
+
     # Load key tile
     k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
@@ -308,19 +396,148 @@ def _fwd_base_kernel(
         )
 
         for n_block in range(n_block_max - 1, n_block_min_causal_local - 1, -1):
+            if active_curr:
+                # Load value tile
+                v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+
+                # Compute attention scores
+                acc_s = activations.log_sigmoid(g, gate_mask)
+                acc_s += tl.dot(q_tile, tl.trans(k_tile))
+
+                # Advance key and delta pointers
+                k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+                d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
+
+                active_next = False
+                if n_block > n_block_min:
+                    # Load next delta tile
+                    d_tile = tl.load(d_ptrs, boundary_check=(0,))
+
+                    d_max = tl.max(d_tile)
+                    d_min = tl.min(d_tile)
+                    maybe_active = activations.gate_skip(
+                        a_max, a_min, d_max, d_min, g_thr_min
+                    )
+                    if maybe_active:
+                        # Compute next attention gates
+                        g = a_tile[:, None] * d_tile[None, :]
+                        gate_mask = g >= g_thr
+
+                        # Check if any gates are active for next tile
+                        active_next = tl.reduce_or(gate_mask, axis=None)
+
+                        if active_next:
+                            # Load next key tile
+                            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+                # Apply mask
+                acc_s = mask.apply_mask(
+                    acc_s=acc_s,
+                    m_block=m_block,
+                    n_block=n_block,
+                    seqlen_q=actual_seqlen_q,
+                    seqlen_k=actual_seqlen_k,
+                    MASK_SEQLEN=True,
+                    MASK_CAUSAL=IS_CAUSAL,
+                    MASK_LOCAL=IS_LOCAL,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    SWAP_AB=False,
+                )
+
+                # Apply online softmax
+                p, row_max, row_sum, row_scale = activations.online_softmax(
+                    acc_s=acc_s,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    CHECK_INF=True,
+                )
+
+                # Rescale output accumulator
+                acc_o = activations.rescale_o(acc_o, row_scale)
+
+                # Update output accumulator
+                acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+
+                # Advance value pointers
+                v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+
+                # Update active status for next iteration
+                active_curr = active_next
+            else:
+                # Advance key, value, and delta pointers
+                k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+                v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+                d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
+
+                active_next = False
+                if n_block > n_block_min:
+                    # Load next delta tile
+                    d_tile = tl.load(d_ptrs, boundary_check=(0,))
+
+                    d_max = tl.max(d_tile)
+                    d_min = tl.min(d_tile)
+                    maybe_active = activations.gate_skip(
+                        a_max, a_min, d_max, d_min, g_thr_min
+                    )
+                    if maybe_active:
+                        # Compute next attention gates
+                        g = a_tile[:, None] * d_tile[None, :]
+                        gate_mask = g >= g_thr
+
+                        # Check if any gates are active for next tile
+                        active_next = tl.reduce_or(gate_mask, axis=None)
+
+                        if active_next:
+                            # Load next key tile
+                            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+                # Update active status for next iteration
+                active_curr = active_next
+
+        n_block_max_no_mask = n_block_min_causal_local
+    else:
+        # First iteration with seqlen masking
+        n_block = n_block_max - 1
+
+        if active_curr:
             # Load value tile
             v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
             # Compute attention scores
-            acc_s = tl.dot(q_tile, tl.trans(k_tile))
+            acc_s = activations.log_sigmoid(g, gate_mask)
+            acc_s += tl.dot(q_tile, tl.trans(k_tile))
 
-            # Advance key pointers
+            # Advance key and delta pointers
             k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
-            if n_block > n_block_min:
-                # Load next key tile
-                k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+            d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
 
-            # Apply mask
+            active_next = False
+            if n_block > n_block_min:
+                # Load next delta tile
+                d_tile = tl.load(d_ptrs, boundary_check=(0,))
+
+                d_max = tl.max(d_tile)
+                d_min = tl.min(d_tile)
+                maybe_active = activations.gate_skip(
+                    a_max, a_min, d_max, d_min, g_thr_min
+                )
+                if maybe_active:
+                    # Compute next attention gates
+                    g = a_tile[:, None] * d_tile[None, :]
+                    gate_mask = g >= g_thr
+
+                    # Check if any gates are active for next tile
+                    active_next = tl.reduce_or(gate_mask, axis=None)
+
+                    if active_next:
+                        # Load next key tile
+                        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+            # Apply seqlen mask only
             acc_s = mask.apply_mask(
                 acc_s=acc_s,
                 m_block=m_block,
@@ -328,8 +545,8 @@ def _fwd_base_kernel(
                 seqlen_q=actual_seqlen_q,
                 seqlen_k=actual_seqlen_k,
                 MASK_SEQLEN=True,
-                MASK_CAUSAL=IS_CAUSAL,
-                MASK_LOCAL=IS_LOCAL,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
                 TILE_M=TILE_M,
                 TILE_N=TILE_N,
                 WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
@@ -355,90 +572,155 @@ def _fwd_base_kernel(
             # Advance value pointers
             v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
 
-        n_block_max_no_mask = n_block_min_causal_local
-    else:
-        # First iteration with seqlen masking
-        n_block = n_block_max - 1
+            # Update active status for next iteration
+            active_curr = active_next
+        else:
+            # Advance key, value, and delta pointers
+            k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+            v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+            d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
 
-        # Load value tile
-        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+            active_next = False
+            if n_block > n_block_min:
+                # Load next delta tile
+                d_tile = tl.load(d_ptrs, boundary_check=(0,))
 
-        # Compute attention scores
-        acc_s = tl.dot(q_tile, tl.trans(k_tile))
+                d_max = tl.max(d_tile)
+                d_min = tl.min(d_tile)
+                maybe_active = activations.gate_skip(
+                    a_max, a_min, d_max, d_min, g_thr_min
+                )
+                if maybe_active:
+                    # Compute next attention gates
+                    g = a_tile[:, None] * d_tile[None, :]
+                    gate_mask = g >= g_thr
 
-        # Advance key pointers
-        k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
-        if n_block > n_block_min:
-            # Load next key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+                    # Check if any gates are active for next tile
+                    active_next = tl.reduce_or(gate_mask, axis=None)
 
-        # Apply seqlen mask only
-        acc_s = mask.apply_mask(
-            acc_s=acc_s,
-            m_block=m_block,
-            n_block=n_block,
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            MASK_SEQLEN=True,
-            MASK_CAUSAL=False,
-            MASK_LOCAL=False,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-            SWAP_AB=False,
-        )
+                    if active_next:
+                        # Load next key tile
+                        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
-        # Apply online softmax
-        p, row_max, row_sum, row_scale = activations.online_softmax(
-            acc_s=acc_s,
-            row_max=row_max,
-            row_sum=row_sum,
-            CHECK_INF=True,
-        )
-
-        # Rescale output accumulator
-        acc_o = activations.rescale_o(acc_o, row_scale)
-
-        # Update output accumulator
-        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-
-        # Advance value pointers
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+            # Update active status for next iteration
+            active_curr = active_next
 
         n_block_max_no_mask = n_block_max - 1
 
+    # Recreate block pointers for the non-masking loop to provide
+    # a fresh tl.make_block_ptr origin, breaking the SSA def-use chain
+    # from the masking loop's data-dependent phi nodes that the
+    # TritonRewriteTensorPointer pass cannot trace through.
+    k_ptrs = tl.make_block_ptr(
+        base=k_base,
+        shape=(actual_seqlen_k, head_dim),
+        strides=(stride_kn, 1),
+        offsets=((n_block_max_no_mask - 1) * TILE_N, 0),
+        block_shape=(TILE_N, TILE_K),
+        order=(1, 0),
+    )
+    v_ptrs = tl.make_block_ptr(
+        base=v_base,
+        shape=(actual_seqlen_k, head_dim),
+        strides=(stride_vn, 1),
+        offsets=((n_block_max_no_mask - 1) * TILE_N, 0),
+        block_shape=(TILE_N, TILE_K),
+        order=(1, 0),
+    )
+    d_ptrs = tl.make_block_ptr(
+        base=d_base,
+        shape=(actual_seqlen_k,),
+        strides=(1,),
+        offsets=((n_block_max_no_mask - 1) * TILE_N,),
+        block_shape=(TILE_N,),
+        order=(0,),
+    )
+
     # Process n_blocks without masking
     for n_block in range(n_block_max_no_mask - 1, n_block_min - 1, -1):
-        # Load value tile
-        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+        if active_curr:
+            # Load value tile
+            v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
-        # Compute attention scores
-        acc_s = tl.dot(q_tile, tl.trans(k_tile))
+            # Compute attention scores
+            acc_s = activations.log_sigmoid(g, gate_mask)
+            acc_s += tl.dot(q_tile, tl.trans(k_tile))
 
-        # Advance key pointers
-        k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
-        if n_block > n_block_min:
-            # Load next key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+            # Advance key and delta pointers
+            k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+            d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
 
-        # Apply online softmax
-        p, row_max, row_sum, row_scale = activations.online_softmax(
-            acc_s=acc_s,
-            row_max=row_max,
-            row_sum=row_sum,
-            CHECK_INF=False,
-        )
+            active_next = False
+            if n_block > n_block_min:
+                # Load next delta tile
+                d_tile = tl.load(d_ptrs, boundary_check=(0,))
 
-        # Rescale output accumulator
-        acc_o = activations.rescale_o(acc_o, row_scale)
+                d_max = tl.max(d_tile)
+                d_min = tl.min(d_tile)
+                maybe_active = activations.gate_skip(
+                    a_max, a_min, d_max, d_min, g_thr_min
+                )
+                if maybe_active:
+                    # Compute next attention gates
+                    g = a_tile[:, None] * d_tile[None, :]
+                    gate_mask = g >= g_thr
 
-        # Update output accumulator
-        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+                    # Check if any gates are active for next tile
+                    active_next = tl.reduce_or(gate_mask, axis=None)
 
-        # Advance value pointers
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+                    if active_next:
+                        # Load next key tile
+                        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+            # Apply online softmax
+            p, row_max, row_sum, row_scale = activations.online_softmax(
+                acc_s=acc_s,
+                row_max=row_max,
+                row_sum=row_sum,
+                CHECK_INF=True,
+            )
+
+            # Rescale output accumulator
+            acc_o = activations.rescale_o(acc_o, row_scale)
+
+            # Update output accumulator
+            acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+
+            # Advance value pointers
+            v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+
+            # Update active status for next iteration
+            active_curr = active_next
+        else:
+            # Advance key, value, and delta pointers
+            k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+            v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+            d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
+
+            active_next = False
+            if n_block > n_block_min:
+                # Load next delta tile
+                d_tile = tl.load(d_ptrs, boundary_check=(0,))
+
+                d_max = tl.max(d_tile)
+                d_min = tl.min(d_tile)
+                maybe_active = activations.gate_skip(
+                    a_max, a_min, d_max, d_min, g_thr_min
+                )
+                if maybe_active:
+                    # Compute next attention gates
+                    g = a_tile[:, None] * d_tile[None, :]
+                    gate_mask = g >= g_thr
+
+                    # Check if any gates are active for next tile
+                    active_next = tl.reduce_or(gate_mask, axis=None)
+
+                    if active_next:
+                        # Load next key tile
+                        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+            # Update active status for next iteration
+            active_curr = active_next
 
     # Finalize softmax
     o_scale, lse_tile = activations.finalize(
@@ -469,11 +751,14 @@ def _fwd_base_kernel(
         tl.store(out_ptrs, acc_o.to(q_tile.dtype), boundary_check=(0, 1))
 
 
-def _flash_attn_base_forward(
+def _flash_sparse_attn_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
     softmax_scale: float,
+    gate_scale: float,
     is_causal: bool = False,
     window_size: Optional[Tuple[int, int]] = None,
     pack_gqa: bool = False,
@@ -492,20 +777,25 @@ def _flash_attn_base_forward(
             window_size_left, window_size_right = None, None
 
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
 
-    utils.assert_fwd_base_inputs(
+    utils.assert_fwd_sparse_base_inputs(
         query,
         key,
         value,
+        alpha,
+        delta,
         cu_seqlens_q=None,
         cu_seqlens_k=None,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
+        seqlen_k=seqlen_k,
         head_dim=head_dim,
+        gate_scale=gate_scale,
     )
 
     out = torch.zeros_like(query)
-    lse = torch.empty(
+    lse = torch.zeros(
         (batch_size, num_heads_q, seqlen_q),
         device=query.device,
         dtype=torch.float32,
@@ -521,13 +811,16 @@ def _flash_attn_base_forward(
         pack_gqa=pack_gqa,
     )
 
-    _fwd_base_kernel[grid](
+    _fwd_sparse_base_kernel[grid](
         query,
         key,
         value,
+        alpha,
+        delta,
         out,
         lse,
         softmax_scale,
+        gate_scale,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -537,6 +830,10 @@ def _flash_attn_base_forward(
         value.stride(0),
         value.stride(-2),
         value.stride(-3),
+        alpha.stride(0),
+        alpha.stride(1),
+        delta.stride(0),
+        delta.stride(1),
         out.stride(0),
         out.stride(-2),
         out.stride(-3),
@@ -563,18 +860,21 @@ def _flash_attn_base_forward(
         PACK_GQA=pack_gqa,
     )
 
-    return out, lse, softmax_scale
+    return out, lse, softmax_scale, gate_scale
 
 
-def _flash_attn_varlen_base_forward(
+def _flash_sparse_attn_varlen_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
     softmax_scale: float,
+    gate_scale: float,
     is_causal: bool = False,
     window_size: Optional[Tuple[int, int]] = None,
     pack_gqa: bool = False,
@@ -596,20 +896,25 @@ def _flash_attn_varlen_base_forward(
             window_size_left, window_size_right = None, None
 
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
 
-    utils.assert_fwd_base_inputs(
+    utils.assert_fwd_sparse_base_inputs(
         query,
         key,
         value,
+        alpha,
+        delta,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
+        seqlen_k=seqlen_k,
         head_dim=head_dim,
+        gate_scale=gate_scale,
     )
 
     out = torch.zeros_like(query)
-    lse = torch.empty(
+    lse = torch.zeros(
         (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
     )
 
@@ -623,13 +928,16 @@ def _flash_attn_varlen_base_forward(
         pack_gqa=pack_gqa,
     )
 
-    _fwd_base_kernel[grid](
+    _fwd_sparse_base_kernel[grid](
         query,
         key,
         value,
+        alpha,
+        delta,
         out,
         lse,
         softmax_scale,
+        gate_scale,
         0,
         query.stride(-2),
         query.stride(0),
@@ -639,6 +947,10 @@ def _flash_attn_varlen_base_forward(
         0,
         value.stride(-2),
         value.stride(0),
+        alpha.stride(0),
+        alpha.stride(1),
+        delta.stride(0),
+        delta.stride(1),
         0,
         out.stride(-2),
         out.stride(0),
@@ -665,4 +977,4 @@ def _flash_attn_varlen_base_forward(
         PACK_GQA=pack_gqa,
     )
 
-    return out, lse, softmax_scale
+    return out, lse, softmax_scale, gate_scale

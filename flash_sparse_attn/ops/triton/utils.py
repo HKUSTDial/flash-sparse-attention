@@ -223,3 +223,69 @@ def assert_fwd_base_inputs(
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
             "cu_seqlen_q and cu_seqlen_k must be int32"
         )
+
+
+def assert_fwd_sparse_base_inputs(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
+    cu_seqlens_q: Optional[torch.Tensor] = None,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    num_heads_q: int = None,
+    num_heads_kv: int = None,
+    seqlen_k: int = None,
+    head_dim: int = None,
+    gate_scale: float = None,
+):
+    """
+    Assert the validity of inputs for the forward sparse base kernel.
+
+    :param query: Query tensor
+    :param key: Key tensor
+    :param value: Value tensor
+    :param alpha: Alpha tensor
+    :param delta: Delta tensor
+    :param cu_seqlens_q: Cumulative sequence lengths for queries
+    :param cu_seqlens_k: Cumulative sequence lengths for keys
+    :param num_heads_q: Number of query heads
+    :param num_heads_kv: Number of key/value heads
+    :param seqlen_k: Sequence length for keys
+    :param head_dim: Head dimension
+    :param gate_scale: Gate scaling factor
+
+    :raises AssertionError: If any of the assertions fail
+    """
+    assert (
+        query.is_cuda
+        and key.is_cuda
+        and value.is_cuda
+        and alpha.is_cuda
+        and delta.is_cuda
+    ), "All inputs must be on CUDA device"
+    assert query.dtype in [torch.float16, torch.bfloat16], (
+        "Input dtype must be float16 or bfloat16"
+    )
+    assert query.dtype == key.dtype == value.dtype == alpha.dtype == delta.dtype, (
+        "All inputs must have the same dtype"
+    )
+    assert num_heads_q % num_heads_kv == 0, (
+        "num_heads_q must be divisible by num_heads_kv"
+    )
+    assert head_dim % 16 == 0, (
+        "head_dim must be a multiple of 16 for efficient memory access"
+    )
+    assert head_dim <= 256, (
+        "head_dim must be less than or equal to 256 for efficient memory access"
+    )
+    assert 0.0 < gate_scale * seqlen_k < 1.0, (
+        "gate_scale must be in the range (0.0, 1.0 / seqlen_k) for valid gating behavior"
+    )
+    if cu_seqlens_q is not None and cu_seqlens_k is not None:
+        assert cu_seqlens_q.is_cuda and cu_seqlens_k.is_cuda, (
+            "All inputs must be on CUDA device"
+        )
+        assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
+            "cu_seqlen_q and cu_seqlen_k must be int32"
+        )
