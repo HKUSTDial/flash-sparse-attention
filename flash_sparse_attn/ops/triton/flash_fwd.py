@@ -3,7 +3,13 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import utils, seqlen_info, block_info, mask, softmax
+from flash_sparse_attn.ops.triton import (
+    activations,
+    utils,
+    seqlen_info,
+    block_info,
+    mask,
+)
 
 
 fwd_base_autotune_configs = utils.get_fwd_base_autotune_configs(True)
