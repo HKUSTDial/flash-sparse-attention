@@ -707,9 +707,7 @@ def handle_block_sparse_empty_tile_correction_sm100(
     tOtO: cute.Tensor,
     sO: cute.Tensor,
     pipeline_sm_stats: cutlass.pipeline.PipelineAsync,
-    mbar_ptr,
-    mbar_corr_epi_full_offset: Int32,
-    mbar_corr_epi_empty_offset: Int32,
+    pipeline_o_epi: cutlass.pipeline.PipelineAsync,
     sm_stats_consumer_phase: Int32,
     o_corr_consumer_phase: Int32,
     corr_epi_producer_phase: Int32,
@@ -770,10 +768,7 @@ def handle_block_sparse_empty_tile_correction_sm100(
         pipeline_sm_stats.consumer_release_w_index(stage)
 
         if const_expr(gmem_tiled_copy_O is None):
-            cute.arch.mbarrier_wait(
-                mbar_ptr + mbar_corr_epi_empty_offset + stage,
-                corr_epi_producer_phase,
-            )
+            pipeline_o_epi.producer_acquire_w_index_phase(stage, o_corr_consumer_phase)
         correction_epilogue(
             thr_mma_pv,
             tOtO[None, None, None, stage],
@@ -788,7 +783,7 @@ def handle_block_sparse_empty_tile_correction_sm100(
             gmem_tiled_copy_O,
         )
         if const_expr(gmem_tiled_copy_O is None):
-            cute.arch.mbarrier_arrive(mbar_ptr + mbar_corr_epi_full_offset + stage)
+            pipeline_o_epi.producer_commit_w_index(stage)
 
     sm_stats_consumer_phase ^= 1
     corr_epi_producer_phase ^= 1
@@ -813,7 +808,6 @@ def softmax_block_sparse_sm100(
     si_corr_producer_phase: Int32,
     s0_s1_sequence_phase: Int32,
     pipeline_sm_stats: cutlass.pipeline.PipelineAsync,
-    mbar_ptr,
     q_stage: cutlass.Constexpr,
     stage_idx: Int32,
     check_m_boundary: bool,

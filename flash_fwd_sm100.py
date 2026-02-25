@@ -579,9 +579,7 @@ class FlashAttentionForwardSm100:
         grid_dim = TileScheduler.get_grid_shape(tile_sched_params)
 
         self.mbar_O_full_offset = 0
-        self.mbar_corr_epi_full_offset = self.mbar_O_full_offset + self.q_stage
-        self.mbar_corr_epi_empty_offset = self.mbar_corr_epi_full_offset + self.q_stage
-        self.mbar_s0_s1_sequence_offset = self.mbar_corr_epi_empty_offset + self.q_stage
+        self.mbar_s0_s1_sequence_offset = self.mbar_O_full_offset + self.q_stage
         self.mbar_tmem_dealloc_offset = self.mbar_s0_s1_sequence_offset + 8
         self.mbar_P_full_2_offset = self.mbar_tmem_dealloc_offset + 1
         self.mbar_total = self.mbar_P_full_2_offset + self.q_stage
@@ -599,6 +597,8 @@ class FlashAttentionForwardSm100:
             mbar_load_KV: cute.struct.MemRange[cutlass.Int64, self.kv_stage * 2]
             mbar_S_full_P_full_O_rescaled: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
             mbar_softmax_stats: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
+            # mbar_softmax_stats: cute.struct.MemRange[cutlass.Int64, self.q_stage * 4 * 2]
+            mbar_O_epi: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
             mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.mbar_total]
             # Tmem holding buffer
             tmem_holding_buf: Int32
@@ -606,12 +606,10 @@ class FlashAttentionForwardSm100:
             # store row max and row sum
             sScale: cute.struct.MemRange[Float32, self.q_stage * self.m_block_size * 2]
             sO: cute.struct.Align[
-                cute.struct.MemRange[self.o_dtype, sO_size],
-                self.buffer_align_bytes,
+                cute.struct.MemRange[self.o_dtype, sO_size], self.buffer_align_bytes
             ]
             sQ: cute.struct.Align[
-                cute.struct.MemRange[self.q_dtype, sQ_size],
-                self.buffer_align_bytes,
+                cute.struct.MemRange[self.q_dtype, sQ_size], self.buffer_align_bytes
             ]
             sK: cute.struct.Align[
                 # cute.cosize(sK_layout) is correct even in the case of self.uneven_kv_smem
@@ -780,16 +778,6 @@ class FlashAttentionForwardSm100:
                     cute.arch.mbarrier_init(
                         mbar_ptr + self.mbar_s0_s1_sequence_offset + i, cute.arch.WARP_SIZE
                     )
-        if const_expr(not self.use_correction_warps_for_epi) and warp_idx == 4:
-            for i in cutlass.range(self.q_stage):
-                cute.arch.mbarrier_init(
-                    mbar_ptr + self.mbar_corr_epi_full_offset + i,
-                    cute.arch.WARP_SIZE * len(self.correction_warp_ids),
-                )
-                cute.arch.mbarrier_init(
-                    mbar_ptr + self.mbar_corr_epi_empty_offset + i,
-                    cute.arch.WARP_SIZE * len(self.epilogue_warp_ids),
-                )
         if warp_idx == 5:
             for i in cutlass.range(self.q_stage):
                 cute.arch.mbarrier_init(
@@ -816,12 +804,15 @@ class FlashAttentionForwardSm100:
         mma_warp = ThreadCooperativeGroup(len([self.mma_warp_id]))
         tma_warp = ThreadCooperativeGroup(len(self.load_warp_ids))
         softmax_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE * len(self.softmax0_warp_ids))
+        # softmax_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE)
         correction_threads = ThreadCooperativeGroup(
             cute.arch.WARP_SIZE * len(self.correction_warp_ids)
         )
+        # correction_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE)
         softmax_correction_threads = ThreadCooperativeGroup(
             cute.arch.WARP_SIZE * len(self.softmax0_warp_ids + self.correction_warp_ids)
         )
+        epilogue_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE * len(self.epilogue_warp_ids))
         pipeline_q = pipeline_custom.PipelineTmaUmma.create(
             barrier_storage=storage.mbar_load_Q.data_ptr(),
             num_stages=self.q_stage,
@@ -864,10 +855,20 @@ class FlashAttentionForwardSm100:
         pipeline_sm_stats = pipeline_custom.PipelineAsync.create(
             barrier_storage=storage.mbar_softmax_stats.data_ptr(),
             num_stages=self.q_stage,
+            # num_stages=self.q_stage * 4,
             producer_group=softmax_threads,
             consumer_group=correction_threads,
             defer_sync=True,
         )
+        pipeline_o_epi = None
+        if const_expr(not self.use_correction_warps_for_epi):
+            pipeline_o_epi = pipeline_custom.PipelineAsync.create(
+                barrier_storage=storage.mbar_O_epi.data_ptr(),
+                num_stages=self.q_stage,
+                producer_group=correction_threads,
+                consumer_group=epilogue_threads,
+                defer_sync=True,
+            )
 
         # Cluster arrive after barrier init
         pipeline_init_arrive(cluster_shape_mn=cluster_layout_vmnk, is_relaxed=True)
@@ -1030,7 +1031,7 @@ class FlashAttentionForwardSm100:
                     sO,
                     gmem_tiled_copy_O,
                     tma_atom_O,
-                    mbar_ptr,
+                    pipeline_o_epi,
                     block_info,
                     num_splits,
                     SeqlenInfoCls,
@@ -1097,6 +1098,7 @@ class FlashAttentionForwardSm100:
                 sO,
                 pipeline_s_p_o,
                 pipeline_sm_stats,
+                pipeline_o_epi,
                 learnable_sink,
                 gmem_tiled_copy_O,
                 tma_atom_O,
@@ -1569,6 +1571,7 @@ class FlashAttentionForwardSm100:
             # * (len(self.softmax0_warp_ids) if stage == 0 else len(self.softmax1_warp_ids)
             * (len(self.softmax0_warp_ids))
         )
+        warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx()) % 4
 
         cta_qk_tiler = (self.mma_tiler_qk[0] // thr_mma_qk.thr_id.shape, self.mma_tiler_qk[1])
         tSAcc = tStS[(None, None), 0, 0, stage]  # (128, 128)
@@ -1718,6 +1721,7 @@ class FlashAttentionForwardSm100:
             if const_expr(self.use_block_sparsity) or has_work:
                 # See block_sparse_utils.py NOTE [SM100 block-sparse empty tiles: mbarrier contract].
                 pipeline_sm_stats.producer_acquire_w_index_phase(stage, sm_stats_producer_phase)
+                # pipeline_sm_stats.producer_acquire_w_index_phase(stage * 4 + warp_idx, sm_stats_producer_phase)
                 sm_stats_producer_phase ^= 1
 
             # Block sparse or dense iteration
@@ -1746,7 +1750,6 @@ class FlashAttentionForwardSm100:
                     sm_stats_producer_phase,
                     s0_s1_sequence_phase,
                     pipeline_sm_stats,
-                    mbar_ptr,
                     self.q_stage,
                     Int32(stage),
                     check_m_boundary,
@@ -1763,6 +1766,7 @@ class FlashAttentionForwardSm100:
                     #     cute.printf("softmax row sum stage %d: %f, row_max = %f\n", stage, softmax.row_sum[0], softmax.row_max[0])
                     # See block_sparse_utils.py NOTE [SM100 block-sparse empty tiles: mbarrier contract].
                     pipeline_sm_stats.producer_commit_w_index(stage)
+                    # pipeline_sm_stats.producer_commit_w_index(stage * 4 + warp_idx)
                     # if tidx == 0: cute.printf("softmax row sum stage %d: %f\n", stage, softmax.row_sum[0])
             else:
                 if const_expr(not self.is_split_kv) or tile_block_count > Int32(0):
@@ -1830,6 +1834,7 @@ class FlashAttentionForwardSm100:
                             tidx + stage * self.m_block_size + self.q_stage * self.m_block_size
                         ] = softmax.row_max[0]
                     pipeline_sm_stats.producer_commit_w_index(stage)
+                    # pipeline_sm_stats.producer_commit_w_index(stage * 4 + warp_idx)
 
             # # Write LSE to gmem
             # if const_expr(mLSE is not None):
@@ -1901,6 +1906,7 @@ class FlashAttentionForwardSm100:
         5. Computing row sums for normalization
         6. Coordinating pipeline synchronization between different processing stages
         """
+        warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx()) % 4
         tilePlikeFP32 = self.mma_tiler_qk[1] // Float32.width * self.v_dtype.width
         tScS = thr_mma_qk.partition_C(cute.make_identity_tensor(self.mma_tiler_qk[:2]))
         tScS = tScS[(None, None), 0, 0]  # (128, 128)
@@ -1944,6 +1950,7 @@ class FlashAttentionForwardSm100:
             # if thread_idx == 0: cute.printf("softmax acc_scale stage %d: %f, row_max = %f\n", stage, acc_scale, row_max)
         # Notify correction wg that row_max is ready
         pipeline_sm_stats.producer_commit_w_index(stage)
+        # pipeline_sm_stats.producer_commit_w_index(stage * 4 + warp_idx)
 
         # if thread_idx == 0 and stage == 0: cute.print_tensor(tSrS_t2r)
         softmax.scale_subtract_rowmax(tSrS_t2r, row_max)
@@ -1982,6 +1989,7 @@ class FlashAttentionForwardSm100:
         with cute.arch.elect_one():
             cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_P_full_2_offset + stage)
         pipeline_sm_stats.producer_acquire_w_index_phase(stage, sm_stats_producer_phase)
+        # pipeline_sm_stats.producer_acquire_w_index_phase(stage * 4 + warp_idx, sm_stats_producer_phase)
         softmax.update_row_sum(tSrS_t2r.load(), acc_scale, is_first)
         # acc_scale = cute.math.exp2(acc_scale_, fastmath=True)
         return mma_si_consumer_phase ^ 1, sm_stats_producer_phase ^ 1, s0_s1_sequence_phase ^ 1
@@ -1999,6 +2007,7 @@ class FlashAttentionForwardSm100:
         sO: cute.Tensor,
         pipeline_s_p_o: pipeline.PipelineAsync,
         pipeline_sm_stats: pipeline.PipelineAsync,
+        pipeline_o_epi: pipeline.PipelineAsync,
         learnable_sink: Optional[cute.Tensor],
         gmem_tiled_copy_O: cute.TiledCopy,
         tma_atom_O: cute.CopyAtom,
@@ -2011,6 +2020,7 @@ class FlashAttentionForwardSm100:
         blocksparse_tensors: Optional[BlockSparseTensors] = None,
     ):
         tidx = cute.arch.thread_idx()[0] % (cute.arch.WARP_SIZE * len(self.correction_warp_ids))
+        warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx()) % 4
         tScS = thr_mma_qk.partition_C(cute.make_identity_tensor(self.mma_tiler_qk[:2]))
         tStScale_layout = cute.composition(tStS.layout, cute.make_layout((self.m_block_size, 1)))
         tStScales = tuple(
@@ -2068,9 +2078,12 @@ class FlashAttentionForwardSm100:
             if has_work:
                 # Ignore first signal from softmax as no correction is required
                 pipeline_sm_stats.consumer_wait_w_index_phase(0, sm_stats_consumer_phase)
+                # pipeline_sm_stats.consumer_wait_w_index_phase(0 * 4 + warp_idx, sm_stats_consumer_phase)
                 pipeline_sm_stats.consumer_release_w_index(0)
+                # pipeline_sm_stats.consumer_release_w_index(0 * 4 + warp_idx)
                 if const_expr(self.q_stage == 2):
                     pipeline_sm_stats.consumer_wait_w_index_phase(1, sm_stats_consumer_phase)
+                    # pipeline_sm_stats.consumer_wait_w_index_phase(1 * 4 + warp_idx, sm_stats_consumer_phase)
                 sm_stats_consumer_phase ^= 1
 
                 tSrScale_t2r = cute.make_fragment(tSrScale_t2r_shape, Float32)
@@ -2078,6 +2091,7 @@ class FlashAttentionForwardSm100:
                     for stage in cutlass.range_constexpr(self.q_stage):
                         # wait for S0 / S1
                         pipeline_sm_stats.consumer_wait_w_index_phase(stage, sm_stats_consumer_phase)
+                        # pipeline_sm_stats.consumer_wait_w_index_phase(stage * 4 + warp_idx, sm_stats_consumer_phase)
                         # cute.copy(tiled_tmem_load_vec, tStScales_t2r[stage], tSrScale_t2r)
                         # cute.arch.fence_view_async_tmem_load()
                         # scale = tSrScale_t2r[0]
@@ -2093,10 +2107,12 @@ class FlashAttentionForwardSm100:
                         # Notify mma warp that O has been rescaled
                         pipeline_s_p_o.consumer_release_w_index(stage)
                         pipeline_sm_stats.consumer_release_w_index(self.q_stage - 1 - stage)
+                        # pipeline_sm_stats.consumer_release_w_index((self.q_stage - 1 - stage) * 4 + warp_idx)
                     sm_stats_consumer_phase ^= 1
                     # o_corr_consumer_phase ^= 1
                 if const_expr(self.q_stage == 2):
                     pipeline_sm_stats.consumer_release_w_index(1)
+                    # pipeline_sm_stats.consumer_release_w_index(1 * 4 + warp_idx)
                 # End of seqlen_corr_loop_steps
 
                 # Even in the case of self.overlap_sO_sQ, we can write to stage 0 of sO without
@@ -2115,6 +2131,7 @@ class FlashAttentionForwardSm100:
                             learnable_sink_val[stage] = Float32(learnable_sink[q_head_idx])
                 for stage in cutlass.range_constexpr(self.q_stage):
                     pipeline_sm_stats.consumer_wait_w_index_phase(stage, sm_stats_consumer_phase)
+                    # pipeline_sm_stats.consumer_wait_w_index_phase(stage * 4 + warp_idx, sm_stats_consumer_phase)
                     # cute.copy(tiled_tmem_load_vec, tStScales_t2r[stage], tSrScale_t2r)
                     # cute.arch.fence_view_async_tmem_load()
                     # scale = tSrScale_t2r[0]
@@ -2124,6 +2141,7 @@ class FlashAttentionForwardSm100:
                     else:
                         row_max = None
                     pipeline_sm_stats.consumer_release_w_index(stage)
+                    # pipeline_sm_stats.consumer_release_w_index(stage * 4 + warp_idx)
                     if const_expr(learnable_sink is not None):
                         LOG2_E = math.log2(math.e)
                         sink_val = learnable_sink_val[stage]
@@ -2143,9 +2161,7 @@ class FlashAttentionForwardSm100:
                         mbar_ptr + self.mbar_O_full_offset + stage, o_corr_consumer_phase
                     )
                     if const_expr(not self.use_correction_warps_for_epi):
-                        cute.arch.mbarrier_wait(
-                            mbar_ptr + self.mbar_corr_epi_empty_offset + stage, corr_epi_producer_phase
-                        )
+                        pipeline_o_epi.producer_acquire_w_index_phase(stage, corr_epi_producer_phase)
                     self.correction_epilogue(
                         thr_mma_pv,
                         tOtO[None, None, None, stage],
@@ -2159,11 +2175,11 @@ class FlashAttentionForwardSm100:
                         gO,
                         gmem_tiled_copy_O,
                     )
-                    if const_expr(not self.use_correction_warps_for_epi):
-                        cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_corr_epi_full_offset + stage)
                     # Signal for the next work tile that O buffers in tmem are already read, so
                     # mma warp can write to them
                     pipeline_s_p_o.consumer_release_w_index(stage)
+                    if const_expr(not self.use_correction_warps_for_epi):
+                        pipeline_o_epi.producer_commit_w_index(stage)
                     # if tidx == 0: cute.printf("Correction final scale for stage %d: %f\n", stage, scale)
 
                 o_corr_consumer_phase ^= 1
@@ -2199,9 +2215,7 @@ class FlashAttentionForwardSm100:
                         tOtO,
                         sO,
                         pipeline_sm_stats,
-                        mbar_ptr,
-                        self.mbar_corr_epi_full_offset,
-                        self.mbar_corr_epi_empty_offset,
+                        pipeline_o_epi,
                         sm_stats_consumer_phase,
                         o_corr_consumer_phase,
                         corr_epi_producer_phase,
@@ -2448,7 +2462,7 @@ class FlashAttentionForwardSm100:
         sO: cute.Tensor,
         gmem_tiled_copy_O: cute.TiledCopy,
         tma_atom_O: Optional[cute.CopyAtom],
-        mbar_ptr: cute.Pointer,
+        pipeline_o_epi: pipeline.PipelineAsync,
         block_info: BlockInfo,
         num_splits: int,
         SeqlenInfoCls: Callable,
@@ -2475,16 +2489,14 @@ class FlashAttentionForwardSm100:
                     for stage in cutlass.range(self.q_stage, unroll_full=True):
                         # wait from corr, issue tma store on smem
                         # 1. wait for O0 / O1 final
-                        cute.arch.mbarrier_wait(
-                            mbar_ptr + self.mbar_corr_epi_full_offset + stage, epi_consumer_phase
-                        )
+                        pipeline_o_epi.consumer_wait_w_index_phase(stage, epi_consumer_phase)
                         # 2. copy O0 / O1 to gmem
                         store_O(src_idx=stage, dst_idx=self.q_stage * m_block + stage)
                         cute.arch.cp_async_bulk_commit_group()
                     for stage in cutlass.range_constexpr(self.q_stage):
                         # Ensure O0 / O1 buffer is ready to be released
                         cute.arch.cp_async_bulk_wait_group(self.q_stage - 1 - stage, read=True)
-                        cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_corr_epi_empty_offset + stage)
+                        pipeline_o_epi.consumer_release_w_index(stage)
                 else:
                     tidx = cute.arch.thread_idx()[0] % (
                         cute.arch.WARP_SIZE * len(self.epilogue_warp_ids)
@@ -2492,15 +2504,13 @@ class FlashAttentionForwardSm100:
                     for stage in cutlass.range_constexpr(self.q_stage):
                         # wait from corr, issue tma store on smem
                         # 1. wait for O0 / O1 final
-                        cute.arch.mbarrier_wait(
-                            mbar_ptr + self.mbar_corr_epi_full_offset + stage, epi_consumer_phase
-                        )
+                        pipeline_o_epi.consumer_wait_w_index_phase(stage, epi_consumer_phase)
                         # 2. copy O0 / O1 to gmem
                         self._store_O_to_gmem(
                             sO[None, None, stage], gO, mO_cur, gmem_tiled_copy_O, tidx,
                             m_block, stage, seqlen.seqlen_q
                         )
-                        cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_corr_epi_empty_offset + stage)
+                        pipeline_o_epi.consumer_release_w_index(stage)
 
                 epi_consumer_phase ^= 1
 
