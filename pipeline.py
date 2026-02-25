@@ -8,6 +8,7 @@ from cutlass import Boolean, Int32, const_expr
 from cutlass.cutlass_dsl import if_generate, dsl_user_op
 from cutlass.pipeline import PipelineState
 from cutlass.pipeline import PipelineUserType
+from cutlass.pipeline import PipelineAsync as PipelineAsyncOg
 from cutlass.pipeline import PipelineTmaAsync as PipelineTmaAsyncOg
 from cutlass.pipeline import PipelineTmaUmma as PipelineTmaUmmaOg
 from cutlass.pipeline import PipelineUmmaAsync as PipelineUmmaAsyncOg
@@ -99,6 +100,59 @@ def make_pipeline_state(type: PipelineUserType, stages: int):
 
 
 @dataclass(frozen=True)
+class PipelineAsync(PipelineAsyncOg):
+    @staticmethod
+    def create(*args, **kwargs):
+        obj = PipelineAsyncOg.create(*args, **kwargs)
+        # Can't assign to __class__ directly since the dataclass is frozen
+        # obj.__class__ = PipelineAsync
+        object.__setattr__(obj, "__class__", PipelineAsync)
+        return obj
+
+    @dsl_user_op
+    def producer_acquire_w_index_phase(
+        self,
+        index: Int32,
+        phase: Int32,
+        try_acquire_token: Optional[Boolean] = None,
+        *,
+        loc=None,
+        ip=None,
+    ):
+        if_generate(
+            try_acquire_token is None or try_acquire_token == 0,
+            lambda: self.sync_object_empty.wait(index, phase, loc=loc, ip=ip),
+            loc=loc,
+            ip=ip,
+        )
+
+    @dsl_user_op
+    def producer_commit_w_index(self, index: Int32, *, loc=None, ip=None):
+        self.sync_object_full.arrive(index, self.producer_mask, loc=loc, ip=ip)
+
+    @dsl_user_op
+    def consumer_wait_w_index_phase(
+        self,
+        index: Int32,
+        phase: Int32,
+        try_wait_token: Optional[Boolean] = None,
+        *,
+        loc=None,
+        ip=None,
+    ):
+        if_generate(
+            try_wait_token is None or try_wait_token == 0,
+            lambda: self.sync_object_full.wait(index, phase, loc=loc, ip=ip),
+            loc=loc,
+            ip=ip,
+        )
+
+    @dsl_user_op
+    def consumer_release_w_index(self, index: Int32, *, loc=None, ip=None):
+        self.sync_object_empty.arrive(index, self.consumer_mask, loc=loc, ip=ip)
+
+
+@dataclass(frozen=True)
 class PipelineTmaAsync(PipelineTmaAsyncOg):
     """
     Override producer_acquire to take in extra_tx_count parameter.
@@ -108,7 +162,6 @@ class PipelineTmaAsync(PipelineTmaAsyncOg):
     def create(*args, **kwargs):
         obj = PipelineTmaAsyncOg.create(*args, **kwargs)
         # Can't assign to __class__ directly since the dataclass is frozen
-        # obj.__class__ = PipelineTmaAsync
         object.__setattr__(obj, "__class__", PipelineTmaAsync)
         return obj
 
