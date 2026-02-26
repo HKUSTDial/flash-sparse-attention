@@ -114,7 +114,9 @@ class FlashAttentionForwardSm100:
         # to being the P @ V MMA, then write the rest of P and signal again. This allows some overlap
         # between compute the last couple columns of P and the P @ V MMA.
         self.split_P_arrive = n_block_size // 4 * 3
+        self.split_P_arrive = int(self.split_P_arrive / 32) * 32  # multiple of 32
         assert self.split_P_arrive % 32 == 0
+        assert self.split_P_arrive < self.n_block_size
         self.arch = BaseDSL._get_dsl().get_arch_enum()
         assert self.arch >= Arch.sm_100 and self.arch <= Arch.sm_110f, "Only SM 10.x and 11.x are supported"
 
@@ -587,9 +589,6 @@ class FlashAttentionForwardSm100:
         self.tile_scheduler_cls = TileScheduler
         grid_dim = TileScheduler.get_grid_shape(tile_sched_params)
 
-        self.mbar_s0_s1_sequence_offset = 0
-        self.mbar_total = self.mbar_s0_s1_sequence_offset + 8
-
         sO_size = cute.cosize(sO_layout) if const_expr(not self.overlap_sO_sQ) else 0
         sQ_size = (
             cute.cosize(sQ_layout) if const_expr(not self.overlap_sO_sQ) else
@@ -607,7 +606,7 @@ class FlashAttentionForwardSm100:
             mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 2]
             # mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 4 * 2]
             mbar_O_epi: cute.struct.MemRange[Int64, self.q_stage * 2]
-            mbar_ptr: cute.struct.MemRange[Int64, self.mbar_total]
+            mbar_s0_s1_sequence: cute.struct.MemRange[Int64, 2 * 2]
             # Tmem dealloc cluster barrier
             tmem_dealloc_mbar_ptr: Int64
             # Tmem holding buffer
@@ -766,8 +765,7 @@ class FlashAttentionForwardSm100:
 
         # Prefetch tma descriptor
         if warp_idx == 0:
-            cpasync.prefetch_descriptor(tma_atom_Q)
-            for tma_atom in (tma_atom_K, tma_atom_V, tma_atom_O):
+            for tma_atom in (tma_atom_Q, tma_atom_K, tma_atom_V, tma_atom_O):
                 if const_expr(tma_atom is not None):
                     cpasync.prefetch_descriptor(tma_atom)
 
@@ -801,15 +799,6 @@ class FlashAttentionForwardSm100:
             two_cta_tmem_dealloc_mbar_ptr=storage.tmem_dealloc_mbar_ptr,
         )
 
-        mbar_ptr = storage.mbar_ptr.data_ptr()
-        # Use the first N warps to initialize barriers
-        # Init "full" barrier with number of producers, "empty" barrier with number of consumers
-        if warp_idx == 3:
-            if const_expr(self.s0_s1_barrier):
-                for i in cutlass.range(8):
-                    cute.arch.mbarrier_init(
-                        mbar_ptr + self.mbar_s0_s1_sequence_offset + i, cute.arch.WARP_SIZE
-                    )
         ThreadCooperativeGroup = partial(pipeline.CooperativeGroup, pipeline.Agent.Thread)
         mma_warp = ThreadCooperativeGroup(len([self.mma_warp_id]))
         tma_warp = ThreadCooperativeGroup(len(self.load_warp_ids))
@@ -878,6 +867,18 @@ class FlashAttentionForwardSm100:
             consumer_group=correction_threads,
             defer_sync=True,
         )
+        pipeline_s0_s1_sequence = None
+        if const_expr(self.s0_s1_barrier and self.q_stage > 1):
+            # This is not a typical producer-consumer pipeline. We will directly use
+            # pipeline_s0_s1_sequence.sync_object_full and will not use
+            # pipeline_s0_s1_sequence.sync_object_empty.
+            pipeline_s0_s1_sequence = pipeline_custom.PipelineAsync.create(
+                barrier_storage=storage.mbar_s0_s1_sequence.data_ptr(),
+                num_stages=2,
+                producer_group=softmax_threads,
+                consumer_group=softmax_threads,
+                defer_sync=True,
+            )
         pipeline_sm_stats = pipeline_custom.PipelineAsync.create(
             barrier_storage=storage.mbar_softmax_stats.data_ptr(),
             num_stages=self.q_stage,
@@ -996,7 +997,6 @@ class FlashAttentionForwardSm100:
                 tma_atom_V,
                 pipeline_q,
                 pipeline_kv,
-                mbar_ptr,
                 block_info,
                 num_splits,
                 SeqlenInfoCls,
@@ -1077,8 +1077,8 @@ class FlashAttentionForwardSm100:
                 pipeline_s_p_o=pipeline_s_p_o,
                 pipeline_p_lastsplit=pipeline_p_lastsplit,
                 pipeline_sm_stats=pipeline_sm_stats,
+                pipeline_s0_s1_sequence=pipeline_s0_s1_sequence,
                 learnable_sink=learnable_sink,
-                mbar_ptr=mbar_ptr,
                 block_info=block_info,
                 num_splits=num_splits,
                 SeqlenInfoCls=SeqlenInfoCls,
@@ -1151,7 +1151,6 @@ class FlashAttentionForwardSm100:
         tma_atom_V: Optional[cute.CopyAtom],
         pipeline_q: pipeline.PipelineAsync,
         pipeline_kv: pipeline.PipelineAsync,
-        mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
         num_splits: Int32,
         SeqlenInfoCls: Callable,
@@ -1563,8 +1562,8 @@ class FlashAttentionForwardSm100:
         pipeline_s_p_o: pipeline.PipelineAsync,
         pipeline_p_lastsplit: pipeline.PipelineAsync,
         pipeline_sm_stats: pipeline.PipelineAsync,
+        pipeline_s0_s1_sequence: Optional[pipeline.PipelineAsync],
         learnable_sink: Optional[cute.Tensor],
-        mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
         num_splits: Int32,
         SeqlenInfoCls: Callable,
@@ -1632,7 +1631,6 @@ class FlashAttentionForwardSm100:
         # self.warp_scheduler_barrier_init()
 
         warp_idx_in_wg = cute.arch.make_warp_uniform(cute.arch.warp_idx()) % 4
-        mbar_s0_s1_sequence_offset = self.mbar_s0_s1_sequence_offset + warp_idx_in_wg
 
         tile_scheduler = TileSchedulerCls()
         work_tile = tile_scheduler.initial_work_tile_info()
@@ -1716,12 +1714,11 @@ class FlashAttentionForwardSm100:
             softmax_step = partial(
                 self.softmax_step,
                 softmax=softmax,
-                mbar_ptr=mbar_ptr,
-                mbar_s0_s1_sequence_offset=mbar_s0_s1_sequence_offset,
                 thr_mma_qk=thr_mma_qk,
                 pipeline_s_p_o=pipeline_s_p_o,
                 pipeline_p_lastsplit=pipeline_p_lastsplit,
                 pipeline_sm_stats=pipeline_sm_stats,
+                pipeline_s0_s1_sequence=pipeline_s0_s1_sequence,
                 thr_tmem_load=thr_tmem_load,
                 thr_tmem_store=thr_tmem_store,
                 thr_tmem_store_scale=thr_tmem_store_scale,
@@ -1889,12 +1886,11 @@ class FlashAttentionForwardSm100:
         s0_s1_sequence_phase: Int32,
         n_block: Int32,
         softmax: SoftmaxSm100,
-        mbar_ptr: cute.Pointer,
-        mbar_s0_s1_sequence_offset: Int32,
         thr_mma_qk: cute.core.ThrMma,
         pipeline_s_p_o: pipeline.PipelineAsync,
         pipeline_p_lastsplit: pipeline.PipelineAsync,
         pipeline_sm_stats: pipeline.PipelineAsync,
+        pipeline_s0_s1_sequence: Optional[pipeline.PipelineAsync],
         thr_tmem_load: cute.CopyAtom,
         thr_tmem_store: cute.CopyAtom,
         thr_tmem_store_scale: cute.CopyAtom,
@@ -1978,9 +1974,7 @@ class FlashAttentionForwardSm100:
         softmax.scale_subtract_rowmax(tSrS_t2r, row_max)
         # Sequence barrier wait
         if const_expr(self.s0_s1_barrier):
-            cute.arch.mbarrier_wait(
-                mbar_ptr + mbar_s0_s1_sequence_offset + stage * 4, s0_s1_sequence_phase
-            )
+            pipeline_s0_s1_sequence.sync_object_full.wait(stage, s0_s1_sequence_phase)
         tSrP_r2t_f32 = cute.make_fragment(
             thr_tmem_store.partition_S(cute.make_identity_tensor(tScP_shape)).shape, Float32
         )
@@ -1996,7 +1990,7 @@ class FlashAttentionForwardSm100:
         )
         # Sequence barrier arrive
         if const_expr(self.s0_s1_barrier):
-            cute.arch.mbarrier_arrive(mbar_ptr + mbar_s0_s1_sequence_offset + (1 - stage) * 4)
+            pipeline_s0_s1_sequence.sync_object_full.arrive(1 - stage, dst=None)
         # print(tSrP_r2t_f32, tStP_r2t)
         # cute.copy(thr_tmem_store, tSrP_r2t_f32, tStP_r2t)
         for i in cutlass.range_constexpr(cute.size(tStP_r2t.shape[2])):
