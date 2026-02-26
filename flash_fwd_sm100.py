@@ -583,8 +583,7 @@ class FlashAttentionForwardSm100:
 
         self.mbar_s0_s1_sequence_offset = 0
         self.mbar_tmem_dealloc_offset = self.mbar_s0_s1_sequence_offset + 8
-        self.mbar_P_full_2_offset = self.mbar_tmem_dealloc_offset + 1
-        self.mbar_total = self.mbar_P_full_2_offset + self.q_stage
+        self.mbar_total = self.mbar_tmem_dealloc_offset + 1
 
         sO_size = cute.cosize(sO_layout) if const_expr(not self.overlap_sO_sQ) else 0
         sQ_size = (
@@ -598,6 +597,7 @@ class FlashAttentionForwardSm100:
             mbar_load_Q: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
             mbar_load_KV: cute.struct.MemRange[cutlass.Int64, self.kv_stage * 2]
             mbar_S_full_P_full_O_rescaled: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
+            mbar_P_full_lastsplit: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
             mbar_O_full: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
             mbar_softmax_stats: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
             # mbar_softmax_stats: cute.struct.MemRange[cutlass.Int64, self.q_stage * 4 * 2]
@@ -781,11 +781,6 @@ class FlashAttentionForwardSm100:
                     cute.arch.mbarrier_init(
                         mbar_ptr + self.mbar_s0_s1_sequence_offset + i, cute.arch.WARP_SIZE
                     )
-        if warp_idx == 6:
-            for i in cutlass.range(self.q_stage):
-                cute.arch.mbarrier_init(
-                    mbar_ptr + self.mbar_P_full_2_offset + i, len(self.softmax0_warp_ids)
-                )
         if warp_idx == 7:
             cute.arch.mbarrier_init(
                 mbar_ptr + self.mbar_tmem_dealloc_offset,
@@ -801,6 +796,7 @@ class FlashAttentionForwardSm100:
         ThreadCooperativeGroup = partial(pipeline.CooperativeGroup, pipeline.Agent.Thread)
         mma_warp = ThreadCooperativeGroup(len([self.mma_warp_id]))
         tma_warp = ThreadCooperativeGroup(len(self.load_warp_ids))
+        softmax_warps = ThreadCooperativeGroup(len(self.softmax0_warp_ids))
         softmax_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE * len(self.softmax0_warp_ids))
         # softmax_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE)
         correction_threads = ThreadCooperativeGroup(
@@ -848,6 +844,13 @@ class FlashAttentionForwardSm100:
             num_stages=self.q_stage,
             producer_group=mma_warp,
             consumer_group=softmax_correction_threads,
+            defer_sync=True,
+        )
+        pipeline_p_lastsplit = pipeline_custom.PipelineAsyncUmma.create(
+            barrier_storage=storage.mbar_P_full_lastsplit.data_ptr(),
+            num_stages=self.q_stage,
+            producer_group=softmax_warps,
+            consumer_group=mma_warp,
             defer_sync=True,
         )
         # MMA warp uses this to signal to the correction warps that O is ready.
@@ -1006,8 +1009,8 @@ class FlashAttentionForwardSm100:
                 pipeline_q,
                 pipeline_kv,
                 pipeline_s_p_o,
+                pipeline_p_lastsplit,
                 pipeline_o_acc,
-                mbar_ptr,
                 block_info,
                 num_splits,
                 SeqlenInfoCls,
@@ -1062,6 +1065,7 @@ class FlashAttentionForwardSm100:
                 sScale=sScale,
                 mLSE=mLSE,
                 pipeline_s_p_o=pipeline_s_p_o,
+                pipeline_p_lastsplit=pipeline_p_lastsplit,
                 pipeline_sm_stats=pipeline_sm_stats,
                 learnable_sink=learnable_sink,
                 mbar_ptr=mbar_ptr,
@@ -1110,7 +1114,6 @@ class FlashAttentionForwardSm100:
                 learnable_sink,
                 gmem_tiled_copy_O,
                 tma_atom_O,
-                mbar_ptr,
                 softmax_scale_log2,
                 block_info,
                 num_splits,
@@ -1322,8 +1325,8 @@ class FlashAttentionForwardSm100:
         pipeline_q: pipeline.PipelineAsync,
         pipeline_kv: pipeline.PipelineAsync,
         pipeline_s_p_o: pipeline.PipelineAsync,
+        pipeline_p_lastsplit: pipeline.PipelineAsync,
         pipeline_o_acc: pipeline.PipelineAsync,
-        mbar_ptr: cute.Pointer,
         block_info: BlockInfo,
         num_splits: Int32,
         SeqlenInfoCls: Callable,
@@ -1453,7 +1456,7 @@ class FlashAttentionForwardSm100:
                             tCrB=tOrVi,
                             sB=sV_cur,
                             zero_init=not O_should_accumulate,
-                            mbar_ptr=mbar_ptr + self.mbar_P_full_2_offset + stage,
+                            mbar_ptr=pipeline_p_lastsplit.sync_object_full.get_barrier(stage),
                             mbar_phase=P_full_O_rescaled_phase,
                         )
                         # Don't need to signal O_full to the correction warps since the
@@ -1514,7 +1517,7 @@ class FlashAttentionForwardSm100:
                         tCrB=tOrVi,
                         sB=sV_cur,
                         zero_init=not O_should_accumulate,
-                        mbar_ptr=mbar_ptr + self.mbar_P_full_2_offset + stage,
+                        mbar_ptr=pipeline_p_lastsplit.sync_object_full.get_barrier(stage),
                         mbar_phase=P_full_O_rescaled_phase,
                     )
                     # 4. release accumulated O0_partial
@@ -1548,6 +1551,7 @@ class FlashAttentionForwardSm100:
         sScale: cute.Tensor,
         mLSE: Optional[cute.Tensor],
         pipeline_s_p_o: pipeline.PipelineAsync,
+        pipeline_p_lastsplit: pipeline.PipelineAsync,
         pipeline_sm_stats: pipeline.PipelineAsync,
         learnable_sink: Optional[cute.Tensor],
         mbar_ptr: cute.Pointer,
@@ -1706,6 +1710,7 @@ class FlashAttentionForwardSm100:
                 mbar_s0_s1_sequence_offset=mbar_s0_s1_sequence_offset,
                 thr_mma_qk=thr_mma_qk,
                 pipeline_s_p_o=pipeline_s_p_o,
+                pipeline_p_lastsplit=pipeline_p_lastsplit,
                 pipeline_sm_stats=pipeline_sm_stats,
                 thr_tmem_load=thr_tmem_load,
                 thr_tmem_store=thr_tmem_store,
@@ -1878,6 +1883,7 @@ class FlashAttentionForwardSm100:
         mbar_s0_s1_sequence_offset: Int32,
         thr_mma_qk: cute.core.ThrMma,
         pipeline_s_p_o: pipeline.PipelineAsync,
+        pipeline_p_lastsplit: pipeline.PipelineAsync,
         pipeline_sm_stats: pipeline.PipelineAsync,
         thr_tmem_load: cute.CopyAtom,
         thr_tmem_store: cute.CopyAtom,
@@ -1993,7 +1999,7 @@ class FlashAttentionForwardSm100:
         cute.arch.fence_view_async_tmem_store()
         cute.arch.sync_warp()
         with cute.arch.elect_one():
-            cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_P_full_2_offset + stage)
+            pipeline_p_lastsplit.producer_commit_w_index(stage)
         pipeline_sm_stats.producer_acquire_w_index_phase(stage, sm_stats_producer_phase)
         # pipeline_sm_stats.producer_acquire_w_index_phase(stage * 4 + warp_idx, sm_stats_producer_phase)
         softmax.update_row_sum(tSrS_t2r.load(), acc_scale, is_first)
@@ -2018,7 +2024,6 @@ class FlashAttentionForwardSm100:
         learnable_sink: Optional[cute.Tensor],
         gmem_tiled_copy_O: cute.TiledCopy,
         tma_atom_O: cute.CopyAtom,
-        mbar_ptr: cute.Pointer,
         softmax_scale_log2: Float32,
         block_info: BlockInfo,
         num_splits: Int32,
@@ -2361,7 +2366,7 @@ class FlashAttentionForwardSm100:
         :type sO: cute.Tensor
         """
 
-        corr_tile_size = 32 * 8 // self.o_dtype.width
+        corr_tile_size = 8 * 32 // self.o_dtype.width
         tOsO = thr_mma.partition_C(sO)
         tOcO = thr_mma.partition_C(cute.make_identity_tensor(self.mma_tiler_pv[:2]))
 
@@ -2585,32 +2590,6 @@ class FlashAttentionForwardSm100:
             return cute.make_tensor(sX.iterator + offset, sX.layout)
         else:
             return sX
-
-    def make_and_init_load_kv_pipeline(self, load_kv_mbar_ptr):
-        load_kv_consumer_group = pipeline.CooperativeGroup(
-            pipeline.Agent.Thread, len([self.mma_warp_id])
-        )
-        if self.use_tma_KV:
-            load_kv_producer_group = pipeline.CooperativeGroup(
-                pipeline.Agent.Thread, len(self.load_warp_ids)
-            )
-            return pipeline_custom.PipelineTmaUmma.create(
-                barrier_storage=load_kv_mbar_ptr,
-                num_stages=self.kv_stage,
-                producer_group=load_kv_producer_group,
-                consumer_group=load_kv_consumer_group,
-                tx_count=self.tma_copy_bytes["K"],
-            )
-        else:
-            load_kv_producer_group = pipeline.CooperativeGroup(
-                pipeline.Agent.Thread, len(self.load_warp_ids) * cute.arch.WARP_SIZE
-            )
-            return pipeline.PipelineAsyncUmma.create(
-                num_stages=self.kv_stage,
-                producer_group=load_kv_producer_group,
-                consumer_group=load_kv_consumer_group,
-                barrier_storage=load_kv_mbar_ptr,
-            )
 
     # @cute.jit
     # def warp_scheduler_barrier_init(self):
