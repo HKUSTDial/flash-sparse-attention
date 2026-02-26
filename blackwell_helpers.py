@@ -380,6 +380,7 @@ def gemm_ptx_partial(
     sB: cute.Tensor,
     mbar_ptr: Optional[cutlass.Pointer] = None,
     mbar_phase: Optional[Int32] = None,
+    split_arrive: Optional[int] = None,
     zero_init: bool | Boolean = False,
     # sA_offset: Int32 = 0,
     # acc_offset: Int32 = 0,
@@ -509,6 +510,10 @@ def gemm_ptx_partial(
         ]
         if const_expr(mbar_ptr is not None):
             assert mbar_phase is not None, "mbar_phase must be provided when mbar_ptr is not None"
+            assert split_arrive is not None, (
+                "split_arrive must be provided when mbar_ptr is not None"
+            )
+            split_arrive_idx = split_arrive // op.shape_mnk[2]
             input_args.append(mbar_ptr.toint().ir_value())
             input_args.append(Int32(mbar_phase).ir_value())
             mbar_wait_str = (
@@ -561,9 +566,7 @@ def gemm_ptx_partial(
                 )
                 for k in range(
                     1,
-                    cute.size(tCrA.shape[2])
-                    if const_expr(mbar_ptr is None)
-                    else cute.size(tCrA.shape[2]) // 4 * 3,
+                    cute.size(tCrA.shape[2]) if const_expr(mbar_ptr is None) else split_arrive_idx,
                 )
             )
             + mbar_wait_str
@@ -574,7 +577,7 @@ def gemm_ptx_partial(
                         f"mov.b64 smem_desc_b, {{smem_desc_b_lo, smem_desc_b_hi}};\n\t"
                         f"@leader_thread tcgen05.mma.cta_group::{cta_group}.kind::f16 [tmem_acc], [tmem_a + {hex(offset_a[k])}], smem_desc_b, idesc, 1;\n\t"
                     )
-                    for k in range(cute.size(tCrA.shape[2]) // 4 * 3, cute.size(tCrA.shape[2]))
+                    for k in range(split_arrive_idx, cute.size(tCrA.shape[2]))
                 )
                 if const_expr(mbar_ptr is not None)
                 else ""

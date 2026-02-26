@@ -110,6 +110,11 @@ class FlashAttentionForwardSm100:
         self.q_stage = q_stage
         assert self.q_stage in [1, 2]
         self.use_2cta_instrs = False
+        # If split_P_arrive, the softmax warps write some columns of P first, signal to the MMA warp
+        # to being the P @ V MMA, then write the rest of P and signal again. This allows some overlap
+        # between compute the last couple columns of P and the P @ V MMA.
+        self.split_P_arrive = n_block_size // 4 * 3
+        assert self.split_P_arrive % 32 == 0
         self.arch = BaseDSL._get_dsl().get_arch_enum()
         assert self.arch >= Arch.sm_100 and self.arch <= Arch.sm_110f, "Only SM 10.x and 11.x are supported"
 
@@ -1365,6 +1370,7 @@ class FlashAttentionForwardSm100:
                 self.tmem_o_offset[stage],
                 tOrP[None, None, None, stage],
                 sA=None,
+                split_arrive=self.split_P_arrive if self.split_P_arrive > 0 else None,
             )
             for stage in range(self.q_stage)
         ]
@@ -1460,7 +1466,7 @@ class FlashAttentionForwardSm100:
                             tCrB=tOrVi,
                             sB=sV_cur,
                             zero_init=not O_should_accumulate,
-                            mbar_ptr=pipeline_p_lastsplit.sync_object_full.get_barrier(stage),
+                            mbar_ptr=pipeline_p_lastsplit.sync_object_full.get_barrier(stage) if self.split_P_arrive > 0 else None,
                             mbar_phase=P_full_O_rescaled_phase,
                         )
                         # Don't need to signal O_full to the correction warps since the
@@ -1521,7 +1527,7 @@ class FlashAttentionForwardSm100:
                         tCrB=tOrVi,
                         sB=sV_cur,
                         zero_init=not O_should_accumulate,
-                        mbar_ptr=pipeline_p_lastsplit.sync_object_full.get_barrier(stage),
+                        mbar_ptr=pipeline_p_lastsplit.sync_object_full.get_barrier(stage) if self.split_P_arrive > 0 else None,
                         mbar_phase=P_full_O_rescaled_phase,
                     )
                     # 4. release accumulated O0_partial
@@ -1995,15 +2001,20 @@ class FlashAttentionForwardSm100:
         # cute.copy(thr_tmem_store, tSrP_r2t_f32, tStP_r2t)
         for i in cutlass.range_constexpr(cute.size(tStP_r2t.shape[2])):
             cute.copy(thr_tmem_store, tSrP_r2t_f32[None, None, i], tStP_r2t[None, None, i])
-            if const_expr(i + 1 == cute.size(tStP_r2t.shape[2]) // 4 * 3):
-                # Notify mma warp that the 1st half of P is ready
-                cute.arch.fence_view_async_tmem_store()
-                pipeline_s_p_o.consumer_release_w_index(stage)
+            if const_expr(self.split_P_arrive > 0):
+                split_P_arrive_idx = cute.size(tStP_r2t.shape[2]) * self.split_P_arrive // self.n_block_size
+                if const_expr(i + 1 == split_P_arrive_idx):
+                    # Notify mma warp that the 1st half of P is ready
+                    cute.arch.fence_view_async_tmem_store()
+                    pipeline_s_p_o.consumer_release_w_index(stage)
         # Notify mma warp that the 2nd half of P is ready
         cute.arch.fence_view_async_tmem_store()
-        cute.arch.sync_warp()
-        with cute.arch.elect_one():
-            pipeline_p_lastsplit.producer_commit_w_index(stage)
+        if const_expr(self.split_P_arrive > 0):
+            cute.arch.sync_warp()
+            with cute.arch.elect_one():
+                pipeline_p_lastsplit.producer_commit_w_index(stage)
+        else:
+            pipeline_s_p_o.consumer_release_w_index(stage)
         pipeline_sm_stats.producer_acquire_w_index_phase(stage, sm_stats_producer_phase)
         # pipeline_sm_stats.producer_acquire_w_index_phase(stage * 4 + warp_idx, sm_stats_producer_phase)
         softmax.update_row_sum(tSrS_t2r.load(), acc_scale, is_first)
