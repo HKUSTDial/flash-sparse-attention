@@ -22,7 +22,7 @@ import cuda.bindings.driver as cuda
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Int32, const_expr
+from cutlass import Float32, Int32, Int64, const_expr
 from cutlass.cute.nvgpu import cpasync
 import cutlass.cute.nvgpu.tcgen05 as tcgen05
 import cutlass.utils.blackwell_helpers as sm100_utils_basic
@@ -63,6 +63,7 @@ from flash_attn.cute.tile_scheduler import (
 
 class NamedBarrierFwd(enum.IntEnum):
     Epilogue = enum.auto()  # starts from 1 as barrier 0 is reserved for sync_threads()
+    TmemPtr = enum.auto()
 #     WarpSchedulerWG1 = enum.auto()
 #     WarpSchedulerWG2 = enum.auto()
 #     WarpSchedulerWG3 = enum.auto()
@@ -108,6 +109,7 @@ class FlashAttentionForwardSm100:
         self.n_block_size = n_block_size
         self.q_stage = q_stage
         assert self.q_stage in [1, 2]
+        self.use_2cta_instrs = False
         self.arch = BaseDSL._get_dsl().get_arch_enum()
         assert self.arch >= Arch.sm_100 and self.arch <= Arch.sm_110f, "Only SM 10.x and 11.x are supported"
 
@@ -161,8 +163,7 @@ class FlashAttentionForwardSm100:
         self.epilogue_warp_ids = (13,)
         self.load_warp_ids = (14,)
         self.empty_warp_ids = (15,)
-        SM100_TMEM_CAPACITY_COLUMNS = 512
-        self.tmem_alloc_cols = SM100_TMEM_CAPACITY_COLUMNS
+        self.tmem_alloc_cols = cute.arch.get_max_tmem_alloc_cols("sm_100")
 
         self.threads_per_cta = cute.arch.WARP_SIZE * len(
             (
@@ -199,7 +200,7 @@ class FlashAttentionForwardSm100:
             for i in range(self.q_stage)
         ]  # e.g., 256, 384
         self.tmem_total = self.tmem_o_offset[-1] + self.head_dim_v_padded
-        assert self.tmem_total <= SM100_TMEM_CAPACITY_COLUMNS
+        assert self.tmem_total <= self.tmem_alloc_cols
         self.tmem_s_to_p_offset = self.n_block_size // 2
         self.tmem_p_offset = [
             self.tmem_s_offset[i] + self.tmem_s_to_p_offset for i in range(2)
@@ -582,8 +583,7 @@ class FlashAttentionForwardSm100:
         grid_dim = TileScheduler.get_grid_shape(tile_sched_params)
 
         self.mbar_s0_s1_sequence_offset = 0
-        self.mbar_tmem_dealloc_offset = self.mbar_s0_s1_sequence_offset + 8
-        self.mbar_total = self.mbar_tmem_dealloc_offset + 1
+        self.mbar_total = self.mbar_s0_s1_sequence_offset + 8
 
         sO_size = cute.cosize(sO_layout) if const_expr(not self.overlap_sO_sQ) else 0
         sQ_size = (
@@ -594,15 +594,17 @@ class FlashAttentionForwardSm100:
         @cute.struct
         class SharedStorage:
             # m_barriers for pipelines
-            mbar_load_Q: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
-            mbar_load_KV: cute.struct.MemRange[cutlass.Int64, self.kv_stage * 2]
-            mbar_S_full_P_full_O_rescaled: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
-            mbar_P_full_lastsplit: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
-            mbar_O_full: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
-            mbar_softmax_stats: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
-            # mbar_softmax_stats: cute.struct.MemRange[cutlass.Int64, self.q_stage * 4 * 2]
-            mbar_O_epi: cute.struct.MemRange[cutlass.Int64, self.q_stage * 2]
-            mbar_ptr: cute.struct.MemRange[cutlass.Int64, self.mbar_total]
+            mbar_load_Q: cute.struct.MemRange[Int64, self.q_stage * 2]
+            mbar_load_KV: cute.struct.MemRange[Int64, self.kv_stage * 2]
+            mbar_S_full_P_full_O_rescaled: cute.struct.MemRange[Int64, self.q_stage * 2]
+            mbar_P_full_lastsplit: cute.struct.MemRange[Int64, self.q_stage * 2]
+            mbar_O_full: cute.struct.MemRange[Int64, self.q_stage * 2]
+            mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 2]
+            # mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 4 * 2]
+            mbar_O_epi: cute.struct.MemRange[Int64, self.q_stage * 2]
+            mbar_ptr: cute.struct.MemRange[Int64, self.mbar_total]
+            # Tmem dealloc cluster barrier
+            tmem_dealloc_mbar_ptr: Int64
             # Tmem holding buffer
             tmem_holding_buf: Int32
             # Smem tensors
@@ -764,12 +766,34 @@ class FlashAttentionForwardSm100:
                 if const_expr(tma_atom is not None):
                     cpasync.prefetch_descriptor(tma_atom)
 
+        cluster_layout_vmnk = cute.tiled_divide(
+            cute.make_layout(self.cluster_shape_mnk), (tiled_mma_qk.thr_id.shape,)
+        )
+        # Setup cta/thread coordinates
+        bidx, _, _ = cute.arch.block_idx()
+        mma_tile_coord_v = bidx % cute.size(tiled_mma_qk.thr_id.shape)
+        is_leader_cta = mma_tile_coord_v == 0
+
         # Alloc
         smem = cutlass.utils.SmemAllocator()
         storage = smem.allocate(self.shared_storage)
 
-        cluster_layout_vmnk = cute.tiled_divide(
-            cute.make_layout(self.cluster_shape_mnk), (tiled_mma_qk.thr_id.shape,)
+        tmem_alloc_barrier = pipeline.NamedBarrier(
+            barrier_id=int(NamedBarrierFwd.TmemPtr),
+            num_threads=cute.arch.WARP_SIZE * len(
+                (self.mma_warp_id,
+                 *self.softmax0_warp_ids,
+                 *self.softmax1_warp_ids,
+                 *self.correction_warp_ids)
+            ),
+        )
+        # Tensor memory dealloc barrier init
+        tmem = cutlass.utils.TmemAllocator(
+            storage.tmem_holding_buf,
+            barrier_for_retrieve=tmem_alloc_barrier,
+            allocator_warp_id=self.mma_warp_id,
+            is_two_cta=self.use_2cta_instrs,
+            two_cta_tmem_dealloc_mbar_ptr=storage.tmem_dealloc_mbar_ptr,
         )
 
         mbar_ptr = storage.mbar_ptr.data_ptr()
@@ -781,18 +805,6 @@ class FlashAttentionForwardSm100:
                     cute.arch.mbarrier_init(
                         mbar_ptr + self.mbar_s0_s1_sequence_offset + i, cute.arch.WARP_SIZE
                     )
-        if warp_idx == 7:
-            cute.arch.mbarrier_init(
-                mbar_ptr + self.mbar_tmem_dealloc_offset,
-                cute.arch.WARP_SIZE
-                * len(
-                    (
-                        *self.softmax0_warp_ids,
-                        *self.softmax1_warp_ids,
-                        *self.correction_warp_ids,
-                    )
-                ),
-            )
         ThreadCooperativeGroup = partial(pipeline.CooperativeGroup, pipeline.Agent.Thread)
         mma_warp = ThreadCooperativeGroup(len([self.mma_warp_id]))
         tma_warp = ThreadCooperativeGroup(len(self.load_warp_ids))
@@ -992,11 +1004,10 @@ class FlashAttentionForwardSm100:
         # ///////////////////////////////////////////////////////////////////////////////
         if warp_idx == self.mma_warp_id:
             cute.arch.setmaxregister_decrease(self.num_regs_other)
-            # Alloc tmem buffer
-            tmem_alloc_cols = Int32(self.tmem_alloc_cols)
-            cute.arch.alloc_tmem(tmem_alloc_cols, storage.tmem_holding_buf)
-            cute.arch.sync_warp()
-
+            # Alloc tensor memory buffer
+            tmem.allocate(cute.arch.get_max_tmem_alloc_cols("sm_100"))
+            tmem.wait_for_alloc()
+            tmem_ptr = tmem.retrieve_ptr(self.qk_acc_dtype)
             self.mma(
                 tiled_mma_qk,
                 tiled_mma_pv,
@@ -1017,18 +1028,9 @@ class FlashAttentionForwardSm100:
                 TileSchedulerCls,
                 blocksparse_tensors,
             )
-
-            # dealloc tmem buffer
-            cute.arch.relinquish_tmem_alloc_permit()
-            cute.arch.mbarrier_wait(mbar_ptr + self.mbar_tmem_dealloc_offset, 0)
-            tmem_alloc_cols = Int32(self.tmem_alloc_cols)
-            #  Retrieving tmem ptr and make acc
-            tmem_ptr = cute.arch.retrieve_tmem_ptr(
-                Float32,
-                alignment=16,
-                ptr_to_buffer_holding_addr=storage.tmem_holding_buf,
-            )
-            cute.arch.dealloc_tmem(tmem_ptr, tmem_alloc_cols)
+            # Dealloc the tensor memory buffer
+            tmem.relinquish_alloc_permit()
+            tmem.free(tmem_ptr)
 
         # ///////////////////////////////////////////////////////////////////////////////
         #  Epilogue
@@ -1057,6 +1059,9 @@ class FlashAttentionForwardSm100:
         ):
             # increase register after decreasing
             cute.arch.setmaxregister_increase(self.num_regs_softmax)
+            # sync with mma warp before retrieving tmem ptr
+            tmem.wait_for_alloc()
+            tmem_ptr = tmem.retrieve_ptr(self.qk_acc_dtype)
             softmax_loop = partial(
                 self.softmax_loop,
                 softmax_scale_log2=softmax_scale_log2,
@@ -1083,21 +1088,21 @@ class FlashAttentionForwardSm100:
             if const_expr(not self.s0_s1_barrier):
                 stage = Int32(0 if const_expr(self.q_stage == 1) or warp_idx < self.softmax1_warp_ids[0] else 1)
                 softmax_loop(stage=stage, tStS=tStS)
-                cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_tmem_dealloc_offset)
             else:
                 # If there's s0_s1_barrier, it's faster to have 2 WGs having different code
                 if warp_idx < self.softmax1_warp_ids[0]:
                     softmax_loop(stage=0, tStS=tStS)
-                    cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_tmem_dealloc_offset)
                 if warp_idx < self.correction_warp_ids[0] and warp_idx >= self.softmax1_warp_ids[0]:
                     softmax_loop(stage=1, tStS=tStS)
-                    cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_tmem_dealloc_offset)
 
         # ///////////////////////////////////////////////////////////////////////////////
         #  Correction
         # ///////////////////////////////////////////////////////////////////////////////
         if warp_idx >= self.correction_warp_ids[0] and warp_idx < self.mma_warp_id:
             cute.arch.setmaxregister_decrease(self.num_regs_correction)
+            # sync with mma warp before retrieving tmem ptr
+            tmem.wait_for_alloc()
+            tmem_ptr = tmem.retrieve_ptr(self.qk_acc_dtype)
             self.correction_loop(
                 thr_mma_qk,
                 thr_mma_pv,
@@ -1121,7 +1126,6 @@ class FlashAttentionForwardSm100:
                 TileSchedulerCls,
                 blocksparse_tensors,
             )
-            cute.arch.mbarrier_arrive(mbar_ptr + self.mbar_tmem_dealloc_offset)
 
         return
 
@@ -2381,7 +2385,7 @@ class FlashAttentionForwardSm100:
             self.o_dtype,
             self.pv_acc_dtype,
             epi_subtile,
-            use_2cta_instrs=False,
+            use_2cta_instrs=self.use_2cta_instrs,
         )
         tiled_tmem_load = tcgen05.make_tmem_copy(tmem_copy_atom, tOtO_i[(None, None), 0])
         thr_tmem_load = tiled_tmem_load.get_slice(tidx)
