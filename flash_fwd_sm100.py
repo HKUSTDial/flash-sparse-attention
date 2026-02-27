@@ -90,6 +90,7 @@ class FlashAttentionForwardSm100:
         has_aux_tensors: cutlass.Constexpr = False,
         paged_kv_non_tma: bool = False,
         is_varlen_q: bool = False,
+        use_2cta_instrs: bool = False,
     ):
         self.use_tma_KV = not paged_kv_non_tma
         # self.dtype = dtype
@@ -106,7 +107,7 @@ class FlashAttentionForwardSm100:
         self.n_block_size = n_block_size
         self.q_stage = q_stage
         assert self.q_stage in [1, 2]
-        self.use_2cta_instrs = False
+        self.use_2cta_instrs = use_2cta_instrs
         # If split_P_arrive, the softmax warps write some columns of P first, signal to the MMA warp
         # to being the P @ V MMA, then write the rest of P and signal again. This allows some overlap
         # between compute the last couple columns of P and the P @ V MMA.
@@ -117,13 +118,16 @@ class FlashAttentionForwardSm100:
         self.arch = BaseDSL._get_dsl().get_arch_enum()
         assert self.arch >= Arch.sm_100 and self.arch <= Arch.sm_110f, "Only SM 10.x and 11.x are supported"
 
-        # 2 Q tile per CTA
-        self.cta_tiler = (self.q_stage * m_block_size, n_block_size, self.head_dim_padded)
-        self.mma_tiler_qk = (m_block_size, n_block_size, self.head_dim_padded)
-        self.mma_tiler_pv = (m_block_size, self.head_dim_v_padded, n_block_size)
+        self.cta_group_size = 2 if self.use_2cta_instrs else 1
+        # With 2CTA, cta_tiler M includes both CTAs since the tile scheduler assigns per-cluster tiles
+        self.cta_tiler = (self.q_stage * m_block_size * self.cta_group_size, n_block_size, self.head_dim_padded)
+        # With 2CTA, the MMA tiler M covers both CTAs, so it's cta_group_size * m_block_size.
+        # Each CTA owns m_block_size rows; the 2CTA MMA instruction spans both.
+        self.mma_tiler_qk = (self.cta_group_size * m_block_size, n_block_size, self.head_dim_padded)
+        self.mma_tiler_pv = (self.cta_group_size * m_block_size, self.head_dim_v_padded, n_block_size)
         self.qk_acc_dtype = Float32
         self.pv_acc_dtype = Float32
-        self.cluster_shape_mn = (1, 1)
+        self.cluster_shape_mn = (2, 1) if self.use_2cta_instrs else (1, 1)
         self.is_persistent = is_persistent
         self.is_causal = is_causal
         self.is_local = is_local
@@ -356,7 +360,7 @@ class FlashAttentionForwardSm100:
         ):
             self.e2e_freq = 32 if mCuSeqlensQ is not None or mSeqUsedQ is not None else 10
 
-        cta_group = tcgen05.CtaGroup.ONE
+        cta_group = tcgen05.CtaGroup.TWO if self.use_2cta_instrs else tcgen05.CtaGroup.ONE
         q_major_mode = tcgen05.OperandMajorMode.K
         k_major_mode = tcgen05.OperandMajorMode.K
         v_major_mode = tcgen05.OperandMajorMode.MN
@@ -383,11 +387,12 @@ class FlashAttentionForwardSm100:
         )
 
         self.cluster_shape_mnk = (*self.cluster_shape_mn, 1)
-        self.cluster_layout_vmnk = cute.tiled_divide(
+        cta_layout_vmnk = cute.tiled_divide(
             cute.make_layout(self.cluster_shape_mnk), (tiled_mma_qk.thr_id.shape,)
         )
 
-        self.epi_tile = self.mma_tiler_pv[:2]
+        # epi_tile is per-CTA (not full 2CTA) since each CTA writes its own O portion
+        self.epi_tile = (self.m_block_size, self.head_dim_v_padded)
 
         sQ_layout = sm100_utils_basic.make_smem_layout_a(
             tiled_mma_qk, self.mma_tiler_qk, self.q_dtype, self.q_stage
@@ -497,7 +502,7 @@ class FlashAttentionForwardSm100:
             cute.select(sQ_layout, mode=[0, 1, 2]),
             self.mma_tiler_qk,
             tiled_mma_qk,
-            self.cluster_layout_vmnk.shape,
+            cta_layout_vmnk.shape,
         )
 
         tma_atom_K = None
@@ -510,7 +515,7 @@ class FlashAttentionForwardSm100:
                 cute.select(sK_layout, mode=[0, 1, 2]),
                 self.mma_tiler_qk,
                 tiled_mma_qk,
-                self.cluster_layout_vmnk.shape,
+                cta_layout_vmnk.shape,
             )
             # TMA load for V
             tma_atom_V, mV = cute.nvgpu.make_tiled_tma_atom_B(
@@ -519,7 +524,7 @@ class FlashAttentionForwardSm100:
                 cute.select(sV_layout, mode=[0, 1, 2]),
                 self.mma_tiler_pv,
                 tiled_mma_pv,
-                self.cluster_layout_vmnk.shape,
+                cta_layout_vmnk.shape,
             )
 
         self.num_epilogue_threads = cute.arch.WARP_SIZE * len(self.epilogue_warp_ids)
@@ -766,12 +771,15 @@ class FlashAttentionForwardSm100:
                 if const_expr(tma_atom is not None):
                     cpasync.prefetch_descriptor(tma_atom)
 
-        cluster_layout_vmnk = cute.tiled_divide(
+        cta_layout_vmnk = cute.tiled_divide(
             cute.make_layout(self.cluster_shape_mnk), (tiled_mma_qk.thr_id.shape,)
         )
         # Setup cta/thread coordinates
         bidx, _, _ = cute.arch.block_idx()
-        mma_tile_coord_v = bidx % cute.size(tiled_mma_qk.thr_id.shape)
+        if const_expr(cute.size(tiled_mma_qk.thr_id.shape) == 1):
+            mma_tile_coord_v = 0
+        else:
+            mma_tile_coord_v = bidx % cute.size(tiled_mma_qk.thr_id.shape)
         is_leader_cta = mma_tile_coord_v == 0
 
         # Alloc
@@ -810,12 +818,24 @@ class FlashAttentionForwardSm100:
             cute.arch.WARP_SIZE * len(self.softmax0_warp_ids + self.correction_warp_ids)
         )
         epilogue_threads = ThreadCooperativeGroup(cute.arch.WARP_SIZE * len(self.epilogue_warp_ids))
+        # For UMMA-bridging pipelines: the non-MMA side spans both CTAs in the cluster,
+        # so the thread count must include warps from both CTAs.
+        softmax_warps_cluster = ThreadCooperativeGroup(
+            len(self.softmax0_warp_ids) * self.cta_group_size
+        )
+        correction_threads_cluster = ThreadCooperativeGroup(
+            cute.arch.WARP_SIZE * len(self.correction_warp_ids) * self.cta_group_size
+        )
+        softmax_correction_threads_cluster = ThreadCooperativeGroup(
+            cute.arch.WARP_SIZE * len(self.softmax0_warp_ids + self.correction_warp_ids) * self.cta_group_size
+        )
         pipeline_q = pipeline_custom.PipelineTmaUmma.create(
             barrier_storage=storage.mbar_load_Q.data_ptr(),
             num_stages=self.q_stage,
             producer_group=tma_warp,
             consumer_group=mma_warp,
             tx_count=self.tma_copy_bytes["Q"],
+            cta_layout_vmnk=cta_layout_vmnk,
             defer_sync=True,
         )
         if const_expr(self.use_tma_KV):
@@ -825,6 +845,7 @@ class FlashAttentionForwardSm100:
                 producer_group=tma_warp,
                 consumer_group=mma_warp,
                 tx_count=self.tma_copy_bytes["K"],
+                cta_layout_vmnk=cta_layout_vmnk,
                 defer_sync=True,
             )
         else:
@@ -836,6 +857,7 @@ class FlashAttentionForwardSm100:
                 num_stages=self.kv_stage,
                 producer_group=cpasync_producer_group,
                 consumer_group=mma_warp,
+                cta_layout_vmnk=cta_layout_vmnk,
                 defer_sync=True,
             )
         # This pipeline is not the typical producer-consumer pipeline. The "producer" mma warp
@@ -846,14 +868,16 @@ class FlashAttentionForwardSm100:
             barrier_storage=storage.mbar_S_full_P_full_O_rescaled.data_ptr(),
             num_stages=self.q_stage,
             producer_group=mma_warp,
-            consumer_group=softmax_correction_threads,
+            consumer_group=softmax_correction_threads_cluster,
+            cta_layout_vmnk=cta_layout_vmnk,
             defer_sync=True,
         )
         pipeline_p_lastsplit = pipeline_custom.PipelineAsyncUmma.create(
             barrier_storage=storage.mbar_P_full_lastsplit.data_ptr(),
             num_stages=self.q_stage,
-            producer_group=softmax_warps,
+            producer_group=softmax_warps_cluster,
             consumer_group=mma_warp,
+            cta_layout_vmnk=cta_layout_vmnk,
             defer_sync=True,
         )
         # MMA warp uses this to signal to the correction warps that O is ready.
@@ -861,7 +885,8 @@ class FlashAttentionForwardSm100:
             barrier_storage=storage.mbar_O_full.data_ptr(),
             num_stages=self.q_stage,
             producer_group=mma_warp,
-            consumer_group=correction_threads,
+            consumer_group=correction_threads_cluster,
+            cta_layout_vmnk=cta_layout_vmnk,
             defer_sync=True,
         )
         pipeline_s0_s1_sequence = None
@@ -912,8 +937,8 @@ class FlashAttentionForwardSm100:
 
         sScale = storage.sScale.get_tensor(cute.make_layout(self.q_stage * self.m_block_size * 2))
 
-        thr_mma_qk = tiled_mma_qk.get_slice(0)  # default 1SM
-        thr_mma_pv = tiled_mma_pv.get_slice(0)  # default 1SM
+        thr_mma_qk = tiled_mma_qk.get_slice(mma_tile_coord_v)
+        thr_mma_pv = tiled_mma_pv.get_slice(mma_tile_coord_v)
 
         qk_acc_shape = thr_mma_qk.partition_shape_C(self.mma_tiler_qk[:2])
         # This is a fake tensor, by right we need to retrieve tmem_ptr. But we know that we always
@@ -2380,7 +2405,8 @@ class FlashAttentionForwardSm100:
         """
 
         corr_tile_size = 8 * 32 // self.o_dtype.width
-        tOsO = thr_mma.partition_C(sO)
+        # Use CTA 0 mapping for smem partitioning since sO is per-CTA sized
+        tOsO = thr_mma.get_slice(0).partition_C(sO)
         tOcO = thr_mma.partition_C(cute.make_identity_tensor(self.mma_tiler_pv[:2]))
 
         tOtO_i = cute.logical_divide(tOtO, cute.make_layout((self.m_block_size, corr_tile_size)))
