@@ -1077,6 +1077,7 @@ class FlashAttentionForwardSm100:
                     num_splits,
                     SeqlenInfoCls,
                     TileSchedulerCls,
+                    mma_tile_coord_v,
                 )
 
         # ///////////////////////////////////////////////////////////////////////////////
@@ -2070,6 +2071,8 @@ class FlashAttentionForwardSm100:
     ):
         tidx = cute.arch.thread_idx()[0] % (cute.arch.WARP_SIZE * len(self.correction_warp_ids))
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx()) % 4
+        mma_tile_coord_v = thr_mma_qk.thr_idx
+
         tScS = thr_mma_qk.partition_C(cute.make_identity_tensor(self.mma_tiler_qk[:2]))
         tStScale_layout = cute.composition(tStS.layout, cute.make_layout((self.m_block_size, 1)))
         tStScales = tuple(
@@ -2179,7 +2182,7 @@ class FlashAttentionForwardSm100:
                     else:  # Each thread might have a different sink value due to different q_head
                         for stage in cutlass.range_constexpr(self.q_stage):
                             q_head_idx = (
-                                (self.q_stage * m_block + stage) * self.m_block_size + tidx
+                                ((m_block * self.q_stage + stage) * self.cta_group_size + mma_tile_coord_v) * self.m_block_size + tidx
                             ) % self.qhead_per_kvhead + head_idx * self.qhead_per_kvhead
                             learnable_sink_val[stage] = Float32(learnable_sink[q_head_idx])
                 for stage in cutlass.range_constexpr(self.q_stage):
@@ -2292,7 +2295,7 @@ class FlashAttentionForwardSm100:
                     else:
                         mLSE_cur = cute.domain_offset((offset,), mLSE[None, head_idx])
                 for stage in cutlass.range_constexpr(self.q_stage):
-                    m_tile_idx = self.q_stage * m_block + stage
+                    m_tile_idx = (m_block * self.q_stage + stage) * self.cta_group_size + mma_tile_coord_v
                     gLSE = cute.local_tile(mLSE_cur, (self.m_block_size,), (m_tile_idx,))
                     row_sum, row_max, acc_O_mn_row_is_zero_or_nan = stats[stage]
                     # if tidx == 0 and stage <= 1:
@@ -2451,7 +2454,8 @@ class FlashAttentionForwardSm100:
             assert(gmem_tiled_copy_O is not None)
             cute.arch.barrier(barrier_id=int(NamedBarrierFwd.Epilogue),
                               number_of_threads=len(self.epilogue_warp_ids) * cute.arch.WARP_SIZE)
-            m_tile_idx = m_block * self.q_stage + stage
+            mma_tile_coord_v = thr_mma.thr_idx
+            m_tile_idx = (m_block * self.q_stage + stage) * self.cta_group_size + mma_tile_coord_v
             self._store_O_to_gmem(
                 sO, gO, mO_cur, gmem_tiled_copy_O, tidx, seqlen_q, m_tile_idx
             )
@@ -2516,6 +2520,7 @@ class FlashAttentionForwardSm100:
         num_splits: int,
         SeqlenInfoCls: Callable,
         TileSchedulerCls: Callable,
+        mma_tile_coord_v: Int32 = 0,
     ):
         epi_consumer_phase = Int32(0)
         tile_scheduler = TileSchedulerCls()
@@ -2560,7 +2565,7 @@ class FlashAttentionForwardSm100:
                         # 1. wait for O0 / O1 final
                         pipeline_o_epi.consumer_wait_w_index_phase(stage, epi_consumer_phase)
                         # 2. copy O0 / O1 to gmem
-                        m_tile_idx = m_block * self.q_stage + stage
+                        m_tile_idx = (m_block * self.q_stage + stage) * self.cta_group_size + mma_tile_coord_v
                         self._store_O_to_gmem(
                             sO[None, None, stage], gO[None, None, stage], mO_cur, gmem_tiled_copy_O,
                             tidx, seqlen.seqlen_q, m_tile_idx,
