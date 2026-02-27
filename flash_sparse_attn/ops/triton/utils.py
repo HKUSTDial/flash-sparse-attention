@@ -69,6 +69,9 @@ def ensure_contiguous(fn):
 FWD_BASE_AUTOTUNE_KEYS = ["seqlen_q", "seqlen_k", "IS_CAUSAL", "IS_LOCAL", "TILE_K"]
 
 
+FWD_COMBINE_AUTOTUNE_KEYS = ["seqlen_q", "head_dim", "MAX_SPLITS"]
+
+
 def get_fwd_base_autotune_configs(autotune: bool):
     """
     Get autotuning configurations for the forward base kernel.
@@ -142,12 +145,86 @@ def get_fwd_base_autotune_configs(autotune: bool):
     return configs
 
 
+def get_fwd_combine_autotune_configs(autotune: bool):
+    """
+    Get autotuning configurations for the forward combine kernel.
+
+    :param autotune: Whether to perform autotuning
+
+    :return configs: List of triton.Config objects
+    """
+    device = get_device()
+    arch = get_arch(device)
+
+    if arch == "N/A":
+        raise ValueError("Your device architecture is not supported for now.")
+
+    if not autotune:
+        if arch == "cuda:sm80":
+            return [
+                triton.Config(
+                    {"TILE_M": 32, "TILE_N": 128},
+                    num_warps=4,
+                    num_stages=1,
+                )
+            ]
+        elif arch == "cuda:sm90":
+            return [
+                triton.Config(
+                    {"TILE_M": 32, "TILE_N": 128},
+                    num_warps=4,
+                    num_stages=1,
+                )
+            ]
+        elif arch == "cuda:sm100":
+            return [
+                triton.Config(
+                    {"TILE_M": 32, "TILE_N": 128},
+                    num_warps=4,
+                    num_stages=1,
+                )
+            ]
+        elif arch == "cuda:sm120":
+            return [
+                triton.Config(
+                    {"TILE_M": 32, "TILE_N": 128},
+                    num_warps=4,
+                    num_stages=1,
+                )
+            ]
+        else:
+            raise ValueError(f"Unsupported architecture for default config: {arch}")
+
+    configs = []
+    BLOCK_M_OPTIONS = [64, 32]
+    BLOCK_K_OPTIONS = [256, 128, 64, 32]
+    NUM_WARPS_OPTIONS = [4, 8]
+    NUM_STAGES_OPTIONS = [1, 2]
+
+    for bm in BLOCK_M_OPTIONS:
+        for bk in BLOCK_K_OPTIONS:
+            for nw in NUM_WARPS_OPTIONS:
+                for ns in NUM_STAGES_OPTIONS:
+                    configs.append(
+                        triton.Config(
+                            {
+                                "TILE_M": bm,
+                                "TILE_K": bk,
+                            },
+                            num_warps=nw,
+                            num_stages=ns,
+                        )
+                    )
+    return configs
+
+
 def get_fwd_base_grid(
     batch_size: int,
     seqlen_q: int,
     num_heads_q: int,
     num_heads_kv: int,
     pack_gqa: bool,
+    num_splits: int,
 ):
     """
     Get the grid function for the forward base kernel.
@@ -157,6 +234,7 @@ def get_fwd_base_grid(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param pack_gqa: Whether GQA packing is used
+    :param num_splits: Number of KV splits
 
     :return grid: Grid function
     """
@@ -168,7 +246,34 @@ def get_fwd_base_grid(
                 META["TILE_M"],
             ),
             num_heads_kv if pack_gqa else num_heads_q,
-            batch_size,
+            batch_size * num_splits,
+        )
+
+    return grid
+
+
+def get_fwd_combine_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+    head_dim: int,
+):
+    """
+    Get the grid function for the forward combine kernel.
+
+    :param batch_size: Batch size
+    :param seqlen_q: Sequence length of queries
+    :param num_heads_q: Number of query heads
+    :param head_dim: Head dimension
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            triton.cdiv(head_dim, META["TILE_K"]),
+            batch_size * num_heads_q,
         )
 
     return grid
@@ -183,6 +288,7 @@ def assert_fwd_base_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    num_splits: int = None,
 ):
     """
     Assert the validity of inputs for the forward base kernel.
@@ -195,6 +301,7 @@ def assert_fwd_base_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param num_splits: Number of KV splits
 
     :raises AssertionError: If any of the assertions fail
     """
@@ -222,6 +329,10 @@ def assert_fwd_base_inputs(
         )
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
             "cu_seqlen_q and cu_seqlen_k must be int32"
+        )
+    if num_splits is not None:
+        assert num_splits >= 1, (
+            "num_splits must be greater than or equal to 1 for splitting"
         )
 
 
