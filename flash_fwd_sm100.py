@@ -1341,11 +1341,14 @@ class FlashAttentionForwardSm100:
                     self.q_subtile_factor if self.q_subtile_factor is not None else 1,
                 )
 
-
             tile_scheduler.prefetch_next_work()
             tile_scheduler.advance_to_next_work()
             work_tile = tile_scheduler.get_current_work()
             # End of persistent scheduler loop
+
+        pipeline_kv.producer_tail(kv_producer_state)
+        # This is equivalent to pipeline_q.producer_tail
+        pipeline_q.producer_acquire_w_index_phase(self.q_stage - 1, q_producer_phase)
 
     @cute.jit
     def mma(
@@ -1373,10 +1376,6 @@ class FlashAttentionForwardSm100:
         tSrQ = tiled_mma_qk.make_fragment_A(sQ)
         tSrK = tiled_mma_qk.make_fragment_B(sK)
         tOrV = tiled_mma_pv.make_fragment_B(sV)
-        if const_expr(self.q_stage == 2):
-            tSrQs = (tSrQ[None, None, None, 0], tSrQ[None, None, None, 1])
-        else:
-            tSrQs = (tSrQ[None, None, None, 0],)
 
         qk_mma_op, pv_mma_op = tiled_mma_qk.op, tiled_mma_pv.op
 
@@ -1576,6 +1575,10 @@ class FlashAttentionForwardSm100:
             work_tile = tile_scheduler.get_current_work()
         # End of persistent scheduler loop
 
+        # We don't need pipeline_s_p_o.producer_tail() since there's no dangling mbarrier at the end
+        # pipeline_s_p_o.producer_acquire_w_index_phase(self.q_stage - 1, P_full_O_rescaled_phase)
+        # We don't need pipeline_o_acc.producer_tail() since we don't call
+        # pipeline_o_acc.producer_acquire() inside the loop.
 
     # for both softmax0 and softmax1 warp group
     @cute.jit
@@ -1906,6 +1909,13 @@ class FlashAttentionForwardSm100:
             tile_scheduler.advance_to_next_work()
             work_tile = tile_scheduler.get_current_work()
         # End of persistent scheduler loop
+
+        # This is equivalent to pipeline_sm_stats.producer_tail
+        pipeline_sm_stats.producer_acquire_w_index_phase(stage, sm_stats_producer_phase)
+        # This is equivalent to pipeline_s0_s1.producer_tail
+        if const_expr(self.s0_s1_barrier):
+            if stage == 0:
+                pipeline_s0_s1_sequence.sync_object_full.wait(stage, s0_s1_sequence_phase)
 
     @cute.jit
     def softmax_step(
@@ -2319,6 +2329,10 @@ class FlashAttentionForwardSm100:
             tile_scheduler.advance_to_next_work()
             work_tile = tile_scheduler.get_current_work()
         # End of persistent scheduler loop
+
+        # This is equivalent to pipeline_o_epi.consumer_tail() for the correction warps
+        if const_expr(not self.use_correction_warps_for_epi):
+            pipeline_o_epi.producer_acquire_w_index_phase(self.q_stage - 1, corr_epi_producer_phase)
 
     @cute.jit
     def correction_rescale(
