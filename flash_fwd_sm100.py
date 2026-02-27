@@ -22,7 +22,7 @@ import cuda.bindings.driver as cuda
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Int32, Int64, const_expr
+from cutlass import Float32, Int32, Int64, Boolean, const_expr
 from cutlass.cute.nvgpu import cpasync
 import cutlass.cute.nvgpu.tcgen05 as tcgen05
 import cutlass.utils.blackwell_helpers as sm100_utils_basic
@@ -1050,6 +1050,7 @@ class FlashAttentionForwardSm100:
                 pipeline_s_p_o,
                 pipeline_p_lastsplit,
                 pipeline_o_acc,
+                is_leader_cta,
                 block_info,
                 num_splits,
                 SeqlenInfoCls,
@@ -1361,6 +1362,7 @@ class FlashAttentionForwardSm100:
         pipeline_s_p_o: pipeline.PipelineAsync,
         pipeline_p_lastsplit: pipeline.PipelineAsync,
         pipeline_o_acc: pipeline.PipelineAsync,
+        is_leader_cta: Boolean,
         block_info: BlockInfo,
         num_splits: Int32,
         SeqlenInfoCls: Callable,
@@ -1433,7 +1435,7 @@ class FlashAttentionForwardSm100:
                 else:
                     process_tile = n_block_min < n_block_max
 
-            if process_tile:
+            if process_tile and is_leader_cta:
                 for stage in cutlass.range_constexpr(self.q_stage):
                     # GEMM_QK00 (Q0 * K0 -> S0) or GEMM_QK01 (Q1 * K0 -> S1)
                     # 1. wait for Q0 / Q1
