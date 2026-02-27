@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Tuple
 import torch
 import triton
 import triton.language as tl
@@ -9,6 +9,7 @@ from flash_sparse_attn.ops.triton import (
     seqlen_info,
     block_info,
     mask,
+    flash_fwd_combine,
 )
 
 
@@ -40,13 +41,16 @@ def _fwd_base_kernel(
     stride_ob,
     stride_oh,
     stride_om,
+    stride_os,
     stride_lb,
     stride_lh,
+    stride_ls,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
     seqused_k,
     qhead_per_kvhead,
+    num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
@@ -56,6 +60,7 @@ def _fwd_base_kernel(
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_SPLIT_KV: tl.constexpr,
     WINDOW_SIZE_LEFT: tl.constexpr,
     WINDOW_SIZE_RIGHT: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
@@ -66,14 +71,20 @@ def _fwd_base_kernel(
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
-    batch_idx = tl.program_id(2)
-    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-    offs_kb = tl.arange(0, TILE_K)
-
+    batch_split_idx = tl.program_id(2)
+    if IS_SPLIT_KV:
+        batch_idx = batch_split_idx // num_splits
+        split_idx = batch_split_idx - batch_idx * num_splits
+    else:
+        batch_idx = batch_split_idx
+        split_idx = 0
     if PACK_GQA:
         head_kv_idx = head_idx
     else:
         head_kv_idx = head_idx // qhead_per_kvhead
+
+    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
+    offs_kb = tl.arange(0, TILE_K)
 
     # Get seqlen info for this batch
     (
@@ -151,18 +162,23 @@ def _fwd_base_kernel(
         USE_PADDED=False,
     )
 
+    # For split KV, offset output and LSE base pointers by split_idx
+    if IS_SPLIT_KV:
+        out_base += split_idx * stride_os
+        lse_base += split_idx * stride_ls
+
     # Compute n_block range for this m_block
     n_block_min, n_block_max = block_info.get_n_block_min_max(
         seqlen_q=actual_seqlen_q,
         seqlen_k=actual_seqlen_k,
         m_block=m_block,
-        split_idx=0,
-        num_splits=1,
+        split_idx=split_idx,
+        num_splits=num_splits,
         TILE_N=TILE_N,
         TILE_M=TILE_M,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
-        IS_SPLIT_KV=False,
+        IS_SPLIT_KV=IS_SPLIT_KV,
         WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
         WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
         QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
@@ -306,6 +322,10 @@ def _fwd_base_kernel(
             WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
             QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
         )
+
+        # Clamp to split's range so the no-mask loop stays within bounds
+        if IS_SPLIT_KV:
+            n_block_min_causal_local = tl.minimum(n_block_min_causal_local, n_block_max)
 
         for n_block in range(n_block_max - 1, n_block_min_causal_local - 1, -1):
             # Load value tile
@@ -458,15 +478,19 @@ def _fwd_base_kernel(
     else:
         tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
     # Store output
+    # When IS_SPLIT_KV, store float32 partial results.
+    # Otherwise, convert back to input dtype.
+    if not IS_SPLIT_KV:
+        acc_o = acc_o.to(q_tile.dtype)
     if PACK_GQA:
         tl.store(
             out_ptrs,
-            acc_o.to(q_tile.dtype),
+            acc_o,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
         )
     else:
-        tl.store(out_ptrs, acc_o.to(q_tile.dtype), boundary_check=(0, 1))
+        tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
 
 
 def _flash_attn_base_forward(
@@ -475,22 +499,18 @@ def _flash_attn_base_forward(
     value: torch.Tensor,
     softmax_scale: float,
     is_causal: bool = False,
-    window_size: Optional[Tuple[int, int]] = None,
+    window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
+    num_splits: int = 1,
 ):
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-
-    if window_size is None:
-        is_local = False
-        window_size_left, window_size_right = None, None
+    is_split_kv = num_splits > 1
+    is_local = window_size[0] is not None or window_size[1] is not None
+    if is_local:
+        window_size_left, window_size_right = window_size
     else:
-        is_local = window_size[0] is not None or window_size[1] is not None
-        if is_local:
-            window_size_left, window_size_right = window_size
-        else:
-            window_size_left, window_size_right = None, None
-
+        window_size_left, window_size_right = None, None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     utils.assert_fwd_base_inputs(
@@ -502,16 +522,31 @@ def _flash_attn_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-    )
-
-    out = torch.zeros_like(query)
-    lse = torch.empty(
-        (batch_size, num_heads_q, seqlen_q),
-        device=query.device,
-        dtype=torch.float32,
+        num_splits=num_splits,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    out = torch.zeros_like(query)
+    lse = torch.full(
+        (batch_size, num_heads_q, seqlen_q),
+        float("-inf"),
+        dtype=torch.float32,
+        device=query.device,
+    )
+
+    if is_split_kv:
+        out_partial = torch.zeros(
+            (num_splits, batch_size, seqlen_q, num_heads_q, head_dim),
+            dtype=torch.float32,
+            device=query.device,
+        )
+        lse_partial = torch.full(
+            (num_splits, batch_size, num_heads_q, seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=query.device,
+        )
 
     grid = utils.get_fwd_base_grid(
         batch_size=batch_size,
@@ -519,14 +554,15 @@ def _flash_attn_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         pack_gqa=pack_gqa,
+        num_splits=num_splits,
     )
 
     _fwd_base_kernel[grid](
         query,
         key,
         value,
-        out,
-        lse,
+        out if not is_split_kv else out_partial,
+        lse if not is_split_kv else lse_partial,
         softmax_scale,
         query.stride(0),
         query.stride(-2),
@@ -537,16 +573,19 @@ def _flash_attn_base_forward(
         value.stride(0),
         value.stride(-2),
         value.stride(-3),
-        out.stride(0),
-        out.stride(-2),
-        out.stride(-3),
-        lse.stride(0),
-        lse.stride(1),
+        out.stride(0) if not is_split_kv else out_partial.stride(1),
+        out.stride(-2) if not is_split_kv else out_partial.stride(-2),
+        out.stride(-3) if not is_split_kv else out_partial.stride(-3),
+        0 if not is_split_kv else out_partial.stride(0),
+        lse.stride(0) if not is_split_kv else lse_partial.stride(1),
+        lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
+        0 if not is_split_kv else lse_partial.stride(0),
         None,
         None,
         None,
         None,
         num_heads_q // num_heads_kv,
+        num_splits,
         seqlen_q,
         seqlen_k,
         head_dim,
@@ -554,6 +593,7 @@ def _flash_attn_base_forward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPLIT_KV=is_split_kv,
         WINDOW_SIZE_LEFT=window_size_left,
         WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=False,
@@ -562,6 +602,14 @@ def _flash_attn_base_forward(
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
     )
+
+    if is_split_kv:
+        flash_fwd_combine._flash_attn_fwd_combine(
+            out_partial,
+            lse_partial,
+            out,
+            lse,
+        )
 
     return out, lse, softmax_scale
 
@@ -576,25 +624,21 @@ def _flash_attn_varlen_base_forward(
     max_seqlen_k: int,
     softmax_scale: float,
     is_causal: bool = False,
-    window_size: Optional[Tuple[int, int]] = None,
+    window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
+    num_splits: int = 1,
 ):
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-
-    if window_size is None:
-        is_local = False
-        window_size_left, window_size_right = None, None
+    is_split_kv = num_splits > 1
+    is_local = window_size[0] is not None or window_size[1] is not None
+    if is_local:
+        window_size_left, window_size_right = window_size
     else:
-        is_local = window_size[0] is not None or window_size[1] is not None
-        if is_local:
-            window_size_left, window_size_right = window_size
-        else:
-            window_size_left, window_size_right = None, None
-
+        window_size_left, window_size_right = None, None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     utils.assert_fwd_base_inputs(
@@ -606,14 +650,31 @@ def _flash_attn_varlen_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-    )
-
-    out = torch.zeros_like(query)
-    lse = torch.empty(
-        (total_seqlen_q, num_heads_q), device=query.device, dtype=torch.float32
+        num_splits=num_splits,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    out = torch.zeros_like(query)
+    lse = torch.full(
+        (num_heads_q, total_seqlen_q),
+        float("-inf"),
+        dtype=torch.float32,
+        device=query.device,
+    )
+
+    if is_split_kv:
+        out_partial = torch.zeros(
+            (num_splits, total_seqlen_q, num_heads_q, head_dim),
+            dtype=torch.float32,
+            device=query.device,
+        )
+        lse_partial = torch.full(
+            (num_splits, num_heads_q, total_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=query.device,
+        )
 
     grid = utils.get_fwd_base_grid(
         batch_size=batch_size,
@@ -621,14 +682,15 @@ def _flash_attn_varlen_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         pack_gqa=pack_gqa,
+        num_splits=num_splits,
     )
 
     _fwd_base_kernel[grid](
         query,
         key,
         value,
-        out,
-        lse,
+        out if not is_split_kv else out_partial,
+        lse if not is_split_kv else lse_partial,
         softmax_scale,
         0,
         query.stride(-2),
@@ -640,15 +702,18 @@ def _flash_attn_varlen_base_forward(
         value.stride(-2),
         value.stride(0),
         0,
-        out.stride(-2),
-        out.stride(0),
-        lse.stride(0),
-        lse.stride(1),
+        out.stride(-2) if not is_split_kv else out_partial.stride(-2),
+        out.stride(0) if not is_split_kv else out_partial.stride(-3),
+        0 if not is_split_kv else out_partial.stride(0),
+        0,
+        lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
+        0 if not is_split_kv else lse_partial.stride(0),
         cu_seqlens_q,
         cu_seqlens_k,
         None,
         None,
         num_heads_q // num_heads_kv,
+        num_splits,
         seqlen_q,
         seqlen_k,
         head_dim,
@@ -656,6 +721,7 @@ def _flash_attn_varlen_base_forward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPLIT_KV=is_split_kv,
         WINDOW_SIZE_LEFT=window_size_left,
         WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=True,
@@ -664,5 +730,14 @@ def _flash_attn_varlen_base_forward(
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
     )
+
+    if is_split_kv:
+        flash_fwd_combine._flash_attn_fwd_combine(
+            out_partial,
+            lse_partial,
+            out,
+            lse,
+            cu_seqlens_q=cu_seqlens_q,
+        )
 
     return out, lse, softmax_scale
