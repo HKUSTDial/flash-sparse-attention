@@ -66,6 +66,31 @@ def ensure_contiguous(fn):
     return wrapper
 
 
+def num_splits_heuristic(
+    total_mblocks: int,
+    num_SMs: int,
+    num_n_blocks: int,
+    max_splits: int = 128,
+) -> int:
+    """
+    Determine the number of KV splits for FlashDecoding.
+
+    Splits only when there are enough KV blocks to benefit from parallelism,
+    and targets full SM occupancy by over-subscribing the M-block count.
+
+    :param total_mblocks: Total number of M-blocks across batch and heads.
+    :param num_SMs: Number of streaming multiprocessors on the device.
+    :param num_n_blocks: Number of N-blocks.
+    :param max_splits: Hard upper bound on number of splits.
+
+    :return: Number of splits.
+    """
+    if num_n_blocks <= 4:
+        # 1 means no splitting
+        return 1
+    return min(num_SMs // max(total_mblocks, 1), max_splits, num_n_blocks)
+
+
 FWD_BASE_AUTOTUNE_KEYS = ["seqlen_q", "seqlen_k", "IS_CAUSAL", "IS_LOCAL", "TILE_K"]
 
 
