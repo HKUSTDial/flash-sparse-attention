@@ -530,7 +530,6 @@ def load_block_list_sm100(
     block_indices: cute.Tensor,
     block_count,
     load_q_with_first: cutlass.Constexpr,
-    m_block,
     q_stage: cutlass.Constexpr,
     kv_producer_state,
     load_Q,
@@ -545,9 +544,9 @@ def load_block_list_sm100(
 
         if const_expr(load_q_with_first):
             # SM100 loads Q0 and optionally Q1
-            load_Q(block=q_stage * m_block + 0, stage=0)
+            load_Q(block=0, stage=0)
             if const_expr(q_stage == 2):
-                load_Q(block=q_stage * m_block + 1, stage=1)
+                load_Q(block=1, stage=1)
 
         # SM100 doesn't use producer_acquire for pipeline_kv in load path
         # The pipeline barriers are handled inside load_KV
@@ -618,7 +617,6 @@ def produce_block_sparse_loads_sm100(
             curr_full_block_idx,
             curr_full_block_cnt,
             load_q_with_first=True,
-            m_block=m_block,
             q_stage=q_stage,
             kv_producer_state=kv_producer_state,
             load_Q=load_Q,
@@ -633,7 +631,6 @@ def produce_block_sparse_loads_sm100(
             curr_mask_block_idx,
             curr_mask_block_cnt,
             load_q_with_first=True,
-            m_block=m_block,
             q_stage=q_stage,
             kv_producer_state=kv_producer_state,
             load_Q=load_Q,
@@ -649,7 +646,6 @@ def produce_block_sparse_loads_sm100(
                 curr_full_block_idx,
                 curr_full_block_cnt,
                 load_q_with_first=False,
-                m_block=m_block,
                 q_stage=q_stage,
                 kv_producer_state=kv_producer_state,
                 load_Q=load_Q,
@@ -779,7 +775,7 @@ def handle_block_sparse_empty_tile_correction_sm100(
             Float32(0.0),  # zero scale ensures empty tile writes zeros into staged outputs
             sO[None, None, stage],
             mO_cur,
-            gO,
+            gO[None, None, stage],
             gmem_tiled_copy_O,
         )
         if const_expr(gmem_tiled_copy_O is None):
