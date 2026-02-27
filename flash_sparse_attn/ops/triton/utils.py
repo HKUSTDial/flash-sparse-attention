@@ -188,7 +188,7 @@ def get_fwd_combine_autotune_configs(autotune: bool):
         if arch == "cuda:sm80":
             return [
                 triton.Config(
-                    {"TILE_M": 32, "TILE_N": 128},
+                    {"TILE_M": 32, "TILE_K": 128},
                     num_warps=4,
                     num_stages=1,
                 )
@@ -196,7 +196,7 @@ def get_fwd_combine_autotune_configs(autotune: bool):
         elif arch == "cuda:sm90":
             return [
                 triton.Config(
-                    {"TILE_M": 32, "TILE_N": 128},
+                    {"TILE_M": 32, "TILE_K": 128},
                     num_warps=4,
                     num_stages=1,
                 )
@@ -204,7 +204,7 @@ def get_fwd_combine_autotune_configs(autotune: bool):
         elif arch == "cuda:sm100":
             return [
                 triton.Config(
-                    {"TILE_M": 32, "TILE_N": 128},
+                    {"TILE_M": 32, "TILE_K": 128},
                     num_warps=4,
                     num_stages=1,
                 )
@@ -212,7 +212,7 @@ def get_fwd_combine_autotune_configs(autotune: bool):
         elif arch == "cuda:sm120":
             return [
                 triton.Config(
-                    {"TILE_M": 32, "TILE_N": 128},
+                    {"TILE_M": 32, "TILE_K": 128},
                     num_warps=4,
                     num_stages=1,
                 )
