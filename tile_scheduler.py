@@ -91,7 +91,11 @@ class SingleTileScheduler:
 
     @staticmethod
     def create(params: Params, *, loc=None, ip=None) -> "SingleTileScheduler":
-        blk_coord = cute.arch.block_idx()
+        if const_expr(cute.size(params.cluster_shape_mn) == 1):
+            blk_coord = cute.arch.block_idx()
+        else:
+            # All CTAs in a cluster must get the same block coordinate
+            blk_coord = cute.arch.cluster_idx()
         return SingleTileScheduler(params, blk_coord, loc=loc, ip=ip)
 
     # called by host
@@ -149,17 +153,22 @@ class SingleTileScheduler:
 class StaticPersistentTileScheduler:
     @dataclass
     class Params(ParamsBase):
-        num_block_divmod: FastDivmodDivisor
+        num_block_cluster_divmod: FastDivmodDivisor
         num_head_divmod: FastDivmodDivisor
-        total_blocks: Int32
+        total_blocks_cluster: Int32
+        cluster_shape_m: cutlass.Constexpr[int] = 1
 
         @staticmethod
         def create(
             args: TileSchedulerArguments, *, loc=None, ip=None
         ) -> "StaticPersistentTileScheduler.Params":
-            total_blocks = args.num_block * args.num_head * args.num_batch
+            num_block_cluster = cute.ceil_div(args.num_block, cute.size(args.cluster_shape_mn))
+            total_blocks_cluster = num_block_cluster * args.num_head * args.num_batch
             return StaticPersistentTileScheduler.Params(
-                FastDivmodDivisor(args.num_block), FastDivmodDivisor(args.num_head), total_blocks
+                FastDivmodDivisor(num_block_cluster),
+                FastDivmodDivisor(args.num_head),
+                total_blocks_cluster,
+                cluster_shape_m=args.cluster_shape_mn[0],
             )
 
     def __init__(self, params: Params, tile_idx: Int32, *, loc=None, ip=None):
@@ -174,7 +183,10 @@ class StaticPersistentTileScheduler:
 
     @staticmethod
     def create(params: Params, *, loc=None, ip=None) -> "StaticPersistentTileScheduler":
-        tile_idx = cute.arch.block_idx()[0]
+        if const_expr(cute.size(params.cluster_shape_m) == 1):
+            tile_idx = cute.arch.block_idx()[0]
+        else:
+            tile_idx = cute.arch.cluster_idx()[0]
         return StaticPersistentTileScheduler(params, tile_idx, loc=loc, ip=ip)
 
     # called by host
@@ -187,13 +199,16 @@ class StaticPersistentTileScheduler:
     ) -> Tuple[Int32, Int32, Int32]:
         hardware_info = cutlass.utils.HardwareInfo()
         sm_count = hardware_info.get_device_multiprocessor_count()
-        return (cutlass.min(sm_count, params.total_blocks), Int32(1), Int32(1))
+        # Grid must be a multiple of cluster_shape_m for CUDA cluster launch.
+        max_ctas = (sm_count // params.cluster_shape_m) * params.cluster_shape_m
+        grid_x = cutlass.min(max_ctas, params.total_blocks_cluster * params.cluster_shape_m)
+        return (grid_x, Int32(1), Int32(1))
 
     # @cute.jit
     def get_current_work(self, *, loc=None, ip=None) -> WorkTileInfo:
-        hn_idx, block_idx = divmod(self._tile_idx, self.params.num_block_divmod)
+        hn_idx, block_idx = divmod(self._tile_idx, self.params.num_block_cluster_divmod)
         batch_idx, head_idx = divmod(hn_idx, self.params.num_head_divmod)
-        is_valid = self._tile_idx < self.params.total_blocks
+        is_valid = self._tile_idx < self.params.total_blocks_cluster
         # if cute.arch.thread_idx()[0] == 0:
         #     cute.printf("TileScheduler: tile_idx=%d, hn_idx=%d, block_idx=%d, batch_idx=%d, head_idx=%d, is_valid=%d", self._tile_idx, hn_idx, block_idx, batch_idx, head_idx, is_valid)
         return WorkTileInfo(
@@ -207,7 +222,10 @@ class StaticPersistentTileScheduler:
         pass
 
     def advance_to_next_work(self, *, loc=None, ip=None):
-        self._tile_idx += cute.arch.grid_dim()[0]
+        if const_expr(self.params.cluster_shape_m == 1):
+            self._tile_idx += cute.arch.grid_dim()[0]
+        else:
+            self._tile_idx += cute.arch.cluster_dim()[0]
 
     def __extract_mlir_values__(self):
         values, self._values_pos = [], []

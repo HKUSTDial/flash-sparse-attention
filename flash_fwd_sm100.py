@@ -119,8 +119,8 @@ class FlashAttentionForwardSm100:
         assert self.arch >= Arch.sm_100 and self.arch <= Arch.sm_110f, "Only SM 10.x and 11.x are supported"
 
         self.cta_group_size = 2 if self.use_2cta_instrs else 1
-        # With 2CTA, cta_tiler M includes both CTAs since the tile scheduler assigns per-cluster tiles
-        self.cta_tiler = (self.q_stage * m_block_size * self.cta_group_size, n_block_size, self.head_dim_padded)
+        # cta_tiler M includes only 1 CTA, the scheduler will take into account the cluster shape
+        self.cta_tiler = (self.q_stage * m_block_size, n_block_size, self.head_dim_padded)
         # With 2CTA, the MMA tiler M covers both CTAs, so it's cta_group_size * m_block_size.
         # Each CTA owns m_block_size rows; the 2CTA MMA instruction spans both.
         self.mma_tiler_qk = (self.cta_group_size * m_block_size, n_block_size, self.head_dim_padded)
@@ -260,7 +260,7 @@ class FlashAttentionForwardSm100:
             if (self.q_dtype.width == 8 or self.q_stage == 1)
             and self.head_dim_padded <= 128
             and self.head_dim_v_padded <= 128
-            else 3
+            else (3 if not self.use_2cta_instrs else 6)
         )
         self.s_stage = 2
         assert self.s_stage >= self.q_stage
@@ -491,6 +491,8 @@ class FlashAttentionForwardSm100:
                 ("V", mV, sV_layout),
             ]
         }
+        for name in ("Q", "K", "V"):
+            self.tma_copy_bytes[name] *= self.cta_group_size
 
         # TMA load for Q
         tma_load_op = cpasync.CopyBulkTensorTileG2SOp(cta_group)
@@ -586,6 +588,7 @@ class FlashAttentionForwardSm100:
             is_persistent=self.is_persistent,
             lpt=self.is_causal or self.is_local,
             is_split_kv=self.is_split_kv,
+            cluster_shape_mn=self.cluster_shape_mn,
         )
         tile_sched_params = TileScheduler.to_underlying_arguments(tile_sched_args)
         self.tile_scheduler_cls = TileScheduler
@@ -1387,6 +1390,7 @@ class FlashAttentionForwardSm100:
                 tSrQs[stage],
                 sA=sQ[None, None, None, stage],
                 zero_init=True,
+                cta_group=self.cta_group_size,
             )
             for stage in range(self.q_stage)
         ]
@@ -1398,6 +1402,7 @@ class FlashAttentionForwardSm100:
                 tOrP[None, None, None, stage],
                 sA=None,
                 split_arrive=self.split_P_arrive if self.split_P_arrive > 0 else None,
+                cta_group=self.cta_group_size,
             )
             for stage in range(self.q_stage)
         ]
@@ -1673,7 +1678,7 @@ class FlashAttentionForwardSm100:
 
             mask = AttentionMaskCls(seqlen)
             shared_mask_kwargs = dict(
-                m_block=self.q_stage * m_block + stage,
+                m_block=(self.q_stage * m_block + stage) * self.cta_group_size,
                 thr_mma=thr_mma_qk,
                 thr_tmem_load=thr_tmem_load,
                 mask_causal=self.is_causal,
@@ -1761,7 +1766,7 @@ class FlashAttentionForwardSm100:
                 stage=stage,
                 batch_idx=batch_idx,
                 head_idx=head_idx,
-                m_block=self.q_stage * m_block + stage,
+                m_block=(self.q_stage * m_block + stage) * self.cta_group_size,
                 seqlen=seqlen,
                 aux_tensors=aux_tensors,
                 fastdiv_mods=fastdiv_mods,
@@ -1779,7 +1784,7 @@ class FlashAttentionForwardSm100:
                 # When aux_tensors exist, Q indices beyond seqlen_q must be wrapped to avoid
                 # OOB aux_tensor access. Only edge tiles (where m_tile_end > seqlen_q) need this.
                 if const_expr(aux_tensors is not None):
-                    m_tile_end = (self.q_stage * m_block + stage + 1) * self.m_block_size
+                    m_tile_end = ((self.q_stage * m_block + stage + 1) * self.cta_group_size) * self.m_block_size
                     check_m_boundary = m_tile_end > seqlen.seqlen_q
                 else:
                     check_m_boundary = False
@@ -2123,6 +2128,7 @@ class FlashAttentionForwardSm100:
             gO = layout_utils.select(
                 cute.flat_divide(gO, (self.mma_tiler_pv[0],)), mode=[0, 2, 1]
             )  # (128, 128, 2)
+            gO = cute.flat_divide(gO, (self.mma_tiler_pv[0] // self.cta_group_size,))[None, mma_tile_coord_v, None, None]
 
             # Default LSE to -inf for invalid split_idx tiles
             stats = [(0.0, -Float32.inf if const_expr(mLSE is not None or learnable_sink is not None) else None, True)] * self.q_stage
@@ -2554,6 +2560,7 @@ class FlashAttentionForwardSm100:
                 gO = layout_utils.select(
                     cute.flat_divide(gO, (self.mma_tiler_pv[0],)), mode=[0, 2, 1]
                 )  # (128, 128, 2)
+                gO = cute.flat_divide(gO, (self.mma_tiler_pv[0] // self.cta_group_size,))[None, mma_tile_coord_v, None, None]
 
                 if const_expr(self.use_tma_O):
                     store_O, _, _ = copy_utils.tma_get_copy_fn(

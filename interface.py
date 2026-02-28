@@ -467,6 +467,7 @@ def _flash_attn_fwd(
                 q_subtile_factor=q_subtile_factor,
             )
         elif arch // 10 in [10, 11]:
+            use_2cta_instrs = not causal and not local and not is_split_kv and cu_seqlens_q is None and seqused_q is None and not use_block_sparsity and head_dim == 128 and head_dim_v == 128
             fa_fwd = FlashAttentionForwardSm100(
                 head_dim,
                 head_dim_v,
@@ -489,6 +490,7 @@ def _flash_attn_fwd(
                 paged_kv_non_tma=page_size not in [None, 128],
                 is_varlen_q=cu_seqlens_q is not None or seqused_q is not None,
                 q_subtile_factor=q_subtile_factor,
+                use_2cta_instrs=use_2cta_instrs,
             )
         else:
             raise ValueError(
