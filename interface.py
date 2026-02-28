@@ -597,6 +597,19 @@ def _flash_attn_bwd(
 
     num_head, head_dim = q.shape[-2:]
 
+    if causal:
+        window_size_right = 0
+    if window_size_left is not None and window_size_right is not None and window_size_left + window_size_right < 0:
+        window_size_left = None
+        window_size_right = None
+    local = window_size_left is not None or window_size_right is not None
+    if local:
+        if window_size_left is None and window_size_right == 0:
+            causal, local = True, False
+            window_size_right = None
+        else:
+            causal, local = False, True
+
     if arch // 10 == 9:
         m_block_size = 80 if not causal else 64
         n_block_size = 128
@@ -626,8 +639,15 @@ def _flash_attn_bwd(
         dKV_swapAB = False
         AtomLayoutMdQ = 1
         AtomLayoutNdKV = 1
-        cluster_size = 2 if head_dim == 192 else 1
+        disable_2cta = (
+            local
+            or score_mod is not None
+            or score_mod_bwd is not None
+            or mask_mod is not None
+        )
+        cluster_size = 2 if head_dim >= 128 and not disable_2cta else 1
         use_2cta_instrs = cluster_size==2
+    
     q, k, v, out, dout, lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k = [
         maybe_contiguous(t)
         for t in (q, k, v, out, dout, lse, cu_seqlens_q, cu_seqlens_k, seqused_q, seqused_k)
@@ -650,19 +670,6 @@ def _flash_attn_bwd(
 
     num_head_kv = k.shape[-2]
     head_dim_v = v.shape[-1]
-
-    if causal:
-        window_size_right = 0
-    if window_size_left is not None and window_size_right is not None and window_size_left + window_size_right < 0:
-        window_size_left = None
-        window_size_right = None
-    local = window_size_left is not None or window_size_right is not None
-    if local:
-        if window_size_left is None and window_size_right == 0:
-            causal, local = True, False
-            window_size_right = None
-        else:
-            causal, local = False, True
 
     use_block_sparsity = block_sparse_tensors is not None
 
