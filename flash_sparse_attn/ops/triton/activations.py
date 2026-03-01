@@ -15,6 +15,7 @@ def online_softmax(
     row_sum,
     scale_log2,
     CHECK_INF: tl.constexpr,
+    # RESCALE_THRESHOLD: tl.constexpr = 0.0,
 ):
     """
     Apply online softmax to acc_s, and update row_max and row_sum.
@@ -29,19 +30,29 @@ def online_softmax(
     :return row_sum_new: Updated sum values per row of shape [BLOCK_M].
     :return row_scale: Scaling factors per row of shape [BLOCK_M].
     """
-    # combine current block max with previous row max
+    # Update row max
     row_max_new = tl.maximum(tl.max(acc_s, axis=1), row_max)
 
-    # avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
+    # Avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
     if CHECK_INF:
         row_max_new = check_inf(row_max_new)
 
-    # compute the exponentials and current row sum
-    p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
-    row_sum_cur = tl.sum(p, axis=1)
+    # Compute row scale
+    acc_scale_log2 = (row_max - row_max_new) * scale_log2
+    row_scale = tl.exp2(acc_scale_log2)
 
-    # compute rescaling factor, exp2(-inf - x) = 0 on first iteration
-    row_scale = tl.exp2((row_max - row_max_new) * scale_log2)
+    # TODO: Triton 3.6 currently does not support enabling LAZY_RESCALE
+    # # If max update is tiny, keep the old max
+    # if RESCALE_THRESHOLD > 0.0:
+    #     if tl.min(acc_scale_log2) >= -RESCALE_THRESHOLD:
+    #         row_max_new = row_max
+    #         row_scale = row_scale * 0.0 + 1.0
+
+    # Compute attention weights
+    p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
+
+    # Update row sum
+    row_sum_cur = tl.sum(p, axis=1)
     row_sum_new = row_sum * row_scale + row_sum_cur
 
     return p, row_max_new, row_sum_new, row_scale
