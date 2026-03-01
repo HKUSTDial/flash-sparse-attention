@@ -23,6 +23,7 @@ def online_softmax(
     :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
     :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
+    :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
     :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
 
     :return p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
