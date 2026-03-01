@@ -91,7 +91,21 @@ def finalize(
 def rescale_o(
     acc_o,
     row_scale,
+    # LAZY_RESCALE: tl.constexpr,
 ):
+    """
+    Rescale output accumulator by row_scale.
+
+    :param acc_o: Output accumulator tensor of shape [BLOCK_M, BLOCK_N].
+    :param row_scale: Scaling factors per row of shape [BLOCK_M].
+
+    :return: Rescaled output accumulator tensor of shape [BLOCK_M, BLOCK_N].
+    """
+    # TODO: In Triton 3.6, combining tensor condition with early return
+    # in a jitted helper can trigger compile errors
+    # if LAZY_RESCALE:
+    #     if tl.min(row_scale) == 1.0:
+    #         return acc_o
     return acc_o * row_scale[:, None]
 
 
