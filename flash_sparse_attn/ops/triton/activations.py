@@ -61,7 +61,7 @@ def finalize(
     :param row_sum: Final sum values per row of shape [BLOCK_M].
     :param final_scale: Scaling factor to be applied to the output.
 
-    :return o_scale: Output scaling factors per row of shape [BLOCK_M].
+    :return row_scale: Final scaling factors per row of shape [BLOCK_M].
     :return lse: Logsumexp values per row of shape [BLOCK_M].
     """
     # if row_sum is zero or nan, set it to 1 to avoid division by zero
