@@ -1,3 +1,4 @@
+import math
 import triton
 import triton.language as tl
 
@@ -12,6 +13,7 @@ def online_softmax(
     acc_s,
     row_max,
     row_sum,
+    scale_log2,
     CHECK_INF: tl.constexpr,
 ):
     """
@@ -35,11 +37,11 @@ def online_softmax(
         row_max_new = check_inf(row_max_new)
 
     # compute the exponentials and current row sum
-    p = tl.exp(acc_s - row_max_new[:, None])
+    p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
     row_sum_cur = tl.sum(p, axis=1)
 
-    # compute rescaling factor, exp(-inf - x) = 0 on first iteration
-    row_scale = tl.exp(row_max - row_max_new)
+    # compute rescaling factor, exp2(-inf - x) = 0 on first iteration
+    row_scale = tl.exp2((row_max - row_max_new) * scale_log2)
     row_sum_new = row_sum * row_scale + row_sum_cur
 
     return p, row_max_new, row_sum_new, row_scale
@@ -49,6 +51,7 @@ def online_softmax(
 def finalize(
     row_max,
     row_sum,
+    scale_log2,
     final_scale,
 ):
     """
@@ -63,11 +66,14 @@ def finalize(
     """
     # if row_sum is zero or nan, set it to 1 to avoid division by zero
     acc_o_is_zero_or_nan = (row_sum == 0.0) | (row_sum != row_sum)
-
-    row_sum = tl.where(acc_o_is_zero_or_nan, 1.0, row_sum)
-    o_scale = (1.0 / row_sum) * final_scale
-    lse = tl.where(acc_o_is_zero_or_nan, float("-inf"), row_max + tl.log(row_sum))
-    return o_scale, lse
+    row_scale = tl.where(acc_o_is_zero_or_nan, 1.0, 1.0 / row_sum) * final_scale
+    ln2 = math.log(2.0)
+    lse = tl.where(
+        acc_o_is_zero_or_nan,
+        float("-inf"),
+        (row_max * scale_log2 + tl.log2(row_sum)) * ln2,
+    )
+    return row_scale, lse
 
 
 @triton.jit
