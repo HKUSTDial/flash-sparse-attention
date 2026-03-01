@@ -1,4 +1,5 @@
 from typing import Tuple
+import math
 import torch
 import triton
 import triton.language as tl
@@ -11,6 +12,83 @@ from flash_sparse_attn.ops.triton import (
     mask,
     flash_fwd_combine,
 )
+
+
+@triton.jit
+def _fwd_inner_base_kernel(
+    q_tile,
+    k_tile,
+    k_ptrs,
+    v_ptrs,
+    acc_o,
+    row_max,
+    row_sum,
+    softmax_scale_log2,
+    m_block,
+    n_block,
+    n_block_min,
+    actual_seqlen_q,
+    actual_seqlen_k,
+    TILE_M: tl.constexpr,
+    TILE_N: tl.constexpr,
+    WINDOW_SIZE_LEFT: tl.constexpr,
+    WINDOW_SIZE_RIGHT: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+    IS_MASK: tl.constexpr,
+    MASK_CAUSAL: tl.constexpr,
+    MASK_LOCAL: tl.constexpr,
+    CHECK_INF: tl.constexpr,
+):
+    # Load value tile
+    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+
+    # Compute attention scores
+    acc_s = tl.dot(q_tile, tl.trans(k_tile))
+
+    # Advance key pointer
+    k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+    if n_block > n_block_min:
+        # Load next key tile
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+
+    if IS_MASK:
+        # Apply mask to attention scores
+        acc_s = mask.apply_mask(
+            acc_s=acc_s,
+            m_block=m_block,
+            n_block=n_block,
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            MASK_SEQLEN=True,
+            MASK_CAUSAL=MASK_CAUSAL,
+            MASK_LOCAL=MASK_LOCAL,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            SWAP_AB=False,
+        )
+
+    # Apply online softmax
+    p, row_max, row_sum, row_scale = activations.online_softmax(
+        acc_s=acc_s,
+        row_max=row_max,
+        row_sum=row_sum,
+        scale_log2=softmax_scale_log2,
+        CHECK_INF=CHECK_INF,
+    )
+
+    # Rescale output accumulator
+    acc_o = activations.rescale_o(acc_o, row_scale)
+
+    # Update output accumulator
+    acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+
+    # Advance value pointer
+    v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+
+    return k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum
 
 
 fwd_base_autotune_configs = utils.get_fwd_base_autotune_configs(True)
@@ -28,7 +106,7 @@ def _fwd_base_kernel(
     V,
     Out,
     Lse,
-    softmax_scale,
+    softmax_scale_log2,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -298,9 +376,6 @@ def _fwd_base_kernel(
     else:
         q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
 
-    # Scale query
-    q_tile = (q_tile * softmax_scale).to(q_tile.dtype)
-
     # Initialize accumulators
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
@@ -327,143 +402,96 @@ def _fwd_base_kernel(
         if IS_SPLIT_KV:
             n_block_min_causal_local = tl.minimum(n_block_min_causal_local, n_block_max)
 
-        for n_block in range(n_block_max - 1, n_block_min_causal_local - 1, -1):
-            # Load value tile
-            v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
-
-            # Compute attention scores
-            acc_s = tl.dot(q_tile, tl.trans(k_tile))
-
-            # Advance key pointers
-            k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
-            if n_block > n_block_min:
-                # Load next key tile
-                k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
-
-            # Apply mask
-            acc_s = mask.apply_mask(
-                acc_s=acc_s,
+        for n_block in tl.range(n_block_max - 1, n_block_min_causal_local - 1, -1):
+            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
+                q_tile=q_tile,
+                k_tile=k_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                acc_o=acc_o,
+                row_max=row_max,
+                row_sum=row_sum,
+                softmax_scale_log2=softmax_scale_log2,
                 m_block=m_block,
                 n_block=n_block,
-                seqlen_q=actual_seqlen_q,
-                seqlen_k=actual_seqlen_k,
-                MASK_SEQLEN=True,
-                MASK_CAUSAL=IS_CAUSAL,
-                MASK_LOCAL=IS_LOCAL,
+                n_block_min=n_block_min,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
                 TILE_M=TILE_M,
                 TILE_N=TILE_N,
                 WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
                 WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
                 QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                SWAP_AB=False,
-            )
-
-            # Apply online softmax
-            p, row_max, row_sum, row_scale = activations.online_softmax(
-                acc_s=acc_s,
-                row_max=row_max,
-                row_sum=row_sum,
+                IS_MASK=True,
+                MASK_CAUSAL=IS_CAUSAL,
+                MASK_LOCAL=IS_LOCAL,
                 CHECK_INF=True,
             )
-
-            # Rescale output accumulator
-            acc_o = activations.rescale_o(acc_o, row_scale)
-
-            # Update output accumulator
-            acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-
-            # Advance value pointers
-            v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
 
         n_block_max_no_mask = n_block_min_causal_local
     else:
         # First iteration with seqlen masking
         n_block = n_block_max - 1
 
-        # Load value tile
-        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
-
-        # Compute attention scores
-        acc_s = tl.dot(q_tile, tl.trans(k_tile))
-
-        # Advance key pointers
-        k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
-        if n_block > n_block_min:
-            # Load next key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
-
-        # Apply seqlen mask only
-        acc_s = mask.apply_mask(
-            acc_s=acc_s,
+        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
+            q_tile=q_tile,
+            k_tile=k_tile,
+            k_ptrs=k_ptrs,
+            v_ptrs=v_ptrs,
+            acc_o=acc_o,
+            row_max=row_max,
+            row_sum=row_sum,
+            softmax_scale_log2=softmax_scale_log2,
             m_block=m_block,
             n_block=n_block,
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            MASK_SEQLEN=True,
-            MASK_CAUSAL=False,
-            MASK_LOCAL=False,
+            n_block_min=n_block_min,
+            actual_seqlen_q=actual_seqlen_q,
+            actual_seqlen_k=actual_seqlen_k,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
             WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
             WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
             QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-            SWAP_AB=False,
-        )
-
-        # Apply online softmax
-        p, row_max, row_sum, row_scale = activations.online_softmax(
-            acc_s=acc_s,
-            row_max=row_max,
-            row_sum=row_sum,
+            IS_MASK=True,
+            MASK_CAUSAL=False,
+            MASK_LOCAL=False,
             CHECK_INF=True,
         )
-
-        # Rescale output accumulator
-        acc_o = activations.rescale_o(acc_o, row_scale)
-
-        # Update output accumulator
-        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-
-        # Advance value pointers
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
 
         n_block_max_no_mask = n_block_max - 1
 
     # Process n_blocks without masking
-    for n_block in range(n_block_max_no_mask - 1, n_block_min - 1, -1):
-        # Load value tile
-        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
-
-        # Compute attention scores
-        acc_s = tl.dot(q_tile, tl.trans(k_tile))
-
-        # Advance key pointers
-        k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
-        if n_block > n_block_min:
-            # Load next key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
-
-        # Apply online softmax
-        p, row_max, row_sum, row_scale = activations.online_softmax(
-            acc_s=acc_s,
+    for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
+        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
+            q_tile=q_tile,
+            k_tile=k_tile,
+            k_ptrs=k_ptrs,
+            v_ptrs=v_ptrs,
+            acc_o=acc_o,
             row_max=row_max,
             row_sum=row_sum,
+            softmax_scale_log2=softmax_scale_log2,
+            m_block=m_block,
+            n_block=n_block,
+            n_block_min=n_block_min,
+            actual_seqlen_q=actual_seqlen_q,
+            actual_seqlen_k=actual_seqlen_k,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            IS_MASK=False,
+            MASK_CAUSAL=False,
+            MASK_LOCAL=False,
             CHECK_INF=False,
         )
-
-        # Rescale output accumulator
-        acc_o = activations.rescale_o(acc_o, row_scale)
-
-        # Update output accumulator
-        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-
-        # Advance value pointers
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
 
     # Finalize softmax
     o_scale, lse_tile = activations.finalize(
         row_max=row_max,
         row_sum=row_sum,
+        scale_log2=softmax_scale_log2,
         final_scale=1.0,
     )
     acc_o = activations.rescale_o(acc_o, o_scale)
@@ -512,6 +540,7 @@ def _flash_attn_base_forward(
     else:
         window_size_left, window_size_right = None, None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    softmax_scale_log2 = softmax_scale * math.log2(math.e)
 
     utils.assert_fwd_base_inputs(
         query,
@@ -563,7 +592,7 @@ def _flash_attn_base_forward(
         value,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale,
+        softmax_scale_log2,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -640,6 +669,7 @@ def _flash_attn_varlen_base_forward(
     else:
         window_size_left, window_size_right = None, None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    softmax_scale_log2 = softmax_scale * math.log2(math.e)
 
     utils.assert_fwd_base_inputs(
         query,
@@ -691,7 +721,7 @@ def _flash_attn_varlen_base_forward(
         value,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale,
+        softmax_scale_log2,
         0,
         query.stride(-2),
         query.stride(0),
