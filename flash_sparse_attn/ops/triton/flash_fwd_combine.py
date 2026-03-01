@@ -202,12 +202,12 @@ def _fwd_combine_kernel(
             block_shape=(TILE_M,),
             order=(0,),
         )
-        final_lse = tl.where(
+        lse = tl.where(
             sum_exp > 0.0,
             max_lse + tl.log(sum_exp),
             float("-inf"),
         )
-        tl.store(lse_ptrs, final_lse, boundary_check=(0,))
+        tl.store(lse_ptrs, lse, boundary_check=(0,))
 
 
 def _flash_attn_fwd_combine(
