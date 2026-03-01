@@ -488,13 +488,13 @@ def _fwd_base_kernel(
         )
 
     # Finalize softmax
-    o_scale, lse_tile = activations.finalize(
+    row_scale, lse_tile = activations.finalize(
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         final_scale=1.0,
     )
-    acc_o = activations.rescale_o(acc_o, o_scale)
+    acc_o = activations.rescale_o(acc_o, row_scale)
 
     # Store LSE
     if PACK_GQA:
