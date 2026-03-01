@@ -88,9 +88,12 @@ def rescale_o(
 def log_sigmoid(x, mask):
     x = x.to(tl.float32)
     neg_abs_x = -tl.abs(x)
-    # return tl.where(mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(neg_abs_x)), float("-inf"))
-    correction = tl.where(neg_abs_x < -8.0, 0.0, tl.log(1.0 + tl.exp(neg_abs_x)))
-    return tl.where(mask, tl.minimum(x, 0.0) - correction, float("-inf"))
+    # TODO: In Triton 3.6, tl.where cannot reduce the actual computation
+    # correction = tl.where(neg_abs_x < -8.0, 0.0, tl.log(1.0 + tl.exp(neg_abs_x)))
+    # return tl.where(mask, tl.minimum(x, 0.0) - correction, float("-inf"))
+    return tl.where(
+        mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(neg_abs_x)), float("-inf")
+    )
 
 
 @triton.jit
