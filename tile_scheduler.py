@@ -91,11 +91,13 @@ class SingleTileScheduler:
 
     @staticmethod
     def create(params: Params, *, loc=None, ip=None) -> "SingleTileScheduler":
-        if const_expr(cute.size(params.cluster_shape_mn) == 1):
-            blk_coord = cute.arch.block_idx()
-        else:
-            # All CTAs in a cluster must get the same block coordinate
-            blk_coord = cute.arch.cluster_idx()
+        # if const_expr(cute.size(params.cluster_shape_mn) == 1):
+        #     blk_coord = cute.arch.block_idx()
+        # else:
+        #     # All CTAs in a cluster must get the same block coordinate
+        #     blk_coord = cute.arch.cluster_idx()
+        # Temporary set to block_idx until we sort out the best way to handle cluster
+        blk_coord = cute.arch.block_idx()
         return SingleTileScheduler(params, blk_coord, loc=loc, ip=ip)
 
     # called by host
