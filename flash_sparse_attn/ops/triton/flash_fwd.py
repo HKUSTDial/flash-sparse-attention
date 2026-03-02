@@ -314,17 +314,17 @@ def _fwd_base_kernel(
         else:
             tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
 
-        # We can't get dtype of query for output here, so we initialize output to zero
-        # # Write output as zero for proper handling
-        # if PACK_GQA:
-        #     tl.store(
-        #         out_ptrs,
-        #         o_tile,
-        #         mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
-        #         & (offs_kb < head_dim)[None, :],
-        #     )
-        # else:
-        #     tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
+        # Write output as zero for proper handling
+        o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
+        if PACK_GQA:
+            tl.store(
+                out_ptrs,
+                o_tile,
+                mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+                & (offs_kb < head_dim)[None, :],
+            )
+        else:
+            tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
         return
 
     # Create query pointers
@@ -556,23 +556,21 @@ def _flash_attn_base_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    out = torch.zeros_like(query)
-    lse = torch.full(
+    out = torch.empty_like(query)
+    lse = torch.empty(
         (batch_size, num_heads_q, seqlen_q),
-        float("-inf"),
         dtype=torch.float32,
         device=query.device,
     )
 
     if is_split_kv:
-        out_partial = torch.zeros(
+        out_partial = torch.empty(
             (num_splits, batch_size, seqlen_q, num_heads_q, head_dim),
             dtype=torch.float32,
             device=query.device,
         )
-        lse_partial = torch.full(
+        lse_partial = torch.empty(
             (num_splits, batch_size, num_heads_q, seqlen_q),
-            float("-inf"),
             dtype=torch.float32,
             device=query.device,
         )
@@ -685,23 +683,21 @@ def _flash_attn_varlen_base_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    out = torch.zeros_like(query)
-    lse = torch.full(
+    out = torch.empty_like(query)
+    lse = torch.empty(
         (num_heads_q, total_seqlen_q),
-        float("-inf"),
         dtype=torch.float32,
         device=query.device,
     )
 
     if is_split_kv:
-        out_partial = torch.zeros(
+        out_partial = torch.empty(
             (num_splits, total_seqlen_q, num_heads_q, head_dim),
             dtype=torch.float32,
             device=query.device,
         )
-        lse_partial = torch.full(
+        lse_partial = torch.empty(
             (num_splits, num_heads_q, total_seqlen_q),
-            float("-inf"),
             dtype=torch.float32,
             device=query.device,
         )
