@@ -43,10 +43,10 @@ def _fwd_inner_base_kernel(
     v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
     # Compute attention scores
-    acc_s = tl.dot(q_tile, tl.trans(k_tile))
+    acc_s = tl.dot(q_tile, k_tile)
 
     # Advance key pointer
-    k_ptrs = tl.advance(k_ptrs, (-TILE_N, 0))
+    k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
     if n_block > n_block_min:
         # Load next key tile
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
@@ -350,11 +350,11 @@ def _fwd_base_kernel(
         )
     k_ptrs = tl.make_block_ptr(
         base=k_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_kn, 1),
-        offsets=((n_block_max - 1) * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=(head_dim, actual_seqlen_k),
+        strides=(1, stride_kn),
+        offsets=(0, (n_block_max - 1) * TILE_N),
+        block_shape=(TILE_K, TILE_N),
+        order=(0, 1),
     )
     v_ptrs = tl.make_block_ptr(
         base=v_base,
