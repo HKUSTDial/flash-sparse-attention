@@ -9,9 +9,11 @@ def get_fwd_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int, int]:
     """
-    Get launch configuration for forward pass kernel based on input parameters and device architecture.
+    Get launch configuration for forward kernel based on input parameters and device architecture.
 
     :param is_split_kv: Whether the attention is split KV
+    :param pack_gqa: Whether GQA packing is used
+    :param qheads_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
 
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
@@ -105,6 +107,51 @@ def get_fwd_launch_config(
                     return (tile_m, 32, 4, 1, 1)
                 else:
                     return (tile_m, 32, 4, 1, 1)
+        else:
+            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
+    else:
+        raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+def get_fwd_combine_launch_config(
+    tile_k,
+) -> tuple[int, int, int, int]:
+    """
+    Get launch configuration for forward combine kernel based on input parameters and device architecture.
+
+    :param tile_k: Tile size in the K dimension
+
+    :return launch_config: Tuple of (tile_m, num_warps, num_stages, num_ctas) for launching the kernel
+    """
+    device = utils.get_device()
+    arch = utils.get_arch(device)
+
+    if arch == "N/A":
+        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
+
+    # NOTE: Setting num_ctas=2 for the forward kernel can trigger Triton's PlanCTA assertion
+    # Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
+    if device.type == "cuda":
+        # For A100
+        if arch == "80":
+            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
+            return (tile_m, 4, 1, 1)
+
+        # For H100
+        elif arch == "90":
+            tile_m = 8 if tile_k % 128 == 0 else (16 if tile_k % 64 == 0 else 32)
+            return (tile_m, 4, 1, 1)
+
+        # For B200
+        elif arch == "100":
+            tile_m = 16 if tile_k % 128 == 0 else (32 if tile_k % 64 == 0 else 64)
+            return (tile_m, 4, 1, 1)
+
+        # For RTX 5090
+        elif arch == "120":
+            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
+            return (tile_m, 4, 1, 1)
+
         else:
             raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
     else:
