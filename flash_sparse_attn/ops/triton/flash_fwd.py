@@ -1379,7 +1379,7 @@ def _flash_attn_sm90_forward(
         utils.num_splits_heuristic(
             total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
             num_SMs=num_SMs,
-            num_n_blocks=triton.cdiv(seqlen_k, TILE_K),
+            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
             max_splits=triton.next_power_of_2(num_SMs // 4),
         )
         if is_split_kv
@@ -1534,7 +1534,7 @@ def _flash_attn_varlen_sm90_forward(
         utils.num_splits_heuristic(
             total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
             num_SMs=num_SMs,
-            num_n_blocks=triton.cdiv(seqlen_k, TILE_K),
+            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
             max_splits=triton.next_power_of_2(num_SMs // 4),
         )
         if is_split_kv
