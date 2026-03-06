@@ -3,17 +3,9 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import seqlen_info, utils
+from flash_sparse_attn.ops.triton import utils, seqlen_info, launch_template
 
 
-fwd_combine_autotune_configs = utils.get_fwd_combine_autotune_configs(True)
-
-
-@triton.autotune(
-    configs=fwd_combine_autotune_configs,
-    key=utils.FWD_COMBINE_AUTOTUNE_KEYS,
-    use_cuda_graph=True,
-)
 @triton.jit
 def _fwd_combine_kernel(
     Out_partial,
@@ -226,8 +218,15 @@ def _flash_attn_fwd_combine(
         total_q, num_heads_q, head_dim = out_partial.shape[1:]
         batch_size = cu_seqlens_q.shape[0] - 1
         seqlen_q = total_q
-    log2_splits = max(int(math.ceil(math.log2(max(num_splits, 1)))), 1)
-    MAX_SPLITS = 1 << log2_splits
+    MAX_SPLITS = 1 << max(int(math.ceil(math.log2(max(num_splits, 1)))), 1)
+
+    TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    TILE_M, num_warps, num_stages, num_ctas = (
+        launch_template.get_fwd_combine_launch_config(
+            tile_k=TILE_K,
+        )
+    )
 
     grid = utils.get_fwd_combine_grid(
         batch_size=batch_size,
@@ -259,7 +258,12 @@ def _flash_attn_fwd_combine(
         seqlen_q,
         num_heads_q,
         head_dim,
+        TILE_M=TILE_M,
+        TILE_K=TILE_K,
         HAS_CU_SEQLENS_Q=cu_seqlens_q is not None,
         HAS_SEQUSED_Q=seqused_q is not None,
         MAX_SPLITS=MAX_SPLITS,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
     )
