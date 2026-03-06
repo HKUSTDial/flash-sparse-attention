@@ -5,10 +5,11 @@ import triton
 import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
-    activations,
     utils,
     seqlen_info,
+    launch_template,
     block_info,
+    activations,
     mask,
     flash_fwd_combine,
 )
@@ -1065,18 +1066,16 @@ def _flash_attn_base_forward(
     is_causal: bool = False,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-    num_splits: int = 1,
-):
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    is_split_kv = num_splits > 1
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
-        window_size_left, window_size_right = None, None
+    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
+    window_size_left, window_size_right = window_size
+    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
     utils.assert_fwd_base_inputs(
         query,
@@ -1087,10 +1086,29 @@ def _flash_attn_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-        num_splits=num_splits,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+        launch_template.get_fwd_launch_config(
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
+            qheads_per_kvhead=qheads_per_kvhead,
+            tile_k=TILE_K,
+        )
+    )
+
+    num_splits = (
+        utils.num_splits_heuristic(
+            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            num_SMs=num_SMs,
+            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
+            max_splits=triton.next_power_of_2(num_SMs // 4),
+        )
+        if is_split_kv
+        else 1
+    )
 
     out = torch.empty_like(query)
     lse = torch.empty(
@@ -1152,7 +1170,9 @@ def _flash_attn_base_forward(
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=(num_heads_q // num_heads_kv) if pack_gqa else 1,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
@@ -1164,6 +1184,9 @@ def _flash_attn_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
     )
 
     if is_split_kv:
@@ -1189,21 +1212,19 @@ def _flash_attn_varlen_base_forward(
     is_causal: bool = False,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-    num_splits: int = 1,
-):
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    is_split_kv = num_splits > 1
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
-        window_size_left, window_size_right = None, None
+    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
+    window_size_left, window_size_right = window_size
+    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
     utils.assert_fwd_base_inputs(
         query,
@@ -1214,10 +1235,29 @@ def _flash_attn_varlen_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-        num_splits=num_splits,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+        launch_template.get_fwd_launch_config(
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
+            qheads_per_kvhead=qheads_per_kvhead,
+            tile_k=TILE_K,
+        )
+    )
+
+    num_splits = (
+        utils.num_splits_heuristic(
+            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            num_SMs=num_SMs,
+            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
+            max_splits=triton.next_power_of_2(num_SMs // 4),
+        )
+        if is_split_kv
+        else 1
+    )
 
     out = torch.empty_like(query)
     lse = torch.empty(
@@ -1279,7 +1319,9 @@ def _flash_attn_varlen_base_forward(
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=(num_heads_q // num_heads_kv) if pack_gqa else 1,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
@@ -1291,6 +1333,9 @@ def _flash_attn_varlen_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
     )
 
     if is_split_kv:
@@ -1313,18 +1358,16 @@ def _flash_attn_sm90_forward(
     is_causal: bool = False,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-    num_splits: int = 1,
-):
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    is_split_kv = num_splits > 1
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
-        window_size_left, window_size_right = None, None
+    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
+    window_size_left, window_size_right = window_size
+    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
     utils.assert_fwd_sm90_inputs(
         query,
@@ -1335,10 +1378,29 @@ def _flash_attn_sm90_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-        num_splits=num_splits,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+        launch_template.get_fwd_launch_config(
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
+            qheads_per_kvhead=qheads_per_kvhead,
+            tile_k=TILE_K,
+        )
+    )
+
+    num_splits = (
+        utils.num_splits_heuristic(
+            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            num_SMs=num_SMs,
+            num_n_blocks=triton.cdiv(seqlen_k, TILE_K),
+            max_splits=triton.next_power_of_2(num_SMs // 4),
+        )
+        if is_split_kv
+        else 1
+    )
 
     out = torch.empty_like(query)
     lse = torch.empty(
@@ -1406,7 +1468,9 @@ def _flash_attn_sm90_forward(
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=(num_heads_q // num_heads_kv) if pack_gqa else 1,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
@@ -1418,6 +1482,9 @@ def _flash_attn_sm90_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
     )
 
     if is_split_kv:
@@ -1443,21 +1510,19 @@ def _flash_attn_varlen_sm90_forward(
     is_causal: bool = False,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-    num_splits: int = 1,
-):
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
+    num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    is_split_kv = num_splits > 1
-    is_local = window_size[0] is not None or window_size[1] is not None
-    if is_local:
-        window_size_left, window_size_right = window_size
-    else:
-        window_size_left, window_size_right = None, None
+    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
+    window_size_left, window_size_right = window_size
+    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
     utils.assert_fwd_sm90_inputs(
         query,
@@ -1468,10 +1533,29 @@ def _flash_attn_varlen_sm90_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-        num_splits=num_splits,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+        launch_template.get_fwd_launch_config(
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
+            qheads_per_kvhead=qheads_per_kvhead,
+            tile_k=TILE_K,
+        )
+    )
+
+    num_splits = (
+        utils.num_splits_heuristic(
+            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            num_SMs=num_SMs,
+            num_n_blocks=triton.cdiv(seqlen_k, TILE_K),
+            max_splits=triton.next_power_of_2(num_SMs // 4),
+        )
+        if is_split_kv
+        else 1
+    )
 
     out = torch.empty_like(query)
     lse = torch.empty(
@@ -1539,7 +1623,9 @@ def _flash_attn_varlen_sm90_forward(
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=(num_heads_q // num_heads_kv) if pack_gqa else 1,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
@@ -1551,6 +1637,9 @@ def _flash_attn_varlen_sm90_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
     )
 
     if is_split_kv:
