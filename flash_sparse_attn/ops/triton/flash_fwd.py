@@ -92,14 +92,6 @@ def _fwd_inner_base_kernel(
     return k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum
 
 
-fwd_base_autotune_configs = utils.get_fwd_base_autotune_configs(True)
-
-
-@triton.autotune(
-    configs=fwd_base_autotune_configs,
-    key=utils.FWD_BASE_AUTOTUNE_KEYS,
-    use_cuda_graph=True,
-)
 @triton.jit
 def _fwd_base_kernel(
     Q,
@@ -601,14 +593,6 @@ def _fwd_inner_sm90_kernel(
     return k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum
 
 
-fwd_sm90_autotune_configs = utils.get_fwd_sm90_autotune_configs(False)
-
-
-@triton.autotune(
-    configs=fwd_sm90_autotune_configs,
-    key=utils.FWD_SM90_AUTOTUNE_KEYS,
-    use_cuda_graph=True,
-)
 @triton.jit
 def _fwd_sm90_kernel(
     Q,
