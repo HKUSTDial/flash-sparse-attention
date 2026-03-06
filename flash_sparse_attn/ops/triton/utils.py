@@ -32,9 +32,9 @@ def get_arch(device: torch.device):
     :return arch: Architecture string
     """
     if device == torch.device("cuda"):
-        capability = torch.cuda.get_device_capability(device)
-        sm = f"sm{capability[0]}{capability[1]}"
-        return f"cuda:{sm}"
+        major, minor = torch.cuda.get_device_capability(device)
+        sm = major * 10 + minor
+        return f"{sm}" if sm >= 80 else "N/A"
     elif device == torch.device("xpu"):
         return "N/A"
     elif device == torch.device("mps"):
@@ -400,7 +400,6 @@ def assert_fwd_base_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
-    num_splits: int = None,
 ):
     """
     Assert the validity of inputs for the forward base kernel.
@@ -413,7 +412,6 @@ def assert_fwd_base_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
-    :param num_splits: Number of KV splits
 
     :raises AssertionError: If any of the assertions fail
     """
@@ -442,10 +440,6 @@ def assert_fwd_base_inputs(
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
             "cu_seqlen_q and cu_seqlen_k must be int32"
         )
-    if num_splits is not None:
-        assert num_splits >= 1, (
-            "num_splits must be greater than or equal to 1 for splitting"
-        )
 
 
 def assert_fwd_sm90_inputs(
@@ -457,7 +451,6 @@ def assert_fwd_sm90_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
-    num_splits: int = None,
 ):
     """
     Assert the validity of inputs for the forward base kernel.
@@ -470,7 +463,6 @@ def assert_fwd_sm90_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
-    :param num_splits: Number of KV splits
 
     :raises AssertionError: If any of the assertions fail
     """
@@ -498,10 +490,6 @@ def assert_fwd_sm90_inputs(
         )
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
             "cu_seqlen_q and cu_seqlen_k must be int32"
-        )
-    if num_splits is not None:
-        assert num_splits >= 1, (
-            "num_splits must be greater than or equal to 1 for splitting"
         )
 
 
