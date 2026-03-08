@@ -28,18 +28,18 @@ def get_arch(device: torch.device):
 
     :param device: torch.device object
 
-    :return arch: Architecture string
+    :return arch: Architecture model as a number
     """
-    if device == torch.device("cuda"):
+    if device.type == "cuda":
         major, minor = torch.cuda.get_device_capability(device)
         sm = major * 10 + minor
-        return f"{sm}" if sm >= 80 else "N/A"
-    elif device == torch.device("xpu"):
-        return "N/A"
-    elif device == torch.device("mps"):
-        return "N/A"
-    elif device == torch.device("cpu"):
-        return "N/A"
+        return sm if sm >= 80 else -1
+    elif device.type == "xpu":
+        return -1
+    elif device.type == "mps":
+        return -1
+    elif device.type == "cpu":
+        return -1
     else:
         raise ValueError(f"Unsupported device: {device}")
 

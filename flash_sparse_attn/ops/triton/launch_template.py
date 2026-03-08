@@ -21,7 +21,7 @@ def get_fwd_launch_config(
     device = utils.get_device()
     arch = utils.get_arch(device)
 
-    if arch == "N/A":
+    if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     # NOTE: Setting num_ctas=2 for the forward kernel can trigger Triton's PlanCTA assertion
@@ -38,7 +38,7 @@ def get_fwd_launch_config(
             tile_m = None
 
         # For A100
-        if arch == "80":
+        if arch // 10 == 8:
             if not is_split_kv:
                 if tile_k <= 64:
                     return (128, 128, 4, 1, 1)
@@ -59,7 +59,7 @@ def get_fwd_launch_config(
                     return (tile_m, 64, 4, 1, 1)
 
         # For H100
-        elif arch == "90":
+        elif arch // 10 == 9:
             if not is_split_kv:
                 if tile_k <= 64:
                     return (256, 128, 4, 1, 1)
@@ -80,7 +80,7 @@ def get_fwd_launch_config(
                     return (tile_m, 64, 4, 1, 1)
 
         # For B200
-        elif arch == "100":
+        elif arch // 10 == 10:
             # TODO: Tune launch config for SM 100
             if not is_split_kv:
                 return (64, 64, 4, 1, 1)
@@ -88,7 +88,7 @@ def get_fwd_launch_config(
                 return (tile_m, 64, 4, 1, 1)
 
         # For RTX 5090
-        elif arch == "120":
+        elif arch // 10 == 12:
             if not is_split_kv:
                 if tile_k <= 64:
                     return (128, 64, 4, 1, 1)
@@ -126,29 +126,29 @@ def get_fwd_combine_launch_config(
     device = utils.get_device()
     arch = utils.get_arch(device)
 
-    if arch == "N/A":
+    if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     # NOTE: Setting num_ctas=2 for the forward kernel can trigger Triton's PlanCTA assertion
     # Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
     if device.type == "cuda":
         # For A100
-        if arch == "80":
+        if arch // 10 == 8:
             tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
             return (tile_m, 4, 1, 1)
 
         # For H100
-        elif arch == "90":
+        elif arch // 10 == 9:
             tile_m = 8 if tile_k % 128 == 0 else (16 if tile_k % 64 == 0 else 32)
             return (tile_m, 4, 1, 1)
 
         # For B200
-        elif arch == "100":
+        elif arch // 10 == 10:
             tile_m = 16 if tile_k % 128 == 0 else (32 if tile_k % 64 == 0 else 64)
             return (tile_m, 4, 1, 1)
 
         # For RTX 5090
-        elif arch == "120":
+        elif arch // 10 == 12:
             tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
             return (tile_m, 4, 1, 1)
 
