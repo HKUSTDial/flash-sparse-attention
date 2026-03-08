@@ -78,10 +78,11 @@ def _fwd_inner_base_kernel(
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
+        RESCALE_THRESHOLD=0.0,
     )
 
     # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale)
+    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Update output accumulator
     acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -487,7 +488,7 @@ def _fwd_base_kernel(
         scale_log2=softmax_scale_log2,
         final_scale=1.0,
     )
-    acc_o = activations.rescale_o(acc_o, row_scale)
+    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store LSE
     if PACK_GQA:
@@ -579,10 +580,11 @@ def _fwd_inner_sm90_kernel(
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
+        RESCALE_THRESHOLD=0.0,
     )
 
     # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale)
+    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Update output accumulator
     acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -1015,7 +1017,7 @@ def _fwd_sm90_kernel(
         scale_log2=softmax_scale_log2,
         final_scale=1.0,
     )
-    acc_o = activations.rescale_o(acc_o, row_scale)
+    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store LSE
     if PACK_GQA:
