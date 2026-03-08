@@ -15,7 +15,7 @@ def online_softmax(
     row_sum,
     scale_log2,
     CHECK_INF: tl.constexpr,
-    # RESCALE_THRESHOLD: tl.constexpr = 0.0,
+    RESCALE_THRESHOLD: tl.constexpr,
 ):
     """
     Apply online softmax to acc_s, and update row_max and row_sum.
@@ -25,6 +25,7 @@ def online_softmax(
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
     :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
     :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
+    :param RESCALE_THRESHOLD: Threshold for rescaling to avoid underflow. If <= 0, rescaling is disabled.
 
     :return p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
     :return row_max_new: Updated maximum values per row of shape [BLOCK_M].
@@ -38,16 +39,19 @@ def online_softmax(
     if CHECK_INF:
         row_max_new = check_inf(row_max_new)
 
-    # Compute row scale
+    # Compute scaled differences to new row max
     acc_scale_log2 = (row_max - row_max_new) * scale_log2
-    row_scale = tl.exp2(acc_scale_log2)
 
-    # TODO: Triton 3.6 currently does not support enabling LAZY_RESCALE
-    # # If max update is tiny, keep the old max
-    # if RESCALE_THRESHOLD > 0.0:
-    #     if tl.min(acc_scale_log2) >= -RESCALE_THRESHOLD:
-    #         row_max_new = row_max
-    #         row_scale = row_scale * 0.0 + 1.0
+    # Compute row scale
+    if RESCALE_THRESHOLD > 0.0:
+        # Triton can only skip computation at block granularity
+        if tl.min(acc_scale_log2) < -RESCALE_THRESHOLD:
+            row_scale = tl.exp2(acc_scale_log2)
+        else:
+            row_max_new = row_max
+            row_scale = acc_scale_log2 * 0.0 + 1.0
+    else:
+        row_scale = tl.exp2(acc_scale_log2)
 
     # Compute attention weights
     p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
@@ -92,22 +96,24 @@ def finalize(
 def rescale_o(
     acc_o,
     row_scale,
-    # LAZY_RESCALE: tl.constexpr,
+    LAZY_RESCALE: tl.constexpr,
 ):
     """
     Rescale output accumulator by row_scale.
 
     :param acc_o: Output accumulator tensor of shape [BLOCK_M, BLOCK_N].
     :param row_scale: Scaling factors per row of shape [BLOCK_M].
+    :param LAZY_RESCALE: Boolean flag indicating if rescaling should be applied lazily.
 
     :return: Rescaled output accumulator tensor of shape [BLOCK_M, BLOCK_N].
     """
-    # TODO: In Triton 3.6, combining tensor condition with early return
-    # in a jitted helper can trigger compile errors
-    # if LAZY_RESCALE:
-    #     if tl.min(row_scale) == 1.0:
-    #         return acc_o
-    return acc_o * row_scale[:, None]
+    if LAZY_RESCALE:
+        # On some hardware, the check can cause severe performance regression
+        if tl.min(row_scale) != 1.0:
+            acc_o = acc_o * row_scale[:, None]
+    else:
+        acc_o = acc_o * row_scale[:, None]
+    return acc_o
 
 
 @triton.jit
