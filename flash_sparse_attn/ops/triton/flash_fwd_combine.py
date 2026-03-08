@@ -3,7 +3,7 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import utils, seqlen_info, launch_template
+from flash_sparse_attn.ops.triton import launch_template, launch_grid, seqlen_info
 
 
 @triton.jit
@@ -228,7 +228,7 @@ def _flash_attn_fwd_combine(
         )
     )
 
-    grid = utils.get_fwd_combine_grid(
+    grid = launch_grid.get_fwd_combine_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
