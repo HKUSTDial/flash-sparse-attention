@@ -5,9 +5,11 @@ import triton
 import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
+    assert_inputs,
     utils,
-    seqlen_info,
     launch_template,
+    launch_grid,
+    seqlen_info,
     block_info,
     activations,
     mask,
@@ -1063,7 +1065,7 @@ def _flash_attn_base_forward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    utils.assert_fwd_base_inputs(
+    assert_inputs.assert_fwd_inputs(
         query,
         key,
         value,
@@ -1087,10 +1089,11 @@ def _flash_attn_base_forward(
 
     num_splits = (
         utils.num_splits_heuristic(
-            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
             num_SMs=num_SMs,
-            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
-            max_splits=triton.next_power_of_2(num_SMs // 4),
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
         )
         if is_split_kv
         else 1
@@ -1115,7 +1118,7 @@ def _flash_attn_base_forward(
             device=query.device,
         )
 
-    grid = utils.get_fwd_base_grid(
+    grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
@@ -1212,7 +1215,7 @@ def _flash_attn_varlen_base_forward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    utils.assert_fwd_base_inputs(
+    assert_inputs.assert_fwd_inputs(
         query,
         key,
         value,
@@ -1236,10 +1239,11 @@ def _flash_attn_varlen_base_forward(
 
     num_splits = (
         utils.num_splits_heuristic(
-            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
             num_SMs=num_SMs,
-            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
-            max_splits=triton.next_power_of_2(num_SMs // 4),
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
         )
         if is_split_kv
         else 1
@@ -1264,7 +1268,7 @@ def _flash_attn_varlen_base_forward(
             device=query.device,
         )
 
-    grid = utils.get_fwd_base_grid(
+    grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
@@ -1355,7 +1359,7 @@ def _flash_attn_sm90_forward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    utils.assert_fwd_sm90_inputs(
+    assert_inputs.assert_fwd_inputs(
         query,
         key,
         value,
@@ -1379,10 +1383,11 @@ def _flash_attn_sm90_forward(
 
     num_splits = (
         utils.num_splits_heuristic(
-            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
             num_SMs=num_SMs,
-            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
-            max_splits=triton.next_power_of_2(num_SMs // 4),
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
         )
         if is_split_kv
         else 1
@@ -1407,7 +1412,7 @@ def _flash_attn_sm90_forward(
             device=query.device,
         )
 
-    grid = utils.get_fwd_sm90_grid(
+    grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
@@ -1510,7 +1515,7 @@ def _flash_attn_varlen_sm90_forward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    utils.assert_fwd_sm90_inputs(
+    assert_inputs.assert_fwd_inputs(
         query,
         key,
         value,
@@ -1534,10 +1539,11 @@ def _flash_attn_varlen_sm90_forward(
 
     num_splits = (
         utils.num_splits_heuristic(
-            total_mblocks=(triton.cdiv(seqlen_q, TILE_M)),
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
             num_SMs=num_SMs,
-            num_n_blocks=triton.cdiv(seqlen_k, TILE_N),
-            max_splits=triton.next_power_of_2(num_SMs // 4),
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
         )
         if is_split_kv
         else 1
@@ -1562,7 +1568,7 @@ def _flash_attn_varlen_sm90_forward(
             device=query.device,
         )
 
-    grid = utils.get_fwd_base_grid(
+    grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
