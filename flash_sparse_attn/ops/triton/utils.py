@@ -66,10 +66,11 @@ def ensure_contiguous(fn):
 
 
 def num_splits_heuristic(
-    total_mblocks: int,
+    seqlen_q: int,
+    seqlen_k: int,
     num_SMs: int,
-    num_n_blocks: int,
-    max_splits: int = 128,
+    TILE_M: int,
+    TILE_N: int,
 ) -> int:
     """
     Determine the number of KV splits for FlashDecoding.
@@ -77,13 +78,17 @@ def num_splits_heuristic(
     Splits only when there are enough KV blocks to benefit from parallelism,
     and targets full SM occupancy by over-subscribing the M-block count.
 
-    :param total_mblocks: Total number of M-blocks across batch and heads.
+    :param seqlen_q: Sequence length of queries.
+    :param seqlen_k: Sequence length of keys.
     :param num_SMs: Number of streaming multiprocessors on the device.
-    :param num_n_blocks: Number of N-blocks.
-    :param max_splits: Hard upper bound on number of splits.
+    :param TILE_M: Tile size for M dimension.
+    :param TILE_N: Tile size for N dimension.
 
     :return: Number of splits.
     """
+    total_mblocks = triton.cdiv(seqlen_q, TILE_M)
+    num_n_blocks = triton.cdiv(seqlen_k, TILE_N)
+    max_splits = triton.next_power_of_2(num_SMs // 4)
     if num_n_blocks <= 4:
         # 1 means no splitting
         return 1
