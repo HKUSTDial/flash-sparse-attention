@@ -258,6 +258,7 @@ def _fwd_base_kernel(
         QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
     )
 
+    # Create pointers
     if not PACK_GQA:
         lse_ptrs = tl.make_block_ptr(
             base=lse_base,
@@ -323,7 +324,6 @@ def _fwd_base_kernel(
             tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
         return
 
-    # Create query pointers
     if not PACK_GQA:
         q_ptrs = tl.make_block_ptr(
             base=q_base,
@@ -760,6 +760,7 @@ def _fwd_sm90_kernel(
         QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
     )
 
+    # Create pointers
     if not PACK_GQA:
         lse_ptrs = tl.make_block_ptr(
             base=lse_base,
@@ -826,7 +827,6 @@ def _fwd_sm90_kernel(
         return
 
     # NOTE: In Triton 3.6, make_tensor_descriptor is less efficient than make_block_ptr, so we revert to using make_block_ptr for creating pointers
-    # Create query pointers
     if not PACK_GQA:
         # q_ptrs = tl.make_tensor_descriptor(
         #     base=q_base,
