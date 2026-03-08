@@ -1063,7 +1063,8 @@ def _flash_attn_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
+    qheads_per_kvhead = num_heads_q // num_heads_kv
+    qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
     assert_inputs.assert_fwd_inputs(
         query,
@@ -1154,12 +1155,12 @@ def _flash_attn_base_forward(
         None,
         None,
         None,
-        num_heads_q // num_heads_kv,
+        qheads_per_kvhead,
         num_splits,
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -1213,7 +1214,8 @@ def _flash_attn_varlen_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
+    qheads_per_kvhead = num_heads_q // num_heads_kv
+    qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
     assert_inputs.assert_fwd_inputs(
         query,
@@ -1304,12 +1306,12 @@ def _flash_attn_varlen_base_forward(
         cu_seqlens_k,
         None,
         None,
-        num_heads_q // num_heads_kv,
+        qheads_per_kvhead,
         num_splits,
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -1357,7 +1359,8 @@ def _flash_attn_sm90_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
+    qheads_per_kvhead = num_heads_q // num_heads_kv
+    qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
     assert_inputs.assert_fwd_inputs(
         query,
@@ -1454,12 +1457,12 @@ def _flash_attn_sm90_forward(
         None,
         None,
         None,
-        num_heads_q // num_heads_kv,
+        qheads_per_kvhead,
         num_splits,
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -1513,7 +1516,8 @@ def _flash_attn_varlen_sm90_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    qheads_per_kvhead = num_heads_q // num_heads_kv if pack_gqa else 1
+    qheads_per_kvhead = num_heads_q // num_heads_kv
+    qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
     assert_inputs.assert_fwd_inputs(
         query,
@@ -1610,12 +1614,12 @@ def _flash_attn_varlen_sm90_forward(
         cu_seqlens_k,
         None,
         None,
-        num_heads_q // num_heads_kv,
+        qheads_per_kvhead,
         num_splits,
         seqlen_q,
         seqlen_k,
         head_dim,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
