@@ -35,6 +35,31 @@ def get_fwd_grid(
     return grid
 
 
+def get_bwd_grid(
+    batch_size: int,
+    seqlen_k: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the backward kernel.
+
+    :param batch_size: Batch size
+    :param seqlen_k: Sequence length of keys
+    :param num_heads_q: Number of query heads
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_k, META["TILE_N"]),
+            num_heads_q,
+            batch_size,
+        )
+
+    return grid
+
+
 def get_fwd_combine_grid(
     batch_size: int,
     seqlen_q: int,
@@ -57,6 +82,56 @@ def get_fwd_combine_grid(
             triton.cdiv(seqlen_q, META["TILE_M"]),
             triton.cdiv(head_dim, META["TILE_K"]),
             batch_size * num_heads_q,
+        )
+
+    return grid
+
+
+def get_bwd_preprocess_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the backward preprocess kernel.
+
+    :param batch_size: Batch size
+    :param seqlen_q: Sequence length of queries
+    :param num_heads_q: Number of query heads
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            num_heads_q,
+            batch_size,
+        )
+
+    return grid
+
+
+def get_bwd_postprocess_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the backward postprocess kernel.
+
+    :param batch_size: Batch size
+    :param seqlen_q: Sequence length of queries
+    :param num_heads_q: Number of query heads
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            num_heads_q,
+            batch_size,
         )
 
     return grid
