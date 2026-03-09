@@ -124,6 +124,8 @@ def get_gate_threshold(
     IS_CAUSAL: tl.constexpr,
     TILE_M: tl.constexpr,
     QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+    IS_ADAPT_GATE: tl.constexpr,
+    IS_LOGSIGMOID_GATE: tl.constexpr,
     SWAP_AB: tl.constexpr,
 ):
     """
@@ -136,6 +138,8 @@ def get_gate_threshold(
     :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
     :param TILE_M: Tile size along the M dimension.
     :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
+    :param IS_ADAPT_GATE: Boolean flag indicating if self-adaptive gate threshold is enabled.
+    :param IS_LOGSIGMOID_GATE: Boolean flag indicating if the gate uses logsigmoid.
     :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
     """
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
@@ -147,9 +151,8 @@ def get_gate_threshold(
         if QHEADS_PER_KVHEAD_PACKGQA > 1:
             q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
 
-    causal_offset = seqlen_k - seqlen_q
-
-    if IS_CAUSAL:
+    if IS_CAUSAL and IS_ADAPT_GATE:
+        causal_offset = seqlen_k - seqlen_q
         g_thr = tl.log(gate_scale * (q_idx + causal_offset + 1.0))
     else:
         if SWAP_AB:
@@ -160,7 +163,8 @@ def get_gate_threshold(
             g_thr = tl.full(
                 (TILE_M, 1), tl.log(gate_scale * seqlen_k), dtype=tl.float32
             )
-    g_thr += -tl.log(1.0 - tl.exp(g_thr))
+    if IS_LOGSIGMOID_GATE:
+        g_thr += -tl.log(1.0 - tl.exp(g_thr))
     return g_thr
 
 
