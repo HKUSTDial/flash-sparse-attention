@@ -50,8 +50,8 @@ def apply_mask(
         tl.static_assert(
             QHEADS_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PACKGQA > 1 not supported"
         )
-        q_idx = offs_n[None, :]
-        k_idx = offs_m[:, None]
+        q_idx = offs_m[None, :]
+        k_idx = offs_n[:, None]
     else:
         q_idx = offs_m[:, None]
         k_idx = offs_n[None, :]

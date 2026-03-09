@@ -1,4 +1,5 @@
 import triton
+
 from flash_sparse_attn.ops.triton import utils
 
 
@@ -107,6 +108,68 @@ def get_fwd_launch_config(
                     return (tile_m, 32, 4, 1, 1)
                 else:
                     return (tile_m, 32, 4, 1, 1)
+        else:
+            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
+    else:
+        raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+def get_bwd_launch_config(
+    tile_k,
+) -> tuple[int, int, int, int, int]:
+    """
+    Get launch configuration for backward kernel based on input parameters and device architecture.
+
+    :param tile_k: Tile size in the K dimension
+
+    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
+    """
+    device = utils.get_device()
+    arch = utils.get_arch(device)
+
+    if arch == -1:
+        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
+
+    # NOTE: Setting num_ctas=2 for the backward kernel can trigger Triton's PlanCTA assertion
+    # Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
+    if device.type == "cuda":
+        # For A100
+        if arch // 10 == 8:
+            if tile_k <= 64:
+                return (128, 128, 4, 1, 1)
+            elif tile_k <= 128:
+                return (128, 64, 4, 1, 1)
+            elif tile_k <= 256:
+                return (64, 64, 4, 1, 1)
+            else:
+                return (64, 64, 4, 1, 1)
+
+        # For H100
+        elif arch // 10 == 9:
+            if tile_k <= 64:
+                return (256, 128, 4, 1, 1)
+            elif tile_k <= 128:
+                return (128, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (128, 64, 4, 1, 1)
+            else:
+                return (128, 64, 4, 1, 1)
+
+        # For B200
+        elif arch // 10 == 10:
+            # TODO: Tune launch config for SM 100
+            return (64, 64, 4, 1, 1)
+
+        # For RTX 5090
+        elif arch // 10 == 12:
+            if tile_k <= 64:
+                return (64, 128, 8, 1, 1)
+            elif tile_k <= 128:
+                return (64, 64, 8, 1, 1)
+            elif tile_k <= 256:
+                return (32, 32, 4, 1, 1)
+            else:
+                return (32, 32, 4, 1, 1)
         else:
             raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
     else:

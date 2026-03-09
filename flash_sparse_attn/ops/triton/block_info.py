@@ -117,3 +117,44 @@ def get_n_block_min_before_local_mask(
         n_idx = m_idx_max + seqlen_k - seqlen_q
         n_idx_left = n_idx - WINDOW_SIZE_LEFT
         return tl.maximum(n_block_min, tl.cdiv(n_idx_left, TILE_N))
+
+
+@triton.jit
+def get_m_block_min_causal_local_mask(
+    seqlen_q,
+    seqlen_k,
+    n_block,
+    m_block_min,
+    TILE_N: tl.constexpr,
+    TILE_M: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+    IS_LOCAL: tl.constexpr,
+    WINDOW_SIZE_RIGHT: tl.constexpr,
+):
+    if not IS_CAUSAL and (not IS_LOCAL or WINDOW_SIZE_RIGHT is None):
+        return m_block_min
+    else:
+        n_idx_max = (n_block + 1) * TILE_N
+        m_idx = n_idx_max + seqlen_q - seqlen_k
+        m_idx_right = m_idx if IS_CAUSAL else m_idx - WINDOW_SIZE_RIGHT
+        return tl.maximum(m_block_min, tl.cdiv(m_idx_right, TILE_M))
+
+
+@triton.jit
+def get_m_block_max_before_local_mask(
+    seqlen_q,
+    seqlen_k,
+    n_block,
+    m_block_max,
+    TILE_N: tl.constexpr,
+    TILE_M: tl.constexpr,
+    IS_LOCAL: tl.constexpr,
+    WINDOW_SIZE_LEFT: tl.constexpr,
+):
+    if not IS_LOCAL or WINDOW_SIZE_LEFT is None:
+        return m_block_max
+    else:
+        n_idx_min = n_block * TILE_N
+        m_idx = n_idx_min + seqlen_q - seqlen_k
+        m_idx_left = m_idx + WINDOW_SIZE_LEFT
+        return tl.minimum(m_block_max, m_idx_left // TILE_M)
