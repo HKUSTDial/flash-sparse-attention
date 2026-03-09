@@ -1,4 +1,5 @@
 from typing import Optional
+
 import torch
 
 from flash_sparse_attn.ops.triton import utils

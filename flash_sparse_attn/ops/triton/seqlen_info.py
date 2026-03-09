@@ -201,6 +201,24 @@ def offset_batch_K(
 
 
 @triton.jit
+def make_ptrs(
+    base_ptrs,
+    mn_block,
+    stride_seq,
+    TILE_MN: tl.constexpr,
+    TILE_K: tl.constexpr,
+    SWAP_AB: tl.constexpr,
+):
+    offs_mn = mn_block * TILE_MN + tl.arange(0, TILE_MN)
+    offs_k = tl.arange(0, TILE_K)
+    if SWAP_AB:
+        ptrs = base_ptrs + offs_mn[None, :] * stride_seq + offs_k[:, None]
+    else:
+        ptrs = base_ptrs + offs_mn[:, None] * stride_seq + offs_k[None, :]
+    return ptrs
+
+
+@triton.jit
 def make_pack_gqa_ptrs(
     base_ptrs,
     m_block,
@@ -215,7 +233,6 @@ def make_pack_gqa_ptrs(
     m_idx = offs_m // QHEADS_PER_KVHEAD_PACKGQA
     q_head_offset = offs_m - m_idx * QHEADS_PER_KVHEAD_PACKGQA
     q_head = head_idx * QHEADS_PER_KVHEAD_PACKGQA + q_head_offset
-
     offs_k = tl.arange(0, TILE_K)
     if TILE_K > 1:
         ptrs = (
