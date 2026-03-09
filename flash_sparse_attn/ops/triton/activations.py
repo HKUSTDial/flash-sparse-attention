@@ -130,6 +130,17 @@ def log_sigmoid(x, mask):
 
 @triton.jit
 def gate_skip(a_max, a_min, d_max, d_min, g_thr_min):
+    """
+    Determine whether to keep the tile.
+
+    :param a_max: Maximum value of the Alpha tile.
+    :param a_min: Minimum value of the Alpha tile.
+    :param d_max: Maximum value of the Delta tile.
+    :param d_min: Minimum value of the Delta tile.
+    :param g_thr_min: Minimum value of the gate threshold.
+
+    :return active: Boolean flag indicating whether the tile should be computed or skipped.
+    """
     g_upper = tl.maximum(
         tl.maximum(a_max * d_max, a_max * d_min),
         tl.maximum(a_min * d_max, a_min * d_min),
