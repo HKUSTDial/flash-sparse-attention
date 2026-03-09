@@ -117,15 +117,24 @@ def rescale_o(
 
 
 @triton.jit
-def log_sigmoid(x, mask):
+def log_sigmoid(x, mask, FASTMATH: tl.constexpr):
     x = x.to(tl.float32)
-    neg_abs_x = -tl.abs(x)
-    # TODO: In Triton 3.6, tl.where cannot reduce the actual computation
-    # correction = tl.where(neg_abs_x < -8.0, 0.0, tl.log(1.0 + tl.exp(neg_abs_x)))
-    # return tl.where(mask, tl.minimum(x, 0.0) - correction, float("-inf"))
-    return tl.where(
-        mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(neg_abs_x)), float("-inf")
-    )
+    if FASTMATH:
+        xc = tl.maximum(tl.minimum(x, 4.0), -4.0)
+        x2 = xc * xc
+        x4 = x2 * x2
+        y = -0.6931471805599453 + 0.5 * xc - 0.125 * x2 + 0.005208333333333333 * x4
+        # return tl.where(mask, tl.minimum(y, 0.0), float("-inf"))
+        return tl.maximum(tl.minimum(y, 0.0), x)
+    else:
+        # TODO: In Triton 3.6, tl.where cannot reduce the actual computation,
+        # which leads to fusion failure and severe performance degradation.
+        # Since not masking -inf still results in very small errors,
+        # we will not handle it for now.
+        # return tl.where(
+        #     mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x))), float("-inf")
+        # )
+        return tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x)))
 
 
 @triton.jit
