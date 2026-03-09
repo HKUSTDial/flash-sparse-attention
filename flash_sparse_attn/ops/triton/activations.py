@@ -129,8 +129,6 @@ def log_sigmoid(x, mask, FASTMATH: tl.constexpr):
     else:
         # TODO: In Triton 3.6, tl.where cannot reduce the actual computation,
         # which leads to fusion failure and severe performance degradation.
-        # Since not masking -inf still results in very small errors,
-        # we will not handle it for now.
         # return tl.where(
         #     mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x))), float("-inf")
         # )
