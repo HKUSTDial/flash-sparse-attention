@@ -120,9 +120,6 @@ def get_bwd_launch_config(
     """
     Get launch configuration for backward kernel based on input parameters and device architecture.
 
-    :param is_split_kv: Whether the attention is split KV
-    :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
 
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
