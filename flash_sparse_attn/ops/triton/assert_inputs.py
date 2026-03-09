@@ -146,7 +146,7 @@ def assert_bwd_inputs(
         )
 
 
-def assert_fwd_sparse_base_inputs(
+def assert_fwd_sparse_inputs(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -208,7 +208,6 @@ def assert_fwd_sparse_base_inputs(
         "head_dim must be less than or equal to 256 for efficient memory access"
     )
     assert 0.0 < gate_scale * seqlen_k < 1.0, (
-        # from 0.0 to 1.0
         "gate_scale must be chosen such that 0.0 < gate_scale * seqlen_k < 1.0 for effective gating"
     )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:

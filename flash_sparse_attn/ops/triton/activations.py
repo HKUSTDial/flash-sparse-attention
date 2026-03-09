@@ -117,19 +117,37 @@ def rescale_o(
 
 
 @triton.jit
-def log_sigmoid(x, mask):
+def log_sigmoid(x, mask, FASTMATH: tl.constexpr):
     x = x.to(tl.float32)
-    neg_abs_x = -tl.abs(x)
-    # TODO: In Triton 3.6, tl.where cannot reduce the actual computation
-    # correction = tl.where(neg_abs_x < -8.0, 0.0, tl.log(1.0 + tl.exp(neg_abs_x)))
-    # return tl.where(mask, tl.minimum(x, 0.0) - correction, float("-inf"))
-    return tl.where(
-        mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(neg_abs_x)), float("-inf")
-    )
+    if FASTMATH:
+        xc = tl.maximum(tl.minimum(x, 4.0), -4.0)
+        x2 = xc * xc
+        x4 = x2 * x2
+        y = -0.6931471805599453 + 0.5 * xc - 0.125 * x2 + 0.005208333333333333 * x4
+        # return tl.where(mask, tl.minimum(y, 0.0), float("-inf"))
+        return tl.maximum(tl.minimum(y, 0.0), x)
+    else:
+        # TODO: In Triton 3.6, tl.where cannot reduce the actual computation,
+        # which leads to fusion failure and severe performance degradation.
+        # return tl.where(
+        #     mask, tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x))), float("-inf")
+        # )
+        return tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x)))
 
 
 @triton.jit
 def gate_skip(a_max, a_min, d_max, d_min, g_thr_min):
+    """
+    Determine whether to keep the tile.
+
+    :param a_max: Maximum value of the Alpha tile.
+    :param a_min: Minimum value of the Alpha tile.
+    :param d_max: Maximum value of the Delta tile.
+    :param d_min: Minimum value of the Delta tile.
+    :param g_thr_min: Minimum value of the gate threshold.
+
+    :return active: Boolean flag indicating whether the tile should be computed or skipped.
+    """
     g_upper = tl.maximum(
         tl.maximum(a_max * d_max, a_max * d_min),
         tl.maximum(a_min * d_max, a_min * d_min),

@@ -502,6 +502,7 @@ def _fwd_base_kernel(
         )
     else:
         tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+
     # Store output
     # When IS_SPLIT_KV, store float32 partial results.
     # Otherwise, convert back to input dtype.
