@@ -120,12 +120,12 @@ def rescale_o(
 def log_sigmoid(x, mask, FASTMATH: tl.constexpr):
     x = x.to(tl.float32)
     if FASTMATH:
-        xc = tl.maximum(tl.minimum(x, 4.0), -4.0)
-        x2 = xc * xc
-        x4 = x2 * x2
-        y = -0.6931471805599453 + 0.5 * xc - 0.125 * x2 + 0.005208333333333333 * x4
-        # return tl.where(mask, tl.minimum(y, 0.0), float("-inf"))
-        return tl.maximum(tl.minimum(y, 0.0), x)
+        xc = tl.minimum(tl.abs(x), 4.0)
+        xc2 = xc * xc
+        # return tl.where(
+        #     mask, tl.minimum(x, 0.0) - 0.05674870 * xc2 - 0.37664706 * xc + 0.65169323, float("-inf")
+        # )
+        return tl.minimum(x, 0.0) - 0.05674870 * xc2 - 0.37664706 * xc + 0.65169323
     else:
         # TODO: In Triton 3.6, tl.where cannot reduce the actual computation,
         # which leads to fusion failure and severe performance degradation.
