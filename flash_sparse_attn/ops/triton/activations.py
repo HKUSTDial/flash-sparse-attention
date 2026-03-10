@@ -123,9 +123,9 @@ def log_sigmoid(x, mask, FASTMATH: tl.constexpr):
         xc = tl.minimum(tl.abs(x), 4.0)
         xc2 = xc * xc
         # return tl.where(
-        #     mask, tl.minimum(x, 0.0) - 0.05674870 * xc2 - 0.37664706 * xc + 0.65169323, float("-inf")
+        #     mask, tl.minimum(x, 0.0) - 0.05674870 * xc2 + 0.37664706 * xc - 0.65169323, float("-inf")
         # )
-        return tl.minimum(x, 0.0) - 0.05674870 * xc2 - 0.37664706 * xc + 0.65169323
+        return tl.minimum(x, 0.0) - 0.05674870 * xc2 + 0.37664706 * xc - 0.65169323
     else:
         # TODO: In Triton 3.6, tl.where cannot reduce the actual computation,
         # which leads to fusion failure and severe performance degradation.
