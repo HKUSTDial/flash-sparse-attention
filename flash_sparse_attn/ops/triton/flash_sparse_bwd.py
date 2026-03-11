@@ -589,13 +589,18 @@ def _flash_sparse_attn_base_backward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
     out: torch.Tensor,
     dout: torch.Tensor,
     lse: torch.Tensor,
     softmax_scale: float,
+    gate_scale: float,
     is_causal: bool = False,
+    is_logsigmoid_gate: bool = True,
+    is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     window_size_left, window_size_right = window_size
@@ -633,6 +638,8 @@ def _flash_sparse_attn_base_backward(
     dq = torch.empty_like(query)
     dk = torch.empty_like(key)
     dv = torch.empty_like(value)
+    da = torch.empty_like(alpha)
+    dd = torch.empty_like(delta)
     lse_log2 = torch.empty(
         (batch_size, num_heads_q, seqlen_q_rounded),
         dtype=torch.float32,
@@ -664,6 +671,8 @@ def _flash_sparse_attn_base_backward(
         dtype=torch.float32,
         device=query.device,
     )
+    da_accum = torch.zeros_like(alpha, dtype=torch.float32)
+    dd_accum = torch.zeros_like(delta, dtype=torch.float32)
 
     flash_bwd_preprocess._flash_attn_bwd_preprocess(
         out=out,
@@ -687,14 +696,19 @@ def _flash_sparse_attn_base_backward(
         query,
         key,
         value,
+        alpha,
+        delta,
         dout,
         lse_log2,
         dpsum,
         dq_accum,
         dk_accum,
         dv_accum,
+        da_accum,
+        dd_accum,
         softmax_scale,
         softmax_scale_log2,
+        gate_scale,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -704,6 +718,10 @@ def _flash_sparse_attn_base_backward(
         value.stride(0),
         value.stride(-2),
         value.stride(-3),
+        alpha.stride(0),
+        alpha.stride(-2),
+        delta.stride(0),
+        delta.stride(-2),
         dout.stride(0),
         dout.stride(-2),
         dout.stride(-3),
@@ -741,6 +759,8 @@ def _flash_sparse_attn_base_backward(
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
+        IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
+        IS_ADAPT_GATE=is_adapt_gate,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -749,7 +769,7 @@ def _flash_sparse_attn_base_backward(
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
-        scale=softmax_scale,
+        scale=1.0,
         head_dim_rounded=head_dim_rounded,
         tile_m=TILE_M,
         tile_k=TILE_K,
@@ -757,27 +777,34 @@ def _flash_sparse_attn_base_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
+    da.copy_(da_accum)
+    dd.copy_(dd_accum)
 
-    return dq, dk, dv
+    return dq, dk, dv, da, dd
 
 
 def _flash_sparse_attn_varlen_base_backward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
     out: torch.Tensor,
     dout: torch.Tensor,
     lse: torch.Tensor,
     softmax_scale: float,
+    gate_scale: float,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: Optional[int] = None,
     max_seqlen_k: Optional[int] = None,
     is_causal: bool = False,
+    is_logsigmoid_gate: bool = True,
+    is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     total_q, num_heads_q, head_dim = query.shape
     total_k, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
@@ -820,6 +847,8 @@ def _flash_sparse_attn_varlen_base_backward(
     dq = torch.empty_like(query)
     dk = torch.empty_like(key)
     dv = torch.empty_like(value)
+    da = torch.empty_like(alpha)
+    dd = torch.empty_like(delta)
     lse_log2 = torch.empty(
         num_heads_q,
         total_q_rounded_padded,
@@ -852,6 +881,8 @@ def _flash_sparse_attn_varlen_base_backward(
         dtype=torch.float32,
         device=query.device,
     )
+    da_accum = torch.zeros_like(alpha, dtype=torch.float32)
+    dd_accum = torch.zeros_like(delta, dtype=torch.float32)
 
     flash_bwd_preprocess._flash_attn_bwd_preprocess(
         out=out,
@@ -878,14 +909,19 @@ def _flash_sparse_attn_varlen_base_backward(
         query,
         key,
         value,
+        alpha,
+        delta,
         dout,
         lse_log2,
         dpsum,
         dq_accum,
         dk_accum,
         dv_accum,
+        da_accum,
+        dd_accum,
         softmax_scale,
         softmax_scale_log2,
+        gate_scale,
         0,
         query.stride(-2),
         query.stride(0),
@@ -895,6 +931,10 @@ def _flash_sparse_attn_varlen_base_backward(
         0,
         value.stride(-2),
         value.stride(0),
+        0,
+        alpha.stride(-2),
+        0,
+        delta.stride(-2),
         0,
         dout.stride(-2),
         dout.stride(0),
@@ -932,6 +972,8 @@ def _flash_sparse_attn_varlen_base_backward(
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
+        IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
+        IS_ADAPT_GATE=is_adapt_gate,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -940,7 +982,7 @@ def _flash_sparse_attn_varlen_base_backward(
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
-        scale=softmax_scale,
+        scale=1.0,
         head_dim_rounded=head_dim_rounded,
         cu_seqlens_q=cu_seqlens_q,
         seqused_q=seqused_q,
@@ -951,5 +993,7 @@ def _flash_sparse_attn_varlen_base_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
+    da.copy_(da_accum)
+    dd.copy_(dd_accum)
 
-    return dq, dk, dv
+    return dq, dk, dv, da, dd
