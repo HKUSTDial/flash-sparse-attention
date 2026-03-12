@@ -1,0 +1,579 @@
+from typing import Optional, Tuple
+
+import torch
+
+from flash_sparse_attn.ops.triton.flash_fwd import (
+    _flash_attn_base_forward,
+    _flash_attn_varlen_base_forward,
+)
+from flash_sparse_attn.ops.triton.flash_bwd import (
+    _flash_attn_base_backward,
+    _flash_attn_varlen_base_backward,
+)
+from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
+    _flash_sparse_attn_base_forward,
+    _flash_sparse_attn_varlen_base_forward,
+)
+from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
+    _flash_sparse_attn_base_backward,
+    _flash_sparse_attn_varlen_base_backward,
+)
+from flash_sparse_attn.ops.triton.utils import ensure_contiguous
+
+
+class FlashAttnFunc(torch.autograd.Function):
+    @staticmethod
+    @ensure_contiguous
+    def forward(
+        ctx,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        softmax_scale: Optional[float] = None,
+        is_causal: bool = False,
+        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        return_lse: bool = False,
+    ):
+        # Pack GQA if query and key have different number of heads and sequence length is 1
+        pack_gqa = (
+            query.shape[2] != key.shape[2]
+            and query.shape[1] == 1
+            and query.shape[1] != key.shape[1]
+        )
+        out, lse, softmax_scale = _flash_attn_base_forward(
+            query=query,
+            key=key,
+            value=value,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+            pack_gqa=pack_gqa,
+        )
+
+        ctx.save_for_backward(query, key, value, out, lse)
+        ctx.softmax_scale = softmax_scale
+        ctx.is_causal = is_causal
+        ctx.window_size = window_size
+
+        if return_lse:
+            # LSE gradient is not supported yet
+            ctx.mark_non_differentiable(lse)
+            return out, lse
+        return out
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dout: torch.Tensor, *args):
+        query, key, value, out, lse = ctx.saved_tensors
+
+        dq, dk, dv = _flash_attn_base_backward(
+            query=query,
+            key=key,
+            value=value,
+            out=out,
+            dout=dout,
+            lse=lse,
+            softmax_scale=ctx.softmax_scale,
+            is_causal=ctx.is_causal,
+            window_size=ctx.window_size,
+        )
+
+        return dq, dk, dv, *((None,) * 20)
+
+
+class FlashAttnVarlenFunc(torch.autograd.Function):
+    @staticmethod
+    @ensure_contiguous
+    def forward(
+        ctx,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+        softmax_scale: Optional[float] = None,
+        is_causal: bool = False,
+        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        seqused_q: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
+        return_lse: bool = False,
+    ):
+        # Pack GQA if query and key have different number of heads and sequence length is 1
+        pack_gqa = (
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
+        )
+        out, lse, softmax_scale = _flash_attn_varlen_base_forward(
+            query=query,
+            key=key,
+            value=value,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+            pack_gqa=pack_gqa,
+        )
+
+        ctx.save_for_backward(
+            query,
+            key,
+            value,
+            out,
+            lse,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            seqused_q,
+            seqused_k,
+        )
+        ctx.softmax_scale = softmax_scale
+        ctx.is_causal = is_causal
+        ctx.window_size = window_size
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
+
+        if return_lse:
+            # LSE gradient is not supported yet
+            ctx.mark_non_differentiable(lse)
+            return out, lse
+        return out
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dout: torch.Tensor, *args):
+        (
+            query,
+            key,
+            value,
+            out,
+            lse,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            seqused_q,
+            seqused_k,
+        ) = ctx.saved_tensors
+
+        dq, dk, dv = _flash_attn_varlen_base_backward(
+            query=query,
+            key=key,
+            value=value,
+            out=out,
+            dout=dout,
+            lse=lse,
+            softmax_scale=ctx.softmax_scale,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=ctx.max_seqlen_q,
+            max_seqlen_k=ctx.max_seqlen_k,
+            is_causal=ctx.is_causal,
+            window_size=ctx.window_size,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+        )
+
+        return dq, dk, dv, *((None,) * 20)
+
+
+class FlashSparseAttnFunc(torch.autograd.Function):
+    @staticmethod
+    @ensure_contiguous
+    def forward(
+        ctx,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        alpha: torch.Tensor,
+        delta: torch.Tensor,
+        softmax_scale: Optional[float] = None,
+        gate_scale: Optional[float] = None,
+        is_causal: bool = False,
+        is_logsigmoid_gate: bool = True,
+        is_adapt_gate: bool = True,
+        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        return_lse: bool = False,
+    ):
+        # Pack GQA if query and key have different number of heads and sequence length is 1
+        pack_gqa = (
+            query.shape[2] != key.shape[2]
+            and query.shape[1] == 1
+            and query.shape[1] != key.shape[1]
+        )
+        out, lse, softmax_scale, gate_scale = _flash_sparse_attn_base_forward(
+            query=query,
+            key=key,
+            value=value,
+            alpha=alpha,
+            delta=delta,
+            softmax_scale=softmax_scale,
+            gate_scale=gate_scale,
+            is_causal=is_causal,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=is_adapt_gate,
+            window_size=window_size,
+            pack_gqa=pack_gqa,
+        )
+
+        ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
+        ctx.softmax_scale = softmax_scale
+        ctx.gate_scale = gate_scale
+        ctx.is_causal = is_causal
+        ctx.is_logsigmoid_gate = is_logsigmoid_gate
+        ctx.is_adapt_gate = is_adapt_gate
+        ctx.window_size = window_size
+
+        if return_lse:
+            # LSE gradient is not supported yet
+            ctx.mark_non_differentiable(lse)
+            return out, lse
+        return out
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dout: torch.Tensor, *args):
+        query, key, value, alpha, delta, out, lse = ctx.saved_tensors
+
+        dq, dk, dv, da, dd = _flash_sparse_attn_base_backward(
+            query=query,
+            key=key,
+            value=value,
+            alpha=alpha,
+            delta=delta,
+            out=out,
+            dout=dout,
+            lse=lse,
+            softmax_scale=ctx.softmax_scale,
+            gate_scale=ctx.gate_scale,
+            is_causal=ctx.is_causal,
+            is_logsigmoid_gate=ctx.is_logsigmoid_gate,
+            is_adapt_gate=ctx.is_adapt_gate,
+            window_size=ctx.window_size,
+        )
+
+        return dq, dk, dv, da, dd, *((None,) * 20)
+
+
+class FlashSparseAttnVarlenFunc(torch.autograd.Function):
+    @staticmethod
+    @ensure_contiguous
+    def forward(
+        ctx,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        alpha: torch.Tensor,
+        delta: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+        softmax_scale: Optional[float] = None,
+        gate_scale: Optional[float] = None,
+        is_causal: bool = False,
+        is_logsigmoid_gate: bool = True,
+        is_adapt_gate: bool = True,
+        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        seqused_q: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
+        return_lse: bool = False,
+    ):
+        # Pack GQA if query and key have different number of heads and sequence length is 1
+        pack_gqa = (
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
+        )
+        out, lse, softmax_scale, gate_scale = _flash_sparse_attn_varlen_base_forward(
+            query=query,
+            key=key,
+            value=value,
+            alpha=alpha,
+            delta=delta,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            softmax_scale=softmax_scale,
+            gate_scale=gate_scale,
+            is_causal=is_causal,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=is_adapt_gate,
+            window_size=window_size,
+            pack_gqa=pack_gqa,
+        )
+
+        ctx.save_for_backward(
+            query,
+            key,
+            value,
+            alpha,
+            delta,
+            out,
+            lse,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            seqused_q,
+            seqused_k,
+        )
+        ctx.softmax_scale = softmax_scale
+        ctx.gate_scale = gate_scale
+        ctx.is_causal = is_causal
+        ctx.is_logsigmoid_gate = is_logsigmoid_gate
+        ctx.is_adapt_gate = is_adapt_gate
+        ctx.window_size = window_size
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
+
+        if return_lse:
+            # LSE gradient is not supported yet
+            ctx.mark_non_differentiable(lse)
+            return out, lse
+        return out
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dout: torch.Tensor, *args):
+        (
+            query,
+            key,
+            value,
+            alpha,
+            delta,
+            out,
+            lse,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            seqused_q,
+            seqused_k,
+        ) = ctx.saved_tensors
+
+        dq, dk, dv, da, dd = _flash_sparse_attn_varlen_base_backward(
+            query=query,
+            key=key,
+            value=value,
+            alpha=alpha,
+            delta=delta,
+            out=out,
+            dout=dout,
+            lse=lse,
+            softmax_scale=ctx.softmax_scale,
+            gate_scale=ctx.gate_scale,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=ctx.max_seqlen_q,
+            max_seqlen_k=ctx.max_seqlen_k,
+            is_causal=ctx.is_causal,
+            is_logsigmoid_gate=ctx.is_logsigmoid_gate,
+            is_adapt_gate=ctx.is_adapt_gate,
+            window_size=ctx.window_size,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+        )
+
+        return dq, dk, dv, da, dd, *((None,) * 20)
+
+
+def flash_attn_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    is_causal: bool = False,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    return_lse: bool = False,
+):
+    """
+    Flash attention function that computes the attention output and optionally the logsumexp.
+
+    :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param is_causal: Whether to apply a causal mask.
+    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
+
+    :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
+    :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
+    """
+    return FlashAttnFunc.apply(
+        query,
+        key,
+        value,
+        softmax_scale,
+        is_causal,
+        window_size,
+        return_lse,
+    )
+
+
+def flash_attn_varlen_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    softmax_scale: Optional[float] = None,
+    is_causal: bool = False,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    return_lse: bool = False,
+):
+    """
+    Flash attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
+
+    :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
+    :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
+    :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
+    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
+    :param max_seqlen_q: Maximum sequence length for queries.
+    :param max_seqlen_k: Maximum sequence length for keys/values.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param is_causal: Whether to apply a causal mask.
+    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
+    :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
+
+    :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
+    """
+    return FlashAttnVarlenFunc.apply(
+        query,
+        key,
+        value,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        is_causal,
+        window_size,
+        seqused_q,
+        seqused_k,
+        return_lse,
+    )
+
+
+def flash_sparse_attn_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    gate_scale: Optional[float] = None,
+    is_causal: bool = False,
+    is_logsigmoid_gate: bool = True,
+    is_adapt_gate: bool = True,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    return_lse: bool = False,
+):
+    """
+    Flash sparse attention function that computes the attention output and optionally the logsumexp.
+
+    :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param alpha: Tensor of shape [batch_size, num_heads, seqlen_q] representing the sparsity pattern for queries.
+    :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param gate_scale: Optional scaling factor for the sparsity gate. If None, defaults to 1/seqlen_k.
+    :param is_causal: Whether to apply a causal mask.
+    :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
+    :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
+    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
+
+    :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
+    :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
+    """
+    return FlashSparseAttnFunc.apply(
+        query,
+        key,
+        value,
+        alpha,
+        delta,
+        softmax_scale,
+        gate_scale,
+        is_causal,
+        is_logsigmoid_gate,
+        is_adapt_gate,
+        window_size,
+        return_lse,
+    )
+
+
+def flash_sparse_attn_varlen_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    softmax_scale: Optional[float] = None,
+    gate_scale: Optional[float] = None,
+    is_causal: bool = False,
+    is_logsigmoid_gate: bool = True,
+    is_adapt_gate: bool = True,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    return_lse: bool = False,
+):
+    """
+    Flash sparse attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
+
+    :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
+    :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
+    :param alpha: Tensor of shape [batch_size, num_heads_q, seqlen_q] representing the sparsity pattern for queries.
+    :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
+    :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
+    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
+    :param max_seqlen_q: Maximum sequence length for queries.
+    :param max_seqlen_k: Maximum sequence length for keys/values.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param gate_scale: Optional scaling factor for the sparsity gate. If None, defaults to 1/seqlen_k.
+    :param is_causal: Whether to apply a causal mask.
+    :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
+    :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
+    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
+    :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
+
+    :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
+    """
+    return FlashSparseAttnVarlenFunc.apply(
+        query,
+        key,
+        value,
+        alpha,
+        delta,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        gate_scale,
+        is_causal,
+        is_logsigmoid_gate,
+        is_adapt_gate,
+        window_size,
+        seqused_q,
+        seqused_k,
+        return_lse,
+    )
