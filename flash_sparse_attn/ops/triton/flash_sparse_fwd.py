@@ -548,7 +548,7 @@ def _fwd_sparse_base_kernel(
 
     # Compute attention scores
     if IS_LOGSIGMOID_GATE:
-        acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=False)
+        acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
     else:
         acc_s = tl.where(gate_mask, g, float("-inf"))
     acc_s += tl.dot(q_tile, k_tile)
@@ -765,7 +765,7 @@ def _fwd_sparse_base_kernel(
 
         # Compute attention scores
         if IS_LOGSIGMOID_GATE:
-            acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=False)
+            acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
         acc_s += tl.dot(q_tile, k_tile)
