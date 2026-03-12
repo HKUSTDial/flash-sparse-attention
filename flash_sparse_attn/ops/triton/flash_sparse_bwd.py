@@ -11,6 +11,7 @@ from flash_sparse_attn.ops.triton import (
     launch_grid,
     seqlen_info,
     block_info,
+    activations,
     mask,
     flash_bwd_preprocess,
     flash_bwd_postprocess,
@@ -112,14 +113,19 @@ def _bwd_sparse_base_kernel(
     Q,
     K,
     V,
+    A,
+    D,
     dO,
     LSELog2,
     dPsum,
     dQaccum,
     dK,
     dV,
+    dA,
+    dD,
     softmax_scale,
     softmax_scale_log2,
+    gate_scale,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -129,6 +135,10 @@ def _bwd_sparse_base_kernel(
     stride_vb,
     stride_vh,
     stride_vn,
+    stride_ab,
+    stride_ah,
+    stride_db,
+    stride_dh,
     stride_dob,
     stride_doh,
     stride_dom,
@@ -147,6 +157,10 @@ def _bwd_sparse_base_kernel(
     stride_dvb,
     stride_dvh,
     stride_dvn,
+    stride_dab,
+    stride_dah,
+    stride_ddb,
+    stride_ddh,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
@@ -166,6 +180,8 @@ def _bwd_sparse_base_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
+    IS_LOGSIGMOID_GATE: tl.constexpr,
+    IS_ADAPT_GATE: tl.constexpr,
 ):
     n_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -234,6 +250,26 @@ def _bwd_sparse_base_kernel(
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
+    a_base = seqlen_info.offset_batch_Q(
+        A + head_idx * stride_ah,
+        batch_idx,
+        offset_q,
+        padded_offset_q,
+        stride_ab,
+        1,
+        HAS_CU_SEQLENS_Q,
+        USE_PADDED=False,
+    )
+    d_base = seqlen_info.offset_batch_K(
+        D + head_kv_idx * stride_dh,
+        batch_idx,
+        offset_k,
+        padded_offset_k,
+        stride_db,
+        1,
+        HAS_CU_SEQLENS_K,
+        USE_PADDED=False,
+    )
     do_base = seqlen_info.offset_batch_Q(
         dO + head_idx * stride_doh,
         batch_idx,
@@ -294,6 +330,26 @@ def _bwd_sparse_base_kernel(
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
+    da_base = seqlen_info.offset_batch_Q(
+        dA + head_idx * stride_dah,
+        batch_idx,
+        offset_q,
+        padded_offset_q,
+        stride_dab,
+        1,
+        HAS_CU_SEQLENS_Q,
+        USE_PADDED=True,
+    )
+    dd_base = seqlen_info.offset_batch_K(
+        dD + head_kv_idx * stride_ddh,
+        batch_idx,
+        offset_k,
+        padded_offset_k,
+        stride_ddb,
+        1,
+        HAS_CU_SEQLENS_K,
+        USE_PADDED=False,
+    )
 
     # Compute m_block range for this n_block
     m_block_min, m_block_max = block_info.get_m_block_min_max(
@@ -330,14 +386,6 @@ def _bwd_sparse_base_kernel(
     )
 
     # Create pointers
-    q_ptrs = tl.make_block_ptr(
-        base=q_base,
-        shape=(head_dim, actual_seqlen_q),
-        strides=(1, stride_qm),
-        offsets=(0, m_block_min * TILE_M),
-        block_shape=(TILE_K, TILE_M),
-        order=(0, 1),
-    )
     k_ptrs = tl.make_block_ptr(
         base=k_base,
         shape=(actual_seqlen_k, head_dim),
@@ -354,28 +402,12 @@ def _bwd_sparse_base_kernel(
         block_shape=(TILE_N, TILE_K),
         order=(1, 0),
     )
-    do_ptrs = tl.make_block_ptr(
-        base=do_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_dom, 1),
-        offsets=(m_block_min * TILE_M, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
-    )
-    lse_ptrs = tl.make_block_ptr(
-        base=lse_base,
-        shape=(actual_seqlen_q,),
-        strides=(stride_ll,),
-        offsets=(m_block_min * TILE_M,),
-        block_shape=(TILE_M,),
-        order=(0,),
-    )
-    dpsum_ptrs = tl.make_block_ptr(
-        base=dpsum_base,
-        shape=(actual_seqlen_q,),
-        strides=(stride_pm,),
-        offsets=(m_block_min * TILE_M,),
-        block_shape=(TILE_M,),
+    d_ptrs = tl.make_block_ptr(
+        base=d_base,
+        shape=(actual_seqlen_k,),
+        strides=(1,),
+        offsets=(n_block * TILE_N,),
+        block_shape=(TILE_N,),
         order=(0,),
     )
     if QHEADS_PER_KVHEAD > 1:
@@ -395,6 +427,14 @@ def _bwd_sparse_base_kernel(
             TILE_K=TILE_K,
             SWAP_AB=False,
         )
+        dd_ptrs = seqlen_info.make_ptrs(
+            base_ptrs=dd_base,
+            mn_block=n_block,
+            stride_seq=1,
+            TILE_MN=TILE_N,
+            TILE_K=1,
+            SWAP_AB=False,
+        )
     else:
         dk_ptrs = tl.make_block_ptr(
             base=dk_base,
@@ -411,6 +451,14 @@ def _bwd_sparse_base_kernel(
             offsets=(n_block * TILE_N, 0),
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
+        )
+        dd_ptrs = tl.make_block_ptr(
+            base=dd_base,
+            shape=(actual_seqlen_k,),
+            strides=(1,),
+            offsets=(n_block * TILE_N,),
+            block_shape=(TILE_N,),
+            order=(0,),
         )
 
     # Load K tile
@@ -656,23 +704,25 @@ def _flash_sparse_attn_base_backward(
         device=query.device,
     )
     dk_accum = torch.zeros(
-        batch_size,
-        seqlen_k,
-        num_heads_kv,
-        head_dim,
+        (batch_size, seqlen_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
     dv_accum = torch.zeros(
-        batch_size,
-        seqlen_k,
-        num_heads_kv,
-        head_dim,
+        (batch_size, seqlen_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
-    da_accum = torch.zeros_like(alpha, dtype=torch.float32)
-    dd_accum = torch.zeros_like(delta, dtype=torch.float32)
+    da_accum = torch.zeros(
+        (batch_size, num_heads_q, seqlen_q_rounded),
+        dtype=torch.float32,
+        device=query.device,
+    )
+    dd_accum = torch.zeros(
+        (batch_size, num_heads_kv, seqlen_k),
+        dtype=torch.float32,
+        device=query.device,
+    )
 
     flash_bwd_preprocess._flash_attn_bwd_preprocess(
         out=out,
@@ -740,6 +790,10 @@ def _flash_sparse_attn_base_backward(
         dv_accum.stride(0),
         dv_accum.stride(-2),
         dv_accum.stride(-3),
+        da_accum.stride(0),
+        da_accum.stride(-2),
+        dd_accum.stride(0),
+        dd_accum.stride(-2),
         None,
         None,
         None,
@@ -769,6 +823,8 @@ def _flash_sparse_attn_base_backward(
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
+        da_accum=da_accum,
+        da=da,
         scale=1.0,
         head_dim_rounded=head_dim_rounded,
         tile_m=TILE_M,
@@ -777,7 +833,6 @@ def _flash_sparse_attn_base_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
-    da.copy_(da_accum)
     dd.copy_(dd_accum)
 
     return dq, dk, dv, da, dd
@@ -850,39 +905,40 @@ def _flash_sparse_attn_varlen_base_backward(
     da = torch.empty_like(alpha)
     dd = torch.empty_like(delta)
     lse_log2 = torch.empty(
-        num_heads_q,
-        total_q_rounded_padded,
+        (num_heads_q, total_q_rounded_padded),
         dtype=torch.float32,
         device=query.device,
     )
     dpsum = torch.empty(
-        num_heads_q,
-        total_q_rounded_padded,
+        (num_heads_q, total_q_rounded_padded),
         dtype=torch.float32,
         device=query.device,
     )
     dq_accum = torch.empty(
-        num_heads_q,
-        total_q_rounded_padded * head_dim_rounded,
+        (num_heads_q, total_q_rounded_padded * head_dim_rounded),
         dtype=torch.float32,
         device=query.device,
     )
     dk_accum = torch.zeros(
-        total_k,
-        num_heads_kv,
-        head_dim,
+        (total_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
     dv_accum = torch.zeros(
-        total_k,
-        num_heads_kv,
-        head_dim,
+        (total_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
-    da_accum = torch.zeros_like(alpha, dtype=torch.float32)
-    dd_accum = torch.zeros_like(delta, dtype=torch.float32)
+    da_accum = torch.zeros(
+        (num_heads_q, total_q_rounded_padded),
+        dtype=torch.float32,
+        device=query.device,
+    )
+    dd_accum = torch.zeros(
+        (num_heads_kv, total_k),
+        dtype=torch.float32,
+        device=query.device,
+    )
 
     flash_bwd_preprocess._flash_attn_bwd_preprocess(
         out=out,
@@ -953,6 +1009,10 @@ def _flash_sparse_attn_varlen_base_backward(
         0,
         dv_accum.stride(-2),
         dv_accum.stride(0),
+        0,
+        da_accum.stride(0),
+        0,
+        dd_accum.stride(0),
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
@@ -982,6 +1042,8 @@ def _flash_sparse_attn_varlen_base_backward(
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
+        da_accum=da_accum,
+        da=da,
         scale=1.0,
         head_dim_rounded=head_dim_rounded,
         cu_seqlens_q=cu_seqlens_q,
@@ -993,7 +1055,6 @@ def _flash_sparse_attn_varlen_base_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
-    da.copy_(da_accum)
     dd.copy_(dd_accum)
 
     return dq, dk, dv, da, dd
