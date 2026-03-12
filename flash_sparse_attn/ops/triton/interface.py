@@ -36,11 +36,9 @@ class FlashAttnFunc(torch.autograd.Function):
     ):
         # Pack GQA if query and key have different number of heads and sequence length is 1
         pack_gqa = (
-            True
-            if (query.shape[2] != key.shape[2])
-            and (query.shape[1] != key.shape[1])
-            and (query.shape[1] == 1)
-            else False
+            query.shape[2] != key.shape[2]
+            and query.shape[1] == 1
+            and query.shape[1] != key.shape[1]
         )
         out, lse, softmax_scale = _flash_attn_base_forward(
             query=query,
@@ -104,11 +102,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
     ):
         # Pack GQA if query and key have different number of heads and sequence length is 1
         pack_gqa = (
-            True
-            if (query.shape[2] != key.shape[2])
-            and (query.shape[1] != key.shape[1])
-            and (query.shape[1] == 1)
-            else False
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
         )
         out, lse, softmax_scale = _flash_attn_varlen_base_forward(
             query=query,
@@ -203,11 +199,9 @@ class FlashSparseAttnFunc(torch.autograd.Function):
     ):
         # Pack GQA if query and key have different number of heads and sequence length is 1
         pack_gqa = (
-            True
-            if (query.shape[2] != key.shape[2])
-            and (query.shape[1] != key.shape[1])
-            and (query.shape[1] == 1)
-            else False
+            query.shape[2] != key.shape[2]
+            and query.shape[1] == 1
+            and query.shape[1] != key.shape[1]
         )
         out, lse, softmax_scale, gate_scale = _flash_sparse_attn_base_forward(
             query=query,
@@ -289,11 +283,9 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
     ):
         # Pack GQA if query and key have different number of heads and sequence length is 1
         pack_gqa = (
-            True
-            if (query.shape[2] != key.shape[2])
-            and (query.shape[1] != key.shape[1])
-            and (query.shape[1] == 1)
-            else False
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
         )
         out, lse, softmax_scale, gate_scale = _flash_sparse_attn_varlen_base_forward(
             query=query,
