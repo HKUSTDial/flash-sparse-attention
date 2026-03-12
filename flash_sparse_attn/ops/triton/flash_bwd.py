@@ -43,7 +43,7 @@ def _bwd_inner_base_kernel(
     # Load query tile
     q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
 
-    # Advance query pointer
+    # Advance query pointers
     q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
 
     # Compute attention scores
@@ -52,11 +52,11 @@ def _bwd_inner_base_kernel(
     # Load LSE
     lse_log2 = tl.load(lse_ptrs, boundary_check=(0,))
 
-    # Advance LSE pointer
+    # Advance LSE pointers
     lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
 
     if IS_MASK:
-        # Apply mask to attention scores
+        # Apply mask
         acc_s = mask.apply_mask(
             acc_s=acc_s,
             m_block=m_block,
@@ -77,31 +77,31 @@ def _bwd_inner_base_kernel(
     # Compute attention weights
     p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(q_tile.dtype)
 
-    # Load do tile
+    # Load output gradients tile
     do_tile = tl.load(do_ptrs, boundary_check=(0, 1))
 
-    # Advance do pointer
+    # Advance output gradients pointers
     do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
 
-    # Compute value gradient
+    # Compute value gradients
     acc_dv += tl.dot(p, do_tile)
 
-    # Compute attention weight gradient
+    # Compute attention weight gradients
     acc_dp = tl.dot(v_tile, tl.trans(do_tile))
 
     # Load dpsum
     dpsum = tl.load(dpsum_ptrs, boundary_check=(0,))
 
-    # Advance dpsum pointer
+    # Advance dpsum pointers
     dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
 
-    # Compute attention score gradient
+    # Compute attention score gradients
     ds = p * (acc_dp - dpsum[None, :]).to(q_tile.dtype)
 
-    # Compute query gradient
+    # Compute query gradients
     dq = tl.dot(tl.trans(ds), k_tile)
 
-    # Compute key gradient
+    # Compute key gradients
     acc_dk += tl.dot(ds, tl.trans(q_tile))
 
     return dq, acc_dk, acc_dv, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs
@@ -561,25 +561,27 @@ def _bwd_base_kernel(
                 & (offs_kb[None, :] < head_dim),
             )
 
-    # Store dv
+    # Store value gradients
     if QHEADS_PER_KVHEAD > 1:
         tl.atomic_add(
             dv_ptrs,
             acc_dv,
             mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
+            sem="relaxed",
         )
     else:
         tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1))
 
-    # Scale dk
+    # Scale key gradients
     acc_dk = acc_dk * softmax_scale
 
-    # Store dk
+    # Store key gradients
     if QHEADS_PER_KVHEAD > 1:
         tl.atomic_add(
             dk_ptrs,
             acc_dk,
             mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
+            sem="relaxed",
         )
     else:
         tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1))

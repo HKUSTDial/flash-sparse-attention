@@ -865,7 +865,7 @@ def _bwd_sparse_base_kernel(
                 )
             )
 
-    # Store dd
+    # Store delta gradients
     if QHEADS_PER_KVHEAD > 1:
         tl.atomic_add(
             dd_ptrs,
@@ -876,7 +876,7 @@ def _bwd_sparse_base_kernel(
     else:
         tl.store(dd_ptrs, acc_dd, boundary_check=(0,))
 
-    # Store dv
+    # Store value gradients
     if QHEADS_PER_KVHEAD > 1:
         tl.atomic_add(
             dv_ptrs,
@@ -887,10 +887,10 @@ def _bwd_sparse_base_kernel(
     else:
         tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1))
 
-    # Scale dk
+    # Scale key gradients
     acc_dk = acc_dk * softmax_scale
 
-    # Store dk
+    # Store key gradients
     if QHEADS_PER_KVHEAD > 1:
         tl.atomic_add(
             dk_ptrs,
