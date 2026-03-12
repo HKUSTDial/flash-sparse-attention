@@ -522,20 +522,68 @@ def _bwd_sparse_base_kernel(
             order=(0,),
         )
 
-    # Load K tile
+    # Load key tile
     k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
-    # Load V tile
+    # Scale key tile
+    k_tile = (k_tile * softmax_scale).to(k_tile.dtype)
+
+    # Load value tile
     v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
     # Initialize accumulators
     acc_dk = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
     acc_dv = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
+    acc_dd = tl.zeros((TILE_N,), dtype=tl.float32)
+
+    # Load delta tile
+    d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
+    d_max = tl.max(d_tile)
+    d_min = tl.min(d_tile)
 
     # Process m_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
+        q_ptrs = tl.make_block_ptr(
+            base=q_base,
+            shape=(head_dim, actual_seqlen_q),
+            strides=(1, stride_qm),
+            offsets=(0, m_block_min * TILE_M),
+            block_shape=(TILE_K, TILE_M),
+            order=(0, 1),
+        )
+        a_ptrs = tl.make_block_ptr(
+            base=a_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(m_block_min * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        do_ptrs = tl.make_block_ptr(
+            base=do_base,
+            shape=(actual_seqlen_q, head_dim),
+            strides=(stride_dom, 1),
+            offsets=(m_block_min * TILE_M, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+        lse_ptrs = tl.make_block_ptr(
+            base=lse_base,
+            shape=(actual_seqlen_q,),
+            strides=(stride_ll,),
+            offsets=(m_block_min * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        dpsum_ptrs = tl.make_block_ptr(
+            base=dpsum_base,
+            shape=(actual_seqlen_q,),
+            strides=(stride_pm,),
+            offsets=(m_block_min * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
         for m_block in tl.range(m_block_min, m_block_min_no_mask):
-            offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
             dq_accum_ptrs = seqlen_info.make_ptrs(
                 base_ptrs=dq_accum_base,
                 mn_block=m_block,
@@ -544,18 +592,48 @@ def _bwd_sparse_base_kernel(
                 TILE_K=TILE_K,
                 SWAP_AB=False,
             )
+            da_accum_ptrs = seqlen_info.make_ptrs(
+                base_ptrs=da_base,
+                mn_block=m_block,
+                stride_seq=1,
+                TILE_MN=TILE_M,
+                TILE_K=1,
+                SWAP_AB=False,
+            )
 
-            dq, acc_dk, acc_dv, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
+            g_thr = seqlen_info.get_gate_threshold(
+                gate_scale=gate_scale,
+                m_block=m_block,
+                seqlen_q=actual_seqlen_q,
+                seqlen_k=actual_seqlen_k,
+                IS_CAUSAL=IS_CAUSAL,
+                TILE_M=TILE_M,
+                QHEADS_PER_KVHEAD_PACKGQA=1,
+                IS_ADAPT_GATE=IS_ADAPT_GATE,
+                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                SWAP_AB=True,
+            )
+            g_thr_min = tl.min(g_thr)
+
+            acc_dk, acc_dv, acc_dd, q_ptrs, a_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
                 _bwd_inner_sparse_base_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
+                    acc_dd=acc_dd,
                     k_tile=k_tile,
                     v_tile=v_tile,
+                    d_tile=d_tile,
                     q_ptrs=q_ptrs,
+                    a_ptrs=a_ptrs,
                     do_ptrs=do_ptrs,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    da_accum_ptrs=da_accum_ptrs,
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
-                    softmax_scale_log2=softmax_scale_log2,
+                    d_max=d_max,
+                    d_min=d_min,
+                    g_thr=g_thr,
+                    g_thr_min=g_thr_min,
                     m_block=m_block,
                     n_block=n_block,
                     actual_seqlen_q=actual_seqlen_q,
@@ -567,20 +645,53 @@ def _bwd_sparse_base_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=IS_CAUSAL,
                     MASK_LOCAL=IS_LOCAL,
+                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 )
             )
 
-            # Store dq
-            tl.atomic_add(
-                dq_accum_ptrs,
-                dq,
-                mask=(offs_m[:, None] < actual_seqlen_q)
-                & (offs_kb[None, :] < head_dim),
-            )
-
     # Process m_blocks without masking
+    if m_block_min_no_mask < m_block_max_no_mask:
+        q_ptrs = tl.make_block_ptr(
+            base=q_base,
+            shape=(head_dim, actual_seqlen_q),
+            strides=(1, stride_qm),
+            offsets=(0, m_block_min_no_mask * TILE_M),
+            block_shape=(TILE_K, TILE_M),
+            order=(0, 1),
+        )
+        a_ptrs = tl.make_block_ptr(
+            base=a_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(m_block_min_no_mask * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        do_ptrs = tl.make_block_ptr(
+            base=do_base,
+            shape=(actual_seqlen_q, head_dim),
+            strides=(stride_dom, 1),
+            offsets=(m_block_min_no_mask * TILE_M, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+        lse_ptrs = tl.make_block_ptr(
+            base=lse_base,
+            shape=(actual_seqlen_q,),
+            strides=(stride_ll,),
+            offsets=(m_block_min_no_mask * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        dpsum_ptrs = tl.make_block_ptr(
+            base=dpsum_base,
+            shape=(actual_seqlen_q,),
+            strides=(stride_pm,),
+            offsets=(m_block_min_no_mask * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
     for m_block in tl.range(m_block_min_no_mask, m_block_max_no_mask):
-        offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
         dq_accum_ptrs = seqlen_info.make_ptrs(
             base_ptrs=dq_accum_base,
             mn_block=m_block,
@@ -589,19 +700,48 @@ def _bwd_sparse_base_kernel(
             TILE_K=TILE_K,
             SWAP_AB=False,
         )
+            da_accum_ptrs = seqlen_info.make_ptrs(
+                base_ptrs=da_base,
+                mn_block=m_block,
+                stride_seq=1,
+                TILE_MN=TILE_M,
+                TILE_K=1,
+                SWAP_AB=False,
+            )
 
-        # Compute attention backward for this m_block
-        dq, acc_dk, acc_dv, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
+            g_thr = seqlen_info.get_gate_threshold(
+                gate_scale=gate_scale,
+                m_block=m_block,
+                seqlen_q=actual_seqlen_q,
+                seqlen_k=actual_seqlen_k,
+                IS_CAUSAL=IS_CAUSAL,
+                TILE_M=TILE_M,
+                QHEADS_PER_KVHEAD_PACKGQA=1,
+                IS_ADAPT_GATE=IS_ADAPT_GATE,
+                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                SWAP_AB=True,
+            )
+            g_thr_min = tl.min(g_thr)
+
+            acc_dk, acc_dv, acc_dd, q_ptrs, a_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
             _bwd_inner_sparse_base_kernel(
                 acc_dk=acc_dk,
                 acc_dv=acc_dv,
+                    acc_dd=acc_dd,
                 k_tile=k_tile,
                 v_tile=v_tile,
+                    d_tile=d_tile,
                 q_ptrs=q_ptrs,
+                    a_ptrs=a_ptrs,
                 do_ptrs=do_ptrs,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    da_accum_ptrs=da_accum_ptrs,
                 lse_ptrs=lse_ptrs,
                 dpsum_ptrs=dpsum_ptrs,
-                softmax_scale_log2=softmax_scale_log2,
+                    d_max=d_max,
+                    d_min=d_min,
+                    g_thr=g_thr,
+                    g_thr_min=g_thr_min,
                 m_block=m_block,
                 n_block=n_block,
                 actual_seqlen_q=actual_seqlen_q,
@@ -613,20 +753,53 @@ def _bwd_sparse_base_kernel(
                 IS_MASK=False,
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
-            )
-        )
-
-        # Store dq
-        tl.atomic_add(
-            dq_accum_ptrs,
-            dq,
-            mask=(offs_m[:, None] < actual_seqlen_q) & (offs_kb[None, :] < head_dim),
+                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                )
         )
 
     # Process m_blocks with masking
-    if IS_LOCAL:
+    if IS_LOCAL and m_block_max_no_mask < m_block_max:
+        q_ptrs = tl.make_block_ptr(
+            base=q_base,
+            shape=(head_dim, actual_seqlen_q),
+            strides=(1, stride_qm),
+            offsets=(0, m_block_max_no_mask * TILE_M),
+            block_shape=(TILE_K, TILE_M),
+            order=(0, 1),
+        )
+        a_ptrs = tl.make_block_ptr(
+            base=a_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(m_block_max_no_mask * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        do_ptrs = tl.make_block_ptr(
+            base=do_base,
+            shape=(actual_seqlen_q, head_dim),
+            strides=(stride_dom, 1),
+            offsets=(m_block_max_no_mask * TILE_M, 0),
+            block_shape=(TILE_M, TILE_K),
+            order=(1, 0),
+        )
+        lse_ptrs = tl.make_block_ptr(
+            base=lse_base,
+            shape=(actual_seqlen_q,),
+            strides=(stride_ll,),
+            offsets=(m_block_max_no_mask * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        dpsum_ptrs = tl.make_block_ptr(
+            base=dpsum_base,
+            shape=(actual_seqlen_q,),
+            strides=(stride_pm,),
+            offsets=(m_block_max_no_mask * TILE_M,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
         for m_block in tl.range(m_block_max_no_mask, m_block_max):
-            offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
             dq_accum_ptrs = seqlen_info.make_ptrs(
                 base_ptrs=dq_accum_base,
                 mn_block=m_block,
@@ -635,19 +808,48 @@ def _bwd_sparse_base_kernel(
                 TILE_K=TILE_K,
                 SWAP_AB=False,
             )
+            da_accum_ptrs = seqlen_info.make_ptrs(
+                base_ptrs=da_base,
+                mn_block=m_block,
+                stride_seq=1,
+                TILE_MN=TILE_M,
+                TILE_K=1,
+                SWAP_AB=False,
+            )
 
-            # Compute attention backward for this m_block
-            dq, acc_dk, acc_dv, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
+            g_thr = seqlen_info.get_gate_threshold(
+                gate_scale=gate_scale,
+                m_block=m_block,
+                seqlen_q=actual_seqlen_q,
+                seqlen_k=actual_seqlen_k,
+                IS_CAUSAL=IS_CAUSAL,
+                TILE_M=TILE_M,
+                QHEADS_PER_KVHEAD_PACKGQA=1,
+                IS_ADAPT_GATE=IS_ADAPT_GATE,
+                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                SWAP_AB=True,
+            )
+            g_thr_min = tl.min(g_thr)
+
+            acc_dk, acc_dv, acc_dd, q_ptrs, a_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
                 _bwd_inner_sparse_base_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
+                    acc_dd=acc_dd,
                     k_tile=k_tile,
                     v_tile=v_tile,
+                    d_tile=d_tile,
                     q_ptrs=q_ptrs,
+                    a_ptrs=a_ptrs,
                     do_ptrs=do_ptrs,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    da_accum_ptrs=da_accum_ptrs,
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
-                    softmax_scale_log2=softmax_scale_log2,
+                    d_max=d_max,
+                    d_min=d_min,
+                    g_thr=g_thr,
+                    g_thr_min=g_thr_min,
                     m_block=m_block,
                     n_block=n_block,
                     actual_seqlen_q=actual_seqlen_q,
@@ -659,16 +861,20 @@ def _bwd_sparse_base_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=IS_CAUSAL,
                     MASK_LOCAL=IS_LOCAL,
+                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 )
             )
 
-            # Store dq
+    # Store dd
+    if QHEADS_PER_KVHEAD > 1:
             tl.atomic_add(
-                dq_accum_ptrs,
-                dq,
-                mask=(offs_m[:, None] < actual_seqlen_q)
-                & (offs_kb[None, :] < head_dim),
-            )
+            dd_ptrs,
+            acc_dd,
+            mask=(offs_n < actual_seqlen_k),
+            sem="relaxed",
+        )
+    else:
+        tl.store(dd_ptrs, acc_dd, boundary_check=(0,))
 
     # Store dv
     if QHEADS_PER_KVHEAD > 1:
@@ -676,6 +882,7 @@ def _bwd_sparse_base_kernel(
             dv_ptrs,
             acc_dv,
             mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
+            sem="relaxed",
         )
     else:
         tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1))
@@ -689,6 +896,7 @@ def _bwd_sparse_base_kernel(
             dk_ptrs,
             acc_dk,
             mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
+            sem="relaxed",
         )
     else:
         tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1))
