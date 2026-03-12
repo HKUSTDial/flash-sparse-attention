@@ -11,12 +11,18 @@ from flash_sparse_attn.ops.triton import launch_grid, seqlen_info
 def _bwd_postprocess_kernel(
     dQaccum,
     dQ,
+    dAaccum,
+    dA,
     stride_dqab,
     stride_dqah,
     stride_dqam,
     stride_dqb,
     stride_dqh,
     stride_dqm,
+    stride_daab,
+    stride_daah,
+    stride_dab,
+    stride_dah,
     cu_seqlens_q,
     seqused_q,
     seqlen_q,
@@ -25,6 +31,7 @@ def _bwd_postprocess_kernel(
     scale,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
+    HAS_DA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_K: tl.constexpr,
 ):
@@ -98,12 +105,68 @@ def _bwd_postprocess_kernel(
     # Store dq
     tl.store(dq_ptrs, dq, boundary_check=(0, 1))
 
+    if HAS_DA:
+        da_accum_base = seqlen_info.offset_batch_Q(
+            dAaccum + head_idx * stride_daah,
+            batch_idx,
+            offset_q,
+            padded_offset_q,
+            stride_daab,
+            1,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=True,
+        )
+        da_base = seqlen_info.offset_batch_Q(
+            dA + head_idx * stride_dah,
+            batch_idx,
+            offset_q,
+            padded_offset_q,
+            stride_dab,
+            1,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+
+        da_accum_ptrs = tl.make_block_ptr(
+            base=da_accum_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(0,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+        da_ptrs = tl.make_block_ptr(
+            base=da_base,
+            shape=(actual_seqlen_q,),
+            strides=(1,),
+            offsets=(0,),
+            block_shape=(TILE_M,),
+            order=(0,),
+        )
+
+        # Advance da_accum pointer
+        da_accum_ptrs = tl.advance(da_accum_ptrs, (m_block * TILE_M,))
+
+        # Load da accumulators
+        acc_da = tl.load(da_accum_ptrs, boundary_check=(0,))
+
+        # Advance da pointer
+        da_ptrs = tl.advance(da_ptrs, (m_block * TILE_M,))
+
+        # Convert da_accum to da dtype
+        da = acc_da.to(dA.dtype.element_ty)
+
+        # Store da
+        tl.store(da_ptrs, da, boundary_check=(0,))
+
 
 def _flash_attn_bwd_postprocess(
     dq_accum: torch.Tensor,
     dq: torch.Tensor,
     scale: float,
     head_dim_rounded: int,
+    da_accum: Optional[torch.Tensor] = None,
+    da: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
@@ -117,18 +180,27 @@ def _flash_attn_bwd_postprocess(
         _, num_heads_q, head_dim = dq.shape
         batch_size = cu_seqlens_q.shape[0] - 1
         seqlen_q = max_seqlen_q
+    has_da = da_accum is not None and da is not None
 
     grid = launch_grid.get_bwd_postprocess_grid(batch_size, seqlen_q, num_heads_q)
 
     _bwd_postprocess_kernel[grid](
         dq_accum,
         dq,
+        da_accum if has_da else dq_accum,
+        da if has_da else dq,
         dq_accum.stride(0) if not is_varlen else 0,
         dq_accum.stride(1) if not is_varlen else dq_accum.stride(0),
         head_dim_rounded,
         dq.stride(0) if not is_varlen else 0,
         dq.stride(-2),
         dq.stride(-3) if not is_varlen else dq.stride(0),
+        da_accum.stride(0) if (has_da and not is_varlen) else 0,
+        da_accum.stride(1)
+        if (has_da and not is_varlen)
+        else (da_accum.stride(0) if has_da else 0),
+        da.stride(0) if (has_da and not is_varlen) else 0,
+        da.stride(-2) if has_da else 0,
         cu_seqlens_q,
         seqused_q,
         seqlen_q,
@@ -137,6 +209,7 @@ def _flash_attn_bwd_postprocess(
         scale,
         HAS_CU_SEQLENS_Q=is_varlen,
         HAS_SEQUSED_Q=seqused_q is not None,
+        HAS_DA=has_da,
         TILE_M=tile_m,
         TILE_K=tile_k,
         num_warps=4,
