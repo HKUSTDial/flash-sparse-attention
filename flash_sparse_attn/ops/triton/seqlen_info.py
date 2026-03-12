@@ -142,16 +142,14 @@ def get_gate_threshold(
     :param IS_LOGSIGMOID_GATE: Boolean flag indicating if the gate uses logsigmoid.
     :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
     """
-    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-
-    if SWAP_AB:
-        q_idx = offs_m[None, :]
-    else:
-        q_idx = offs_m[:, None]
-        if QHEADS_PER_KVHEAD_PACKGQA > 1:
-            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
-
     if IS_CAUSAL and IS_ADAPT_GATE:
+        offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
+        if SWAP_AB:
+            q_idx = offs_m[None, :]
+        else:
+            q_idx = offs_m[:, None]
+            if QHEADS_PER_KVHEAD_PACKGQA > 1:
+                q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
         g_thr = tl.log(gate_scale * (q_idx + causal_offset + 1.0))
     else:
@@ -214,11 +212,14 @@ def make_ptrs(
     SWAP_AB: tl.constexpr,
 ):
     offs_mn = mn_block * TILE_MN + tl.arange(0, TILE_MN)
-    offs_k = tl.arange(0, TILE_K)
-    if SWAP_AB:
-        ptrs = base_ptrs + offs_mn[None, :] * stride_seq + offs_k[:, None]
+    if TILE_K > 1:
+        offs_k = tl.arange(0, TILE_K)
+        if SWAP_AB:
+            ptrs = base_ptrs + offs_mn[None, :] * stride_seq + offs_k[:, None]
+        else:
+            ptrs = base_ptrs + offs_mn[:, None] * stride_seq + offs_k[None, :]
     else:
-        ptrs = base_ptrs + offs_mn[:, None] * stride_seq + offs_k[None, :]
+        ptrs = base_ptrs + offs_mn
     return ptrs
 
 
@@ -237,8 +238,8 @@ def make_pack_gqa_ptrs(
     m_idx = offs_m // QHEADS_PER_KVHEAD_PACKGQA
     q_head_offset = offs_m - m_idx * QHEADS_PER_KVHEAD_PACKGQA
     q_head = head_idx * QHEADS_PER_KVHEAD_PACKGQA + q_head_offset
-    offs_k = tl.arange(0, TILE_K)
     if TILE_K > 1:
+        offs_k = tl.arange(0, TILE_K)
         ptrs = (
             base_ptrs
             + m_idx[:, None] * stride_seq
