@@ -22,13 +22,21 @@ from flash_sparse_attn.ops.triton import (
 def _bwd_inner_sparse_base_kernel(
     acc_dk,
     acc_dv,
+    acc_dd,
     k_tile,
     v_tile,
+    d_tile,
     q_ptrs,
+    a_ptrs,
     do_ptrs,
+    dq_accum_ptrs,
+    da_accum_ptrs,
     lse_ptrs,
     dpsum_ptrs,
-    softmax_scale_log2,
+    d_max,
+    d_min,
+    g_thr,
+    g_thr_min,
     m_block,
     n_block,
     actual_seqlen_q,
@@ -40,15 +48,44 @@ def _bwd_inner_sparse_base_kernel(
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
+    IS_LOGSIGMOID_GATE: tl.constexpr,
 ):
+    # Load alpha tile
+    a_tile = tl.load(a_ptrs, boundary_check=(0,)).to(tl.float32)
+    a_max = tl.max(a_tile)
+    a_min = tl.min(a_tile)
+
+    # Check if any gates are active for current tile
+    active_curr = activations.gate_skip(a_max, a_min, d_max, d_min, g_thr_min)
+
+    # Advance alpha pointers
+    a_ptrs = tl.advance(a_ptrs, (TILE_M,))
+
+    if active_curr:
+        # Compute attention gates
+        g = d_tile[:, None] * a_tile[None, :]
+
+        # Update gate mask for current tile
+        gate_mask = g >= g_thr
+
+        # Compute scaling factor for gated attention score gradients
+        if IS_LOGSIGMOID_GATE:
+            ds_scale = tl.sigmoid(-g)
+        else:
+            ds_scale = 1.0
+
     # Load query tile
     q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
 
-    # Advance query pointer
+        # Advance query pointers
     q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
 
     # Compute attention scores
-    acc_s = tl.dot(k_tile, q_tile)
+        if IS_LOGSIGMOID_GATE:
+            acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=False)
+        else:
+            acc_s = tl.where(gate_mask, g, float("-inf"))
+        acc_s += tl.dot(k_tile, q_tile)
 
     # Load LSE
     lse_log2 = tl.load(lse_ptrs, boundary_check=(0,))
@@ -57,7 +94,7 @@ def _bwd_inner_sparse_base_kernel(
     lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
 
     if IS_MASK:
-        # Apply mask to attention scores
+            # Apply mask
         acc_s = mask.apply_mask(
             acc_s=acc_s,
             m_block=m_block,
@@ -76,36 +113,60 @@ def _bwd_inner_sparse_base_kernel(
         )
 
     # Compute attention weights
-    p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(q_tile.dtype)
+        p = tl.math.exp2(acc_s * math.log2(math.e) - lse_log2[None, :]).to(q_tile.dtype)
 
-    # Load do tile
+        # Load output gradients tile
     do_tile = tl.load(do_ptrs, boundary_check=(0, 1))
 
-    # Advance do pointer
+        # Advance output gradients pointers
     do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
 
-    # Compute value gradient
+        # Compute value gradients
     acc_dv += tl.dot(p, do_tile)
 
-    # Compute attention weight gradient
+        # Compute attention weight gradients
     acc_dp = tl.dot(v_tile, tl.trans(do_tile))
 
     # Load dpsum
     dpsum = tl.load(dpsum_ptrs, boundary_check=(0,))
 
-    # Advance dpsum pointer
+        # Advance dpsum pointers
     dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
 
-    # Compute attention score gradient
+        # Compute attention score gradients
     ds = p * (acc_dp - dpsum[None, :]).to(q_tile.dtype)
 
-    # Compute query gradient
+        # Compute query gradients
     dq = tl.dot(tl.trans(ds), k_tile)
 
-    # Compute key gradient
+        # Store query gradients
+        tl.atomic_add(dq_accum_ptrs, dq, sem="relaxed")
+
+        # Compute key gradients
     acc_dk += tl.dot(ds, tl.trans(q_tile))
 
-    return dq, acc_dk, acc_dv, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs
+        # Compute alpha gradients
+        da = tl.sum(ds * ds_scale * d_tile[:, None], axis=0)
+
+        # Store alpha gradients
+        tl.atomic_add(da_accum_ptrs, da, sem="relaxed")
+
+        # Compute delta gradients
+        acc_dd += tl.sum(ds * ds_scale * a_tile[None, :], axis=1)
+    else:
+        # Advance query pointers
+        q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
+
+        # Advance LSE pointers
+        lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
+
+        # Advance output gradients pointers
+        do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
+
+        # Advance dpsum pointers
+        dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
+
+    return acc_dk, acc_dv, acc_dd, q_ptrs, a_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs
 
 
 @triton.jit
