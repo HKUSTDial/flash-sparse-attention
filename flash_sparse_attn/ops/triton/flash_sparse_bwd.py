@@ -944,7 +944,7 @@ def _flash_sparse_attn_base_backward(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_bwd_launch_config(
+        launch_template.get_bwd_sparse_launch_config(
             tile_k=TILE_K,
         )
     )
@@ -1158,7 +1158,7 @@ def _flash_sparse_attn_varlen_base_backward(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_bwd_launch_config(
+        launch_template.get_bwd_sparse_launch_config(
             tile_k=TILE_K,
         )
     )
