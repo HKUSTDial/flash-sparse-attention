@@ -5,7 +5,7 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import launch_grid, seqlen_info
+from flash_sparse_attn.ops.triton import launch_grid, seqlen_info, activations
 
 
 @triton.jit
@@ -206,6 +206,7 @@ def _bwd_preprocess_kernel(
 
     # Compute lse_log2
     lse_log2 = tl.where(lse_tile == lse_tile, lse_tile * math.log2(math.e), 0.0)
+    lse_log2 = activations.check_inf(lse_log2)
 
     # Store dq_accum
     tl.store(dq_accum_ptrs, acc_dq, boundary_check=(0, 1))
