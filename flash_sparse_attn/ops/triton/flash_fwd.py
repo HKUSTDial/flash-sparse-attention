@@ -258,6 +258,33 @@ def _fwd_base_kernel(
         WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
         QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
     )
+    n_block_min_no_mask = block_info.get_n_block_min_before_local_mask(
+        seqlen_q=actual_seqlen_q,
+        seqlen_k=actual_seqlen_k,
+        m_block=m_block,
+        n_block_min=n_block_min,
+        TILE_N=TILE_N,
+        TILE_M=TILE_M,
+        IS_LOCAL=IS_LOCAL,
+        WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+    )
+    n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+        seqlen_q=actual_seqlen_q,
+        seqlen_k=actual_seqlen_k,
+        m_block=m_block,
+        n_block_min=n_block_min,
+        TILE_N=TILE_N,
+        TILE_M=TILE_M,
+        IS_LOCAL=IS_LOCAL,
+        WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+    )
+
+    # Clamp to split's range so the no-mask loop stays within bounds
+    if IS_SPLIT_KV:
+        n_block_min_no_mask = tl.maximum(n_block_min_no_mask, n_block_min)
+        n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
     # Create pointers
     if not PACK_GQA:
@@ -383,23 +410,128 @@ def _fwd_base_kernel(
 
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
-        n_block_min_causal_local = block_info.get_n_block_min_causal_local_mask(
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
+        for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
+            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
+                q_tile=q_tile,
+                k_tile=k_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                acc_o=acc_o,
+                row_max=row_max,
+                row_sum=row_sum,
+                softmax_scale_log2=softmax_scale_log2,
+                m_block=m_block,
+                n_block=n_block,
+                n_block_min=n_block_max_no_mask,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                IS_MASK=True,
+                MASK_CAUSAL=IS_CAUSAL,
+                MASK_LOCAL=IS_LOCAL,
+                CHECK_INF=True,
+            )
+    else:
+        # First iteration with seqlen masking
+        n_block = n_block_max - 1
+
+        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
+            q_tile=q_tile,
+            k_tile=k_tile,
+            k_ptrs=k_ptrs,
+            v_ptrs=v_ptrs,
+            acc_o=acc_o,
+            row_max=row_max,
+            row_sum=row_sum,
+            softmax_scale_log2=softmax_scale_log2,
             m_block=m_block,
-            n_block_min=n_block_min,
-            TILE_N=TILE_N,
+            n_block=n_block,
+            n_block_min=n_block,
+            actual_seqlen_q=actual_seqlen_q,
+            actual_seqlen_k=actual_seqlen_k,
             TILE_M=TILE_M,
-            IS_LOCAL=IS_LOCAL,
+            TILE_N=TILE_N,
+            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
             WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            IS_MASK=True,
+            MASK_CAUSAL=False,
+            MASK_LOCAL=False,
+            CHECK_INF=True,
         )
 
-        # Clamp to split's range so the no-mask loop stays within bounds
-        if IS_SPLIT_KV:
-            n_block_min_causal_local = tl.minimum(n_block_min_causal_local, n_block_max)
+        n_block_max_no_mask = n_block_max - 1
+        n_block_min_no_mask = tl.minimum(n_block_min_no_mask, n_block_max_no_mask)
 
-        for n_block in tl.range(n_block_max - 1, n_block_min_causal_local - 1, -1):
+    # Process n_blocks without masking
+    if n_block_max_no_mask > n_block_min_no_mask:
+        k_ptrs = tl.make_block_ptr(
+            base=k_base,
+            shape=(head_dim, actual_seqlen_k),
+            strides=(1, stride_kn),
+            offsets=(0, (n_block_max_no_mask - 1) * TILE_N),
+            block_shape=(TILE_K, TILE_N),
+            order=(0, 1),
+        )
+        v_ptrs = tl.make_block_ptr(
+            base=v_base,
+            shape=(actual_seqlen_k, head_dim),
+            strides=(stride_vn, 1),
+            offsets=((n_block_max_no_mask - 1) * TILE_N, 0),
+            block_shape=(TILE_N, TILE_K),
+            order=(1, 0),
+        )
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
+            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
+                q_tile=q_tile,
+                k_tile=k_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                acc_o=acc_o,
+                row_max=row_max,
+                row_sum=row_sum,
+                softmax_scale_log2=softmax_scale_log2,
+                m_block=m_block,
+                n_block=n_block,
+                n_block_min=n_block_min_no_mask,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                IS_MASK=IS_LOCAL,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
+                CHECK_INF=IS_LOCAL,
+            )
+
+    # Process n_blocks with masking
+    if IS_LOCAL and n_block_min_no_mask > n_block_min:
+        k_ptrs = tl.make_block_ptr(
+            base=k_base,
+            shape=(head_dim, actual_seqlen_k),
+            strides=(1, stride_kn),
+            offsets=(0, (n_block_min_no_mask - 1) * TILE_N),
+            block_shape=(TILE_K, TILE_N),
+            order=(0, 1),
+        )
+        v_ptrs = tl.make_block_ptr(
+            base=v_base,
+            shape=(actual_seqlen_k, head_dim),
+            strides=(stride_vn, 1),
+            offsets=((n_block_min_no_mask - 1) * TILE_N, 0),
+            block_shape=(TILE_N, TILE_K),
+            order=(1, 0),
+        )
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
                 q_tile=q_tile,
                 k_tile=k_tile,
@@ -420,69 +552,10 @@ def _fwd_base_kernel(
                 WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
                 QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
                 IS_MASK=True,
-                MASK_CAUSAL=IS_CAUSAL,
-                MASK_LOCAL=IS_LOCAL,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=True,
                 CHECK_INF=True,
             )
-
-        n_block_max_no_mask = n_block_min_causal_local
-    else:
-        # First iteration with seqlen masking
-        n_block = n_block_max - 1
-
-        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
-            q_tile=q_tile,
-            k_tile=k_tile,
-            k_ptrs=k_ptrs,
-            v_ptrs=v_ptrs,
-            acc_o=acc_o,
-            row_max=row_max,
-            row_sum=row_sum,
-            softmax_scale_log2=softmax_scale_log2,
-            m_block=m_block,
-            n_block=n_block,
-            n_block_min=n_block_min,
-            actual_seqlen_q=actual_seqlen_q,
-            actual_seqlen_k=actual_seqlen_k,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-            IS_MASK=True,
-            MASK_CAUSAL=False,
-            MASK_LOCAL=False,
-            CHECK_INF=True,
-        )
-
-        n_block_max_no_mask = n_block_max - 1
-
-    # Process n_blocks without masking
-    for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
-        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_base_kernel(
-            q_tile=q_tile,
-            k_tile=k_tile,
-            k_ptrs=k_ptrs,
-            v_ptrs=v_ptrs,
-            acc_o=acc_o,
-            row_max=row_max,
-            row_sum=row_sum,
-            softmax_scale_log2=softmax_scale_log2,
-            m_block=m_block,
-            n_block=n_block,
-            n_block_min=n_block_min,
-            actual_seqlen_q=actual_seqlen_q,
-            actual_seqlen_k=actual_seqlen_k,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-            IS_MASK=False,
-            MASK_CAUSAL=False,
-            MASK_LOCAL=False,
-            CHECK_INF=False,
-        )
 
     # Finalize softmax
     row_scale, lse_tile = activations.finalize(
