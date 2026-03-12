@@ -74,76 +74,76 @@ def _bwd_inner_sparse_base_kernel(
         else:
             ds_scale = 1.0
 
-    # Load query tile
-    q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+        # Load query tile
+        q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
 
         # Advance query pointers
-    q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
+        q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
 
-    # Compute attention scores
+        # Compute attention scores
         if IS_LOGSIGMOID_GATE:
             acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=False)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
         acc_s += tl.dot(k_tile, q_tile)
 
-    # Load LSE
-    lse_log2 = tl.load(lse_ptrs, boundary_check=(0,))
+        # Load LSE
+        lse_log2 = tl.load(lse_ptrs, boundary_check=(0,))
 
-    # Advance LSE pointer
-    lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
+        # Advance LSE pointer
+        lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
 
-    if IS_MASK:
+        if IS_MASK:
             # Apply mask
-        acc_s = mask.apply_mask(
-            acc_s=acc_s,
-            m_block=m_block,
-            n_block=n_block,
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            MASK_SEQLEN=True,
-            MASK_CAUSAL=MASK_CAUSAL,
-            MASK_LOCAL=MASK_LOCAL,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=1,
-            SWAP_AB=True,
-        )
+            acc_s = mask.apply_mask(
+                acc_s=acc_s,
+                m_block=m_block,
+                n_block=n_block,
+                seqlen_q=actual_seqlen_q,
+                seqlen_k=actual_seqlen_k,
+                MASK_SEQLEN=True,
+                MASK_CAUSAL=MASK_CAUSAL,
+                MASK_LOCAL=MASK_LOCAL,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=1,
+                SWAP_AB=True,
+            )
 
-    # Compute attention weights
+        # Compute attention weights
         p = tl.math.exp2(acc_s * math.log2(math.e) - lse_log2[None, :]).to(q_tile.dtype)
 
         # Load output gradients tile
-    do_tile = tl.load(do_ptrs, boundary_check=(0, 1))
+        do_tile = tl.load(do_ptrs, boundary_check=(0, 1))
 
         # Advance output gradients pointers
-    do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
+        do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
 
         # Compute value gradients
-    acc_dv += tl.dot(p, do_tile)
+        acc_dv += tl.dot(p, do_tile)
 
         # Compute attention weight gradients
-    acc_dp = tl.dot(v_tile, tl.trans(do_tile))
+        acc_dp = tl.dot(v_tile, tl.trans(do_tile))
 
-    # Load dpsum
-    dpsum = tl.load(dpsum_ptrs, boundary_check=(0,))
+        # Load dpsum
+        dpsum = tl.load(dpsum_ptrs, boundary_check=(0,))
 
         # Advance dpsum pointers
-    dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
+        dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
 
         # Compute attention score gradients
-    ds = p * (acc_dp - dpsum[None, :]).to(q_tile.dtype)
+        ds = p * (acc_dp - dpsum[None, :]).to(q_tile.dtype)
 
         # Compute query gradients
-    dq = tl.dot(tl.trans(ds), k_tile)
+        dq = tl.dot(tl.trans(ds), k_tile)
 
         # Store query gradients
         tl.atomic_add(dq_accum_ptrs, dq, sem="relaxed")
 
         # Compute key gradients
-    acc_dk += tl.dot(ds, tl.trans(q_tile))
+        acc_dk += tl.dot(ds, tl.trans(q_tile))
 
         # Compute alpha gradients
         da = tl.sum(ds * ds_scale * d_tile[:, None], axis=0)
@@ -691,15 +691,15 @@ def _bwd_sparse_base_kernel(
             block_shape=(TILE_M,),
             order=(0,),
         )
-    for m_block in tl.range(m_block_min_no_mask, m_block_max_no_mask):
-        dq_accum_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dq_accum_base,
-            mn_block=m_block,
-            stride_seq=stride_dqam,
-            TILE_MN=TILE_M,
-            TILE_K=TILE_K,
-            SWAP_AB=False,
-        )
+        for m_block in tl.range(m_block_min_no_mask, m_block_max_no_mask):
+            dq_accum_ptrs = seqlen_info.make_ptrs(
+                base_ptrs=dq_accum_base,
+                mn_block=m_block,
+                stride_seq=stride_dqam,
+                TILE_MN=TILE_M,
+                TILE_K=TILE_K,
+                SWAP_AB=False,
+            )
             da_accum_ptrs = seqlen_info.make_ptrs(
                 base_ptrs=da_base,
                 mn_block=m_block,
@@ -724,38 +724,38 @@ def _bwd_sparse_base_kernel(
             g_thr_min = tl.min(g_thr)
 
             acc_dk, acc_dv, acc_dd, q_ptrs, a_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-            _bwd_inner_sparse_base_kernel(
-                acc_dk=acc_dk,
-                acc_dv=acc_dv,
+                _bwd_inner_sparse_base_kernel(
+                    acc_dk=acc_dk,
+                    acc_dv=acc_dv,
                     acc_dd=acc_dd,
-                k_tile=k_tile,
-                v_tile=v_tile,
+                    k_tile=k_tile,
+                    v_tile=v_tile,
                     d_tile=d_tile,
-                q_ptrs=q_ptrs,
+                    q_ptrs=q_ptrs,
                     a_ptrs=a_ptrs,
-                do_ptrs=do_ptrs,
+                    do_ptrs=do_ptrs,
                     dq_accum_ptrs=dq_accum_ptrs,
                     da_accum_ptrs=da_accum_ptrs,
-                lse_ptrs=lse_ptrs,
-                dpsum_ptrs=dpsum_ptrs,
+                    lse_ptrs=lse_ptrs,
+                    dpsum_ptrs=dpsum_ptrs,
                     d_max=d_max,
                     d_min=d_min,
                     g_thr=g_thr,
                     g_thr_min=g_thr_min,
-                m_block=m_block,
-                n_block=n_block,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                IS_MASK=False,
-                MASK_CAUSAL=False,
-                MASK_LOCAL=False,
+                    m_block=m_block,
+                    n_block=n_block,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                    IS_MASK=False,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=False,
                     IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 )
-        )
+            )
 
     # Process m_blocks with masking
     if IS_LOCAL and m_block_max_no_mask < m_block_max:
@@ -867,7 +867,7 @@ def _bwd_sparse_base_kernel(
 
     # Store dd
     if QHEADS_PER_KVHEAD > 1:
-            tl.atomic_add(
+        tl.atomic_add(
             dd_ptrs,
             acc_dd,
             mask=(offs_n < actual_seqlen_k),
