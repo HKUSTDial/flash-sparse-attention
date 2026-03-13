@@ -290,7 +290,7 @@ def generate_inputs(
             device=device,
         )
 
-        with torch.inference_mode():
+        with torch.no_grad():
             out = model(
                 input_ids=input_ids,
                 use_cache=False,
