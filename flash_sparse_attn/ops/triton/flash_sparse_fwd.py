@@ -36,6 +36,7 @@ def _fwd_inner_sparse_base_kernel(
     row_sum,
     softmax_scale,
     softmax_scale_log2,
+    softmax_threshold,
     m_block,
     n_block,
     n_block_min,
@@ -51,7 +52,6 @@ def _fwd_inner_sparse_base_kernel(
     MASK_LOCAL: tl.constexpr,
     IS_LOGSIGMOID_GATE: tl.constexpr,
     CHECK_INF: tl.constexpr,
-    SOFTMAX_THRESHOLD: tl.constexpr,
 ):
     # Advance delta pointers
     d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
@@ -95,8 +95,8 @@ def _fwd_inner_sparse_base_kernel(
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=softmax_scale_log2,
+            softmax_threshold=softmax_threshold,
             CHECK_INF=CHECK_INF,
-            SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             RESCALE_THRESHOLD=0.0,
         )
 
@@ -151,8 +151,9 @@ def _fwd_sparse_base_kernel(
     D,
     Out,
     Lse,
-    softmax_scale_log2,
     softmax_scale,
+    softmax_scale_log2,
+    softmax_threshold,
     gate_scale,
     stride_qb,
     stride_qh,
@@ -199,7 +200,7 @@ def _fwd_sparse_base_kernel(
     PACK_GQA: tl.constexpr,
     IS_LOGSIGMOID_GATE: tl.constexpr,
     IS_ADAPT_GATE: tl.constexpr,
-    SOFTMAX_THRESHOLD: tl.constexpr,
+    
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -581,6 +582,7 @@ def _fwd_sparse_base_kernel(
                     row_sum=row_sum,
                     softmax_scale=softmax_scale,
                     softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold=softmax_threshold,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_max_no_mask,
@@ -596,7 +598,6 @@ def _fwd_sparse_base_kernel(
                     MASK_LOCAL=IS_LOCAL,
                     IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                     CHECK_INF=True,
-                    SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
                 )
             )
     else:
@@ -621,6 +622,7 @@ def _fwd_sparse_base_kernel(
                 row_sum=row_sum,
                 softmax_scale=softmax_scale,
                 softmax_scale_log2=softmax_scale_log2,
+                softmax_threshold=softmax_threshold,
                 m_block=m_block,
                 n_block=n_block,
                 n_block_min=n_block_min,
@@ -636,7 +638,6 @@ def _fwd_sparse_base_kernel(
                 MASK_LOCAL=False,
                 IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 CHECK_INF=True,
-                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             )
         )
 
@@ -714,6 +715,7 @@ def _fwd_sparse_base_kernel(
                     row_sum=row_sum,
                     softmax_scale=softmax_scale,
                     softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold=softmax_threshold,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_min_no_mask,
@@ -729,7 +731,6 @@ def _fwd_sparse_base_kernel(
                     MASK_LOCAL=False,
                     IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                     CHECK_INF=True,
-                    SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
                 )
             )
 
@@ -804,6 +805,7 @@ def _fwd_sparse_base_kernel(
                     row_sum=row_sum,
                     softmax_scale=softmax_scale,
                     softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold=softmax_threshold,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_min,
@@ -819,7 +821,6 @@ def _fwd_sparse_base_kernel(
                     MASK_LOCAL=True,
                     IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                     CHECK_INF=True,
-                    SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
                 )
             )
 
@@ -959,8 +960,9 @@ def _flash_sparse_attn_base_forward(
         delta,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale_log2,
         softmax_scale,
+        softmax_scale_log2,
+        softmax_threshold,
         gate_scale,
         query.stride(0),
         query.stride(-2),
@@ -1007,7 +1009,6 @@ def _flash_sparse_attn_base_forward(
         PACK_GQA=pack_gqa,
         IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
         IS_ADAPT_GATE=is_adapt_gate,
-        SOFTMAX_THRESHOLD=softmax_threshold,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1132,8 +1133,9 @@ def _flash_sparse_attn_varlen_base_forward(
         delta,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale_log2,
         softmax_scale,
+        softmax_scale_log2,
+        softmax_threshold,
         gate_scale,
         0,
         query.stride(-2),
@@ -1180,7 +1182,6 @@ def _flash_sparse_attn_varlen_base_forward(
         PACK_GQA=pack_gqa,
         IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
         IS_ADAPT_GATE=is_adapt_gate,
-        SOFTMAX_THRESHOLD=softmax_threshold,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
