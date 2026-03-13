@@ -28,6 +28,7 @@ def _fwd_inner_base_kernel(
     row_max,
     row_sum,
     softmax_scale_log2,
+    softmax_threshold,
     m_block,
     n_block,
     n_block_min,
@@ -43,9 +44,6 @@ def _fwd_inner_base_kernel(
     MASK_LOCAL: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
-    # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
-
     # Compute attention scores
     acc_s = tl.dot(q_tile, k_tile)
 
@@ -75,20 +73,25 @@ def _fwd_inner_base_kernel(
         )
 
     # Apply online softmax
-    p, row_max, row_sum, row_scale = activations.online_softmax(
+    p, row_max, row_sum, row_scale, skip_softmax = activations.online_softmax(
         acc_s=acc_s,
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
+        softmax_threshold=softmax_threshold,
         CHECK_INF=CHECK_INF,
         RESCALE_THRESHOLD=0.0,
     )
 
-    # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+    if not skip_softmax:
+        # Load value tile
+        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
-    # Update output accumulator
-    acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+        # Rescale output accumulator
+        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
     # Advance value pointer
     v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
@@ -104,6 +107,7 @@ def _fwd_base_kernel(
     Out,
     Lse,
     softmax_scale_log2,
+    softmax_threshold,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -420,6 +424,7 @@ def _fwd_base_kernel(
                 row_max=row_max,
                 row_sum=row_sum,
                 softmax_scale_log2=softmax_scale_log2,
+                softmax_threshold=softmax_threshold,
                 m_block=m_block,
                 n_block=n_block,
                 n_block_min=n_block_max_no_mask,
@@ -448,6 +453,7 @@ def _fwd_base_kernel(
             row_max=row_max,
             row_sum=row_sum,
             softmax_scale_log2=softmax_scale_log2,
+            softmax_threshold=softmax_threshold,
             m_block=m_block,
             n_block=n_block,
             n_block_min=n_block,
@@ -496,6 +502,7 @@ def _fwd_base_kernel(
                 row_max=row_max,
                 row_sum=row_sum,
                 softmax_scale_log2=softmax_scale_log2,
+                softmax_threshold=softmax_threshold,
                 m_block=m_block,
                 n_block=n_block,
                 n_block_min=n_block_min_no_mask,
@@ -555,6 +562,7 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=False,
                 MASK_LOCAL=True,
                 CHECK_INF=True,
+                softmax_threshold=softmax_threshold,
             )
 
     # Finalize softmax
@@ -651,20 +659,22 @@ def _fwd_inner_sm90_kernel(
         )
 
     # Apply online softmax
-    p, row_max, row_sum, row_scale = activations.online_softmax(
+    p, row_max, row_sum, row_scale, skip_softmax = activations.online_softmax(
         acc_s=acc_s,
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
+        softmax_threshold=float("-inf"),
         RESCALE_THRESHOLD=0.0,
     )
 
-    # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+    if not skip_softmax:
+        # Rescale output accumulator
+        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
-    # Update output accumulator
-    acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
     # Advance value pointer
     v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
@@ -1138,6 +1148,7 @@ def _flash_attn_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    softmax_threshold = math.log2(head_dim / seqlen_k)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
@@ -1210,6 +1221,7 @@ def _flash_attn_base_forward(
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        softmax_threshold,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -1289,6 +1301,7 @@ def _flash_attn_varlen_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    softmax_threshold = math.log2(head_dim / seqlen_k)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
@@ -1361,6 +1374,7 @@ def _flash_attn_varlen_base_forward(
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        softmax_threshold,
         0,
         query.stride(-2),
         query.stride(0),
