@@ -28,6 +28,7 @@ def _fwd_inner_base_kernel(
     row_max,
     row_sum,
     softmax_scale_log2,
+    softmax_threshold,
     m_block,
     n_block,
     n_block_min,
@@ -42,7 +43,6 @@ def _fwd_inner_base_kernel(
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
     CHECK_INF: tl.constexpr,
-    SOFTMAX_THRESHOLD: tl.constexpr,
 ):
     # Compute attention scores
     acc_s = tl.dot(q_tile, k_tile)
@@ -78,8 +78,8 @@ def _fwd_inner_base_kernel(
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
+        softmax_threshold=softmax_threshold,
         CHECK_INF=CHECK_INF,
-        SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
         RESCALE_THRESHOLD=0.0,
     )
 
@@ -107,6 +107,7 @@ def _fwd_base_kernel(
     Out,
     Lse,
     softmax_scale_log2,
+    softmax_threshold,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -146,7 +147,6 @@ def _fwd_base_kernel(
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
     PACK_GQA: tl.constexpr,
-    SOFTMAX_THRESHOLD: tl.constexpr,
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -424,6 +424,7 @@ def _fwd_base_kernel(
                 row_max=row_max,
                 row_sum=row_sum,
                 softmax_scale_log2=softmax_scale_log2,
+                softmax_threshold=softmax_threshold,
                 m_block=m_block,
                 n_block=n_block,
                 n_block_min=n_block_max_no_mask,
@@ -438,7 +439,6 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=IS_LOCAL,
                 CHECK_INF=True,
-                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             )
     else:
         # First iteration with seqlen masking
@@ -453,6 +453,7 @@ def _fwd_base_kernel(
             row_max=row_max,
             row_sum=row_sum,
             softmax_scale_log2=softmax_scale_log2,
+            softmax_threshold=softmax_threshold,
             m_block=m_block,
             n_block=n_block,
             n_block_min=n_block,
@@ -467,7 +468,6 @@ def _fwd_base_kernel(
             MASK_CAUSAL=False,
             MASK_LOCAL=False,
             CHECK_INF=True,
-            SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
         )
 
         n_block_max_no_mask = n_block_max - 1
@@ -502,6 +502,7 @@ def _fwd_base_kernel(
                 row_max=row_max,
                 row_sum=row_sum,
                 softmax_scale_log2=softmax_scale_log2,
+                softmax_threshold=softmax_threshold,
                 m_block=m_block,
                 n_block=n_block,
                 n_block_min=n_block_min_no_mask,
@@ -516,7 +517,6 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
                 CHECK_INF=IS_LOCAL,
-                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             )
 
     # Process n_blocks with masking
@@ -562,7 +562,7 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=False,
                 MASK_LOCAL=True,
                 CHECK_INF=True,
-                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
+                softmax_threshold=softmax_threshold,
             )
 
     # Finalize softmax
@@ -665,7 +665,7 @@ def _fwd_inner_sm90_kernel(
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
-        SOFTMAX_THRESHOLD=float("-inf"),
+        softmax_threshold=float("-inf"),
         RESCALE_THRESHOLD=0.0,
     )
 
@@ -1221,6 +1221,7 @@ def _flash_attn_base_forward(
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        softmax_threshold,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -1260,7 +1261,6 @@ def _flash_attn_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
-        SOFTMAX_THRESHOLD=softmax_threshold,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1374,6 +1374,7 @@ def _flash_attn_varlen_base_forward(
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        softmax_threshold,
         0,
         query.stride(-2),
         query.stride(0),
@@ -1413,7 +1414,6 @@ def _flash_attn_varlen_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
-        SOFTMAX_THRESHOLD=softmax_threshold,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
