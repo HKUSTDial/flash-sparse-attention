@@ -14,6 +14,7 @@ def online_softmax(
     row_max,
     row_sum,
     scale_log2,
+    softmax_threshold,
     CHECK_INF: tl.constexpr,
     RESCALE_THRESHOLD: tl.constexpr,
 ):
@@ -24,6 +25,7 @@ def online_softmax(
     :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
     :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
+    :param softmax_threshold: Threshold in log2-domain for block-level skip. If > -inf and block max is below threshold relative to running max, skip softmax update.
     :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
     :param RESCALE_THRESHOLD: Threshold for rescaling to avoid underflow. If <= 0, rescaling is disabled.
 
@@ -31,36 +33,53 @@ def online_softmax(
     :return row_max_new: Updated maximum values per row of shape [BLOCK_M].
     :return row_sum_new: Updated sum values per row of shape [BLOCK_M].
     :return row_scale: Scaling factors per row of shape [BLOCK_M].
+    :return skip_softmax: Boolean indicating whether this block was skipped.
     """
-    # Update row max
-    row_max_new = tl.maximum(tl.max(acc_s, axis=1), row_max)
+    skip_softmax = False
 
-    # Avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
-    if CHECK_INF:
-        row_max_new = check_inf(row_max_new)
+    # Compute current row max
+    row_max_curr = tl.max(acc_s, axis=1)
 
-    # Compute scaled differences to new row max
-    acc_scale_log2 = (row_max - row_max_new) * scale_log2
+    # Update skip condition based on threshold
+    row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
+    skip_softmax = tl.max(row_max_diff_log2) < softmax_threshold
 
-    # Compute row scale
-    if RESCALE_THRESHOLD > 0.0:
-        # Triton can only skip computation at block granularity
-        if tl.min(acc_scale_log2) < -RESCALE_THRESHOLD:
-            row_scale = tl.exp2(acc_scale_log2)
-        else:
-            row_max_new = row_max
-            row_scale = acc_scale_log2 * 0.0 + 1.0
+    # Return zero attention weights
+    if skip_softmax:
+        p = acc_s * 0.0
+        row_max_new = row_max
+        row_sum_new = row_sum
+        row_scale = row_max * 0.0 + 1.0
     else:
-        row_scale = tl.exp2(acc_scale_log2)
+        # Update row max
+        row_max_new = tl.maximum(row_max_curr, row_max)
 
-    # Compute attention weights
-    p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
+        # Avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
+        if CHECK_INF:
+            row_max_new = check_inf(row_max_new)
 
-    # Update row sum
-    row_sum_cur = tl.sum(p, axis=1)
-    row_sum_new = row_sum * row_scale + row_sum_cur
+        # Compute scaled differences to new row max
+        acc_scale_log2 = (row_max - row_max_new) * scale_log2
 
-    return p, row_max_new, row_sum_new, row_scale
+        # Compute row scale
+        if RESCALE_THRESHOLD > 0.0:
+            # Triton can only skip computation at block granularity
+            if tl.min(acc_scale_log2) < -RESCALE_THRESHOLD:
+                row_scale = tl.exp2(acc_scale_log2)
+            else:
+                row_max_new = row_max
+                row_scale = acc_scale_log2 * 0.0 + 1.0
+        else:
+            row_scale = tl.exp2(acc_scale_log2)
+
+        # Compute attention weights
+        p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
+
+        # Update row sum
+        row_sum_cur = tl.sum(p, axis=1)
+        row_sum_new = row_sum * row_scale + row_sum_cur
+
+    return p, row_max_new, row_sum_new, row_scale, skip_softmax
 
 
 @triton.jit
@@ -83,7 +102,8 @@ def finalize(
     # if row_sum is zero or nan, set it to 1 to avoid division by zero
     acc_o_is_zero_or_nan = (row_sum == 0.0) | (row_sum != row_sum)
     row_scale = tl.where(acc_o_is_zero_or_nan, 1.0, 1.0 / row_sum) * final_scale
-    ln2 = math.log(2.0)
+    # ln2 = math.log(2.0)
+    ln2 = 0.6931471805599453
     lse = tl.where(
         acc_o_is_zero_or_nan,
         float("-inf"),
