@@ -14,6 +14,7 @@ from test_utils import (
     BenchmarkConfig,
     BenchmarkResult,
     format_tflops,
+    generate_inputs,
     generate_train_configs,
 )
 
@@ -35,29 +36,12 @@ def _fwd_flops(cfg: BenchmarkConfig) -> float:
 def benchmark_triton_dense_forward(
     cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
 ) -> float:
-    q = torch.randn(
-        cfg.batch_size,
-        cfg.seqlen_q,
-        cfg.num_heads,
-        cfg.head_dim,
+    q, k, v = generate_inputs(
+        cfg,
         device=device,
         dtype=dtype,
-    )
-    k = torch.randn(
-        cfg.batch_size,
-        cfg.seqlen_k,
-        cfg.num_kv_heads,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
-    )
-    v = torch.randn(
-        cfg.batch_size,
-        cfg.seqlen_k,
-        cfg.num_kv_heads,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
+        layout="bshd",
+        input_source="llm",
     )
     softmax_scale = cfg.head_dim**-0.5
 
@@ -77,36 +61,19 @@ def benchmark_triton_dense_forward(
 def benchmark_triton_sparse_forward(
     cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
 ) -> float:
-    q = torch.randn(
-        cfg.batch_size,
-        cfg.seqlen_q,
-        cfg.num_heads,
-        cfg.head_dim,
+    q, k, v = generate_inputs(
+        cfg,
         device=device,
         dtype=dtype,
-    )
-    k = torch.randn(
-        cfg.batch_size,
-        cfg.seqlen_k,
-        cfg.num_kv_heads,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
-    )
-    v = torch.randn(
-        cfg.batch_size,
-        cfg.seqlen_k,
-        cfg.num_kv_heads,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
+        layout="bshd",
+        input_source="llm",
     )
     alpha = torch.randn(
         cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
-    )
+    ).normal_(0, 0.02)
     delta = torch.randn(
         cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
-    )
+    ).normal_(0, 0.02)
     softmax_scale = cfg.head_dim**-0.5
     gate_scale = (cfg.seqlen_k + 1) ** -1
 
@@ -131,29 +98,12 @@ def benchmark_triton_sparse_forward(
 def benchmark_fa_dense_forward(
     cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
 ) -> Optional[float]:
-    q = torch.randn(
-        cfg.batch_size,
-        cfg.num_heads,
-        cfg.seqlen_q,
-        cfg.head_dim,
+    q, k, v = generate_inputs(
+        cfg,
         device=device,
         dtype=dtype,
-    )
-    k = torch.randn(
-        cfg.batch_size,
-        cfg.num_kv_heads,
-        cfg.seqlen_k,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
-    )
-    v = torch.randn(
-        cfg.batch_size,
-        cfg.num_kv_heads,
-        cfg.seqlen_k,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
+        layout="bhsd",
+        input_source="llm",
     )
     softmax_scale = cfg.head_dim**-0.5
 
@@ -163,10 +113,9 @@ def benchmark_fa_dense_forward(
                 q,
                 k,
                 v,
-                attn_mask=None,
-                dropout_p=0.0,
                 is_causal=cfg.is_causal,
                 scale=softmax_scale,
+                enable_gqa=True if cfg.num_heads != cfg.num_kv_heads else False,
             )
 
     try:
@@ -178,29 +127,12 @@ def benchmark_fa_dense_forward(
 def benchmark_cudnn_dense_forward(
     cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
 ) -> Optional[float]:
-    q = torch.randn(
-        cfg.batch_size,
-        cfg.num_heads,
-        cfg.seqlen_q,
-        cfg.head_dim,
+    q, k, v = generate_inputs(
+        cfg,
         device=device,
         dtype=dtype,
-    )
-    k = torch.randn(
-        cfg.batch_size,
-        cfg.num_kv_heads,
-        cfg.seqlen_k,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
-    )
-    v = torch.randn(
-        cfg.batch_size,
-        cfg.num_kv_heads,
-        cfg.seqlen_k,
-        cfg.head_dim,
-        device=device,
-        dtype=dtype,
+        layout="bhsd",
+        input_source="llm",
     )
     softmax_scale = cfg.head_dim**-0.5
 
@@ -210,10 +142,9 @@ def benchmark_cudnn_dense_forward(
                 q,
                 k,
                 v,
-                attn_mask=None,
-                dropout_p=0.0,
                 is_causal=cfg.is_causal,
                 scale=softmax_scale,
+                enable_gqa=True if cfg.num_heads != cfg.num_kv_heads else False,
             )
 
     try:
@@ -312,7 +243,7 @@ def main() -> None:
 
     batch_sizes = [1]
     num_heads = [16]
-    num_kv_heads = [16]
+    num_kv_heads = [8]
     seqlens = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
     head_dims = [128]
     is_causal = True
