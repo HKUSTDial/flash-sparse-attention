@@ -554,6 +554,7 @@ def _fwd_sparse_base_kernel(
         acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
     else:
         acc_s = tl.where(gate_mask, g, float("-inf"))
+    acc_s = acc_s * 1.0 / softmax_scale
     acc_s += tl.dot(q_tile, k_tile)
 
     # Check if any gates are active for current tile
@@ -688,6 +689,7 @@ def _fwd_sparse_base_kernel(
             acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
+        acc_s = acc_s * 1.0 / softmax_scale
         acc_s += tl.dot(q_tile, k_tile)
 
         # Check if any gates are active for current tile
@@ -777,6 +779,7 @@ def _fwd_sparse_base_kernel(
             acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
+        acc_s = acc_s * 1.0 / softmax_scale
         acc_s += tl.dot(q_tile, k_tile)
 
         # Check if any gates are active for current tile
