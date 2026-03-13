@@ -42,10 +42,8 @@ def _fwd_inner_base_kernel(
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
     CHECK_INF: tl.constexpr,
+    SOFTMAX_THRESHOLD: tl.constexpr,
 ):
-    # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
-
     # Compute attention scores
     acc_s = tl.dot(q_tile, k_tile)
 
@@ -75,20 +73,25 @@ def _fwd_inner_base_kernel(
         )
 
     # Apply online softmax
-    p, row_max, row_sum, row_scale = activations.online_softmax(
+    p, row_max, row_sum, row_scale, skip_softmax = activations.online_softmax(
         acc_s=acc_s,
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
+        SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
         RESCALE_THRESHOLD=0.0,
     )
 
-    # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+    if not skip_softmax:
+        # Load value tile
+        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
-    # Update output accumulator
-    acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+        # Rescale output accumulator
+        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
     # Advance value pointer
     v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
@@ -143,6 +146,7 @@ def _fwd_base_kernel(
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
     PACK_GQA: tl.constexpr,
+    SOFTMAX_THRESHOLD: tl.constexpr,
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -434,6 +438,7 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=IS_LOCAL,
                 CHECK_INF=True,
+                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             )
     else:
         # First iteration with seqlen masking
@@ -462,6 +467,7 @@ def _fwd_base_kernel(
             MASK_CAUSAL=False,
             MASK_LOCAL=False,
             CHECK_INF=True,
+            SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
         )
 
         n_block_max_no_mask = n_block_max - 1
@@ -510,6 +516,7 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
                 CHECK_INF=IS_LOCAL,
+                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             )
 
     # Process n_blocks with masking
@@ -555,6 +562,7 @@ def _fwd_base_kernel(
                 MASK_CAUSAL=False,
                 MASK_LOCAL=True,
                 CHECK_INF=True,
+                SOFTMAX_THRESHOLD=SOFTMAX_THRESHOLD,
             )
 
     # Finalize softmax
@@ -651,20 +659,22 @@ def _fwd_inner_sm90_kernel(
         )
 
     # Apply online softmax
-    p, row_max, row_sum, row_scale = activations.online_softmax(
+    p, row_max, row_sum, row_scale, skip_softmax = activations.online_softmax(
         acc_s=acc_s,
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
+        SOFTMAX_THRESHOLD=float("-inf"),
         RESCALE_THRESHOLD=0.0,
     )
 
-    # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+    if not skip_softmax:
+        # Rescale output accumulator
+        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
-    # Update output accumulator
-    acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
     # Advance value pointer
     v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
@@ -1138,6 +1148,7 @@ def _flash_attn_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    softmax_threshold = math.log2(head_dim / seqlen_k)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
@@ -1249,6 +1260,7 @@ def _flash_attn_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
+        SOFTMAX_THRESHOLD=softmax_threshold,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1289,6 +1301,7 @@ def _flash_attn_varlen_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    softmax_threshold = math.log2(head_dim / seqlen_k)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
@@ -1400,6 +1413,7 @@ def _flash_attn_varlen_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
+        SOFTMAX_THRESHOLD=softmax_threshold,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
