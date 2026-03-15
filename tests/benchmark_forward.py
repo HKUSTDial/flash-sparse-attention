@@ -70,12 +70,12 @@ def benchmark_triton_sparse_forward(
     )
     alpha = torch.randn(
         cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
-    ).normal_(0, 0.02)
+    ).normal_(0, 0.5)
     delta = torch.randn(
         cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
-    ).normal_(0, 0.02)
+    ).normal_(0, 0.5)
     softmax_scale = cfg.head_dim**-0.5
-    gate_scale = (cfg.seqlen_k + 1) ** -1
+    gate_threshold = 0.75
 
     def fn():
         flash_sparse_attn_func(
@@ -85,8 +85,8 @@ def benchmark_triton_sparse_forward(
             alpha,
             delta,
             softmax_scale=softmax_scale,
-            gate_scale=gate_scale,
             is_causal=cfg.is_causal,
+            gate_threshold=gate_threshold,
             is_logsigmoid_gate=True,
             is_adapt_gate=False,
             window_size=(None, None),

@@ -156,9 +156,8 @@ def assert_fwd_sparse_inputs(
     cu_seqlens_k: Optional[torch.Tensor] = None,
     num_heads_q: int = None,
     num_heads_kv: int = None,
-    seqlen_k: int = None,
     head_dim: int = None,
-    gate_scale: float = None,
+    gate_threshold: float = None,
 ):
     """
     Assert the validity of inputs for the forward sparse base kernel.
@@ -172,9 +171,8 @@ def assert_fwd_sparse_inputs(
     :param cu_seqlens_k: Cumulative sequence lengths for keys
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
-    :param seqlen_k: Sequence length for keys
     :param head_dim: Head dimension
-    :param gate_scale: Gate scaling factor
+    :param gate_threshold: Gate threshold for sparse attention
 
     :raises AssertionError: If any of the assertions fail
     """
@@ -207,8 +205,8 @@ def assert_fwd_sparse_inputs(
     assert head_dim <= 256, (
         "head_dim must be less than or equal to 256 for efficient memory access"
     )
-    assert 0.0 < gate_scale * seqlen_k < 1.0, (
-        "gate_scale must be chosen such that 0.0 < gate_scale * seqlen_k < 1.0 for effective gating"
+    assert 0.0 <= gate_threshold <= 1.0, (
+        "gate_threshold must be in the range [0.0, 1.0] for meaningful gating behavior"
     )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert cu_seqlens_q.is_cuda and cu_seqlens_k.is_cuda, (

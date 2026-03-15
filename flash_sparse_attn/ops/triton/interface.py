@@ -34,7 +34,9 @@ class FlashAttnFunc(torch.autograd.Function):
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         return_lse: bool = False,
     ):
-        # Pack GQA if query and key have different number of heads and sequence length is 1
+        # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
+        is_causal = False if query.shape[1] == 1 else is_causal
+        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
         pack_gqa = (
             query.shape[2] != key.shape[2]
             and query.shape[1] == 1
@@ -100,7 +102,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         seqused_k: Optional[torch.Tensor] = None,
         return_lse: bool = False,
     ):
-        # Pack GQA if query and key have different number of heads and sequence length is 1
+        # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
+        is_causal = False if max_seqlen_q == 1 else is_causal
+        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
         pack_gqa = (
             query.shape[1] != key.shape[1]
             and max_seqlen_q == 1
@@ -190,28 +194,30 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         alpha: torch.Tensor,
         delta: torch.Tensor,
         softmax_scale: Optional[float] = None,
-        gate_scale: Optional[float] = None,
         is_causal: bool = False,
+        gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         return_lse: bool = False,
     ):
-        # Pack GQA if query and key have different number of heads and sequence length is 1
+        # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
+        is_causal = False if query.shape[1] == 1 else is_causal
+        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
         pack_gqa = (
             query.shape[2] != key.shape[2]
             and query.shape[1] == 1
             and query.shape[1] != key.shape[1]
         )
-        out, lse, softmax_scale, gate_scale = _flash_sparse_attn_base_forward(
+        out, lse, softmax_scale, gate_threshold = _flash_sparse_attn_base_forward(
             query=query,
             key=key,
             value=value,
             alpha=alpha,
             delta=delta,
             softmax_scale=softmax_scale,
-            gate_scale=gate_scale,
             is_causal=is_causal,
+            gate_threshold=gate_threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
             is_adapt_gate=is_adapt_gate,
             window_size=window_size,
@@ -220,8 +226,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
 
         ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
         ctx.softmax_scale = softmax_scale
-        ctx.gate_scale = gate_scale
         ctx.is_causal = is_causal
+        ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
         ctx.window_size = window_size
@@ -247,8 +253,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             dout=dout,
             lse=lse,
             softmax_scale=ctx.softmax_scale,
-            gate_scale=ctx.gate_scale,
             is_causal=ctx.is_causal,
+            gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
             window_size=ctx.window_size,
@@ -272,8 +278,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         max_seqlen_q: int,
         max_seqlen_k: int,
         softmax_scale: Optional[float] = None,
-        gate_scale: Optional[float] = None,
         is_causal: bool = False,
+        gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
@@ -281,29 +287,33 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         seqused_k: Optional[torch.Tensor] = None,
         return_lse: bool = False,
     ):
-        # Pack GQA if query and key have different number of heads and sequence length is 1
+        # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
+        is_causal = False if max_seqlen_q == 1 else is_causal
+        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
         pack_gqa = (
             query.shape[1] != key.shape[1]
             and max_seqlen_q == 1
             and max_seqlen_q != max_seqlen_k
         )
-        out, lse, softmax_scale, gate_scale = _flash_sparse_attn_varlen_base_forward(
-            query=query,
-            key=key,
-            value=value,
-            alpha=alpha,
-            delta=delta,
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=max_seqlen_q,
-            max_seqlen_k=max_seqlen_k,
-            softmax_scale=softmax_scale,
-            gate_scale=gate_scale,
-            is_causal=is_causal,
-            is_logsigmoid_gate=is_logsigmoid_gate,
-            is_adapt_gate=is_adapt_gate,
-            window_size=window_size,
-            pack_gqa=pack_gqa,
+        out, lse, softmax_scale, gate_threshold = (
+            _flash_sparse_attn_varlen_base_forward(
+                query=query,
+                key=key,
+                value=value,
+                alpha=alpha,
+                delta=delta,
+                cu_seqlens_q=cu_seqlens_q,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_k,
+                softmax_scale=softmax_scale,
+                is_causal=is_causal,
+                gate_threshold=gate_threshold,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+                is_adapt_gate=is_adapt_gate,
+                window_size=window_size,
+                pack_gqa=pack_gqa,
+            )
         )
 
         ctx.save_for_backward(
@@ -320,8 +330,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             seqused_k,
         )
         ctx.softmax_scale = softmax_scale
-        ctx.gate_scale = gate_scale
         ctx.is_causal = is_causal
+        ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
         ctx.window_size = window_size
@@ -361,12 +371,12 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             dout=dout,
             lse=lse,
             softmax_scale=ctx.softmax_scale,
-            gate_scale=ctx.gate_scale,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=ctx.max_seqlen_q,
             max_seqlen_k=ctx.max_seqlen_k,
             is_causal=ctx.is_causal,
+            gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
             window_size=ctx.window_size,
@@ -470,8 +480,8 @@ def flash_sparse_attn_func(
     alpha: torch.Tensor,
     delta: torch.Tensor,
     softmax_scale: Optional[float] = None,
-    gate_scale: Optional[float] = None,
     is_causal: bool = False,
+    gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
@@ -486,8 +496,8 @@ def flash_sparse_attn_func(
     :param alpha: Tensor of shape [batch_size, num_heads, seqlen_q] representing the sparsity pattern for queries.
     :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
-    :param gate_scale: Optional scaling factor for the sparsity gate. If None, defaults to 1/seqlen_k.
     :param is_causal: Whether to apply a causal mask.
+    :param gate_threshold: Optional threshold for the sparsity gate. If None, defaults to 0.0 (no sparsity).
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
@@ -503,8 +513,8 @@ def flash_sparse_attn_func(
         alpha,
         delta,
         softmax_scale,
-        gate_scale,
         is_causal,
+        gate_threshold,
         is_logsigmoid_gate,
         is_adapt_gate,
         window_size,
@@ -523,8 +533,8 @@ def flash_sparse_attn_varlen_func(
     max_seqlen_q: int,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
-    gate_scale: Optional[float] = None,
     is_causal: bool = False,
+    gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
@@ -545,8 +555,8 @@ def flash_sparse_attn_varlen_func(
     :param max_seqlen_q: Maximum sequence length for queries.
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
-    :param gate_scale: Optional scaling factor for the sparsity gate. If None, defaults to 1/seqlen_k.
     :param is_causal: Whether to apply a causal mask.
+    :param gate_threshold: Optional threshold for the sparsity gate. If None, defaults to 0.0 (no sparsity).
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
@@ -568,8 +578,8 @@ def flash_sparse_attn_varlen_func(
         max_seqlen_q,
         max_seqlen_k,
         softmax_scale,
-        gate_scale,
         is_causal,
+        gate_threshold,
         is_logsigmoid_gate,
         is_adapt_gate,
         window_size,
