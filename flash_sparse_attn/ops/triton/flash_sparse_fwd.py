@@ -126,7 +126,7 @@ def _fwd_inner_sparse_base_kernel(
         g = a_tile[:, None] * d_tile[None, :]
 
         # Update gate mask for next tile
-        gate_mask = g >= g_thr
+        gate_mask = g * softmax_scale >= g_thr
 
         # Load next key tile
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
@@ -136,7 +136,6 @@ def _fwd_inner_sparse_base_kernel(
             acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
-        acc_s = acc_s * 1.0 / softmax_scale
         acc_s += tl.dot(q_tile, k_tile)
 
     return active_next, acc_s, acc_o, k_ptrs, v_ptrs, d_ptrs, row_max, row_sum
@@ -154,7 +153,7 @@ def _fwd_sparse_base_kernel(
     softmax_scale,
     softmax_scale_log2,
     softmax_threshold,
-    gate_scale,
+    gate_threshold,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -200,7 +199,6 @@ def _fwd_sparse_base_kernel(
     PACK_GQA: tl.constexpr,
     IS_LOGSIGMOID_GATE: tl.constexpr,
     IS_ADAPT_GATE: tl.constexpr,
-    
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -495,7 +493,7 @@ def _fwd_sparse_base_kernel(
 
     # Get attention gate threshold
     g_thr = seqlen_info.get_gate_threshold(
-        gate_scale=gate_scale,
+        gate_threshold=gate_threshold,
         m_block=m_block,
         seqlen_q=actual_seqlen_q,
         seqlen_k=actual_seqlen_k,
@@ -503,7 +501,6 @@ def _fwd_sparse_base_kernel(
         TILE_M=TILE_M,
         QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
         IS_ADAPT_GATE=IS_ADAPT_GATE,
-        IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
         SWAP_AB=False,
     )
     g_thr_min = tl.min(g_thr)
@@ -536,8 +533,8 @@ def _fwd_sparse_base_kernel(
         ).to(tl.float32)
     else:
         a_tile = tl.load(a_ptrs, boundary_check=(0,)).to(tl.float32)
-    a_max = tl.max(a_tile)
-    a_min = tl.min(a_tile)
+    a_max = tl.max(a_tile) * softmax_scale
+    a_min = tl.min(a_tile) * softmax_scale
 
     # Load delta tile
     d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
@@ -548,14 +545,13 @@ def _fwd_sparse_base_kernel(
     g = a_tile[:, None] * d_tile[None, :]
 
     # Compute gate mask for current tile
-    gate_mask = g >= g_thr
+    gate_mask = g * softmax_scale >= g_thr
 
     # Compute attention scores
     if IS_LOGSIGMOID_GATE:
         acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
     else:
         acc_s = tl.where(gate_mask, g, float("-inf"))
-    acc_s = acc_s * 1.0 / softmax_scale
     acc_s += tl.dot(q_tile, k_tile)
 
     # Check if any gates are active for current tile
@@ -683,14 +679,13 @@ def _fwd_sparse_base_kernel(
         g = a_tile[:, None] * d_tile[None, :]
 
         # Update gate mask for current tile
-        gate_mask = g >= g_thr
+        gate_mask = g * softmax_scale >= g_thr
 
         # Compute attention scores
         if IS_LOGSIGMOID_GATE:
             acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
-        acc_s = acc_s * 1.0 / softmax_scale
         acc_s += tl.dot(q_tile, k_tile)
 
         # Check if any gates are active for current tile
@@ -773,14 +768,13 @@ def _fwd_sparse_base_kernel(
         g = a_tile[:, None] * d_tile[None, :]
 
         # Update gate mask for current tile
-        gate_mask = g >= g_thr
+        gate_mask = g * softmax_scale >= g_thr
 
         # Compute attention scores
         if IS_LOGSIGMOID_GATE:
             acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
         else:
             acc_s = tl.where(gate_mask, g, float("-inf"))
-        acc_s = acc_s * 1.0 / softmax_scale
         acc_s += tl.dot(q_tile, k_tile)
 
         # Check if any gates are active for current tile
@@ -866,8 +860,8 @@ def _flash_sparse_attn_base_forward(
     alpha: torch.Tensor,
     delta: torch.Tensor,
     softmax_scale: float,
-    gate_scale: float,
     is_causal: bool = False,
+    gate_threshold: float = 0.0,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Optional[Tuple[int, int]] = None,
@@ -881,7 +875,7 @@ def _flash_sparse_attn_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
+    gate_threshold = gate_threshold or 0.0
     softmax_threshold = math.log2(head_dim / seqlen_k)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
@@ -896,9 +890,8 @@ def _flash_sparse_attn_base_forward(
         cu_seqlens_k=None,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
-        seqlen_k=seqlen_k,
         head_dim=head_dim,
-        gate_scale=gate_scale,
+        gate_threshold=gate_threshold,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -963,7 +956,7 @@ def _flash_sparse_attn_base_forward(
         softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
-        gate_scale,
+        gate_threshold,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -1022,7 +1015,7 @@ def _flash_sparse_attn_base_forward(
             lse,
         )
 
-    return out, lse, softmax_scale, gate_scale
+    return out, lse, softmax_scale, gate_threshold
 
 
 def _flash_sparse_attn_varlen_base_forward(
@@ -1036,8 +1029,8 @@ def _flash_sparse_attn_varlen_base_forward(
     max_seqlen_q: int,
     max_seqlen_k: int,
     softmax_scale: float,
-    gate_scale: float,
     is_causal: bool = False,
+    gate_threshold: float = 0.0,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Optional[Tuple[int, int]] = None,
@@ -1054,7 +1047,7 @@ def _flash_sparse_attn_varlen_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    gate_scale = gate_scale or 1.0 / (seqlen_k + 1)
+    gate_threshold = gate_threshold or 0.0
     softmax_threshold = math.log2(head_dim / seqlen_k)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
@@ -1069,9 +1062,8 @@ def _flash_sparse_attn_varlen_base_forward(
         cu_seqlens_k=cu_seqlens_k,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
-        seqlen_k=seqlen_k,
         head_dim=head_dim,
-        gate_scale=gate_scale,
+        gate_threshold=gate_threshold,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -1136,7 +1128,7 @@ def _flash_sparse_attn_varlen_base_forward(
         softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
-        gate_scale,
+        gate_threshold,
         0,
         query.stride(-2),
         query.stride(0),
@@ -1196,4 +1188,4 @@ def _flash_sparse_attn_varlen_base_forward(
             cu_seqlens_q=cu_seqlens_q,
         )
 
-    return out, lse, softmax_scale, gate_scale
+    return out, lse, softmax_scale, gate_threshold
