@@ -103,12 +103,12 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
-        is_causal = False if query.shape[1] == 1 else is_causal
+        is_causal = False if max_seqlen_q == 1 else is_causal
         # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
         pack_gqa = (
-            query.shape[2] != key.shape[2]
-            and query.shape[1] == 1
-            and query.shape[1] != key.shape[1]
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
         )
         out, lse, softmax_scale = _flash_attn_varlen_base_forward(
             query=query,
@@ -288,12 +288,12 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
-        is_causal = False if query.shape[1] == 1 else is_causal
+        is_causal = False if max_seqlen_q == 1 else is_causal
         # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
         pack_gqa = (
-            query.shape[2] != key.shape[2]
-            and query.shape[1] == 1
-            and query.shape[1] != key.shape[1]
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
         )
         out, lse, softmax_scale, gate_threshold = (
             _flash_sparse_attn_varlen_base_forward(
