@@ -150,11 +150,11 @@ def _bwd_postprocess_kernel(
         # Load da accumulators
         acc_da = tl.load(da_accum_ptrs, boundary_check=(0,))
 
+        # Scale da
+        da = (acc_da * scale).to(dA.dtype.element_ty)
+
         # Advance da pointer
         da_ptrs = tl.advance(da_ptrs, (m_block * TILE_M,))
-
-        # Convert da_accum to da dtype
-        da = acc_da.to(dA.dtype.element_ty)
 
         # Store da
         tl.store(da_ptrs, da, boundary_check=(0,))
