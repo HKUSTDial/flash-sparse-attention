@@ -33,6 +33,8 @@ def _bwd_inner_sparse_base_kernel(
     da_accum_ptrs,
     lse_ptrs,
     dpsum_ptrs,
+    softmax_scale_log2,
+    softmax_scale,
     d_max,
     d_min,
     g_thr,
@@ -66,7 +68,7 @@ def _bwd_inner_sparse_base_kernel(
         g = d_tile[:, None] * a_tile[None, :]
 
         # Update gate mask for current tile
-        gate_mask = g >= g_thr
+        gate_mask = g * softmax_scale >= g_thr
 
         # Compute scaling factor for gated attention score gradients
         if IS_LOGSIGMOID_GATE:
@@ -113,7 +115,9 @@ def _bwd_inner_sparse_base_kernel(
             )
 
         # Compute attention weights
-        p = tl.math.exp2(acc_s * math.log2(math.e) - lse_log2[None, :]).to(q_tile.dtype)
+        p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
+            q_tile.dtype
+        )
 
         # Load output gradients tile
         do_tile = tl.load(do_ptrs, boundary_check=(0, 1))
@@ -186,7 +190,7 @@ def _bwd_sparse_base_kernel(
     dD,
     softmax_scale,
     softmax_scale_log2,
-    gate_scale,
+    gate_threshold,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -525,9 +529,6 @@ def _bwd_sparse_base_kernel(
     # Load key tile
     k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
-    # Scale key tile
-    k_tile = (k_tile * softmax_scale).to(k_tile.dtype)
-
     # Load value tile
     v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
@@ -538,8 +539,8 @@ def _bwd_sparse_base_kernel(
 
     # Load delta tile
     d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
-    d_max = tl.max(d_tile)
-    d_min = tl.min(d_tile)
+    d_max = tl.max(d_tile) * softmax_scale
+    d_min = tl.min(d_tile) * softmax_scale
 
     # Process m_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
@@ -602,7 +603,7 @@ def _bwd_sparse_base_kernel(
             )
 
             g_thr = seqlen_info.get_gate_threshold(
-                gate_scale=gate_scale,
+                gate_threshold=gate_threshold,
                 m_block=m_block,
                 seqlen_q=actual_seqlen_q,
                 seqlen_k=actual_seqlen_k,
@@ -610,7 +611,6 @@ def _bwd_sparse_base_kernel(
                 TILE_M=TILE_M,
                 QHEADS_PER_KVHEAD_PACKGQA=1,
                 IS_ADAPT_GATE=IS_ADAPT_GATE,
-                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 SWAP_AB=True,
             )
             g_thr_min = tl.min(g_thr)
@@ -630,6 +630,8 @@ def _bwd_sparse_base_kernel(
                     da_accum_ptrs=da_accum_ptrs,
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
+                    softmax_scale_log2=softmax_scale_log2,
+                    softmax_scale=softmax_scale,
                     d_max=d_max,
                     d_min=d_min,
                     g_thr=g_thr,
@@ -710,7 +712,7 @@ def _bwd_sparse_base_kernel(
             )
 
             g_thr = seqlen_info.get_gate_threshold(
-                gate_scale=gate_scale,
+                gate_threshold=gate_threshold,
                 m_block=m_block,
                 seqlen_q=actual_seqlen_q,
                 seqlen_k=actual_seqlen_k,
@@ -718,7 +720,6 @@ def _bwd_sparse_base_kernel(
                 TILE_M=TILE_M,
                 QHEADS_PER_KVHEAD_PACKGQA=1,
                 IS_ADAPT_GATE=IS_ADAPT_GATE,
-                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 SWAP_AB=True,
             )
             g_thr_min = tl.min(g_thr)
@@ -738,6 +739,8 @@ def _bwd_sparse_base_kernel(
                     da_accum_ptrs=da_accum_ptrs,
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
+                    softmax_scale_log2=softmax_scale_log2,
+                    softmax_scale=softmax_scale,
                     d_max=d_max,
                     d_min=d_min,
                     g_thr=g_thr,
@@ -818,7 +821,7 @@ def _bwd_sparse_base_kernel(
             )
 
             g_thr = seqlen_info.get_gate_threshold(
-                gate_scale=gate_scale,
+                gate_threshold=gate_threshold,
                 m_block=m_block,
                 seqlen_q=actual_seqlen_q,
                 seqlen_k=actual_seqlen_k,
@@ -826,7 +829,6 @@ def _bwd_sparse_base_kernel(
                 TILE_M=TILE_M,
                 QHEADS_PER_KVHEAD_PACKGQA=1,
                 IS_ADAPT_GATE=IS_ADAPT_GATE,
-                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 SWAP_AB=True,
             )
             g_thr_min = tl.min(g_thr)
@@ -846,6 +848,8 @@ def _bwd_sparse_base_kernel(
                     da_accum_ptrs=da_accum_ptrs,
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
+                    softmax_scale_log2=softmax_scale_log2,
+                    softmax_scale=softmax_scale,
                     d_max=d_max,
                     d_min=d_min,
                     g_thr=g_thr,
@@ -865,17 +869,6 @@ def _bwd_sparse_base_kernel(
                 )
             )
 
-    # Store delta gradients
-    if QHEADS_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dd_ptrs,
-            acc_dd,
-            mask=(offs_n < actual_seqlen_k),
-            sem="relaxed",
-        )
-    else:
-        tl.store(dd_ptrs, acc_dd, boundary_check=(0,))
-
     # Store value gradients
     if QHEADS_PER_KVHEAD > 1:
         tl.atomic_add(
@@ -886,6 +879,20 @@ def _bwd_sparse_base_kernel(
         )
     else:
         tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1))
+
+    # Scale delta gradients
+    acc_dd = acc_dd * softmax_scale
+
+    # Store delta gradients
+    if QHEADS_PER_KVHEAD > 1:
+        tl.atomic_add(
+            dd_ptrs,
+            acc_dd,
+            mask=(offs_n < actual_seqlen_k),
+            sem="relaxed",
+        )
+    else:
+        tl.store(dd_ptrs, acc_dd, boundary_check=(0,))
 
     # Scale key gradients
     acc_dk = acc_dk * softmax_scale
@@ -912,8 +919,8 @@ def _flash_sparse_attn_base_backward(
     dout: torch.Tensor,
     lse: torch.Tensor,
     softmax_scale: float,
-    gate_scale: float,
     is_causal: bool = False,
+    gate_threshold: float = 0.0,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
@@ -1027,7 +1034,7 @@ def _flash_sparse_attn_base_backward(
         dd_accum,
         softmax_scale,
         softmax_scale_log2,
-        gate_scale,
+        gate_threshold,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -1094,7 +1101,7 @@ def _flash_sparse_attn_base_backward(
         dq=dq,
         da_accum=da_accum,
         da=da,
-        scale=1.0,
+        scale=softmax_scale,
         head_dim_rounded=head_dim_rounded,
         tile_m=TILE_M,
         tile_k=TILE_K,
@@ -1117,12 +1124,12 @@ def _flash_sparse_attn_varlen_base_backward(
     dout: torch.Tensor,
     lse: torch.Tensor,
     softmax_scale: float,
-    gate_scale: float,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: Optional[int] = None,
     max_seqlen_k: Optional[int] = None,
     is_causal: bool = False,
+    gate_threshold: float = 0.0,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
@@ -1246,7 +1253,7 @@ def _flash_sparse_attn_varlen_base_backward(
         dd_accum,
         softmax_scale,
         softmax_scale_log2,
-        gate_scale,
+        gate_threshold,
         0,
         query.stride(-2),
         query.stride(0),
@@ -1313,7 +1320,7 @@ def _flash_sparse_attn_varlen_base_backward(
         dq=dq,
         da_accum=da_accum,
         da=da,
-        scale=1.0,
+        scale=softmax_scale,
         head_dim_rounded=head_dim_rounded,
         cu_seqlens_q=cu_seqlens_q,
         seqused_q=seqused_q,
