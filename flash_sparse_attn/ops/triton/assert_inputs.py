@@ -171,7 +171,6 @@ def assert_fwd_sparse_inputs(
     :param cu_seqlens_k: Cumulative sequence lengths for keys
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
-    :param seqlen_k: Sequence length for keys
     :param head_dim: Head dimension
     :param gate_threshold: Gate threshold for sparse attention
 
