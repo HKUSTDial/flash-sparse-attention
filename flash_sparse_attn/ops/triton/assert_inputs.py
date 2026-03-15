@@ -206,8 +206,8 @@ def assert_fwd_sparse_inputs(
     assert head_dim <= 256, (
         "head_dim must be less than or equal to 256 for efficient memory access"
     )
-    assert 0.0 < gate_threshold < 1.0, (
-        "gate_threshold must be in the range (0.0, 1.0) for meaningful gating behavior"
+    assert 0.0 <= gate_threshold <= 1.0, (
+        "gate_threshold must be in the range [0.0, 1.0] for meaningful gating behavior"
     )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert cu_seqlens_q.is_cuda and cu_seqlens_k.is_cuda, (
