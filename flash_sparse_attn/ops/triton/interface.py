@@ -29,8 +29,9 @@ class FlashAttnFunc(torch.autograd.Function):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        softmax_scale: Optional[float] = None,
         is_causal: bool = False,
+        softmax_scale: Optional[float] = None,
+        softmax_threshold: Optional[float] = None,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         return_lse: bool = False,
     ):
@@ -46,15 +47,16 @@ class FlashAttnFunc(torch.autograd.Function):
             query=query,
             key=key,
             value=value,
-            softmax_scale=softmax_scale,
             is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
             window_size=window_size,
             pack_gqa=pack_gqa,
         )
 
         ctx.save_for_backward(query, key, value, out, lse)
-        ctx.softmax_scale = softmax_scale
         ctx.is_causal = is_causal
+        ctx.softmax_scale = softmax_scale
         ctx.window_size = window_size
 
         if return_lse:
@@ -75,8 +77,8 @@ class FlashAttnFunc(torch.autograd.Function):
             out=out,
             dout=dout,
             lse=lse,
-            softmax_scale=ctx.softmax_scale,
             is_causal=ctx.is_causal,
+            softmax_scale=ctx.softmax_scale,
             window_size=ctx.window_size,
         )
 
@@ -95,8 +97,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
         max_seqlen_k: int,
-        softmax_scale: Optional[float] = None,
         is_causal: bool = False,
+        softmax_scale: Optional[float] = None,
+        softmax_threshold: Optional[float] = None,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
@@ -118,8 +121,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=max_seqlen_q,
             max_seqlen_k=max_seqlen_k,
-            softmax_scale=softmax_scale,
             is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
             window_size=window_size,
             pack_gqa=pack_gqa,
         )
@@ -135,8 +139,8 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             seqused_q,
             seqused_k,
         )
-        ctx.softmax_scale = softmax_scale
         ctx.is_causal = is_causal
+        ctx.softmax_scale = softmax_scale
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
@@ -169,12 +173,12 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             out=out,
             dout=dout,
             lse=lse,
-            softmax_scale=ctx.softmax_scale,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=ctx.max_seqlen_q,
             max_seqlen_k=ctx.max_seqlen_k,
             is_causal=ctx.is_causal,
+            softmax_scale=ctx.softmax_scale,
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
@@ -193,8 +197,9 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         value: torch.Tensor,
         alpha: torch.Tensor,
         delta: torch.Tensor,
-        softmax_scale: Optional[float] = None,
         is_causal: bool = False,
+        softmax_scale: Optional[float] = None,
+        softmax_threshold: Optional[float] = None,
         gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
@@ -215,8 +220,9 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             value=value,
             alpha=alpha,
             delta=delta,
-            softmax_scale=softmax_scale,
             is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
             gate_threshold=gate_threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
             is_adapt_gate=is_adapt_gate,
@@ -225,8 +231,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
-        ctx.softmax_scale = softmax_scale
         ctx.is_causal = is_causal
+        ctx.softmax_scale = softmax_scale
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
@@ -252,8 +258,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             out=out,
             dout=dout,
             lse=lse,
-            softmax_scale=ctx.softmax_scale,
             is_causal=ctx.is_causal,
+            softmax_scale=ctx.softmax_scale,
             gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
@@ -277,8 +283,9 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
         max_seqlen_k: int,
-        softmax_scale: Optional[float] = None,
         is_causal: bool = False,
+        softmax_scale: Optional[float] = None,
+        softmax_threshold: Optional[float] = None,
         gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
@@ -306,8 +313,9 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
                 cu_seqlens_k=cu_seqlens_k,
                 max_seqlen_q=max_seqlen_q,
                 max_seqlen_k=max_seqlen_k,
-                softmax_scale=softmax_scale,
                 is_causal=is_causal,
+                softmax_scale=softmax_scale,
+                softmax_threshold=softmax_threshold,
                 gate_threshold=gate_threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
                 is_adapt_gate=is_adapt_gate,
@@ -329,8 +337,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             seqused_q,
             seqused_k,
         )
-        ctx.softmax_scale = softmax_scale
         ctx.is_causal = is_causal
+        ctx.softmax_scale = softmax_scale
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
@@ -391,8 +399,9 @@ def flash_attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    softmax_scale: Optional[float] = None,
     is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
+    softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
 ):
@@ -402,8 +411,9 @@ def flash_attn_func(
     :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param is_causal: Whether to apply a causal mask.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -414,8 +424,9 @@ def flash_attn_func(
         query,
         key,
         value,
-        softmax_scale,
         is_causal,
+        softmax_scale,
+        softmax_threshold,
         window_size,
         return_lse,
     )
@@ -429,8 +440,9 @@ def flash_attn_varlen_func(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    softmax_scale: Optional[float] = None,
     is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
+    softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
@@ -446,8 +458,9 @@ def flash_attn_varlen_func(
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_q: Maximum sequence length for queries.
     :param max_seqlen_k: Maximum sequence length for keys/values.
-    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param is_causal: Whether to apply a causal mask.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
@@ -464,8 +477,9 @@ def flash_attn_varlen_func(
         cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        softmax_scale,
         is_causal,
+        softmax_scale,
+        softmax_threshold,
         window_size,
         seqused_q,
         seqused_k,
@@ -479,8 +493,9 @@ def flash_sparse_attn_func(
     value: torch.Tensor,
     alpha: torch.Tensor,
     delta: torch.Tensor,
-    softmax_scale: Optional[float] = None,
     is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
+    softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
@@ -495,9 +510,10 @@ def flash_sparse_attn_func(
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param alpha: Tensor of shape [batch_size, num_heads, seqlen_q] representing the sparsity pattern for queries.
     :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
-    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param is_causal: Whether to apply a causal mask.
-    :param gate_threshold: Optional threshold for the sparsity gate. If None, defaults to 0.0 (no sparsity).
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param softmax_threshold: Optional threshold for the sparse softmax.
+    :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
@@ -512,8 +528,9 @@ def flash_sparse_attn_func(
         value,
         alpha,
         delta,
-        softmax_scale,
         is_causal,
+        softmax_scale,
+        softmax_threshold,
         gate_threshold,
         is_logsigmoid_gate,
         is_adapt_gate,
@@ -532,8 +549,9 @@ def flash_sparse_attn_varlen_func(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    softmax_scale: Optional[float] = None,
     is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
+    softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
@@ -548,15 +566,16 @@ def flash_sparse_attn_varlen_func(
     :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
-    :param alpha: Tensor of shape [batch_size, num_heads_q, seqlen_q] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
+    :param alpha: Tensor of shape [num_heads_q, total_seqlen_q] representing the sparsity pattern for queries.
+    :param delta: Tensor of shape [num_heads_kv, total_seqlen_k] representing the sparsity pattern for keys/values.
     :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_q: Maximum sequence length for queries.
     :param max_seqlen_k: Maximum sequence length for keys/values.
-    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param is_causal: Whether to apply a causal mask.
-    :param gate_threshold: Optional threshold for the sparsity gate. If None, defaults to 0.0 (no sparsity).
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param softmax_threshold: Optional threshold for the sparse softmax.
+    :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
@@ -577,8 +596,9 @@ def flash_sparse_attn_varlen_func(
         cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        softmax_scale,
         is_causal,
+        softmax_scale,
+        softmax_threshold,
         gate_threshold,
         is_logsigmoid_gate,
         is_adapt_gate,
