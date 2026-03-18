@@ -2,7 +2,7 @@ PYTHON := python
 
 .PHONY: test style quality fixup modified_only_fixup
 
-check_dirs := flash_sparse_attn docs
+check_dirs := flash_sparse_attn docs tests
 
 test:
 	$(PYTHON) -m pytest tests
