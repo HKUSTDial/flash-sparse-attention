@@ -402,7 +402,6 @@ def _fwd_base_kernel(
         IS_CAUSAL=IS_CAUSAL,
         TILE_M=TILE_M,
         QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-        SWAP_AB=False,
     )
 
     # Load query tile

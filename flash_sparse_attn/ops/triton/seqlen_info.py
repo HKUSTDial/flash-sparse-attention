@@ -124,7 +124,6 @@ def get_softmax_threshold(
     IS_CAUSAL: tl.constexpr,
     TILE_M: tl.constexpr,
     QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
-    SWAP_AB: tl.constexpr,
 ):
     """
     Compute the softmax threshold for a given block.
@@ -136,25 +135,18 @@ def get_softmax_threshold(
     :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
     :param TILE_M: Tile size along the M dimension.
     :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
-    :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
 
     :return softmax_threshold_log2: Softmax threshold in log2-domain for the given block.
     """
     if IS_CAUSAL:
         offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-        if SWAP_AB:
-            q_idx = offs_m[None, :]
-        else:
-            q_idx = offs_m[:, None]
-            if QHEADS_PER_KVHEAD_PACKGQA > 1:
-                q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
+        q_idx = offs_m
+        if QHEADS_PER_KVHEAD_PACKGQA > 1:
+            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
         s_thr = softmax_threshold * (q_idx + causal_offset + 1.0) / seqlen_k
     else:
-        if SWAP_AB:
-            s_thr = tl.full((1, TILE_M), softmax_threshold, dtype=tl.float32)
-        else:
-            s_thr = tl.full((TILE_M, 1), softmax_threshold, dtype=tl.float32)
+        s_thr = tl.full((TILE_M,), softmax_threshold, dtype=tl.float32)
     softmax_threshold_log2 = tl.log2(s_thr)
     return softmax_threshold_log2
 
