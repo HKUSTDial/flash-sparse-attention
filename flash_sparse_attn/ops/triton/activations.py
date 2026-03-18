@@ -10,6 +10,7 @@ def check_inf(x):
 @triton.jit
 def online_softmax(
     acc_s,
+    block_max,
     row_max,
     row_sum,
     scale_log2,
@@ -18,9 +19,10 @@ def online_softmax(
     RESCALE_THRESHOLD: tl.constexpr,
 ):
     """
-    Apply online softmax to acc_s, and update row_max and row_sum.
+    Apply online softmax to acc_s, and update block_max, row_max and row_sum.
 
     :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
+    :param block_max: Running block-wise maximum scalar, init to -inf.
     :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
     :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
@@ -29,25 +31,33 @@ def online_softmax(
     :param RESCALE_THRESHOLD: Threshold for rescaling to avoid underflow. If <= 0, rescaling is disabled.
 
     :return p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
+    :return block_max_new: Updated block-wise maximum scalar.
     :return row_max_new: Updated maximum values per row of shape [BLOCK_M].
     :return row_sum_new: Updated sum values per row of shape [BLOCK_M].
     :return row_scale: Scaling factors per row of shape [BLOCK_M].
     :return skip_softmax: Boolean indicating whether this block was skipped.
     """
-    # Compute current row max
-    row_max_curr = tl.max(acc_s, axis=1)
+    # Compute current block max
+    block_max_curr = tl.max(acc_s)
 
     # Update skip condition based on threshold
-    row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
-    skip_softmax = tl.max(row_max_diff_log2 - softmax_threshold_log2) < 0
+    block_max_diff_log2 = (block_max_curr - block_max) * scale_log2
+    skip_softmax = block_max_diff_log2 < softmax_threshold_log2
 
     # Return zero attention weights
     if skip_softmax:
         p = acc_s * 0.0
+        block_max_new = block_max
         row_max_new = row_max
         row_sum_new = row_sum
         row_scale = row_max * 0.0 + 1.0
     else:
+        # Compute current row max
+        row_max_curr = tl.max(acc_s, axis=1)
+
+        # Update block max
+        block_max_new = tl.maximum(block_max_curr, block_max)
+
         # Update row max
         row_max_new = tl.maximum(row_max_curr, row_max)
 
@@ -76,7 +86,7 @@ def online_softmax(
         row_sum_cur = tl.sum(p, axis=1)
         row_sum_new = row_sum * row_scale + row_sum_cur
 
-    return p, row_max_new, row_sum_new, row_scale, skip_softmax
+    return p, block_max_new, row_max_new, row_sum_new, row_scale, skip_softmax
 
 
 @triton.jit
