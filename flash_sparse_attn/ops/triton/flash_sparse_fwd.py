@@ -637,7 +637,7 @@ def _flash_sparse_attn_base_forward(
     softmax_threshold: float = None,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
@@ -772,7 +772,7 @@ def _flash_sparse_attn_base_forward(
             lse,
         )
 
-    return out, lse, softmax_scale
+    return out, lse, softmax_scale, softmax_threshold
 
 
 def _flash_sparse_attn_varlen_base_forward(
@@ -788,7 +788,7 @@ def _flash_sparse_attn_varlen_base_forward(
     softmax_threshold: float = None,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
@@ -927,4 +927,4 @@ def _flash_sparse_attn_varlen_base_forward(
             cu_seqlens_q=cu_seqlens_q,
         )
 
-    return out, lse, softmax_scale
+    return out, lse, softmax_scale, softmax_threshold
