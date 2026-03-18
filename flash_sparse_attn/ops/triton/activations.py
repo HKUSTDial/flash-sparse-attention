@@ -13,7 +13,7 @@ def online_softmax(
     row_max,
     row_sum,
     scale_log2,
-    softmax_threshold,
+    softmax_threshold_log2,
     CHECK_INF: tl.constexpr,
     RESCALE_THRESHOLD: tl.constexpr,
 ):
@@ -24,7 +24,7 @@ def online_softmax(
     :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
     :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
-    :param softmax_threshold: Threshold in log2-domain for block-level skip. If > -inf and block max is below threshold relative to running max, skip softmax update.
+    :param softmax_threshold_log2: Threshold in log2-domain for block-level skip. If > -inf and block max is below threshold relative to running max, skip softmax update.
     :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
     :param RESCALE_THRESHOLD: Threshold for rescaling to avoid underflow. If <= 0, rescaling is disabled.
 
@@ -34,14 +34,12 @@ def online_softmax(
     :return row_scale: Scaling factors per row of shape [BLOCK_M].
     :return skip_softmax: Boolean indicating whether this block was skipped.
     """
-    skip_softmax = False
-
     # Compute current row max
     row_max_curr = tl.max(acc_s, axis=1)
 
     # Update skip condition based on threshold
     row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
-    skip_softmax = tl.max(row_max_diff_log2) < softmax_threshold
+    skip_softmax = tl.max(row_max_diff_log2 - softmax_threshold_log2) < 0
 
     # Return zero attention weights
     if skip_softmax:
