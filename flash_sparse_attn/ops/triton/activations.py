@@ -144,24 +144,23 @@ def rescale_o(
 
 
 @triton.jit
-def log_sigmoid(x, mask, FASTMATH: tl.constexpr):
+def log_sigmoid(x, FASTMATH: tl.constexpr):
     """
-    Compute log-sigmoid of x with optional masking.
+    Compute log-sigmoid of x.
 
     :param x: Input tensor of shape [BLOCK_M, BLOCK_N].
-    :param mask: Boolean mask tensor of shape [BLOCK_M, BLOCK_N] indicating where to apply log-sigmoid.
     :param FASTMATH: Boolean flag indicating if the fast approximation should be used.
 
-    :return: Tensor of shape [BLOCK_M, BLOCK_N] containing log-sigmoid values where mask is True, and -inf where mask is False.
+    :return: Tensor of shape [BLOCK_M, BLOCK_N] containing log-sigmoid values.
     """
     if FASTMATH:
         xc = tl.minimum(tl.abs(x), 4.0)
         xc2 = xc * xc
         out = tl.minimum(x, 0.0) - 0.05674870 * xc2 + 0.37664706 * xc - 0.65169323
-        return tl.where(mask, out, float("-inf"))
+        return out
     else:
         out = tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x)))
-        return tl.where(mask, out, float("-inf"))
+        return out
 
 
 @triton.jit
