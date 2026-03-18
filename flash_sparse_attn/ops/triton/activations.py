@@ -164,20 +164,37 @@ def log_sigmoid(x, FASTMATH: tl.constexpr):
 
 
 @triton.jit
-def gate_skip(a_max, a_min, d_max, d_min, g_thr_min):
+def online_gate(
+    a_max,
+    a_min,
+    d_max,
+    d_min,
+    gate_max,
+    scale_log2,
+    gate_threshold_log2,
+):
     """
-    Determine whether to keep the tile.
+    Determine whether to skip gate computation for the current tile based on the maximum possible gate value.
 
     :param a_max: Maximum value of the Alpha tile.
     :param a_min: Minimum value of the Alpha tile.
     :param d_max: Maximum value of the Delta tile.
     :param d_min: Minimum value of the Delta tile.
-    :param g_thr_min: Minimum value of the gate threshold.
+    :param gate_max: Maximum value of the gate.
+    :param scale_log2: Log2 of the scaling factor applied to the gate max.
+    :param gate_threshold_log2: Threshold in log2-domain for gate-level skip.
 
-    :return active: Boolean flag indicating whether the tile should be computed or skipped.
+    :return gate_max_new: Updated gate max value after considering current tile.
+    :return skip_gate: Boolean indicating whether to skip the gate computation for this tile.
     """
-    g_upper = tl.maximum(
+    gate_max_curr = tl.maximum(
         tl.maximum(a_max * d_max, a_max * d_min),
         tl.maximum(a_min * d_max, a_min * d_min),
     )
-    return g_upper >= g_thr_min
+    gate_max_diff_log2 = (gate_max_curr - gate_max) * scale_log2
+    skip_gate = gate_max_diff_log2 < gate_threshold_log2
+    if skip_gate:
+        gate_max_new = gate_max
+    else:
+        gate_max_new = tl.maximum(gate_max_curr, gate_max)
+    return gate_max_new, skip_gate
