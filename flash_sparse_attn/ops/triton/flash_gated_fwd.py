@@ -952,7 +952,7 @@ def _flash_gated_attn_base_forward(
     gate_threshold: float = None,
     is_logsigmoid_gate: bool = False,
     is_adapt_gate: bool = True,
-    window_size: Optional[Tuple[int, int]] = None,
+    window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
@@ -1120,7 +1120,7 @@ def _flash_gated_attn_varlen_base_forward(
     gate_threshold: float = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
-    window_size: Optional[Tuple[int, int]] = None,
+    window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
