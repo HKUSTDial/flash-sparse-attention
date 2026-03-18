@@ -54,7 +54,7 @@ def benchmark_triton_dense_backward(
         k,
         v,
         is_causal=cfg.is_causal,
-        softmax_scale=softmax_scale,   
+        softmax_scale=softmax_scale,
         window_size=(None, None),
     )
     dout = torch.randn_like(out)
