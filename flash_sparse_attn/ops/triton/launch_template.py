@@ -114,14 +114,14 @@ def get_fwd_dense_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-def get_fwd_launch_config(
+def get_fwd_sparse_launch_config(
     is_split_kv,
     pack_gqa,
     qheads_per_kvhead,
     tile_k,
 ) -> tuple[int, int, int, int, int]:
     """
-    Get launch configuration for forward kernel based on input parameters and device architecture.
+    Get launch configuration for forward sparse kernel based on input parameters and device architecture.
 
     :param is_split_kv: Whether the attention is split KV
     :param pack_gqa: Whether GQA packing is used
@@ -398,11 +398,11 @@ def get_bwd_dense_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-def get_bwd_launch_config(
+def get_bwd_sparse_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int, int]:
     """
-    Get launch configuration for backward kernel based on input parameters and device architecture.
+    Get launch configuration for backward sparse kernel based on input parameters and device architecture.
 
     :param tile_k: Tile size in the K dimension
 
