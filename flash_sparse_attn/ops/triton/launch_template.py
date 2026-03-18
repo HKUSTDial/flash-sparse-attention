@@ -30,10 +30,10 @@ def get_fwd_dense_launch_config(
     if device.type == "cuda":
         # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
         if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 1:
+            if pack_gqa and qheads_per_kvhead > 16:
                 tile_m = triton.next_power_of_2(qheads_per_kvhead)
             else:
-                tile_m = 1
+                tile_m = 16
         else:
             # will be set based on architecture and tile_k
             tile_m = None
@@ -63,13 +63,13 @@ def get_fwd_dense_launch_config(
         elif arch // 10 == 9:
             if not is_split_kv:
                 if tile_k <= 64:
-                    return (256, 128, 4, 1, 1)
-                elif tile_k <= 128:
                     return (128, 128, 4, 1, 1)
+                elif tile_k <= 128:
+                    return (128, 64, 4, 1, 1)
                 elif tile_k <= 256:
-                    return (128, 64, 4, 1, 1)
+                    return (64, 64, 4, 1, 1)
                 else:
-                    return (128, 64, 4, 1, 1)
+                    return (64, 64, 4, 1, 1)
             else:
                 if tile_k <= 64:
                     return (tile_m, 256, 4, 1, 1)
@@ -141,10 +141,10 @@ def get_fwd_sparse_launch_config(
     if device.type == "cuda":
         # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
         if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 1:
+            if pack_gqa and qheads_per_kvhead > 16:
                 tile_m = triton.next_power_of_2(qheads_per_kvhead)
             else:
-                tile_m = 1
+                tile_m = 16
         else:
             # will be set based on architecture and tile_k
             tile_m = None
@@ -174,13 +174,13 @@ def get_fwd_sparse_launch_config(
         elif arch // 10 == 9:
             if not is_split_kv:
                 if tile_k <= 64:
-                    return (256, 128, 4, 1, 1)
-                elif tile_k <= 128:
                     return (128, 128, 4, 1, 1)
+                elif tile_k <= 128:
+                    return (128, 64, 4, 1, 1)
                 elif tile_k <= 256:
-                    return (128, 64, 4, 1, 1)
+                    return (64, 64, 4, 1, 1)
                 else:
-                    return (128, 64, 4, 1, 1)
+                    return (64, 64, 4, 1, 1)
             else:
                 if tile_k <= 64:
                     return (tile_m, 256, 4, 1, 1)
@@ -252,10 +252,10 @@ def get_fwd_gated_launch_config(
     if device.type == "cuda":
         # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
         if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 1:
+            if pack_gqa and qheads_per_kvhead > 16:
                 tile_m = triton.next_power_of_2(qheads_per_kvhead)
             else:
-                tile_m = 1
+                tile_m = 16
         else:
             # will be set based on architecture and tile_k
             tile_m = None
@@ -285,13 +285,13 @@ def get_fwd_gated_launch_config(
         elif arch // 10 == 9:
             if not is_split_kv:
                 if tile_k <= 64:
-                    return (256, 128, 4, 1, 1)
-                elif tile_k <= 128:
                     return (128, 128, 4, 1, 1)
+                elif tile_k <= 128:
+                    return (128, 64, 4, 1, 1)
                 elif tile_k <= 256:
-                    return (128, 64, 4, 1, 1)
+                    return (64, 64, 4, 1, 1)
                 else:
-                    return (128, 64, 4, 1, 1)
+                    return (64, 64, 4, 1, 1)
             else:
                 if tile_k <= 64:
                     return (tile_m, 256, 4, 1, 1)
