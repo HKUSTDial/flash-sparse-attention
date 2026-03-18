@@ -161,7 +161,6 @@ def get_gate_threshold(
     TILE_M: tl.constexpr,
     QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
     IS_ADAPT_GATE: tl.constexpr,
-    SWAP_AB: tl.constexpr,
 ):
     """
     Compute the gate threshold for a given block.
@@ -174,26 +173,19 @@ def get_gate_threshold(
     :param TILE_M: Tile size along the M dimension.
     :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
     :param IS_ADAPT_GATE: Boolean flag indicating if self-adaptive gate threshold is enabled.
-    :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
+    :return gate_threshold_log2: Lower-bound scalar gate threshold in log2-domain for the given block.
     """
     if IS_CAUSAL and IS_ADAPT_GATE:
         offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-        if SWAP_AB:
-            q_idx = offs_m[None, :]
-        else:
-            q_idx = offs_m[:, None]
-            if QHEADS_PER_KVHEAD_PACKGQA > 1:
-                q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
+        q_idx = offs_m
+        if QHEADS_PER_KVHEAD_PACKGQA > 1:
+            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
-        g_thr = gate_threshold / seqlen_k * (q_idx + causal_offset + 1.0)
+        g_thr = tl.min(gate_threshold * (q_idx + causal_offset + 1.0) / seqlen_k)
     else:
-        if SWAP_AB:
-            g_thr = tl.full((1, TILE_M), gate_threshold, dtype=tl.float32)
-        else:
-            g_thr = tl.full((TILE_M, 1), gate_threshold, dtype=tl.float32)
-    g_thr = tl.log(g_thr)
-    g_thr += -tl.log(1.0 - tl.exp(g_thr))
-    return g_thr
+        g_thr = tl.full((), gate_threshold, dtype=tl.float32)
+    gate_threshold_log2 = tl.log2(g_thr)
+    return gate_threshold_log2
 
 
 @triton.jit

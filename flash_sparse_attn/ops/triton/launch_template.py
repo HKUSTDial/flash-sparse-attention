@@ -225,7 +225,7 @@ def get_fwd_sparse_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-def get_fwd_sparse_launch_config(
+def get_fwd_gated_launch_config(
     is_split_kv,
     pack_gqa,
     qheads_per_kvhead,
@@ -460,7 +460,7 @@ def get_bwd_sparse_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-def get_bwd_sparse_launch_config(
+def get_bwd_gated_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int, int]:
     """
