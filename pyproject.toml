@@ -1,13 +1,6 @@
+
 [build-system]
-requires = [
-  "setuptools>=64",
-  "wheel",
-  "packaging",
-  "psutil",
-  "ninja",
-  "scikit-build-core>=0.10",
-  "torch>=2.8.0",
-]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -30,9 +23,9 @@ maintainers = [
 ]
 requires-python = ">=3.9"
 dependencies = [
-  "torch",
-  "einops"
+  "triton>=2.0.0"
 ]
+
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: BSD License",
@@ -40,28 +33,12 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/flash-algo/flash-sparse-attention"
-Source = "https://github.com/flash-algo/flash-sparse-attention"
-Issues = "https://github.com/flash-algo/flash-sparse-attention/issues"
+Homepage = "https://github.com/HKUSTDial/flash-sparse-attention"
+Source = "https://github.com/HKUSTDial/flash-sparse-attention"
+Issues = "https://github.com/HKUSTDial/flash-sparse-attention/issues"
 
 [project.optional-dependencies]
-triton = [
-  "triton>=2.0.0"
-]
-flex = [
-  "transformers>=4.38.0"
-]
-all = [
-  "triton>=2.0.0",
-  "transformers>=4.38.0"
-]
-test = [
-  "pytest>=6.0",
-  "pytest-benchmark",
-  "numpy"
-]
 dev = [
-  "triton>=2.0.0",
   "transformers>=4.38.0",
   "pytest>=6.0",
   "pytest-benchmark",
@@ -75,14 +52,7 @@ version = { attr = "flash_sparse_attn.__version__" }
 where = ["."]
 include = ["flash_sparse_attn*"]
 exclude = [
-  "build",
-  "csrc",
-  "include",
-  "tests",
-  "dist",
   "docs",
-  "benchmarks",
-  "flash_sparse_attn.egg-info"
 ]
 
 [tool.setuptools.package-data]
