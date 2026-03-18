@@ -29,10 +29,12 @@ class BenchmarkResult:
     config: BenchmarkConfig
     triton_dense_ms: Optional[float]
     triton_sparse_ms: Optional[float]
+    triton_gated_ms: Optional[float]
     fa_dense_ms: Optional[float]
     cudnn_dense_ms: Optional[float]
     triton_dense_tflops: Optional[float]
     triton_sparse_tflops: Optional[float]
+    triton_gated_tflops: Optional[float]
     fa_dense_tflops: Optional[float]
     cudnn_dense_tflops: Optional[float]
     error_message: Optional[str] = None
