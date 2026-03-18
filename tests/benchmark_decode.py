@@ -7,8 +7,9 @@ from tqdm import tqdm
 from triton.testing import do_bench
 
 from flash_sparse_attn.ops.triton.interface import (
-    flash_attn_func,
+    flash_dense_attn_func,
     flash_sparse_attn_func,
+    flash_gated_attn_func,
 )
 from test_utils import (
     BenchmarkConfig,
@@ -43,12 +44,12 @@ def benchmark_triton_dense_decode(
     softmax_scale = cfg.head_dim**-0.5
 
     def fn():
-        flash_attn_func(
+        flash_dense_attn_func(
             q,
             k,
             v,
-            softmax_scale=softmax_scale,
             is_causal=cfg.is_causal,
+            softmax_scale=softmax_scale,
             window_size=(None, None),
         )
 
@@ -65,26 +66,55 @@ def benchmark_triton_sparse_decode(
         layout="bshd",
         input_source="llm",
     )
-    alpha = torch.randn(
-        cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
-    ).normal_(0, 0.5)
-    delta = torch.randn(
-        cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
-    ).normal_(0, 0.5)
     softmax_scale = cfg.head_dim**-0.5
-    gate_threshold = 0.75
+    softmax_threshold = 1.0
 
     def fn():
         flash_sparse_attn_func(
             q,
             k,
             v,
+            is_causal=cfg.is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
+            window_size=(None, None),
+        )
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_gated_decode(
+    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=dtype,
+        layout="bshd",
+        input_source="llm",
+    )
+    alpha = torch.randn(
+        cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
+    ).normal_(0, 0.1)
+    delta = torch.randn(
+        cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
+    ).normal_(0, 0.1)
+    softmax_scale = cfg.head_dim**-0.5
+    softmax_threshold = 1.0
+    gate_threshold = 1.0
+
+    def fn():
+        flash_gated_attn_func(
+            q,
+            k,
+            v,
             alpha,
             delta,
-            softmax_scale=softmax_scale,
-            gate_threshold=gate_threshold,
             is_causal=cfg.is_causal,
-            is_logsigmoid_gate=True,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
+            gate_threshold=gate_threshold,
+            is_logsigmoid_gate=False,
             is_adapt_gate=False,
             window_size=(None, None),
         )
@@ -154,12 +184,14 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
     try:
         triton_dense_ms = benchmark_triton_dense_decode(cfg)
         triton_sparse_ms = benchmark_triton_sparse_decode(cfg)
+        triton_gated_ms = benchmark_triton_gated_decode(cfg)
         fa_dense_ms = benchmark_fa_decode(cfg)
         cudnn_dense_ms = benchmark_cudnn_decode(cfg)
 
         flops = _decode_fwd_flops(cfg)
         triton_dense_tflops = flops / triton_dense_ms * 1e-9
         triton_sparse_tflops = flops / triton_sparse_ms * 1e-9
+        triton_gated_tflops = flops / triton_gated_ms * 1e-9
         fa_dense_tflops = flops / fa_dense_ms * 1e-9 if fa_dense_ms else None
         cudnn_dense_tflops = flops / cudnn_dense_ms * 1e-9 if cudnn_dense_ms else None
 
@@ -167,10 +199,12 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             config=cfg,
             triton_dense_ms=triton_dense_ms,
             triton_sparse_ms=triton_sparse_ms,
+            triton_gated_ms=triton_gated_ms,
             fa_dense_ms=fa_dense_ms,
             cudnn_dense_ms=cudnn_dense_ms,
             triton_dense_tflops=triton_dense_tflops,
             triton_sparse_tflops=triton_sparse_tflops,
+            triton_gated_tflops=triton_gated_tflops,
             fa_dense_tflops=fa_dense_tflops,
             cudnn_dense_tflops=cudnn_dense_tflops,
         )
@@ -179,10 +213,12 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             config=cfg,
             triton_dense_ms=None,
             triton_sparse_ms=None,
+            triton_gated_ms=None,
             fa_dense_ms=None,
             cudnn_dense_ms=None,
             triton_dense_tflops=None,
             triton_sparse_tflops=None,
+            triton_gated_tflops=None,
             fa_dense_tflops=None,
             cudnn_dense_tflops=None,
             error_message=str(exc),
@@ -210,6 +246,7 @@ def print_results(results: List[BenchmarkResult]) -> None:
                 "causal" if r.config.is_causal else "non-causal",
                 format_tflops(r.triton_dense_tflops),
                 format_tflops(r.triton_sparse_tflops),
+                format_tflops(r.triton_gated_tflops),
                 format_tflops(r.fa_dense_tflops),
                 format_tflops(r.cudnn_dense_tflops),
             ]
@@ -226,6 +263,7 @@ def print_results(results: List[BenchmarkResult]) -> None:
         "Mode",
         "Triton Dense TFLOPS",
         "Triton Sparse TFLOPS",
+        "Triton Gated TFLOPS",
         "FA TFLOPS",
         "cuDNN TFLOPS",
     ]

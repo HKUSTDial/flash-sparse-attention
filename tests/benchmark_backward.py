@@ -7,8 +7,9 @@ from tqdm import tqdm
 from triton.testing import do_bench
 
 from flash_sparse_attn.ops.triton.interface import (
-    flash_attn_func,
+    flash_dense_attn_func,
     flash_sparse_attn_func,
+    flash_gated_attn_func,
 )
 from test_utils import (
     BenchmarkConfig,
