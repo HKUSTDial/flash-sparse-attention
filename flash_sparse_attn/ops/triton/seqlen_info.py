@@ -116,6 +116,42 @@ def get_seqlen_info_qk(
 
 
 @triton.jit
+def get_softmax_threshold(
+    softmax_threshold,
+    m_block,
+    seqlen_q,
+    seqlen_k,
+    IS_CAUSAL: tl.constexpr,
+    TILE_M: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+):
+    """
+    Compute the softmax threshold for a given block.
+
+    :param softmax_threshold: Threshold value normalized by full key length.
+    :param m_block: Current block index along the M dimension.
+    :param seqlen_q: Sequence length of the query.
+    :param seqlen_k: Sequence length of the key.
+    :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
+    :param TILE_M: Tile size along the M dimension.
+    :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
+
+    :return softmax_threshold_log2: Softmax threshold in log2-domain for the given block.
+    """
+    if IS_CAUSAL:
+        offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
+        q_idx = offs_m
+        if QHEADS_PER_KVHEAD_PACKGQA > 1:
+            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
+        causal_offset = seqlen_k - seqlen_q
+        s_thr = softmax_threshold * (q_idx + causal_offset + 1.0) / seqlen_k
+    else:
+        s_thr = tl.full((TILE_M,), softmax_threshold, dtype=tl.float32)
+    softmax_threshold_log2 = tl.log2(s_thr)
+    return softmax_threshold_log2
+
+
+@triton.jit
 def get_gate_threshold(
     gate_threshold,
     m_block,
