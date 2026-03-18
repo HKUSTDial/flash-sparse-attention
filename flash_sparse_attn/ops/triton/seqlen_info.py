@@ -136,7 +136,7 @@ def get_softmax_threshold(
     :param TILE_M: Tile size along the M dimension.
     :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
 
-    :return softmax_threshold_log2: Softmax threshold in log2-domain for the given block.
+    :return softmax_threshold_log2: Lower-bound scalar softmax threshold in log2-domain for the given block.
     """
     if IS_CAUSAL:
         offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
@@ -144,9 +144,9 @@ def get_softmax_threshold(
         if QHEADS_PER_KVHEAD_PACKGQA > 1:
             q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
-        s_thr = softmax_threshold * (q_idx + causal_offset + 1.0) / seqlen_k
+        s_thr = tl.min(softmax_threshold * (q_idx + causal_offset + 1.0) / seqlen_k)
     else:
-        s_thr = tl.full((TILE_M,), softmax_threshold, dtype=tl.float32)
+        s_thr = tl.full((), softmax_threshold, dtype=tl.float32)
     softmax_threshold_log2 = tl.log2(s_thr)
     return softmax_threshold_log2
 
