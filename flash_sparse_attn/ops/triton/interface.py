@@ -4,17 +4,11 @@ import torch
 
 from flash_sparse_attn.ops.triton.flash_dense_fwd import (
     _flash_dense_attn_base_forward,
+    _flash_dense_attn_varlen_base_forward,
 )
 from flash_sparse_attn.ops.triton.flash_dense_bwd import (
     _flash_dense_attn_base_backward,
-)
-from flash_sparse_attn.ops.triton.flash_fwd import (
-    _flash_attn_base_forward,
-    _flash_attn_varlen_base_forward,
-)
-from flash_sparse_attn.ops.triton.flash_bwd import (
-    _flash_attn_base_backward,
-    _flash_attn_varlen_base_backward,
+    _flash_dense_attn_varlen_base_backward,
 )
 from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
     _flash_sparse_attn_base_forward,
@@ -116,7 +110,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             and max_seqlen_q == 1
             and max_seqlen_q != max_seqlen_k
         )
-        out, lse, softmax_scale = _flash_attn_varlen_base_forward(
+        out, lse, softmax_scale = _flash_dense_attn_varlen_base_forward(
             query=query,
             key=key,
             value=value,
@@ -168,7 +162,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             seqused_k,
         ) = ctx.saved_tensors
 
-        dq, dk, dv = _flash_attn_varlen_base_backward(
+        dq, dk, dv = _flash_dense_attn_varlen_base_backward(
             query=query,
             key=key,
             value=value,
@@ -189,7 +183,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         return dq, dk, dv, *((None,) * 20)
 
 
-class FlashAttnFunc(torch.autograd.Function):
+class FlashSparseAttnFunc(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
@@ -211,7 +205,7 @@ class FlashAttnFunc(torch.autograd.Function):
             and query.shape[1] == 1
             and query.shape[1] != key.shape[1]
         )
-        out, lse, softmax_scale = _flash_attn_base_forward(
+        out, lse, softmax_scale = _flash_sparse_attn_base_forward(
             query=query,
             key=key,
             value=value,
@@ -225,6 +219,7 @@ class FlashAttnFunc(torch.autograd.Function):
         ctx.save_for_backward(query, key, value, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.softmax_threshold = softmax_threshold
         ctx.window_size = window_size
 
         if return_lse:
@@ -238,7 +233,7 @@ class FlashAttnFunc(torch.autograd.Function):
     def backward(ctx, dout: torch.Tensor, *args):
         query, key, value, out, lse = ctx.saved_tensors
 
-        dq, dk, dv = _flash_attn_base_backward(
+        dq, dk, dv = _flash_sparse_attn_base_backward(
             query=query,
             key=key,
             value=value,
@@ -247,13 +242,14 @@ class FlashAttnFunc(torch.autograd.Function):
             lse=lse,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            softmax_threshold=ctx.softmax_threshold,
             window_size=ctx.window_size,
         )
 
         return dq, dk, dv, *((None,) * 20)
 
 
-class FlashAttnVarlenFunc(torch.autograd.Function):
+class FlashSparseAttnVarlenFunc(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
@@ -281,7 +277,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             and max_seqlen_q == 1
             and max_seqlen_q != max_seqlen_k
         )
-        out, lse, softmax_scale = _flash_attn_varlen_base_forward(
+        out, lse, softmax_scale = _flash_sparse_attn_varlen_base_forward(
             query=query,
             key=key,
             value=value,
@@ -309,6 +305,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         )
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.softmax_threshold = softmax_threshold
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
@@ -334,7 +331,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             seqused_k,
         ) = ctx.saved_tensors
 
-        dq, dk, dv = _flash_attn_varlen_base_backward(
+        dq, dk, dv = _flash_sparse_attn_varlen_base_backward(
             query=query,
             key=key,
             value=value,
@@ -347,6 +344,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             max_seqlen_k=ctx.max_seqlen_k,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            softmax_threshold=ctx.softmax_threshold,
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
@@ -573,7 +571,7 @@ def flash_dense_attn_func(
     return_lse: bool = False,
 ):
     """
-    Flash attention function that computes the attention output and optionally the logsumexp.
+    Flash dense attention function that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
@@ -586,7 +584,7 @@ def flash_dense_attn_func(
     :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
     """
-    return FlashAttnFunc.apply(
+    return FlashDenseAttnFunc.apply(
         query,
         key,
         value,
@@ -613,7 +611,7 @@ def flash_dense_attn_varlen_func(
     return_lse: bool = False,
 ):
     """
-    Flash attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
+    Flash dense attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
@@ -632,7 +630,7 @@ def flash_dense_attn_varlen_func(
     :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
     """
-    return FlashAttnVarlenFunc.apply(
+    return FlashDenseAttnVarlenFunc.apply(
         query,
         key,
         value,
@@ -649,7 +647,7 @@ def flash_dense_attn_varlen_func(
     )
 
 
-def flash_attn_func(
+def flash_sparse_attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -660,7 +658,7 @@ def flash_attn_func(
     return_lse: bool = False,
 ):
     """
-    Flash attention function that computes the attention output and optionally the logsumexp.
+    Flash sparse attention function that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
@@ -674,7 +672,7 @@ def flash_attn_func(
     :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
     """
-    return FlashAttnFunc.apply(
+    return FlashSparseAttnFunc.apply(
         query,
         key,
         value,
@@ -686,7 +684,7 @@ def flash_attn_func(
     )
 
 
-def flash_attn_varlen_func(
+def flash_sparse_attn_varlen_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -703,7 +701,7 @@ def flash_attn_varlen_func(
     return_lse: bool = False,
 ):
     """
-    Flash attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
+    Flash sparse attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
@@ -723,7 +721,7 @@ def flash_attn_varlen_func(
     :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
     """
-    return FlashAttnVarlenFunc.apply(
+    return FlashSparseAttnVarlenFunc.apply(
         query,
         key,
         value,
