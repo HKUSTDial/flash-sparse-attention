@@ -1,4 +1,5 @@
 from typing import List, Optional
+import traceback
 
 import torch
 from torch.nn.attention import sdpa_kernel, SDPBackend
@@ -269,6 +270,7 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             cudnn_dense_tflops=cudnn_tflops,
         )
     except Exception as exc:
+        full_error = f"{exc}\n{traceback.format_exc()}"
         return BenchmarkResult(
             config=cfg,
             triton_dense_ms=None,
@@ -281,7 +283,7 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             triton_gated_tflops=None,
             fa_dense_tflops=None,
             cudnn_dense_tflops=None,
-            error_message=str(exc),
+            error_message=full_error,
         )
 
 
@@ -290,7 +292,7 @@ def print_results(results: List[BenchmarkResult]) -> None:
     if not ok:
         print("No successful benchmark results.")
         for r in results:
-            print(f"Failed: {r.config} -> {r.error_message}")
+            print(f"Failed: {r.config}\n{r.error_message}")
         return
 
     rows = []
