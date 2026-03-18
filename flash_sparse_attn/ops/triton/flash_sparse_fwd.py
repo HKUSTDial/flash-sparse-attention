@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Tuple
 
 import math
 import torch
@@ -20,23 +20,16 @@ from flash_sparse_attn.ops.triton import (
 
 @triton.jit
 def _fwd_inner_sparse_base_kernel(
-    active_curr,
-    acc_s,
-    acc_o,
     q_tile,
-    a_tile,
+    k_tile,
     k_ptrs,
     v_ptrs,
-    d_ptrs,
-    a_max,
-    a_min,
-    g_thr,
-    g_thr_min,
+    acc_o,
+    block_max,
     row_max,
     row_sum,
-    softmax_scale,
     softmax_scale_log2,
-    softmax_threshold,
+    softmax_threshold_log2,
     m_block,
     n_block,
     n_block_min,
@@ -50,110 +43,75 @@ def _fwd_inner_sparse_base_kernel(
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
-    IS_LOGSIGMOID_GATE: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
-    # Advance delta pointers
-    d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
+    # Compute attention scores
+    acc_s = tl.dot(q_tile, k_tile)
 
-    # Load next delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
-    d_max = tl.max(d_tile)
-    d_min = tl.min(d_tile)
-
-    active_next = False
-    if active_curr:
-        # Advance key pointers
-        k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
-
-        if n_block > n_block_min:
-            # Check if any gates are active for next tile
-            active_next = activations.gate_skip(a_max, a_min, d_max, d_min, g_thr_min)
-
-        if IS_MASK:
-            # Apply mask
-            acc_s = mask.apply_mask(
-                acc_s=acc_s,
-                m_block=m_block,
-                n_block=n_block,
-                seqlen_q=actual_seqlen_q,
-                seqlen_k=actual_seqlen_k,
-                MASK_SEQLEN=True,
-                MASK_CAUSAL=MASK_CAUSAL,
-                MASK_LOCAL=MASK_LOCAL,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                SWAP_AB=False,
-            )
-
-        # Apply online softmax
-        p, row_max, row_sum, row_scale, skip_softmax = activations.online_softmax(
-            acc_s=acc_s,
-            row_max=row_max,
-            row_sum=row_sum,
-            scale_log2=softmax_scale_log2,
-            softmax_threshold=softmax_threshold,
-            CHECK_INF=CHECK_INF,
-            RESCALE_THRESHOLD=0.0,
-        )
-
-        if not skip_softmax:
-            # Load value tile
-            v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
-
-            # Rescale output accumulator
-            acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
-
-            # Update output accumulator
-            acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-
-        # Advance value pointer
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
-    else:
-        # Advance key and value pointers
-        k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
-
-        if n_block > n_block_min:
-            # Check if any gates are active for next tile
-            active_next = activations.gate_skip(a_max, a_min, d_max, d_min, g_thr_min)
-
-    if active_next:
-        # Compute next attention gates
-        g = a_tile[:, None] * d_tile[None, :]
-
-        # Update gate mask for next tile
-        gate_mask = g * softmax_scale >= g_thr
-
+    # Advance key pointer
+    k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
+    if n_block > n_block_min:
         # Load next key tile
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
-        # Compute attention scores
-        if IS_LOGSIGMOID_GATE:
-            acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
-        else:
-            acc_s = tl.where(gate_mask, g, float("-inf"))
-        acc_s += tl.dot(q_tile, k_tile)
+    if IS_MASK:
+        # Apply mask to attention scores
+        acc_s = mask.apply_mask(
+            acc_s=acc_s,
+            m_block=m_block,
+            n_block=n_block,
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            MASK_SEQLEN=True,
+            MASK_CAUSAL=MASK_CAUSAL,
+            MASK_LOCAL=MASK_LOCAL,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            SWAP_AB=False,
+        )
 
-    return active_next, acc_s, acc_o, k_ptrs, v_ptrs, d_ptrs, row_max, row_sum
+    # Apply online softmax
+    p, block_max, row_max, row_sum, row_scale, skip_softmax = (
+        activations.online_softmax(
+            acc_s=acc_s,
+            block_max=block_max,
+            row_max=row_max,
+            row_sum=row_sum,
+            scale_log2=softmax_scale_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
+            CHECK_INF=CHECK_INF,
+            RESCALE_THRESHOLD=0.0,
+        )
+    )
+
+    if not skip_softmax:
+        # Load value tile
+        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+
+        # Rescale output accumulator
+        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+
+    # Advance value pointer
+    v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
+
+    return k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum
 
 
 @triton.jit
-def _fwd_sparse_base_kernel(
+def _fwd_base_sparse_kernel(
     Q,
     K,
     V,
-    A,
-    D,
     Out,
     Lse,
-    softmax_scale,
     softmax_scale_log2,
     softmax_threshold,
-    gate_threshold,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -163,10 +121,6 @@ def _fwd_sparse_base_kernel(
     stride_vb,
     stride_vh,
     stride_vn,
-    stride_ab,
-    stride_ah,
-    stride_db,
-    stride_dh,
     stride_ob,
     stride_oh,
     stride_om,
@@ -197,8 +151,6 @@ def _fwd_sparse_base_kernel(
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
     PACK_GQA: tl.constexpr,
-    IS_LOGSIGMOID_GATE: tl.constexpr,
-    IS_ADAPT_GATE: tl.constexpr,
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -269,26 +221,6 @@ def _fwd_sparse_base_kernel(
         padded_offset_k,
         stride_vb,
         stride_vn,
-        HAS_CU_SEQLENS_K,
-        USE_PADDED=False,
-    )
-    a_base = seqlen_info.offset_batch_Q(
-        A + head_idx * stride_ah if not PACK_GQA else A,
-        batch_idx,
-        offset_q,
-        padded_offset_q,
-        stride_ab,
-        1,
-        HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
-    )
-    d_base = seqlen_info.offset_batch_K(
-        D + head_kv_idx * stride_dh,
-        batch_idx,
-        offset_k,
-        padded_offset_k,
-        stride_db,
-        1,
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
@@ -437,14 +369,6 @@ def _fwd_sparse_base_kernel(
             block_shape=(TILE_M, TILE_K),
             order=(1, 0),
         )
-        a_ptrs = tl.make_block_ptr(
-            base=a_base,
-            shape=(actual_seqlen_q,),
-            strides=(1,),
-            offsets=(m_block * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
     else:
         q_ptrs = seqlen_info.make_pack_gqa_ptrs(
             q_base,
@@ -454,16 +378,6 @@ def _fwd_sparse_base_kernel(
             stride_qm,
             TILE_M=TILE_M,
             TILE_K=TILE_K,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-        )
-        a_ptrs = seqlen_info.make_pack_gqa_ptrs(
-            a_base,
-            m_block,
-            head_idx,
-            stride_ah,
-            1,
-            TILE_M=TILE_M,
-            TILE_K=1,
             QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
         )
     k_ptrs = tl.make_block_ptr(
@@ -482,28 +396,17 @@ def _fwd_sparse_base_kernel(
         block_shape=(TILE_N, TILE_K),
         order=(1, 0),
     )
-    d_ptrs = tl.make_block_ptr(
-        base=d_base,
-        shape=(actual_seqlen_k,),
-        strides=(1,),
-        offsets=((n_block_max - 1) * TILE_N,),
-        block_shape=(TILE_N,),
-        order=(0,),
-    )
 
-    # Get attention gate threshold
-    g_thr = seqlen_info.get_gate_threshold(
-        gate_threshold=gate_threshold,
+    # Get softmax threshold
+    softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
+        softmax_threshold=softmax_threshold,
         m_block=m_block,
         seqlen_q=actual_seqlen_q,
         seqlen_k=actual_seqlen_k,
         IS_CAUSAL=IS_CAUSAL,
         TILE_M=TILE_M,
         QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-        IS_ADAPT_GATE=IS_ADAPT_GATE,
-        SWAP_AB=False,
     )
-    g_thr_min = tl.min(g_thr)
 
     # Load query tile
     if PACK_GQA:
@@ -516,69 +419,30 @@ def _fwd_sparse_base_kernel(
     else:
         q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
 
-    # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
-
     # Initialize accumulators
+    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
-    # Load alpha tile
-    if PACK_GQA:
-        a_tile = tl.load(
-            a_ptrs,
-            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
-            other=0.0,
-        ).to(tl.float32)
-    else:
-        a_tile = tl.load(a_ptrs, boundary_check=(0,)).to(tl.float32)
-    a_max = tl.max(a_tile) * softmax_scale
-    a_min = tl.min(a_tile) * softmax_scale
-
-    # Load delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
-    d_max = tl.max(d_tile)
-    d_min = tl.min(d_tile)
-
-    # Compute attention gates
-    g = a_tile[:, None] * d_tile[None, :]
-
-    # Compute gate mask for current tile
-    gate_mask = g * softmax_scale >= g_thr
-
-    # Compute attention scores
-    if IS_LOGSIGMOID_GATE:
-        acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
-    else:
-        acc_s = tl.where(gate_mask, g, float("-inf"))
-    acc_s += tl.dot(q_tile, k_tile)
-
-    # Check if any gates are active for current tile
-    active_curr = activations.gate_skip(a_max, a_min, d_max, d_min, g_thr_min)
+    # Load key tile
+    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
 
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
         for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
-            active_curr, acc_s, acc_o, k_ptrs, v_ptrs, d_ptrs, row_max, row_sum = (
+            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
                 _fwd_inner_sparse_base_kernel(
-                    active_curr=active_curr,
-                    acc_s=acc_s,
-                    acc_o=acc_o,
                     q_tile=q_tile,
-                    a_tile=a_tile,
+                    k_tile=k_tile,
                     k_ptrs=k_ptrs,
                     v_ptrs=v_ptrs,
-                    d_ptrs=d_ptrs,
-                    a_max=a_max,
-                    a_min=a_min,
-                    g_thr=g_thr,
-                    g_thr_min=g_thr_min,
+                    acc_o=acc_o,
+                    block_max=block_max,
                     row_max=row_max,
                     row_sum=row_sum,
-                    softmax_scale=softmax_scale,
                     softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold=softmax_threshold,
+                    softmax_threshold_log2=softmax_threshold_log2,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_max_no_mask,
@@ -592,7 +456,6 @@ def _fwd_sparse_base_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=IS_CAUSAL,
                     MASK_LOCAL=IS_LOCAL,
-                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                     CHECK_INF=True,
                 )
             )
@@ -600,28 +463,21 @@ def _fwd_sparse_base_kernel(
         # First iteration with seqlen masking
         n_block = n_block_max - 1
 
-        active_curr, acc_s, acc_o, k_ptrs, v_ptrs, d_ptrs, row_max, row_sum = (
+        k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
             _fwd_inner_sparse_base_kernel(
-                active_curr=active_curr,
-                acc_s=acc_s,
-                acc_o=acc_o,
                 q_tile=q_tile,
-                a_tile=a_tile,
+                k_tile=k_tile,
                 k_ptrs=k_ptrs,
                 v_ptrs=v_ptrs,
-                d_ptrs=d_ptrs,
-                a_max=a_max,
-                a_min=a_min,
-                g_thr=g_thr,
-                g_thr_min=g_thr_min,
+                acc_o=acc_o,
+                block_max=block_max,
                 row_max=row_max,
                 row_sum=row_sum,
-                softmax_scale=softmax_scale,
                 softmax_scale_log2=softmax_scale_log2,
-                softmax_threshold=softmax_threshold,
+                softmax_threshold_log2=softmax_threshold_log2,
                 m_block=m_block,
                 n_block=n_block,
-                n_block_min=n_block_min,
+                n_block_min=n_block,
                 actual_seqlen_q=actual_seqlen_q,
                 actual_seqlen_k=actual_seqlen_k,
                 TILE_M=TILE_M,
@@ -632,7 +488,6 @@ def _fwd_sparse_base_kernel(
                 IS_MASK=True,
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
-                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                 CHECK_INF=True,
             )
         )
@@ -658,59 +513,20 @@ def _fwd_sparse_base_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        d_ptrs = tl.make_block_ptr(
-            base=d_base,
-            shape=(actual_seqlen_k,),
-            strides=(1,),
-            offsets=((n_block_max_no_mask - 1) * TILE_N,),
-            block_shape=(TILE_N,),
-            order=(0,),
-        )
-
-        # Load key tile
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
-
-        # Load delta tile
-        d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
-        d_max = tl.max(d_tile)
-        d_min = tl.min(d_tile)
-
-        # Compute attention gates
-        g = a_tile[:, None] * d_tile[None, :]
-
-        # Update gate mask for current tile
-        gate_mask = g * softmax_scale >= g_thr
-
-        # Compute attention scores
-        if IS_LOGSIGMOID_GATE:
-            acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
-        else:
-            acc_s = tl.where(gate_mask, g, float("-inf"))
-        acc_s += tl.dot(q_tile, k_tile)
-
-        # Check if any gates are active for current tile
-        active_curr = activations.gate_skip(a_max, a_min, d_max, d_min, g_thr_min)
-
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
-            active_curr, acc_s, acc_o, k_ptrs, v_ptrs, d_ptrs, row_max, row_sum = (
+            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
                 _fwd_inner_sparse_base_kernel(
-                    active_curr=active_curr,
-                    acc_s=acc_s,
-                    acc_o=acc_o,
                     q_tile=q_tile,
-                    a_tile=a_tile,
+                    k_tile=k_tile,
                     k_ptrs=k_ptrs,
                     v_ptrs=v_ptrs,
-                    d_ptrs=d_ptrs,
-                    a_max=a_max,
-                    a_min=a_min,
-                    g_thr=g_thr,
-                    g_thr_min=g_thr_min,
+                    acc_o=acc_o,
+                    block_max=block_max,
                     row_max=row_max,
                     row_sum=row_sum,
-                    softmax_scale=softmax_scale,
                     softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold=softmax_threshold,
+                    softmax_threshold_log2=softmax_threshold_log2,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_min_no_mask,
@@ -724,8 +540,7 @@ def _fwd_sparse_base_kernel(
                     IS_MASK=IS_LOCAL,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=False,
-                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
-                    CHECK_INF=True,
+                    CHECK_INF=IS_LOCAL,
                 )
             )
 
@@ -747,59 +562,20 @@ def _fwd_sparse_base_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        d_ptrs = tl.make_block_ptr(
-            base=d_base,
-            shape=(actual_seqlen_k,),
-            strides=(1,),
-            offsets=((n_block_min_no_mask - 1) * TILE_N,),
-            block_shape=(TILE_N,),
-            order=(0,),
-        )
-
-        # Load key tile
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
-
-        # Load delta tile
-        d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
-        d_max = tl.max(d_tile)
-        d_min = tl.min(d_tile)
-
-        # Compute attention gates
-        g = a_tile[:, None] * d_tile[None, :]
-
-        # Update gate mask for current tile
-        gate_mask = g * softmax_scale >= g_thr
-
-        # Compute attention scores
-        if IS_LOGSIGMOID_GATE:
-            acc_s = activations.log_sigmoid(g, gate_mask, FASTMATH=True)
-        else:
-            acc_s = tl.where(gate_mask, g, float("-inf"))
-        acc_s += tl.dot(q_tile, k_tile)
-
-        # Check if any gates are active for current tile
-        active_curr = activations.gate_skip(a_max, a_min, d_max, d_min, g_thr_min)
-
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
-            active_curr, acc_s, acc_o, k_ptrs, v_ptrs, d_ptrs, row_max, row_sum = (
+            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
                 _fwd_inner_sparse_base_kernel(
-                    active_curr=active_curr,
-                    acc_s=acc_s,
-                    acc_o=acc_o,
                     q_tile=q_tile,
-                    a_tile=a_tile,
+                    k_tile=k_tile,
                     k_ptrs=k_ptrs,
                     v_ptrs=v_ptrs,
-                    d_ptrs=d_ptrs,
-                    a_max=a_max,
-                    a_min=a_min,
-                    g_thr=g_thr,
-                    g_thr_min=g_thr_min,
+                    acc_o=acc_o,
+                    block_max=block_max,
                     row_max=row_max,
                     row_sum=row_sum,
-                    softmax_scale=softmax_scale,
                     softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold=softmax_threshold,
+                    softmax_threshold_log2=softmax_threshold_log2,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_min,
@@ -813,7 +589,6 @@ def _fwd_sparse_base_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
-                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
                     CHECK_INF=True,
                 )
             )
@@ -857,16 +632,12 @@ def _flash_sparse_attn_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    alpha: torch.Tensor,
-    delta: torch.Tensor,
-    softmax_scale: float,
     is_causal: bool = False,
-    gate_threshold: float = 0.0,
-    is_logsigmoid_gate: bool = True,
-    is_adapt_gate: bool = True,
-    window_size: Optional[Tuple[int, int]] = None,
+    softmax_scale: float = None,
+    softmax_threshold: float = None,
+    window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
@@ -875,23 +646,19 @@ def _flash_sparse_attn_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    gate_threshold = gate_threshold or 0.0
-    softmax_threshold = math.log2(head_dim / seqlen_k)
+    softmax_threshold = softmax_threshold or head_dim / seqlen_k
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    assert_inputs.assert_fwd_sparse_inputs(
+    assert_inputs.assert_fwd_inputs(
         query,
         key,
         value,
-        alpha,
-        delta,
         cu_seqlens_q=None,
         cu_seqlens_k=None,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-        gate_threshold=gate_threshold,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -917,11 +684,11 @@ def _flash_sparse_attn_base_forward(
         else 1
     )
 
-    out = torch.zeros_like(query)
-    lse = torch.zeros(
+    out = torch.empty_like(query)
+    lse = torch.empty(
         (batch_size, num_heads_q, seqlen_q),
-        device=query.device,
         dtype=torch.float32,
+        device=query.device,
     )
 
     if is_split_kv:
@@ -945,18 +712,14 @@ def _flash_sparse_attn_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_sparse_base_kernel[grid](
+    _fwd_base_sparse_kernel[grid](
         query,
         key,
         value,
-        alpha,
-        delta,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
-        gate_threshold,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -966,10 +729,6 @@ def _flash_sparse_attn_base_forward(
         value.stride(0),
         value.stride(-2),
         value.stride(-3),
-        alpha.stride(0),
-        alpha.stride(-2),
-        delta.stride(0),
-        delta.stride(-2),
         out.stride(0) if not is_split_kv else out_partial.stride(1),
         out.stride(-2) if not is_split_kv else out_partial.stride(-2),
         out.stride(-3) if not is_split_kv else out_partial.stride(-3),
@@ -1000,8 +759,6 @@ def _flash_sparse_attn_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
-        IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
-        IS_ADAPT_GATE=is_adapt_gate,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1015,27 +772,23 @@ def _flash_sparse_attn_base_forward(
             lse,
         )
 
-    return out, lse, softmax_scale, gate_threshold
+    return out, lse, softmax_scale
 
 
 def _flash_sparse_attn_varlen_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    alpha: torch.Tensor,
-    delta: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
     max_seqlen_k: int,
-    softmax_scale: float,
     is_causal: bool = False,
-    gate_threshold: float = 0.0,
-    is_logsigmoid_gate: bool = True,
-    is_adapt_gate: bool = True,
-    window_size: Optional[Tuple[int, int]] = None,
+    softmax_scale: float = None,
+    softmax_threshold: float = None,
+    window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-):
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
@@ -1047,23 +800,19 @@ def _flash_sparse_attn_varlen_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    gate_threshold = gate_threshold or 0.0
-    softmax_threshold = math.log2(head_dim / seqlen_k)
+    softmax_threshold = softmax_threshold or head_dim / seqlen_k
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    assert_inputs.assert_fwd_sparse_inputs(
+    assert_inputs.assert_fwd_inputs(
         query,
         key,
         value,
-        alpha,
-        delta,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
-        gate_threshold=gate_threshold,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -1089,7 +838,7 @@ def _flash_sparse_attn_varlen_base_forward(
         else 1
     )
 
-    out = torch.zeros_like(query)
+    out = torch.empty_like(query)
     lse = torch.empty(
         (num_heads_q, total_seqlen_q),
         dtype=torch.float32,
@@ -1117,18 +866,14 @@ def _flash_sparse_attn_varlen_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_sparse_base_kernel[grid](
+    _fwd_base_sparse_kernel[grid](
         query,
         key,
         value,
-        alpha,
-        delta,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
-        gate_threshold,
         0,
         query.stride(-2),
         query.stride(0),
@@ -1138,10 +883,6 @@ def _flash_sparse_attn_varlen_base_forward(
         0,
         value.stride(-2),
         value.stride(0),
-        0,
-        alpha.stride(-2),
-        0,
-        delta.stride(-2),
         0,
         out.stride(-2) if not is_split_kv else out_partial.stride(-2),
         out.stride(0) if not is_split_kv else out_partial.stride(-3),
@@ -1172,8 +913,6 @@ def _flash_sparse_attn_varlen_base_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
         PACK_GQA=pack_gqa,
-        IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
-        IS_ADAPT_GATE=is_adapt_gate,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1188,4 +927,4 @@ def _flash_sparse_attn_varlen_base_forward(
             cu_seqlens_q=cu_seqlens_q,
         )
 
-    return out, lse, softmax_scale, gate_threshold
+    return out, lse, softmax_scale
