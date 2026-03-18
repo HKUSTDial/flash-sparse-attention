@@ -18,6 +18,14 @@ from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
     _flash_sparse_attn_base_backward,
     _flash_sparse_attn_varlen_base_backward,
 )
+from flash_sparse_attn.ops.triton.flash_gated_fwd import (
+    _flash_gated_attn_base_forward,
+    _flash_gated_attn_varlen_base_forward,
+)
+from flash_sparse_attn.ops.triton.flash_gated_bwd import (
+    _flash_gated_attn_base_backward,
+    _flash_gated_attn_varlen_base_backward,
+)
 from flash_sparse_attn.ops.triton.utils import ensure_contiguous
 
 
@@ -205,7 +213,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             and query.shape[1] == 1
             and query.shape[1] != key.shape[1]
         )
-        out, lse, softmax_scale = _flash_sparse_attn_base_forward(
+        out, lse, softmax_scale, softmax_threshold = _flash_sparse_attn_base_forward(
             query=query,
             key=key,
             value=value,
@@ -277,19 +285,21 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             and max_seqlen_q == 1
             and max_seqlen_q != max_seqlen_k
         )
-        out, lse, softmax_scale = _flash_sparse_attn_varlen_base_forward(
-            query=query,
-            key=key,
-            value=value,
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=max_seqlen_q,
-            max_seqlen_k=max_seqlen_k,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            softmax_threshold=softmax_threshold,
-            window_size=window_size,
-            pack_gqa=pack_gqa,
+        out, lse, softmax_scale, softmax_threshold = (
+            _flash_sparse_attn_varlen_base_forward(
+                query=query,
+                key=key,
+                value=value,
+                cu_seqlens_q=cu_seqlens_q,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_k,
+                is_causal=is_causal,
+                softmax_scale=softmax_scale,
+                softmax_threshold=softmax_threshold,
+                window_size=window_size,
+                pack_gqa=pack_gqa,
+            )
         )
 
         ctx.save_for_backward(
@@ -353,7 +363,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         return dq, dk, dv, *((None,) * 20)
 
 
-class FlashSparseAttnFunc(torch.autograd.Function):
+class FlashGatedAttnFunc(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
@@ -380,25 +390,28 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             and query.shape[1] == 1
             and query.shape[1] != key.shape[1]
         )
-        out, lse, softmax_scale, gate_threshold = _flash_sparse_attn_base_forward(
-            query=query,
-            key=key,
-            value=value,
-            alpha=alpha,
-            delta=delta,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            softmax_threshold=softmax_threshold,
-            gate_threshold=gate_threshold,
-            is_logsigmoid_gate=is_logsigmoid_gate,
-            is_adapt_gate=is_adapt_gate,
-            window_size=window_size,
-            pack_gqa=pack_gqa,
+        out, lse, softmax_scale, softmax_threshold, gate_threshold = (
+            _flash_gated_attn_base_forward(
+                query=query,
+                key=key,
+                value=value,
+                alpha=alpha,
+                delta=delta,
+                is_causal=is_causal,
+                softmax_scale=softmax_scale,
+                softmax_threshold=softmax_threshold,
+                gate_threshold=gate_threshold,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+                is_adapt_gate=is_adapt_gate,
+                window_size=window_size,
+                pack_gqa=pack_gqa,
+            )
         )
 
         ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.softmax_threshold = softmax_threshold
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
@@ -415,7 +428,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
     def backward(ctx, dout: torch.Tensor, *args):
         query, key, value, alpha, delta, out, lse = ctx.saved_tensors
 
-        dq, dk, dv, da, dd = _flash_sparse_attn_base_backward(
+        dq, dk, dv, da, dd = _flash_gated_attn_base_backward(
             query=query,
             key=key,
             value=value,
@@ -426,6 +439,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             lse=lse,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            softmax_threshold=ctx.softmax_threshold,
             gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
@@ -435,7 +449,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         return dq, dk, dv, da, dd, *((None,) * 20)
 
 
-class FlashSparseAttnVarlenFunc(torch.autograd.Function):
+class FlashGatedAttnVarlenFunc(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
@@ -468,8 +482,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             and max_seqlen_q == 1
             and max_seqlen_q != max_seqlen_k
         )
-        out, lse, softmax_scale, gate_threshold = (
-            _flash_sparse_attn_varlen_base_forward(
+        out, lse, softmax_scale, softmax_threshold, gate_threshold = (
+            _flash_gated_attn_varlen_base_forward(
                 query=query,
                 key=key,
                 value=value,
@@ -505,6 +519,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         )
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.softmax_threshold = softmax_threshold
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
@@ -535,7 +550,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             seqused_k,
         ) = ctx.saved_tensors
 
-        dq, dk, dv, da, dd = _flash_sparse_attn_varlen_base_backward(
+        dq, dk, dv, da, dd = _flash_gated_attn_varlen_base_backward(
             query=query,
             key=key,
             value=value,
@@ -545,6 +560,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             dout=dout,
             lse=lse,
             softmax_scale=ctx.softmax_scale,
+            softmax_threshold=ctx.softmax_threshold,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=ctx.max_seqlen_q,
@@ -739,7 +755,7 @@ def flash_sparse_attn_varlen_func(
     )
 
 
-def flash_sparse_attn_func(
+def flash_gated_attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -755,7 +771,7 @@ def flash_sparse_attn_func(
     return_lse: bool = False,
 ):
     """
-    Flash sparse attention function that computes the attention output and optionally the logsumexp.
+    Flash gated attention function that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
@@ -774,7 +790,7 @@ def flash_sparse_attn_func(
     :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
     """
-    return FlashSparseAttnFunc.apply(
+    return FlashGatedAttnFunc.apply(
         query,
         key,
         value,
@@ -791,7 +807,7 @@ def flash_sparse_attn_func(
     )
 
 
-def flash_sparse_attn_varlen_func(
+def flash_gated_attn_varlen_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -813,7 +829,7 @@ def flash_sparse_attn_varlen_func(
     return_lse: bool = False,
 ):
     """
-    Flash sparse attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
+    Flash gated attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
@@ -838,7 +854,7 @@ def flash_sparse_attn_varlen_func(
     :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
     """
-    return FlashSparseAttnVarlenFunc.apply(
+    return FlashGatedAttnVarlenFunc.apply(
         query,
         key,
         value,
