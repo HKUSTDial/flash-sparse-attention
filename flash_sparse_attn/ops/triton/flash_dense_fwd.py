@@ -415,7 +415,39 @@ def _fwd_dense_base_kernel(
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
         for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = _fwd_inner_dense_base_kernel(
+            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
+                _fwd_inner_dense_base_kernel(
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    acc_o=acc_o,
+                    block_max=block_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    softmax_scale_log2=softmax_scale_log2,
+                    m_block=m_block,
+                    n_block=n_block,
+                    n_block_min=n_block_max_no_mask,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    IS_MASK=True,
+                    MASK_CAUSAL=IS_CAUSAL,
+                    MASK_LOCAL=IS_LOCAL,
+                    CHECK_INF=True,
+                )
+            )
+    else:
+        # First iteration with seqlen masking
+        n_block = n_block_max - 1
+
+        k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
+            _fwd_inner_dense_base_kernel(
                 q_tile=q_tile,
                 k_tile=k_tile,
                 k_ptrs=k_ptrs,
@@ -427,7 +459,7 @@ def _fwd_dense_base_kernel(
                 softmax_scale_log2=softmax_scale_log2,
                 m_block=m_block,
                 n_block=n_block,
-                n_block_min=n_block_max_no_mask,
+                n_block_min=n_block,
                 actual_seqlen_q=actual_seqlen_q,
                 actual_seqlen_k=actual_seqlen_k,
                 TILE_M=TILE_M,
@@ -436,38 +468,10 @@ def _fwd_dense_base_kernel(
                 WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
                 QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
                 IS_MASK=True,
-                MASK_CAUSAL=IS_CAUSAL,
-                MASK_LOCAL=IS_LOCAL,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
                 CHECK_INF=True,
             )
-    else:
-        # First iteration with seqlen masking
-        n_block = n_block_max - 1
-
-        k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = _fwd_inner_dense_base_kernel(
-            q_tile=q_tile,
-            k_tile=k_tile,
-            k_ptrs=k_ptrs,
-            v_ptrs=v_ptrs,
-            acc_o=acc_o,
-            block_max=block_max,
-            row_max=row_max,
-            row_sum=row_sum,
-            softmax_scale_log2=softmax_scale_log2,
-            m_block=m_block,
-            n_block=n_block,
-            n_block_min=n_block,
-            actual_seqlen_q=actual_seqlen_q,
-            actual_seqlen_k=actual_seqlen_k,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-            IS_MASK=True,
-            MASK_CAUSAL=False,
-            MASK_LOCAL=False,
-            CHECK_INF=True,
         )
 
         n_block_max_no_mask = n_block_max - 1
@@ -493,30 +497,32 @@ def _fwd_dense_base_kernel(
         )
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = _fwd_inner_dense_base_kernel(
-                q_tile=q_tile,
-                k_tile=k_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
-                acc_o=acc_o,
-                block_max=block_max,
-                row_max=row_max,
-                row_sum=row_sum,
-                softmax_scale_log2=softmax_scale_log2,
-                m_block=m_block,
-                n_block=n_block,
-                n_block_min=n_block_min_no_mask,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                IS_MASK=IS_LOCAL,
-                MASK_CAUSAL=False,
-                MASK_LOCAL=False,
-                CHECK_INF=IS_LOCAL,
+            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
+                _fwd_inner_dense_base_kernel(
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    acc_o=acc_o,
+                    block_max=block_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    softmax_scale_log2=softmax_scale_log2,
+                    m_block=m_block,
+                    n_block=n_block,
+                    n_block_min=n_block_min_no_mask,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    IS_MASK=IS_LOCAL,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=False,
+                    CHECK_INF=IS_LOCAL,
+                )
             )
 
     # Process n_blocks with masking
@@ -539,30 +545,32 @@ def _fwd_dense_base_kernel(
         )
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = _fwd_inner_dense_base_kernel(
-                q_tile=q_tile,
-                k_tile=k_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
-                acc_o=acc_o,
-                block_max=block_max,
-                row_max=row_max,
-                row_sum=row_sum,
-                softmax_scale_log2=softmax_scale_log2,
-                m_block=m_block,
-                n_block=n_block,
-                n_block_min=n_block_min,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                IS_MASK=True,
-                MASK_CAUSAL=False,
-                MASK_LOCAL=True,
-                CHECK_INF=True,
+            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
+                _fwd_inner_dense_base_kernel(
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    acc_o=acc_o,
+                    block_max=block_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    softmax_scale_log2=softmax_scale_log2,
+                    m_block=m_block,
+                    n_block=n_block,
+                    n_block_min=n_block_min,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
+                    CHECK_INF=True,
+                )
             )
 
     # Finalize softmax
