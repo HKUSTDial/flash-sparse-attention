@@ -2,6 +2,12 @@ from typing import Optional, Tuple
 
 import torch
 
+from flash_sparse_attn.ops.triton.flash_dense_fwd import (
+    _flash_dense_attn_base_forward,
+)
+from flash_sparse_attn.ops.triton.flash_dense_bwd import (
+    _flash_dense_attn_base_backward,
+)
 from flash_sparse_attn.ops.triton.flash_fwd import (
     _flash_attn_base_forward,
     _flash_attn_varlen_base_forward,
@@ -19,6 +25,168 @@ from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
     _flash_sparse_attn_varlen_base_backward,
 )
 from flash_sparse_attn.ops.triton.utils import ensure_contiguous
+
+
+class FlashDenseAttnFunc(torch.autograd.Function):
+    @staticmethod
+    @ensure_contiguous
+    def forward(
+        ctx,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        is_causal: bool = False,
+        softmax_scale: Optional[float] = None,
+        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        return_lse: bool = False,
+    ):
+        # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
+        is_causal = False if query.shape[1] == 1 else is_causal
+        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
+        pack_gqa = (
+            query.shape[2] != key.shape[2]
+            and query.shape[1] == 1
+            and query.shape[1] != key.shape[1]
+        )
+        out, lse, softmax_scale = _flash_dense_attn_base_forward(
+            query=query,
+            key=key,
+            value=value,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            pack_gqa=pack_gqa,
+        )
+
+        ctx.save_for_backward(query, key, value, out, lse)
+        ctx.is_causal = is_causal
+        ctx.softmax_scale = softmax_scale
+        ctx.window_size = window_size
+
+        if return_lse:
+            # LSE gradient is not supported yet
+            ctx.mark_non_differentiable(lse)
+            return out, lse
+        return out
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dout: torch.Tensor, *args):
+        query, key, value, out, lse = ctx.saved_tensors
+
+        dq, dk, dv = _flash_dense_attn_base_backward(
+            query=query,
+            key=key,
+            value=value,
+            out=out,
+            dout=dout,
+            lse=lse,
+            is_causal=ctx.is_causal,
+            softmax_scale=ctx.softmax_scale,
+            window_size=ctx.window_size,
+        )
+
+        return dq, dk, dv, *((None,) * 20)
+
+
+class FlashDenseAttnVarlenFunc(torch.autograd.Function):
+    @staticmethod
+    @ensure_contiguous
+    def forward(
+        ctx,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+        is_causal: bool = False,
+        softmax_scale: Optional[float] = None,
+        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        seqused_q: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
+        return_lse: bool = False,
+    ):
+        # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
+        is_causal = False if max_seqlen_q == 1 else is_causal
+        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
+        pack_gqa = (
+            query.shape[1] != key.shape[1]
+            and max_seqlen_q == 1
+            and max_seqlen_q != max_seqlen_k
+        )
+        out, lse, softmax_scale = _flash_attn_varlen_base_forward(
+            query=query,
+            key=key,
+            value=value,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            pack_gqa=pack_gqa,
+        )
+
+        ctx.save_for_backward(
+            query,
+            key,
+            value,
+            out,
+            lse,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            seqused_q,
+            seqused_k,
+        )
+        ctx.is_causal = is_causal
+        ctx.softmax_scale = softmax_scale
+        ctx.window_size = window_size
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
+
+        if return_lse:
+            # LSE gradient is not supported yet
+            ctx.mark_non_differentiable(lse)
+            return out, lse
+        return out
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dout: torch.Tensor, *args):
+        (
+            query,
+            key,
+            value,
+            out,
+            lse,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            seqused_q,
+            seqused_k,
+        ) = ctx.saved_tensors
+
+        dq, dk, dv = _flash_attn_varlen_base_backward(
+            query=query,
+            key=key,
+            value=value,
+            out=out,
+            dout=dout,
+            lse=lse,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=ctx.max_seqlen_q,
+            max_seqlen_k=ctx.max_seqlen_k,
+            is_causal=ctx.is_causal,
+            softmax_scale=ctx.softmax_scale,
+            window_size=ctx.window_size,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+        )
+
+        return dq, dk, dv, *((None,) * 20)
 
 
 class FlashAttnFunc(torch.autograd.Function):
@@ -393,6 +561,92 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         )
 
         return dq, dk, dv, da, dd, *((None,) * 20)
+
+
+def flash_dense_attn_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    return_lse: bool = False,
+):
+    """
+    Flash attention function that computes the attention output and optionally the logsumexp.
+
+    :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param is_causal: Whether to apply a causal mask.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
+
+    :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
+    :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
+    """
+    return FlashAttnFunc.apply(
+        query,
+        key,
+        value,
+        is_causal,
+        softmax_scale,
+        window_size,
+        return_lse,
+    )
+
+
+def flash_dense_attn_varlen_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    return_lse: bool = False,
+):
+    """
+    Flash attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
+
+    :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
+    :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
+    :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
+    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
+    :param max_seqlen_q: Maximum sequence length for queries.
+    :param max_seqlen_k: Maximum sequence length for keys/values.
+    :param is_causal: Whether to apply a causal mask.
+    :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
+    :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
+
+    :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
+    """
+    return FlashAttnVarlenFunc.apply(
+        query,
+        key,
+        value,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        is_causal,
+        softmax_scale,
+        window_size,
+        seqused_q,
+        seqused_k,
+        return_lse,
+    )
 
 
 def flash_attn_func(
