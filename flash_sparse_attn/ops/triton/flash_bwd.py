@@ -640,14 +640,15 @@ def _flash_attn_base_backward(
     out: torch.Tensor,
     dout: torch.Tensor,
     lse: torch.Tensor,
-    softmax_scale: float,
     is_causal: bool = False,
+    softmax_scale: float = None,
     window_size: Tuple[int, int] = (None, None),
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
 
@@ -816,11 +817,11 @@ def _flash_attn_varlen_base_backward(
     out: torch.Tensor,
     dout: torch.Tensor,
     lse: torch.Tensor,
-    softmax_scale: float,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: Optional[int] = None,
     max_seqlen_k: Optional[int] = None,
+    softmax_scale: float = None,
     is_causal: bool = False,
     window_size: Tuple[int, int] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
@@ -833,6 +834,7 @@ def _flash_attn_varlen_base_backward(
     seqlen_k = max_seqlen_k
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
 
