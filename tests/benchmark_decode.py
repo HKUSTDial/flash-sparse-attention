@@ -96,10 +96,10 @@ def benchmark_triton_gated_decode(
     )
     alpha = torch.randn(
         cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
-    ).normal_(0, 0.1)
+    )
     delta = torch.randn(
         cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
-    ).normal_(0, 0.1)
+    )
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
     gate_threshold = 1.0
