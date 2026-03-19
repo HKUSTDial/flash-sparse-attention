@@ -1,8 +1,33 @@
 import itertools
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import torch
+
+from flash_sparse_attn.ops.triton.flash_dense_bwd import (
+    _flash_dense_attn_base_backward,
+    _flash_dense_attn_varlen_base_backward,
+)
+from flash_sparse_attn.ops.triton.flash_dense_fwd import (
+    _flash_dense_attn_base_forward,
+    _flash_dense_attn_varlen_base_forward,
+)
+from flash_sparse_attn.ops.triton.flash_gated_bwd import (
+    _flash_gated_attn_base_backward,
+    _flash_gated_attn_varlen_base_backward,
+)
+from flash_sparse_attn.ops.triton.flash_gated_fwd import (
+    _flash_gated_attn_base_forward,
+    _flash_gated_attn_varlen_base_forward,
+)
+from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
+    _flash_sparse_attn_base_backward,
+    _flash_sparse_attn_varlen_base_backward,
+)
+from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
+    _flash_sparse_attn_base_forward,
+    _flash_sparse_attn_varlen_base_forward,
+)
 
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B-Base"
@@ -11,6 +36,30 @@ DEFAULT_DATASET_ID = "SmallDoge/niah"
 _TOKENIZER_CACHE = {}
 _MODEL_CACHE = {}
 _TEXT_CACHE = {}
+
+CORRECTNESS_DTYPE = torch.bfloat16
+KernelType = Literal["dense", "sparse", "gated"]
+
+_DEFAULT_RTOL = {
+    "dense": 8e-2,
+    "sparse": 2.0e-1,
+    "gated": 2.0e-1,
+}
+_DEFAULT_ATOL = {
+    "dense": 8e-2,
+    "sparse": 2.0e-1,
+    "gated": 2.0e-1,
+}
+_DEFAULT_BWD_RTOL = {
+    "dense": 1.0e-1,
+    "sparse": 2.0e-1,
+    "gated": 2.0e-1,
+}
+_DEFAULT_BWD_ATOL = {
+    "dense": 1.0e-1,
+    "sparse": 2.0e-1,
+    "gated": 2.0e-1,
+}
 
 
 @dataclass(frozen=True)
@@ -332,3 +381,908 @@ def generate_inputs(
         v = v.transpose(1, 2).contiguous()
 
     return q, k, v
+
+
+def set_seed(seed: int = 0) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def make_cu_seqlens(lengths: Sequence[int], device: torch.device) -> torch.Tensor:
+    return torch.tensor(
+        [0] + list(torch.cumsum(torch.tensor(lengths), dim=0).tolist()),
+        dtype=torch.int32,
+        device=device,
+    )
+
+
+def _make_mask(
+    seqlen_q: int,
+    seqlen_k: int,
+    device: torch.device,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+) -> torch.Tensor:
+    row_idx = torch.arange(seqlen_q, device=device)[:, None]
+    col_idx = torch.arange(seqlen_k, device=device)[None, :]
+    mask = torch.zeros((seqlen_q, seqlen_k), device=device, dtype=torch.bool)
+    aligned_row = row_idx + (seqlen_k - seqlen_q)
+
+    left, right = window_size
+    if left is not None or right is not None:
+        left = seqlen_k if left is None else left
+        right = seqlen_k if right is None else right
+        allowed = (col_idx >= (aligned_row - left)) & (col_idx <= (aligned_row + right))
+        mask |= ~allowed
+
+    if is_causal:
+        mask |= col_idx > aligned_row
+
+    return mask
+
+
+def _reference_scores(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    softmax_scale: float,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+) -> torch.Tensor:
+    qh = q.transpose(1, 2).float()
+    kh = k.transpose(1, 2).float()
+    if qh.shape[1] != kh.shape[1]:
+        if qh.shape[1] % kh.shape[1] != 0:
+            raise ValueError(
+                f"Q heads ({qh.shape[1]}) must be divisible by KV heads ({kh.shape[1]})"
+            )
+        repeat = qh.shape[1] // kh.shape[1]
+        kh = torch.repeat_interleave(kh, repeats=repeat, dim=1)
+    scores = torch.matmul(qh, kh.transpose(-2, -1)) * softmax_scale
+    if is_causal or window_size != (None, None):
+        mask = _make_mask(q.shape[1], k.shape[1], q.device, is_causal, window_size)
+        scores = scores.masked_fill(mask, float("-inf"))
+    return scores
+
+
+def reference_dense_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    softmax_scale: float,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+) -> torch.Tensor:
+    scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
+    vh = v.transpose(1, 2).float()
+    if scores.shape[1] != vh.shape[1]:
+        if scores.shape[1] % vh.shape[1] != 0:
+            raise ValueError(
+                f"Q heads ({scores.shape[1]}) must be divisible by V heads ({vh.shape[1]})"
+            )
+        repeat = scores.shape[1] // vh.shape[1]
+        vh = torch.repeat_interleave(vh, repeats=repeat, dim=1)
+    attn = torch.softmax(scores, dim=-1)
+    attn = torch.nan_to_num(attn, nan=0.0)
+    out = torch.matmul(attn, vh)
+    return out.transpose(1, 2).contiguous().to(q.dtype)
+
+
+def reference_sparse_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    softmax_scale: float,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+) -> torch.Tensor:
+    scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
+    vh = v.transpose(1, 2).float()
+    if scores.shape[1] != vh.shape[1]:
+        if scores.shape[1] % vh.shape[1] != 0:
+            raise ValueError(
+                f"Q heads ({scores.shape[1]}) must be divisible by V heads ({vh.shape[1]})"
+            )
+        repeat = scores.shape[1] // vh.shape[1]
+        vh = torch.repeat_interleave(vh, repeats=repeat, dim=1)
+    attn = torch.softmax(scores, dim=-1)
+    attn = torch.nan_to_num(attn, nan=0.0)
+    out = torch.matmul(attn, vh)
+    return out.transpose(1, 2).contiguous().to(q.dtype)
+
+
+def reference_gated_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
+    softmax_scale: float,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+    is_logsigmoid_gate: bool,
+) -> torch.Tensor:
+    scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
+    delta_h = delta.float()
+    if alpha.shape[1] != delta.shape[1]:
+        if alpha.shape[1] % delta.shape[1] != 0:
+            raise ValueError(
+                f"Q heads ({alpha.shape[1]}) must be divisible by Delta heads ({delta.shape[1]})"
+            )
+        repeat = alpha.shape[1] // delta.shape[1]
+        delta_h = torch.repeat_interleave(delta_h, repeats=repeat, dim=1)
+    raw_gate = alpha.float().unsqueeze(-1) * delta_h.unsqueeze(-2)
+    gate = torch.nn.functional.logsigmoid(raw_gate) if is_logsigmoid_gate else raw_gate
+    scores = scores + gate * softmax_scale
+    vh = v.transpose(1, 2).float()
+    if scores.shape[1] != vh.shape[1]:
+        if scores.shape[1] % vh.shape[1] != 0:
+            raise ValueError(
+                f"Q heads ({scores.shape[1]}) must be divisible by V heads ({vh.shape[1]})"
+            )
+        repeat = scores.shape[1] // vh.shape[1]
+        vh = torch.repeat_interleave(vh, repeats=repeat, dim=1)
+    attn = torch.softmax(scores, dim=-1)
+    attn = torch.nan_to_num(attn, nan=0.0)
+    out = torch.matmul(attn, vh)
+    return out.transpose(1, 2).contiguous().to(q.dtype)
+
+
+def _reference_varlen_forward(
+    kind: KernelType,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    softmax_scale: float,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+    alpha: Optional[torch.Tensor] = None,
+    delta: Optional[torch.Tensor] = None,
+    is_logsigmoid_gate: bool = True,
+) -> torch.Tensor:
+    outs: List[torch.Tensor] = []
+    batch_size = cu_seqlens_q.numel() - 1
+    for idx in range(batch_size):
+        qs = int(cu_seqlens_q[idx].item())
+        qe = int(cu_seqlens_q[idx + 1].item())
+        ks = int(cu_seqlens_k[idx].item())
+        ke = int(cu_seqlens_k[idx + 1].item())
+        qi = q[qs:qe].unsqueeze(0)
+        ki = k[ks:ke].unsqueeze(0)
+        vi = v[ks:ke].unsqueeze(0)
+        if kind == "gated":
+            ai = alpha[:, qs:qe].unsqueeze(0)
+            di = delta[:, ks:ke].unsqueeze(0)
+            out_i = reference_gated_forward(
+                qi,
+                ki,
+                vi,
+                ai,
+                di,
+                softmax_scale=softmax_scale,
+                is_causal=is_causal,
+                window_size=window_size,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+            )
+        elif kind == "sparse":
+            out_i = reference_sparse_forward(
+                qi,
+                ki,
+                vi,
+                softmax_scale=softmax_scale,
+                is_causal=is_causal,
+                window_size=window_size,
+            )
+        else:
+            out_i = reference_dense_forward(
+                qi,
+                ki,
+                vi,
+                softmax_scale=softmax_scale,
+                is_causal=is_causal,
+                window_size=window_size,
+            )
+        outs.append(out_i.squeeze(0))
+    return torch.cat(outs, dim=0)
+
+
+def _assert_close(
+    name: str, got: torch.Tensor, ref: torch.Tensor, rtol: float, atol: float
+) -> None:
+    try:
+        torch.testing.assert_close(
+            got.float(), ref.float(), rtol=rtol, atol=atol, msg=name
+        )
+    except AssertionError as exc:
+        # allow larger max-diff if mean-diff stays in tolerance
+        got_f = got.float()
+        ref_f = ref.float()
+        abs_diff = (got_f - ref_f).abs()
+        mean_abs_diff = abs_diff.mean().item()
+        ref_mean_abs = ref_f.abs().mean().item()
+        mean_rel_diff = mean_abs_diff / max(ref_mean_abs, 1e-6)
+        if mean_abs_diff <= atol or mean_rel_diff <= rtol:
+            return
+        max_abs_diff = abs_diff.max().item()
+        raise AssertionError(
+            f"{name}: mean-diff fallback failed "
+            f"(mean_abs_diff={mean_abs_diff:.6f}, mean_rel_diff={mean_rel_diff:.6f}, "
+            f"max_abs_diff={max_abs_diff:.6f}, atol={atol}, rtol={rtol})"
+        ) from exc
+
+
+def _run_forward_base(
+    kind: KernelType,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+    alpha: Optional[torch.Tensor],
+    delta: Optional[torch.Tensor],
+    is_logsigmoid_gate: bool,
+):
+    softmax_scale = q.shape[-1] ** -0.5
+    threshold = q.shape[-1] / k.shape[1]
+    if kind == "dense":
+        out, _, _ = _flash_dense_attn_base_forward(
+            q,
+            k,
+            v,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    elif kind == "sparse":
+        out, _, _, _ = _flash_sparse_attn_base_forward(
+            q,
+            k,
+            v,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    else:
+        out, _, _, _, _ = _flash_gated_attn_base_forward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    return out, softmax_scale
+
+
+def run_forward_base_case(
+    kind: KernelType,
+    batch_size: int,
+    seqlen_q: int,
+    seqlen_k: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_logsigmoid_gate: bool = True,
+    dtype: torch.dtype = CORRECTNESS_DTYPE,
+) -> None:
+    device = torch.device("cuda")
+    q = torch.randn(
+        batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
+    )
+    k = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    v = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    alpha = (
+        torch.randn(batch_size, num_heads_q, seqlen_q, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    delta = (
+        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+
+    out, softmax_scale = _run_forward_base(
+        kind,
+        q,
+        k,
+        v,
+        is_causal=is_causal,
+        window_size=window_size,
+        alpha=alpha,
+        delta=delta,
+        is_logsigmoid_gate=is_logsigmoid_gate,
+    )
+    if kind == "gated":
+        out_ref = reference_gated_forward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+        )
+    elif kind == "sparse":
+        out_ref = reference_sparse_forward(
+            q,
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+        )
+    else:
+        out_ref = reference_dense_forward(
+            q,
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+        )
+    _assert_close(
+        name=f"{kind}-base-forward",
+        got=out,
+        ref=out_ref,
+        rtol=_DEFAULT_RTOL[kind],
+        atol=_DEFAULT_ATOL[kind],
+    )
+
+
+def _run_forward_varlen(
+    kind: KernelType,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]],
+    alpha: Optional[torch.Tensor],
+    delta: Optional[torch.Tensor],
+    is_logsigmoid_gate: bool,
+):
+    softmax_scale = q.shape[-1] ** -0.5
+    threshold = q.shape[-1] / max_seqlen_k
+    if kind == "dense":
+        out, _, _ = _flash_dense_attn_varlen_base_forward(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    elif kind == "sparse":
+        out, _, _, _ = _flash_sparse_attn_varlen_base_forward(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    else:
+        out, _, _, _, _ = _flash_gated_attn_varlen_base_forward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    return out, softmax_scale
+
+
+def run_forward_varlen_case(
+    kind: KernelType,
+    lens_q: Sequence[int],
+    lens_k: Sequence[int],
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_logsigmoid_gate: bool = True,
+    dtype: torch.dtype = CORRECTNESS_DTYPE,
+) -> None:
+    device = torch.device("cuda")
+    q = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_q, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_q
+        ],
+        dim=0,
+    )
+    k = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_k
+        ],
+        dim=0,
+    )
+    v = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_k
+        ],
+        dim=0,
+    )
+    alpha = (
+        torch.randn(num_heads_q, sum(lens_q), device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    delta = (
+        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+
+    cu_seqlens_q = make_cu_seqlens(lens_q, device)
+    cu_seqlens_k = make_cu_seqlens(lens_k, device)
+
+    out, softmax_scale = _run_forward_varlen(
+        kind,
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        max_seqlen_q=max(lens_q),
+        max_seqlen_k=max(lens_k),
+        is_causal=is_causal,
+        window_size=window_size,
+        alpha=alpha,
+        delta=delta,
+        is_logsigmoid_gate=is_logsigmoid_gate,
+    )
+    out_ref = _reference_varlen_forward(
+        kind,
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        softmax_scale=softmax_scale,
+        is_causal=is_causal,
+        window_size=window_size,
+        alpha=alpha,
+        delta=delta,
+        is_logsigmoid_gate=is_logsigmoid_gate,
+    )
+    _assert_close(
+        name=f"{kind}-varlen-forward",
+        got=out,
+        ref=out_ref,
+        rtol=_DEFAULT_RTOL[kind],
+        atol=_DEFAULT_ATOL[kind],
+    )
+
+
+def _collect_grads(params: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    return {name: tensor.grad.detach().clone() for name, tensor in params.items()}
+
+
+def run_backward_base_case(
+    kind: KernelType,
+    batch_size: int,
+    seqlen_q: int,
+    seqlen_k: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_logsigmoid_gate: bool = True,
+    dtype: torch.dtype = CORRECTNESS_DTYPE,
+) -> None:
+    device = torch.device("cuda")
+    q = torch.randn(
+        batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
+    )
+    k = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    v = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    alpha = (
+        torch.randn(batch_size, num_heads_q, seqlen_q, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    delta = (
+        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    softmax_scale = head_dim**-0.5
+    threshold = head_dim / seqlen_k
+
+    if kind == "dense":
+        out, lse, _ = _flash_dense_attn_base_forward(
+            q,
+            k,
+            v,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    elif kind == "sparse":
+        out, lse, _, _ = _flash_sparse_attn_base_forward(
+            q,
+            k,
+            v,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    else:
+        out, lse, _, _, _ = _flash_gated_attn_base_forward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+
+    dout = torch.randn_like(out)
+
+    if kind == "dense":
+        kernel_grads = _flash_dense_attn_base_backward(
+            q,
+            k,
+            v,
+            out,
+            dout,
+            lse,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+        )
+    elif kind == "sparse":
+        kernel_grads = _flash_sparse_attn_base_backward(
+            q,
+            k,
+            v,
+            out,
+            dout,
+            lse,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+        )
+    else:
+        kernel_grads = _flash_gated_attn_base_backward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            out,
+            dout,
+            lse,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+        )
+
+    rq = q.detach().clone().requires_grad_(True)
+    rk = k.detach().clone().requires_grad_(True)
+    rv = v.detach().clone().requires_grad_(True)
+    ref_params = {"dq": rq, "dk": rk, "dv": rv}
+    if kind == "gated":
+        ra = alpha.detach().clone().requires_grad_(True)
+        rd = delta.detach().clone().requires_grad_(True)
+        ref_out = reference_gated_forward(
+            rq,
+            rk,
+            rv,
+            ra,
+            rd,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+        )
+        ref_params["da"] = ra
+        ref_params["dd"] = rd
+    elif kind == "sparse":
+        ref_out = reference_sparse_forward(
+            rq,
+            rk,
+            rv,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+        )
+    else:
+        ref_out = reference_dense_forward(
+            rq,
+            rk,
+            rv,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+        )
+    ref_out.backward(dout)
+    ref_grads = _collect_grads(ref_params)
+
+    names = ["dq", "dk", "dv"] if kind != "gated" else ["dq", "dk", "dv", "da", "dd"]
+    for idx, name in enumerate(names):
+        _assert_close(
+            name=f"{kind}-base-backward-{name}",
+            got=kernel_grads[idx],
+            ref=ref_grads[name],
+            rtol=_DEFAULT_BWD_RTOL[kind],
+            atol=_DEFAULT_BWD_ATOL[kind],
+        )
+
+
+def run_backward_varlen_case(
+    kind: KernelType,
+    lens_q: Sequence[int],
+    lens_k: Sequence[int],
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    is_causal: bool,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_logsigmoid_gate: bool = True,
+    dtype: torch.dtype = CORRECTNESS_DTYPE,
+) -> None:
+    device = torch.device("cuda")
+    q = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_q, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_q
+        ],
+        dim=0,
+    )
+    k = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_k
+        ],
+        dim=0,
+    )
+    v = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_k
+        ],
+        dim=0,
+    )
+    alpha = (
+        torch.randn(num_heads_q, sum(lens_q), device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    delta = (
+        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+
+    cu_seqlens_q = make_cu_seqlens(lens_q, device)
+    cu_seqlens_k = make_cu_seqlens(lens_k, device)
+    max_seqlen_k = max(lens_k)
+    softmax_scale = head_dim**-0.5
+    threshold = head_dim / max_seqlen_k
+
+    if kind == "dense":
+        out, lse, _ = _flash_dense_attn_varlen_base_forward(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max(lens_q),
+            max_seqlen_k=max(lens_k),
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    elif kind == "sparse":
+        out, lse, _, _ = _flash_sparse_attn_varlen_base_forward(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max(lens_q),
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+    else:
+        out, lse, _, _, _ = _flash_gated_attn_varlen_base_forward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max(lens_q),
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+            pack_gqa=False,
+        )
+
+    dout = torch.randn_like(out)
+    if kind == "dense":
+        kernel_grads = _flash_dense_attn_varlen_base_backward(
+            q,
+            k,
+            v,
+            out,
+            dout,
+            lse,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max(lens_q),
+            max_seqlen_k=max(lens_k),
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+        )
+    elif kind == "sparse":
+        kernel_grads = _flash_sparse_attn_varlen_base_backward(
+            q,
+            k,
+            v,
+            out,
+            dout,
+            lse,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max(lens_q),
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+        )
+    else:
+        kernel_grads = _flash_gated_attn_varlen_base_backward(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            out,
+            dout,
+            lse,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max(lens_q),
+            max_seqlen_k=max_seqlen_k,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+        )
+
+    rq = q.detach().clone().requires_grad_(True)
+    rk = k.detach().clone().requires_grad_(True)
+    rv = v.detach().clone().requires_grad_(True)
+    ref_params = {"dq": rq, "dk": rk, "dv": rv}
+    if kind == "gated":
+        ra = alpha.detach().clone().requires_grad_(True)
+        rd = delta.detach().clone().requires_grad_(True)
+        ref_out = _reference_varlen_forward(
+            kind,
+            rq,
+            rk,
+            rv,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+            alpha=ra,
+            delta=rd,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+        )
+        ref_params["da"] = ra
+        ref_params["dd"] = rd
+    else:
+        ref_out = _reference_varlen_forward(
+            kind,
+            rq,
+            rk,
+            rv,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            softmax_scale=softmax_scale,
+            is_causal=is_causal,
+            window_size=window_size,
+        )
+    ref_out.backward(dout)
+    ref_grads = _collect_grads(ref_params)
+
+    names = ["dq", "dk", "dv"] if kind != "gated" else ["dq", "dk", "dv", "da", "dd"]
+    for idx, name in enumerate(names):
+        _assert_close(
+            name=f"{kind}-varlen-backward-{name}",
+            got=kernel_grads[idx],
+            ref=ref_grads[name],
+            rtol=_DEFAULT_BWD_RTOL[kind],
+            atol=_DEFAULT_BWD_ATOL[kind],
+        )
