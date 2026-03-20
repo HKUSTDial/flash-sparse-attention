@@ -97,6 +97,25 @@ def _bwd_inner_gated_base_kernel(
         # Compute attention scores
         acc_s += tl.dot(k_tile, q_tile)
 
+        if IS_MASK:
+            # Apply mask
+            acc_s = mask.apply_mask(
+                acc_s=acc_s,
+                m_block=m_block,
+                n_block=n_block,
+                seqlen_q=actual_seqlen_q,
+                seqlen_k=actual_seqlen_k,
+                MASK_SEQLEN=True,
+                MASK_CAUSAL=MASK_CAUSAL,
+                MASK_LOCAL=MASK_LOCAL,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=1,
+                SWAP_AB=True,
+            )
+
         # Compute current block max
         block_max_curr = tl.max(acc_s)
 
@@ -113,25 +132,6 @@ def _bwd_inner_gated_base_kernel(
 
             # Advance LSE pointer
             lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
-
-            if IS_MASK:
-                # Apply mask
-                acc_s = mask.apply_mask(
-                    acc_s=acc_s,
-                    m_block=m_block,
-                    n_block=n_block,
-                    seqlen_q=actual_seqlen_q,
-                    seqlen_k=actual_seqlen_k,
-                    MASK_SEQLEN=True,
-                    MASK_CAUSAL=MASK_CAUSAL,
-                    MASK_LOCAL=MASK_LOCAL,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=1,
-                    SWAP_AB=True,
-                )
 
             # Compute attention weights
             p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
