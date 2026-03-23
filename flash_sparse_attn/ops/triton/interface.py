@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 
@@ -585,7 +585,7 @@ def flash_dense_attn_func(
     softmax_scale: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
-):
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash dense attention function that computes the attention output and optionally the logsumexp.
 
@@ -624,7 +624,7 @@ def flash_dense_attn_varlen_func(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
-):
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash dense attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
 
@@ -670,7 +670,7 @@ def flash_sparse_attn_func(
     softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
-):
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash sparse attention function that computes the attention output and optionally the logsumexp.
 
@@ -712,7 +712,7 @@ def flash_sparse_attn_varlen_func(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
-):
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash sparse attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
 
@@ -765,7 +765,7 @@ def flash_gated_attn_func(
     is_adapt_gate: bool = True,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
-):
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash gated attention function that computes the attention output and optionally the logsumexp.
 
@@ -822,7 +822,7 @@ def flash_gated_attn_varlen_func(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
-):
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash gated attention function for variable-length sequences that computes the attention output and optionally the logsumexp.
 
