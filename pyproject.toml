@@ -44,6 +44,12 @@ dev = [
   "pytest-benchmark",
   "numpy"
 ]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.28",
+  "pymdown-extensions>=10.0"
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "flash_sparse_attn.__version__" }
