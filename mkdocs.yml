@@ -1,0 +1,45 @@
+site_name: flash-sparse-attn
+site_description: Flash Sparse Attention documentation
+site_url: https://hkustdial.github.io/flash-sparse-attention/
+repo_url: https://github.com/HKUSTDial/flash-sparse-attention
+repo_name: HKUSTDial/flash-sparse-attention
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.instant
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - .
+          options:
+            docstring_style: sphinx
+            show_root_heading: true
+            show_root_toc_entry: true
+            show_source: false
+            show_signature_annotations: true
+            members_order: source
+            filters:
+              - "!^_"
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+
+nav:
+  - API: api.md
+
+watch:
+  - flash_sparse_attn
+  - docs
