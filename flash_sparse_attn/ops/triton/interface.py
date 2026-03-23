@@ -597,8 +597,7 @@ def flash_dense_attn_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
-    :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
+    :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
     """
     return FlashDenseAttnFunc.apply(
         query,
@@ -643,8 +642,7 @@ def flash_dense_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
-    :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
+    :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
     """
     return FlashDenseAttnVarlenFunc.apply(
         query,
@@ -685,8 +683,7 @@ def flash_sparse_attn_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
-    :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
+    :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
     """
     return FlashSparseAttnFunc.apply(
         query,
@@ -734,8 +731,7 @@ def flash_sparse_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
-    :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
+    :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
     """
     return FlashSparseAttnVarlenFunc.apply(
         query,
@@ -787,8 +783,7 @@ def flash_gated_attn_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :return out: Attention output tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
-    :return lse: Logsumexp tensor of shape [batch_size, num_heads, seqlen_q] if return_lse is True. Otherwise, not returned.
+    :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
     """
     return FlashGatedAttnFunc.apply(
         query,
@@ -851,8 +846,7 @@ def flash_gated_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :return out: Attention output tensor of shape [total_seqlen_q, num_heads_q, head_dim].
-    :return lse: Logsumexp tensor of shape [total_seqlen_q, num_heads_q] if return_lse is True. Otherwise, not returned.
+    :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
     """
     return FlashGatedAttnVarlenFunc.apply(
         query,
