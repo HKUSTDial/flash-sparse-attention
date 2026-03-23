@@ -32,15 +32,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ninja packaging wheel twine
-          pip install setuptools==75.8.0
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --upgrade pip
+          pip install build twine
 
-      - name: Build core package
-        env:
-          FLASH_SPARSE_ATTENTION_SKIP_CUDA_BUILD: "TRUE"
+      - name: Build package artifacts
         run: |
-          python setup.py sdist --dist-dir=dist
+          python -m build
           ls -l dist
 
       - name: Deploy
