@@ -1,6 +1,3 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
 param(
     [switch]$Init,
     [string]$UpstreamRepo = "https://github.com/Dao-AILab/flash-attention.git",
@@ -9,8 +6,14 @@ param(
     [string]$TempBranch = "sync/cute-upstream-temp",
     [string]$CacheDir = ".ref_repo/flash-attention",
     [switch]$SkipFetch,
-    [switch]$KeepTempBranch
+    [switch]$KeepTempBranch,
+    [switch]$NoTemporaryWorktree
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RewriteCommitMessage = "Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
 
 function Test-GitRemoteSpec {
     param(
@@ -75,8 +78,248 @@ function Test-WorktreeClean {
     }
 }
 
+function Get-DirtyStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo
+    )
+
+    return Get-GitOutput -Repo $Repo -Arguments @("status", "--porcelain")
+}
+
+function Test-IsGitRepo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo
+    )
+
+    & git -C $Repo rev-parse --show-toplevel *> $null
+    return $LASTEXITCODE -eq 0
+}
+
+function Ensure-GitIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo
+    )
+
+    $currentName = (& git -C $Repo config --get user.name) 2>$null
+    $currentEmail = (& git -C $Repo config --get user.email) 2>$null
+
+    if ($currentName -and $currentEmail) {
+        return
+    }
+
+    $fallbackName = Get-GitOutput -Repo $Repo -Arguments @("log", "-1", "--format=%an")
+    $fallbackEmail = Get-GitOutput -Repo $Repo -Arguments @("log", "-1", "--format=%ae")
+
+    if (-not $currentName) {
+        Invoke-Git -Repo $Repo -Arguments @("config", "user.name", $fallbackName)
+    }
+    if (-not $currentEmail) {
+        Invoke-Git -Repo $Repo -Arguments @("config", "user.email", $fallbackEmail)
+    }
+}
+
+function Get-CommitSubject {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo,
+        [Parameter(Mandatory = $true)]
+        [string]$Commit
+    )
+
+    return Get-GitOutput -Repo $Repo -Arguments @("log", "-1", "--format=%s", $Commit)
+}
+
+function Invoke-CoreSync {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WorkRepoRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$UpstreamRepoForSplit,
+        [Parameter(Mandatory = $true)]
+        [string]$Prefix,
+        [Parameter(Mandatory = $true)]
+        [string]$UpstreamPrefix,
+        [Parameter(Mandatory = $true)]
+        [string]$TempBranch,
+        [Parameter(Mandatory = $true)]
+        [string]$RewriteScript,
+        [switch]$Init,
+        [switch]$SkipFetch,
+        [switch]$KeepTempBranch
+    )
+
+    $cutlassRepo = Join-Path $WorkRepoRoot "csrc/cutlass"
+    $targetPath = Join-Path $WorkRepoRoot $Prefix
+    $startHead = Get-GitOutput -Repo $WorkRepoRoot -Arguments @("rev-parse", "HEAD")
+
+    Invoke-Git -Repo $WorkRepoRoot -Arguments @("rev-parse", "--show-toplevel") | Out-Null
+    Invoke-Git -Repo $UpstreamRepoForSplit -Arguments @("rev-parse", "--show-toplevel") | Out-Null
+
+    Test-WorktreeClean -Repo $WorkRepoRoot -Label "Superproject"
+    if ((Test-Path $cutlassRepo) -and (Test-IsGitRepo -Repo $cutlassRepo)) {
+        Test-WorktreeClean -Repo $cutlassRepo -Label "csrc/cutlass submodule"
+    }
+
+    if (-not $SkipFetch) {
+        Write-Host "Fetching latest upstream changes from origin..."
+        Invoke-Git -Repo $UpstreamRepoForSplit -Arguments @("fetch", "origin")
+    }
+
+    Write-Host "Splitting upstream history for $UpstreamPrefix ..."
+    $splitCommit = Get-GitOutput -Repo $UpstreamRepoForSplit -Arguments @("subtree", "split", "--prefix=$UpstreamPrefix", "HEAD")
+    Invoke-Git -Repo $UpstreamRepoForSplit -Arguments @("branch", "-f", $TempBranch, $splitCommit)
+
+    try {
+        if ($Init) {
+            if (Test-Path $targetPath) {
+                throw "$Prefix already exists. Remove -Init to do an update instead."
+            }
+
+            Write-Host "Adding subtree into $Prefix ..."
+            Invoke-Git -Repo $WorkRepoRoot -Arguments @("subtree", "add", "--prefix=$Prefix", $UpstreamRepoForSplit, $TempBranch)
+        }
+        else {
+            if (-not (Test-Path $targetPath)) {
+                throw "$Prefix does not exist yet. Run this script once with -Init first."
+            }
+
+            Write-Host "Pulling upstream updates into $Prefix ..."
+            Invoke-Git -Repo $WorkRepoRoot -Arguments @("subtree", "pull", "--prefix=$Prefix", $UpstreamRepoForSplit, $TempBranch)
+        }
+    }
+    finally {
+        if (-not $KeepTempBranch) {
+            Invoke-Git -Repo $UpstreamRepoForSplit -Arguments @("update-ref", "-d", "refs/heads/$TempBranch")
+        }
+    }
+
+    Write-Host "Rewriting vendored CuTe imports to flash_sparse_attn.ops.cute ..."
+    & python $RewriteScript $targetPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "python $RewriteScript $targetPath failed with exit code $LASTEXITCODE"
+    }
+
+    $prefixStatus = Get-GitOutput -Repo $WorkRepoRoot -Arguments @("status", "--porcelain", "--", $Prefix)
+    if ($prefixStatus) {
+        Ensure-GitIdentity -Repo $WorkRepoRoot
+        Invoke-Git -Repo $WorkRepoRoot -Arguments @("add", "--", $Prefix)
+        Invoke-Git -Repo $WorkRepoRoot -Arguments @("commit", "-m", "Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute")
+    }
+
+    $endHead = Get-GitOutput -Repo $WorkRepoRoot -Arguments @("rev-parse", "HEAD")
+    return [PSCustomObject]@{
+        StartHead = $startHead
+        EndHead = $endHead
+    }
+}
+
+function Invoke-TemporaryWorktreeSync {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$UpstreamRepoForSplit,
+        [Parameter(Mandatory = $true)]
+        [string]$Prefix,
+        [Parameter(Mandatory = $true)]
+        [string]$UpstreamPrefix,
+        [Parameter(Mandatory = $true)]
+        [string]$TempBranch,
+        [Parameter(Mandatory = $true)]
+        [string]$RewriteScript,
+        [switch]$Init,
+        [switch]$SkipFetch,
+        [switch]$KeepTempBranch
+    )
+
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $tempBranchName = "sync/cute-worktree-$timestamp"
+    $tempWorktree = Join-Path (Split-Path $RepoRoot -Parent) ".cute-sync-worktree-$timestamp"
+    $originalHead = Get-GitOutput -Repo $RepoRoot -Arguments @("rev-parse", "HEAD")
+
+    Write-Host "Current worktree is dirty. Syncing in temporary worktree at $tempWorktree ..."
+    Invoke-Git -Repo $RepoRoot -Arguments @("worktree", "add", "-b", $tempBranchName, $tempWorktree, $originalHead)
+
+    $stashName = "sync-cute-autostash-$timestamp"
+    $stashCreated = $false
+
+    try {
+        $result = Invoke-CoreSync -WorkRepoRoot $tempWorktree -UpstreamRepoForSplit $UpstreamRepoForSplit -Prefix $Prefix -UpstreamPrefix $UpstreamPrefix -TempBranch $TempBranch -RewriteScript $RewriteScript -Init:$Init -SkipFetch:$SkipFetch -KeepTempBranch:$KeepTempBranch
+
+        $commitListOutput = Get-GitOutput -Repo $tempWorktree -Arguments @("rev-list", "--reverse", "HEAD", "^$originalHead")
+        $commits = @()
+        if ($commitListOutput) {
+            $commits = $commitListOutput -split "`r?`n" | Where-Object { $_ }
+        }
+
+        if ($commits.Count -eq 0) {
+            Write-Host "No new subtree commits were created."
+            return $result
+        }
+
+        $currentStatus = Get-DirtyStatus -Repo $RepoRoot
+        $currentPrefixStatus = Get-GitOutput -Repo $RepoRoot -Arguments @("status", "--porcelain", "--", $Prefix)
+        if ($currentStatus) {
+            Write-Host "Stashing current worktree before cherry-picking synced commits back ..."
+            Invoke-Git -Repo $RepoRoot -Arguments @("stash", "push", "-u", "-m", $stashName)
+            $stashCreated = $true
+        }
+
+        $commitsToCherryPick = @()
+        $applyRewriteAfterRestore = $false
+        foreach ($commit in $commits) {
+            if ($currentPrefixStatus -and (Get-CommitSubject -Repo $tempWorktree -Commit $commit) -eq $RewriteCommitMessage) {
+                $applyRewriteAfterRestore = $true
+                continue
+            }
+            $commitsToCherryPick += $commit
+        }
+
+        try {
+            foreach ($commit in $commitsToCherryPick) {
+                Write-Host "Cherry-picking $commit back into current worktree ..."
+                Ensure-GitIdentity -Repo $RepoRoot
+                Invoke-Git -Repo $RepoRoot -Arguments @("cherry-pick", $commit)
+            }
+        }
+        catch {
+            throw "Cherry-pick failed. Resolve the cherry-pick in the current worktree manually."
+        }
+
+        if ($stashCreated) {
+            try {
+                Write-Host "Restoring stashed local changes ..."
+                Invoke-Git -Repo $RepoRoot -Arguments @("stash", "pop")
+            }
+            catch {
+                throw "Cherry-pick succeeded, but restoring stashed local changes failed. Resolve the stash pop manually with git stash list / git stash pop."
+            }
+        }
+
+        if ($applyRewriteAfterRestore) {
+            Write-Host "Applying CuTe namespace rewrite in current worktree after restoring local changes ..."
+            & python $RewriteScript (Join-Path $RepoRoot $Prefix)
+            if ($LASTEXITCODE -ne 0) {
+                throw "python $RewriteScript $(Join-Path $RepoRoot $Prefix) failed with exit code $LASTEXITCODE"
+            }
+            Write-Host "Namespace rewrite was applied in the current worktree without creating an extra commit because local changes already exist under $Prefix."
+        }
+
+        return $result
+    }
+    finally {
+        & git -C $RepoRoot worktree remove --force $tempWorktree *> $null
+        & git -C $RepoRoot branch -D $tempBranchName *> $null
+    }
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$repoRoot = $repoRoot.Path
 Set-Location $repoRoot
+$rewriteScript = Join-Path $repoRoot "scripts/rewrite_cute_namespace.py"
 
 $cacheRepo = Join-Path $repoRoot $CacheDir
 $upstreamRepoForSplit = $null
@@ -102,48 +345,19 @@ else {
 $cutlassRepo = Join-Path $repoRoot "csrc/cutlass"
 $targetPath = Join-Path $repoRoot $Prefix
 
-Invoke-Git -Arguments @("rev-parse", "--show-toplevel") | Out-Null
-Invoke-Git -Repo $upstreamRepoForSplit -Arguments @("rev-parse", "--show-toplevel") | Out-Null
-
-Test-WorktreeClean -Repo $repoRoot -Label "Superproject"
-if (Test-Path $cutlassRepo) {
-    Test-WorktreeClean -Repo $cutlassRepo -Label "csrc/cutlass submodule"
+$dirtyStatus = Get-DirtyStatus -Repo $repoRoot
+if ($dirtyStatus -and -not $NoTemporaryWorktree) {
+    $syncResult = Invoke-TemporaryWorktreeSync -RepoRoot $repoRoot -UpstreamRepoForSplit $upstreamRepoForSplit -Prefix $Prefix -UpstreamPrefix $UpstreamPrefix -TempBranch $TempBranch -RewriteScript $rewriteScript -Init:$Init -SkipFetch:$SkipFetch -KeepTempBranch:$KeepTempBranch
 }
-
-if (-not $SkipFetch) {
-    Write-Host "Fetching latest upstream changes from origin..."
-    Invoke-Git -Repo $upstreamRepoForSplit -Arguments @("fetch", "origin")
-}
-
-Write-Host "Splitting upstream history for $UpstreamPrefix ..."
-$splitCommit = Get-GitOutput -Repo $upstreamRepoForSplit -Arguments @("subtree", "split", "--prefix=$UpstreamPrefix", "HEAD")
-Invoke-Git -Repo $upstreamRepoForSplit -Arguments @("branch", "-f", $TempBranch, $splitCommit)
-
-try {
-    if ($Init) {
-        if (Test-Path $targetPath) {
-            throw "$Prefix already exists. Remove -Init to do an update instead."
-        }
-
-        Write-Host "Adding subtree into $Prefix ..."
-        Invoke-Git -Arguments @("subtree", "add", "--prefix=$Prefix", $upstreamRepoForSplit, $TempBranch)
+else {
+    if ($dirtyStatus) {
+        throw "Superproject has uncommitted changes and -NoTemporaryWorktree was set.`n$dirtyStatus"
     }
-    else {
-        if (-not (Test-Path $targetPath)) {
-            throw "$Prefix does not exist yet. Run this script once with -Init first."
-        }
-
-        Write-Host "Pulling upstream updates into $Prefix ..."
-        Invoke-Git -Arguments @("subtree", "pull", "--prefix=$Prefix", $upstreamRepoForSplit, $TempBranch)
-    }
-}
-finally {
-    if (-not $KeepTempBranch) {
-        Invoke-Git -Repo $upstreamRepoForSplit -Arguments @("update-ref", "-d", "refs/heads/$TempBranch")
-    }
+    $syncResult = Invoke-CoreSync -WorkRepoRoot $repoRoot -UpstreamRepoForSplit $upstreamRepoForSplit -Prefix $Prefix -UpstreamPrefix $UpstreamPrefix -TempBranch $TempBranch -RewriteScript $rewriteScript -Init:$Init -SkipFetch:$SkipFetch -KeepTempBranch:$KeepTempBranch
 }
 
 Write-Host "Done."
 Write-Host "Upstream source: $UpstreamRepo"
 Write-Host "Upstream cache used for subtree split: $upstreamRepoForSplit"
+Write-Host "Synced commit range: $($syncResult.StartHead) -> $($syncResult.EndHead)"
 Write-Host "Local edits inside $Prefix stay in this repo and future upstream changes can be merged by rerunning this script without -Init."
