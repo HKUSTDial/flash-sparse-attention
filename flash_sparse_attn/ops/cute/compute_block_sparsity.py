@@ -6,13 +6,13 @@ import cutlass.cute as cute
 import torch
 from cutlass import Boolean, Int8, Int32, const_expr
 
-from flash_attn.cute.block_sparsity import (
+from flash_sparse_attn.ops.cute.block_sparsity import (
     BlockSparseTensors,
     BlockSparseTensorsTorch,
     to_cute_block_sparse_tensors,
 )
-from flash_attn.cute.utils import hash_callable, scalar_to_ssa, ssa_to_scalar
-from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_sparse_attn.ops.cute.utils import hash_callable, scalar_to_ssa, ssa_to_scalar
+from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
 
 
 class BlockSparsityKernel:
