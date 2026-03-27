@@ -14,6 +14,7 @@ NO_TEMPORARY_WORKTREE=0
 TEMP_WORKTREE_PATH=""
 TEMP_WORKTREE_BRANCH=""
 REWRITE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
+UPSTREAM_SPLIT_REF="HEAD"
 
 usage() {
     cat <<'EOF'
@@ -44,6 +45,14 @@ invoke_git() {
         exit 1
     fi
     git "$@"
+}
+
+invoke_git_no_merge_edit() {
+    if [[ $# -lt 1 ]]; then
+        echo "invoke_git_no_merge_edit requires arguments" >&2
+        exit 1
+    fi
+    GIT_MERGE_AUTOEDIT=no git "$@"
 }
 
 git_output() {
@@ -98,10 +107,78 @@ ensure_git_identity() {
     fi
 }
 
+resolve_remote_default_ref() {
+    local repo="$1"
+    local remote_ref
+
+    remote_ref="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [[ -n "$remote_ref" ]]; then
+        printf '%s\n' "$remote_ref"
+        return
+    fi
+
+    git -C "$repo" remote set-head origin --auto >/dev/null 2>&1 || true
+    remote_ref="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [[ -n "$remote_ref" ]]; then
+        printf '%s\n' "$remote_ref"
+        return
+    fi
+
+    printf 'origin/main\n'
+}
+
 get_commit_subject() {
     local repo="$1"
     local commit="$2"
     git -C "$repo" log -1 --format=%s "$commit"
+}
+
+get_prefix_split_commit() {
+    local repo="$1"
+    local prefix="$2"
+    git -C "$repo" subtree split --prefix="$prefix" HEAD | tail -n 1 | tr -d '\r'
+}
+
+commit_is_ancestor() {
+    local repo="$1"
+    local older_commit="$2"
+    local newer_commit="$3"
+
+    git -C "$repo" merge-base --is-ancestor "$older_commit" "$newer_commit"
+}
+
+assert_sync_contains_upstream() {
+    local repo="$1"
+    local upstream_split_commit="$2"
+    local local_split_commit="$3"
+    local previous_local_split_commit="${4:-}"
+
+    if commit_is_ancestor "$repo" "$upstream_split_commit" "$local_split_commit"; then
+        return
+    fi
+
+    echo "Subtree sync did not incorporate the upstream split commit." >&2
+    echo "Upstream split commit: $upstream_split_commit" >&2
+    echo "Local prefix split after sync: $local_split_commit" >&2
+    if [[ -n "$previous_local_split_commit" ]]; then
+        echo "Local prefix split before sync: $previous_local_split_commit" >&2
+        if [[ "$previous_local_split_commit" == "$local_split_commit" ]]; then
+            echo "The local prefix split did not change even though upstream has newer CuTe commits." >&2
+        fi
+    fi
+    echo "git subtree pull reported success, but the vendored prefix still does not contain the upstream split lineage." >&2
+    exit 1
+}
+
+get_commit_parent_count() {
+    local repo="$1"
+    local commit="$2"
+    local rev_line
+    local rev_fields
+
+    rev_line="$(git -C "$repo" rev-list --parents -n 1 "$commit")"
+    read -r -a rev_fields <<< "$rev_line"
+    printf '%s\n' "$(( ${#rev_fields[@]} - 1 ))"
 }
 
 cleanup_worktree() {
@@ -119,7 +196,7 @@ invoke_core_sync() {
     local work_repo_root="$1"
     local cutlass_repo="$work_repo_root/csrc/cutlass"
     local target_path="$work_repo_root/$PREFIX"
-    local start_head
+    local start_head local_split_before local_split_after
     start_head="$(git_output -C "$work_repo_root" rev-parse HEAD)"
 
     invoke_git -C "$work_repo_root" rev-parse --show-toplevel >/dev/null
@@ -135,9 +212,15 @@ invoke_core_sync() {
         invoke_git -C "$UPSTREAM_REPO_FOR_SPLIT" fetch origin
     fi
 
-    echo "Splitting upstream history for $UPSTREAM_PREFIX ..."
-    SPLIT_COMMIT="$(git_output -C "$UPSTREAM_REPO_FOR_SPLIT" subtree split --prefix="$UPSTREAM_PREFIX" HEAD | tail -n 1 | tr -d '\r')"
+    echo "Splitting upstream history for $UPSTREAM_PREFIX from $UPSTREAM_SPLIT_REF ..."
+    SPLIT_COMMIT="$(git_output -C "$UPSTREAM_REPO_FOR_SPLIT" subtree split --prefix="$UPSTREAM_PREFIX" "$UPSTREAM_SPLIT_REF" | tail -n 1 | tr -d '\r')"
     invoke_git -C "$UPSTREAM_REPO_FOR_SPLIT" branch -f "$TEMP_BRANCH" "$SPLIT_COMMIT"
+
+    if [[ "$INIT" -eq 0 ]] && [[ -e "$target_path" ]]; then
+        local_split_before="$(get_prefix_split_commit "$work_repo_root" "$PREFIX")"
+    else
+        local_split_before=""
+    fi
 
     cleanup_core() {
         if [[ "$KEEP_TEMP_BRANCH" -eq 0 ]]; then
@@ -153,14 +236,14 @@ invoke_core_sync() {
             exit 1
         fi
         echo "Adding subtree into $PREFIX ..."
-        invoke_git -C "$work_repo_root" subtree add --prefix="$PREFIX" "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
+        invoke_git_no_merge_edit -C "$work_repo_root" subtree add --prefix="$PREFIX" "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
     else
         if [[ ! -e "$target_path" ]]; then
             echo "$PREFIX does not exist yet. Run this script once with --init first." >&2
             exit 1
         fi
         echo "Pulling upstream updates into $PREFIX ..."
-        invoke_git -C "$work_repo_root" subtree pull --prefix="$PREFIX" "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
+        invoke_git_no_merge_edit -C "$work_repo_root" subtree pull --prefix="$PREFIX" "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
     fi
 
     echo "Rewriting vendored CuTe imports to flash_sparse_attn.ops.cute ..."
@@ -171,6 +254,9 @@ invoke_core_sync() {
         invoke_git -C "$work_repo_root" add -- "$PREFIX"
         invoke_git -C "$work_repo_root" commit -m "Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
     fi
+
+    local_split_after="$(get_prefix_split_commit "$work_repo_root" "$PREFIX")"
+    assert_sync_contains_upstream "$work_repo_root" "$SPLIT_COMMIT" "$local_split_after" "$local_split_before"
 
     END_HEAD="$(git_output -C "$work_repo_root" rev-parse HEAD)"
     SYNC_START_HEAD="$start_head"
@@ -191,7 +277,7 @@ invoke_temporary_worktree_sync() {
 
     invoke_core_sync "$temp_worktree"
 
-    commits="$(git -C "$temp_worktree" rev-list --reverse HEAD "^$original_head")"
+    commits="$(git -C "$temp_worktree" rev-list --reverse --first-parent HEAD "^$original_head")"
     if [[ -z "$commits" ]]; then
         echo "No new subtree commits were created."
         return
@@ -219,7 +305,11 @@ invoke_temporary_worktree_sync() {
     for commit in "${cherry_pick_commits[@]}"; do
         echo "Cherry-picking $commit back into current worktree ..."
         ensure_git_identity "$REPO_ROOT"
-        invoke_git -C "$REPO_ROOT" cherry-pick "$commit"
+        if [[ "$(get_commit_parent_count "$temp_worktree" "$commit")" -gt 1 ]]; then
+            invoke_git -C "$REPO_ROOT" cherry-pick -m 1 "$commit"
+        else
+            invoke_git -C "$REPO_ROOT" cherry-pick "$commit"
+        fi
     done
 
     if [[ -n "$current_status" ]]; then
@@ -307,6 +397,10 @@ if is_git_remote_spec "$UPSTREAM_REPO"; then
     fi
 else
     UPSTREAM_REPO_FOR_SPLIT="$(cd "$UPSTREAM_REPO" && pwd)"
+fi
+
+if is_git_remote_spec "$UPSTREAM_REPO"; then
+    UPSTREAM_SPLIT_REF="$(resolve_remote_default_ref "$UPSTREAM_REPO_FOR_SPLIT")"
 fi
 
 SYNC_START_HEAD="$(git_output -C "$REPO_ROOT" rev-parse HEAD)"
