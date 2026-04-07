@@ -19,8 +19,8 @@ from cutlass.utils import ClcDynamicPersistentTileScheduler, ClcDynamicPersisten
 
 from quack.cute_dsl_utils import ParamsBase
 
-import flash_attn.cute.utils as utils
-from flash_attn.cute.fast_math import clz
+import flash_sparse_attn.ops.cute.utils as utils
+from flash_sparse_attn.ops.cute.fast_math import clz
 
 
 class SchedulingMode(IntEnum):
