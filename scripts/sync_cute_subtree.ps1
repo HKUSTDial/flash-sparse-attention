@@ -13,6 +13,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$PrepareMergeCommitMessage = "Rewrite vendored CuTe namespace to flash_attn.cute before subtree merge"
 $RewriteCommitMessage = "Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
 
 function Test-GitRemoteSpec {
@@ -33,10 +34,14 @@ function Invoke-Git {
     )
 
     if ($Repo) {
-        & git -C $Repo @Arguments
+        $output = & git -C $Repo @Arguments
     }
     else {
-        & git @Arguments
+        $output = & git @Arguments
+    }
+
+    if ($output) {
+        $output | ForEach-Object { Write-Host $_ }
     }
 
     if ($LASTEXITCODE -ne 0) {
@@ -108,6 +113,81 @@ function Get-DirtyStatus {
     )
 
     return Get-GitOutput -Repo $Repo -Arguments @("status", "--porcelain")
+}
+
+function Get-GitCommonDir {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo
+    )
+
+    $commonDir = (& git -C $Repo rev-parse --path-format=absolute --git-common-dir) 2>$null
+    if ($LASTEXITCODE -eq 0 -and $commonDir) {
+        return (($commonDir | Out-String).Trim())
+    }
+
+    $commonDir = Get-GitOutput -Repo $Repo -Arguments @("rev-parse", "--git-common-dir")
+    if (-not $commonDir) {
+        return $null
+    }
+
+    if (-not [System.IO.Path]::IsPathRooted($commonDir)) {
+        return [System.IO.Path]::GetFullPath((Join-Path $Repo $commonDir))
+    }
+
+    return $commonDir
+}
+
+function Get-SubmoduleStatusLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo,
+        [Parameter(Mandatory = $true)]
+        [string]$SubmodulePath
+    )
+
+    $output = (& git -C $Repo submodule status -- $SubmodulePath) 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) {
+        return $null
+    }
+
+    return (($output | Select-Object -First 1 | Out-String).Trim())
+}
+
+function Ensure-SubmoduleInitialized {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo,
+        [Parameter(Mandatory = $true)]
+        [string]$SubmodulePath,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $statusLine = Get-SubmoduleStatusLine -Repo $Repo -SubmodulePath $SubmodulePath
+    if (-not $statusLine) {
+        return
+    }
+
+    if ($statusLine[0] -eq '-') {
+        $commonDir = Get-GitCommonDir -Repo $Repo
+        $referenceRepo = $null
+        if ($commonDir) {
+            $referenceRepo = Join-Path $commonDir "modules"
+            foreach ($segment in $SubmodulePath -split '/') {
+                $referenceRepo = Join-Path $referenceRepo $segment
+            }
+        }
+
+        if ($referenceRepo -and (Test-Path $referenceRepo)) {
+            Write-Host "Initializing $Label in $Repo from local git cache ..."
+            Invoke-Git -Repo $Repo -Arguments @("submodule", "update", "--init", "--reference", $referenceRepo, "--", $SubmodulePath)
+        }
+        else {
+            Write-Host "Initializing $Label in $Repo ..."
+            Invoke-Git -Repo $Repo -Arguments @("submodule", "update", "--init", "--", $SubmodulePath)
+        }
+    }
 }
 
 function Test-IsGitRepo {
@@ -249,6 +329,76 @@ function Assert-SyncContainsUpstream {
     throw ($message -join [Environment]::NewLine)
 }
 
+function Get-SyncResultProperty {
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$SyncResult,
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName
+    )
+
+    if ($null -eq $SyncResult) {
+        return $null
+    }
+
+    if ($SyncResult -is [System.Array]) {
+        foreach ($item in $SyncResult) {
+            if ($null -ne $item -and $item.PSObject.Properties.Match($PropertyName).Count -gt 0) {
+                return $item.$PropertyName
+            }
+        }
+
+        return $null
+    }
+
+    if ($SyncResult.PSObject.Properties.Match($PropertyName).Count -gt 0) {
+        return $SyncResult.$PropertyName
+    }
+
+    return $null
+}
+
+function Invoke-NamespaceRewrite {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RewriteScript,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("local", "upstream")]
+        [string]$Direction
+    )
+
+    $rewriteOutput = & python $RewriteScript --direction $Direction $TargetPath
+    if ($rewriteOutput) {
+        $rewriteOutput | ForEach-Object { Write-Host $_ }
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "python $RewriteScript --direction $Direction $TargetPath failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Commit-PrefixIfChanged {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repo,
+        [Parameter(Mandatory = $true)]
+        [string]$Prefix,
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    $prefixStatus = Get-GitOutput -Repo $Repo -Arguments @("status", "--porcelain", "--", $Prefix)
+    if (-not $prefixStatus) {
+        return $false
+    }
+
+    Ensure-GitIdentity -Repo $Repo
+    Invoke-Git -Repo $Repo -Arguments @("add", "--", $Prefix)
+    Invoke-Git -Repo $Repo -Arguments @("commit", "-m", $Message)
+    return $true
+}
+
 function Invoke-CoreSync {
     param(
         [Parameter(Mandatory = $true)]
@@ -271,13 +421,15 @@ function Invoke-CoreSync {
     )
 
     $cutlassRepo = Join-Path $WorkRepoRoot "csrc/cutlass"
+    $cutlassSubmodulePath = "csrc/cutlass"
     $targetPath = Join-Path $WorkRepoRoot $Prefix
     $startHead = Get-GitOutput -Repo $WorkRepoRoot -Arguments @("rev-parse", "HEAD")
     $localSplitBefore = $null
 
-    Invoke-Git -Repo $WorkRepoRoot -Arguments @("rev-parse", "--show-toplevel") | Out-Null
-    Invoke-Git -Repo $UpstreamRepoForSplit -Arguments @("rev-parse", "--show-toplevel") | Out-Null
+    Get-GitOutput -Repo $WorkRepoRoot -Arguments @("rev-parse", "--show-toplevel") | Out-Null
+    Get-GitOutput -Repo $UpstreamRepoForSplit -Arguments @("rev-parse", "--show-toplevel") | Out-Null
 
+    Ensure-SubmoduleInitialized -Repo $WorkRepoRoot -SubmodulePath $cutlassSubmodulePath -Label "csrc/cutlass submodule"
     Test-WorktreeClean -Repo $WorkRepoRoot -Label "Superproject"
     if ((Test-Path $cutlassRepo) -and (Test-IsGitRepo -Repo $cutlassRepo)) {
         Test-WorktreeClean -Repo $cutlassRepo -Label "csrc/cutlass submodule"
@@ -310,8 +462,13 @@ function Invoke-CoreSync {
                 throw "$Prefix does not exist yet. Run this script once with -Init first."
             }
 
+            Write-Host "Rewriting vendored CuTe imports to flash_attn.cute before subtree merge ..."
+            Invoke-NamespaceRewrite -RewriteScript $RewriteScript -TargetPath $targetPath -Direction upstream
+            [void](Commit-PrefixIfChanged -Repo $WorkRepoRoot -Prefix $Prefix -Message $PrepareMergeCommitMessage)
+
             Write-Host "Pulling upstream updates into $Prefix ..."
-            Invoke-GitNoMergeEdit -Repo $WorkRepoRoot -Arguments @("subtree", "pull", "--prefix=$Prefix", $UpstreamRepoForSplit, $TempBranch)
+            Invoke-Git -Repo $WorkRepoRoot -Arguments @("fetch", $UpstreamRepoForSplit, $TempBranch)
+            Invoke-GitNoMergeEdit -Repo $WorkRepoRoot -Arguments @("merge", "-X", "theirs", "-Xsubtree=$Prefix", "FETCH_HEAD")
         }
     }
     finally {
@@ -321,17 +478,8 @@ function Invoke-CoreSync {
     }
 
     Write-Host "Rewriting vendored CuTe imports to flash_sparse_attn.ops.cute ..."
-    & python $RewriteScript $targetPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "python $RewriteScript $targetPath failed with exit code $LASTEXITCODE"
-    }
-
-    $prefixStatus = Get-GitOutput -Repo $WorkRepoRoot -Arguments @("status", "--porcelain", "--", $Prefix)
-    if ($prefixStatus) {
-        Ensure-GitIdentity -Repo $WorkRepoRoot
-        Invoke-Git -Repo $WorkRepoRoot -Arguments @("add", "--", $Prefix)
-        Invoke-Git -Repo $WorkRepoRoot -Arguments @("commit", "-m", "Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute")
-    }
+    Invoke-NamespaceRewrite -RewriteScript $RewriteScript -TargetPath $targetPath -Direction local
+    [void](Commit-PrefixIfChanged -Repo $WorkRepoRoot -Prefix $Prefix -Message $RewriteCommitMessage)
 
     $localSplitAfter = Get-PrefixSplitCommit -Repo $WorkRepoRoot -Prefix $Prefix
     Assert-SyncContainsUpstream -Repo $WorkRepoRoot -UpstreamSplitCommit $splitCommit -LocalSplitCommit $localSplitAfter -PreviousLocalSplitCommit $localSplitBefore
@@ -390,25 +538,14 @@ function Invoke-TemporaryWorktreeSync {
         }
 
         $currentStatus = Get-DirtyStatus -Repo $RepoRoot
-        $currentPrefixStatus = Get-GitOutput -Repo $RepoRoot -Arguments @("status", "--porcelain", "--", $Prefix)
         if ($currentStatus) {
             Write-Host "Stashing current worktree before cherry-picking synced commits back ..."
             Invoke-Git -Repo $RepoRoot -Arguments @("stash", "push", "-u", "-m", $stashName)
             $stashCreated = $true
         }
 
-        $commitsToCherryPick = @()
-        $applyRewriteAfterRestore = $false
-        foreach ($commit in $commits) {
-            if ($currentPrefixStatus -and (Get-CommitSubject -Repo $tempWorktree -Commit $commit) -eq $RewriteCommitMessage) {
-                $applyRewriteAfterRestore = $true
-                continue
-            }
-            $commitsToCherryPick += $commit
-        }
-
         try {
-            foreach ($commit in $commitsToCherryPick) {
+            foreach ($commit in $commits) {
                 Write-Host "Cherry-picking $commit back into current worktree ..."
                 Ensure-GitIdentity -Repo $RepoRoot
                 if ((Get-CommitParentCount -Repo $tempWorktree -Commit $commit) -gt 1) {
@@ -431,15 +568,6 @@ function Invoke-TemporaryWorktreeSync {
             catch {
                 throw "Cherry-pick succeeded, but restoring stashed local changes failed. Resolve the stash pop manually with git stash list / git stash pop."
             }
-        }
-
-        if ($applyRewriteAfterRestore) {
-            Write-Host "Applying CuTe namespace rewrite in current worktree after restoring local changes ..."
-            & python $RewriteScript (Join-Path $RepoRoot $Prefix)
-            if ($LASTEXITCODE -ne 0) {
-                throw "python $RewriteScript $(Join-Path $RepoRoot $Prefix) failed with exit code $LASTEXITCODE"
-            }
-            Write-Host "Namespace rewrite was applied in the current worktree without creating an extra commit because local changes already exist under $Prefix."
         }
 
         return $result
@@ -493,5 +621,13 @@ else {
 Write-Host "Done."
 Write-Host "Upstream source: $UpstreamRepo"
 Write-Host "Upstream cache used for subtree split: $upstreamRepoForSplit"
-Write-Host "Synced commit range: $($syncResult.StartHead) -> $($syncResult.EndHead)"
+$syncStartHead = Get-SyncResultProperty -SyncResult $syncResult -PropertyName "StartHead"
+$syncEndHead = Get-SyncResultProperty -SyncResult $syncResult -PropertyName "EndHead"
+if (-not $syncStartHead) {
+    $syncStartHead = Get-GitOutput -Repo $repoRoot -Arguments @("rev-parse", "HEAD")
+}
+if (-not $syncEndHead) {
+    $syncEndHead = Get-GitOutput -Repo $repoRoot -Arguments @("rev-parse", "HEAD")
+}
+Write-Host "Synced commit range: $syncStartHead -> $syncEndHead"
 Write-Host "Local edits inside $Prefix stay in this repo and future upstream changes can be merged by rerunning this script without -Init."
