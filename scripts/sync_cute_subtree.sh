@@ -13,6 +13,7 @@ KEEP_TEMP_BRANCH=0
 NO_TEMPORARY_WORKTREE=0
 TEMP_WORKTREE_PATH=""
 TEMP_WORKTREE_BRANCH=""
+PREPARE_MERGE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_attn.cute before subtree merge"
 REWRITE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
 UPSTREAM_SPLIT_REF="HEAD"
 
@@ -78,6 +79,56 @@ test_worktree_clean() {
 dirty_status() {
     local repo="$1"
     git -C "$repo" status --porcelain
+}
+
+get_git_common_dir() {
+    local repo="$1"
+    local common_dir
+
+    common_dir="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null | tail -n 1 | tr -d '\r')"
+    if [[ -z "$common_dir" ]]; then
+        common_dir="$(git -C "$repo" rev-parse --git-common-dir | tail -n 1 | tr -d '\r')"
+        if [[ -n "$common_dir" && ! "$common_dir" =~ ^([A-Za-z]:[\\/]|/) ]]; then
+            common_dir="$(cd "$repo" && cd "$common_dir" && pwd)"
+        fi
+    fi
+
+    printf '%s\n' "$common_dir"
+}
+
+get_submodule_status_line() {
+    local repo="$1"
+    local submodule_path="$2"
+    git -C "$repo" submodule status -- "$submodule_path" 2>/dev/null | head -n 1 | tr -d '\r'
+}
+
+ensure_submodule_initialized() {
+    local repo="$1"
+    local submodule_path="$2"
+    local label="$3"
+    local status_line status_prefix common_dir reference_repo
+
+    status_line="$(get_submodule_status_line "$repo" "$submodule_path")"
+    if [[ -z "$status_line" ]]; then
+        return
+    fi
+
+    status_prefix="${status_line:0:1}"
+    if [[ "$status_prefix" == "-" ]]; then
+        common_dir="$(get_git_common_dir "$repo")"
+        reference_repo=""
+        if [[ -n "$common_dir" ]]; then
+            reference_repo="$common_dir/modules/$submodule_path"
+        fi
+
+        if [[ -n "$reference_repo" && -d "$reference_repo" ]]; then
+            echo "Initializing $label in $repo from local git cache ..."
+            invoke_git -C "$repo" submodule update --init --reference "$reference_repo" -- "$submodule_path"
+        else
+            echo "Initializing $label in $repo ..."
+            invoke_git -C "$repo" submodule update --init -- "$submodule_path"
+        fi
+    fi
 }
 
 is_git_repo() {
@@ -192,9 +243,30 @@ cleanup_worktree() {
     fi
 }
 
+run_namespace_rewrite() {
+    local target_path="$1"
+    local direction="$2"
+    python "$REWRITE_SCRIPT" --direction "$direction" "$target_path"
+}
+
+commit_prefix_if_changed() {
+    local repo="$1"
+    local prefix="$2"
+    local message="$3"
+
+    if [[ -z "$(git -C "$repo" status --porcelain -- "$prefix")" ]]; then
+        return 1
+    fi
+
+    ensure_git_identity "$repo"
+    invoke_git -C "$repo" add -- "$prefix"
+    invoke_git -C "$repo" commit -m "$message"
+}
+
 invoke_core_sync() {
     local work_repo_root="$1"
     local cutlass_repo="$work_repo_root/csrc/cutlass"
+    local cutlass_submodule_path="csrc/cutlass"
     local target_path="$work_repo_root/$PREFIX"
     local start_head local_split_before local_split_after
     start_head="$(git_output -C "$work_repo_root" rev-parse HEAD)"
@@ -202,6 +274,7 @@ invoke_core_sync() {
     invoke_git -C "$work_repo_root" rev-parse --show-toplevel >/dev/null
     invoke_git -C "$UPSTREAM_REPO_FOR_SPLIT" rev-parse --show-toplevel >/dev/null
 
+    ensure_submodule_initialized "$work_repo_root" "$cutlass_submodule_path" "csrc/cutlass submodule"
     test_worktree_clean "$work_repo_root" "Superproject"
     if [[ -e "$cutlass_repo" ]] && is_git_repo "$cutlass_repo"; then
         test_worktree_clean "$cutlass_repo" "csrc/cutlass submodule"
@@ -242,18 +315,20 @@ invoke_core_sync() {
             echo "$PREFIX does not exist yet. Run this script once with --init first." >&2
             exit 1
         fi
+
+        echo "Rewriting vendored CuTe imports to flash_attn.cute before subtree merge ..."
+        run_namespace_rewrite "$target_path" upstream
+        commit_prefix_if_changed "$work_repo_root" "$PREFIX" "$PREPARE_MERGE_COMMIT_MESSAGE" || true
+
         echo "Pulling upstream updates into $PREFIX ..."
-        invoke_git_no_merge_edit -C "$work_repo_root" subtree pull --prefix="$PREFIX" "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
+        invoke_git -C "$work_repo_root" fetch "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
+        invoke_git_no_merge_edit -C "$work_repo_root" merge -X theirs "-Xsubtree=$PREFIX" FETCH_HEAD
     fi
 
     echo "Rewriting vendored CuTe imports to flash_sparse_attn.ops.cute ..."
-    python "$REWRITE_SCRIPT" "$target_path"
+    run_namespace_rewrite "$target_path" local
 
-    if [[ -n "$(git -C "$work_repo_root" status --porcelain -- "$PREFIX")" ]]; then
-        ensure_git_identity "$work_repo_root"
-        invoke_git -C "$work_repo_root" add -- "$PREFIX"
-        invoke_git -C "$work_repo_root" commit -m "Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
-    fi
+    commit_prefix_if_changed "$work_repo_root" "$PREFIX" "$REWRITE_COMMIT_MESSAGE" || true
 
     local_split_after="$(get_prefix_split_commit "$work_repo_root" "$PREFIX")"
     assert_sync_contains_upstream "$work_repo_root" "$SPLIT_COMMIT" "$local_split_after" "$local_split_before"
@@ -264,7 +339,7 @@ invoke_core_sync() {
 }
 
 invoke_temporary_worktree_sync() {
-    local timestamp temp_branch_name temp_worktree original_head stash_name current_status current_prefix_status commits commit cherry_pick_commits apply_rewrite_after_restore
+    local timestamp temp_branch_name temp_worktree original_head stash_name current_status commits commit
     timestamp="$(date +%Y%m%d-%H%M%S)"
     temp_branch_name="sync/cute-worktree-$timestamp"
     temp_worktree="$(cd "$REPO_ROOT/.." && pwd)/.cute-sync-worktree-$timestamp"
@@ -284,25 +359,14 @@ invoke_temporary_worktree_sync() {
     fi
 
     current_status="$(dirty_status "$REPO_ROOT")"
-    current_prefix_status="$(git -C "$REPO_ROOT" status --porcelain -- "$PREFIX")"
     stash_name="sync-cute-autostash-$timestamp"
     if [[ -n "$current_status" ]]; then
         echo "Stashing current worktree before cherry-picking synced commits back ..."
         invoke_git -C "$REPO_ROOT" stash push -u -m "$stash_name"
     fi
 
-    cherry_pick_commits=()
-    apply_rewrite_after_restore=0
     while IFS= read -r commit; do
         [[ -z "$commit" ]] && continue
-        if [[ -n "$current_prefix_status" ]] && [[ "$(get_commit_subject "$temp_worktree" "$commit")" == "$REWRITE_COMMIT_MESSAGE" ]]; then
-            apply_rewrite_after_restore=1
-            continue
-        fi
-        cherry_pick_commits+=("$commit")
-    done <<< "$commits"
-
-    for commit in "${cherry_pick_commits[@]}"; do
         echo "Cherry-picking $commit back into current worktree ..."
         ensure_git_identity "$REPO_ROOT"
         if [[ "$(get_commit_parent_count "$temp_worktree" "$commit")" -gt 1 ]]; then
@@ -310,7 +374,7 @@ invoke_temporary_worktree_sync() {
         else
             invoke_git -C "$REPO_ROOT" cherry-pick "$commit"
         fi
-    done
+    done <<< "$commits"
 
     if [[ -n "$current_status" ]]; then
         echo "Restoring stashed local changes ..."
@@ -318,12 +382,6 @@ invoke_temporary_worktree_sync() {
             echo "Cherry-pick succeeded, but restoring stashed local changes failed. Resolve manually with git stash list / git stash pop." >&2
             exit 1
         fi
-    fi
-
-    if [[ "$apply_rewrite_after_restore" -eq 1 ]]; then
-        echo "Applying CuTe namespace rewrite in current worktree after restoring local changes ..."
-        python "$REWRITE_SCRIPT" "$REPO_ROOT/$PREFIX"
-        echo "Namespace rewrite was applied in the current worktree without creating an extra commit because local changes already exist under $PREFIX."
     fi
 }
 
