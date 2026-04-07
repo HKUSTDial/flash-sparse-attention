@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("flash-sparse-attn")
+    __version__ = version("fa4")
 except PackageNotFoundError:
     __version__ = "0.0.0"
 
@@ -14,7 +14,7 @@ from .interface import (
     flash_attn_varlen_func,
 )
 
-from flash_sparse_attn.ops.cute.cute_dsl_utils import cute_compile_patched
+from flash_attn.cute.cute_dsl_utils import cute_compile_patched
 
 # Patch cute.compile to optionally dump SASS
 cute.compile = cute_compile_patched
