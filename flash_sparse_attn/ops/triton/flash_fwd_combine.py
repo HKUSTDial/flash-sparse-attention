@@ -140,8 +140,8 @@ def _fwd_combine_kernel(
 
         # Compute normalized exponentials
         new_e_max = tl.maximum(lse_s, e_max)
-        old_scale = tl.exp(e_max - new_e_max)
-        exp_logic = tl.exp(lse_s - new_e_max)
+        old_scale = tl.exp2(e_max - new_e_max)
+        exp_logic = tl.exp2(lse_s - new_e_max)
 
         # Load partial outputs
         o_s = tl.sum(tl.load(out_part_ptrs, boundary_check=(0, 1, 2)), axis=0)
@@ -169,7 +169,9 @@ def _fwd_combine_kernel(
     )
 
     # Compute LSE
-    lse = tl.where(e_sum > 0.0, e_max + tl.log(e_sum), float("-inf"))
+    # ln2 = math.log(2.0)
+    ln2 = 0.6931471805599453
+    lse = tl.where(e_sum > 0.0, (e_max + tl.log2(e_sum)) * ln2, float("-inf"))
 
     # Store LSE
     tl.store(lse_ptrs, lse, boundary_check=(0,))
