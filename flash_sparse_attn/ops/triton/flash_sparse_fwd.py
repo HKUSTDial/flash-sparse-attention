@@ -599,6 +599,7 @@ def _fwd_base_sparse_kernel(
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
         final_scale=1.0,
+        IS_LOG2=IS_SPLIT_KV,
     )
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
