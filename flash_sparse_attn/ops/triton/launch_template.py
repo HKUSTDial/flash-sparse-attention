@@ -522,11 +522,11 @@ def get_bwd_gated_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-def get_fwd_combine_launch_config(
+def get_dec_combine_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int]:
     """
-    Get launch configuration for forward combine kernel based on input parameters and device architecture.
+    Get launch configuration for decode combine kernel based on input parameters and device architecture.
 
     :param tile_k: Tile size in the K dimension
 
@@ -538,7 +538,7 @@ def get_fwd_combine_launch_config(
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
-    # NOTE: Setting num_ctas=2 for the forward kernel can trigger Triton's PlanCTA assertion
+    # NOTE: Setting num_ctas=2 for the decode combine kernel can trigger Triton's PlanCTA assertion
     # Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
     if device.type == "cuda":
         # For A100
