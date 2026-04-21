@@ -7,7 +7,7 @@ import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
-    flash_combine,
+    flash_decode_combine,
     utils,
     launch_template,
     launch_grid,
@@ -1095,7 +1095,7 @@ def _flash_gated_attn_base_forward(
     )
 
     if is_split_kv:
-        flash_combine._flash_attn_fwd_combine(
+        flash_decode_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
@@ -1266,7 +1266,7 @@ def _flash_gated_attn_varlen_base_forward(
     )
 
     if is_split_kv:
-        flash_combine._flash_attn_fwd_combine(
+        flash_decode_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
