@@ -9,7 +9,7 @@ from cutlass.cute.nvgpu import cpasync
 
 
 from quack import layout_utils
-import flash_attn.cute.utils as utils
+import flash_sparse_attn.ops.cute.utils as utils
 
 
 def pack_gqa_layout(T, qhead_per_kvhead, nheads_kv, head_idx):
