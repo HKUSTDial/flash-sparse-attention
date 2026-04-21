@@ -18,13 +18,13 @@ from quack import copy_utils
 from quack import layout_utils
 from quack import sm90_utils
 
-from flash_sparse_attn.ops.cute import utils
-from flash_sparse_attn.ops.cute.cute_dsl_utils import assume_tensor_aligned
-from flash_sparse_attn.ops.cute import ampere_helpers as sm80_utils
-from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute import utils
+from flash_attn.cute.cute_dsl_utils import assume_tensor_aligned
+from flash_attn.cute import ampere_helpers as sm80_utils
+from flash_attn.cute.seqlen_info import SeqlenInfoQK
 import cutlass.cute.nvgpu.tcgen05 as tcgen05
 from quack.cute_dsl_utils import ParamsBase
-from flash_sparse_attn.ops.cute.tile_scheduler import (
+from flash_attn.cute.tile_scheduler import (
     SingleTileScheduler,
     SingleTileVarlenScheduler,
     TileSchedulerArguments,
