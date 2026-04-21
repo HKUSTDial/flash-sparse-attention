@@ -16,36 +16,36 @@ import cutlass
 import cutlass.cute as cute
 from cutlass import Int32, Float32
 from quack.compile_utils import make_fake_tensor as fake_tensor
-from flash_attn.cute.cache_utils import get_jit_cache
-from flash_attn.cute.testing import is_fake_mode
+from flash_sparse_attn.ops.cute.cache_utils import get_jit_cache
+from flash_sparse_attn.ops.cute.testing import is_fake_mode
 
 
 if os.environ.get("CUTE_DSL_PTXAS_PATH", None) is not None:
-    from flash_attn.cute import cute_dsl_ptxas  # noqa: F401
+    from flash_sparse_attn.ops.cute import cute_dsl_ptxas  # noqa: F401
 
     # Patch to dump ptx and then use system ptxas to compile to cubin
     cute_dsl_ptxas.patch()
 
 
-from flash_attn.cute import utils
-from flash_attn.cute import fa_logging
-from flash_attn.cute.cute_dsl_utils import (
+from flash_sparse_attn.ops.cute import utils
+from flash_sparse_attn.ops.cute import fa_logging
+from flash_sparse_attn.ops.cute.cute_dsl_utils import (
     to_cute_tensor, to_cute_aux_tensor, get_aux_tensor_metadata, get_broadcast_dims,
 )
-from flash_attn.cute.flash_fwd import FlashAttentionForwardSm80
-from flash_attn.cute.flash_fwd_sm90 import FlashAttentionForwardSm90
-from flash_attn.cute.flash_fwd_sm100 import FlashAttentionForwardSm100, DescaleTensors
-from flash_attn.cute.flash_fwd_sm120 import FlashAttentionForwardSm120
-from flash_attn.cute.flash_bwd_preprocess import FlashAttentionBackwardPreprocess
-from flash_attn.cute.flash_bwd import FlashAttentionBackwardSm80
-from flash_attn.cute.flash_bwd_sm90 import FlashAttentionBackwardSm90
-from flash_attn.cute.flash_bwd_sm100 import FlashAttentionBackwardSm100
-from flash_attn.cute.flash_bwd_sm120 import FlashAttentionBackwardSm120
-from flash_attn.cute.flash_bwd_postprocess import FlashAttentionBackwardPostprocess
-from flash_attn.cute.flash_fwd_combine import FlashAttentionForwardCombine
-from flash_attn.cute.flash_fwd_mla_sm100 import FlashAttentionMLAForwardSm100
+from flash_sparse_attn.ops.cute.flash_fwd import FlashAttentionForwardSm80
+from flash_sparse_attn.ops.cute.flash_fwd_sm90 import FlashAttentionForwardSm90
+from flash_sparse_attn.ops.cute.flash_fwd_sm100 import FlashAttentionForwardSm100, DescaleTensors
+from flash_sparse_attn.ops.cute.flash_fwd_sm120 import FlashAttentionForwardSm120
+from flash_sparse_attn.ops.cute.flash_bwd_preprocess import FlashAttentionBackwardPreprocess
+from flash_sparse_attn.ops.cute.flash_bwd import FlashAttentionBackwardSm80
+from flash_sparse_attn.ops.cute.flash_bwd_sm90 import FlashAttentionBackwardSm90
+from flash_sparse_attn.ops.cute.flash_bwd_sm100 import FlashAttentionBackwardSm100
+from flash_sparse_attn.ops.cute.flash_bwd_sm120 import FlashAttentionBackwardSm120
+from flash_sparse_attn.ops.cute.flash_bwd_postprocess import FlashAttentionBackwardPostprocess
+from flash_sparse_attn.ops.cute.flash_fwd_combine import FlashAttentionForwardCombine
+from flash_sparse_attn.ops.cute.flash_fwd_mla_sm100 import FlashAttentionMLAForwardSm100
 
-from flash_attn.cute.block_sparsity import (
+from flash_sparse_attn.ops.cute.block_sparsity import (
     BlockSparseTensorsTorch,
     get_sparse_q_block_size,
     to_cute_block_sparse_tensors,
