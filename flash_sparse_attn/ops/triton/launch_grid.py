@@ -60,13 +60,13 @@ def get_bwd_grid(
     return grid
 
 
-def get_fwd_combine_grid(
+def get_dec_combine_grid(
     batch_size: int,
     seqlen_q: int,
     num_heads_q: int,
 ):
     """
-    Get the grid function for the forward combine kernel.
+    Get the grid function for the decode combine kernel.
 
     :param batch_size: Batch size
     :param seqlen_q: Sequence length of queries
