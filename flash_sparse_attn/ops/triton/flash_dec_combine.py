@@ -6,7 +6,7 @@ from flash_sparse_attn.ops.triton import launch_template, launch_grid, seqlen_in
 
 
 @triton.jit
-def _fwd_combine_kernel(
+def _dec_combine_kernel(
     Out_partial,
     Lse_partial,
     Out,
@@ -177,7 +177,7 @@ def _fwd_combine_kernel(
     tl.store(lse_ptrs, lse, boundary_check=(0,))
 
 
-def _flash_attn_fwd_combine(
+def _flash_attn_dec_combine(
     out_partial: torch.Tensor,
     lse_partial: torch.Tensor,
     out: torch.Tensor,
@@ -197,18 +197,18 @@ def _flash_attn_fwd_combine(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_combine_launch_config(
+        launch_template.get_dec_combine_launch_config(
             tile_k=TILE_K,
         )
     )
 
-    grid = launch_grid.get_fwd_combine_grid(
+    grid = launch_grid.get_dec_combine_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
     )
 
-    _fwd_combine_kernel[grid](
+    _dec_combine_kernel[grid](
         out_partial,
         lse_partial,
         out,
