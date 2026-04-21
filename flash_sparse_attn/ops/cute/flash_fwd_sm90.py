@@ -21,23 +21,23 @@ from quack import copy_utils
 from quack import layout_utils
 from quack import sm90_utils
 
-from flash_attn.cute.cute_dsl_utils import assume_tensor_aligned
-from flash_attn.cute import utils
-from flash_attn.cute.mask import AttentionMask
-from flash_attn.cute.softmax import Softmax, apply_score_mod_inner
-from flash_attn.cute.seqlen_info import SeqlenInfoQK
-from flash_attn.cute.block_info import BlockInfo
-from flash_attn.cute.block_sparsity import BlockSparseTensors
-from flash_attn.cute.block_sparse_utils import (
+from flash_sparse_attn.ops.cute.cute_dsl_utils import assume_tensor_aligned
+from flash_sparse_attn.ops.cute import utils
+from flash_sparse_attn.ops.cute.mask import AttentionMask
+from flash_sparse_attn.ops.cute.softmax import Softmax, apply_score_mod_inner
+from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
+from flash_sparse_attn.ops.cute.block_info import BlockInfo
+from flash_sparse_attn.ops.cute.block_sparsity import BlockSparseTensors
+from flash_sparse_attn.ops.cute.block_sparse_utils import (
     produce_block_sparse_loads,
     consume_block_sparse_loads,
 )
-from flash_attn.cute import pipeline as pipeline_custom
-from flash_attn.cute.pack_gqa import PackGQA, pack_gqa_layout, make_packgqa_tiled_tma_atom
-from flash_attn.cute.paged_kv import PagedKVManager
-from flash_attn.cute.named_barrier import NamedBarrierFwd
+from flash_sparse_attn.ops.cute import pipeline as pipeline_custom
+from flash_sparse_attn.ops.cute.pack_gqa import PackGQA, pack_gqa_layout, make_packgqa_tiled_tma_atom
+from flash_sparse_attn.ops.cute.paged_kv import PagedKVManager
+from flash_sparse_attn.ops.cute.named_barrier import NamedBarrierFwd
 from quack.cute_dsl_utils import ParamsBase
-from flash_attn.cute.tile_scheduler import (
+from flash_sparse_attn.ops.cute.tile_scheduler import (
     TileSchedulerArguments,
     SingleTileScheduler,
     SingleTileLPTScheduler,
@@ -45,7 +45,7 @@ from flash_attn.cute.tile_scheduler import (
 )
 from cutlass.cute import FastDivmodDivisor
 
-from flash_attn.cute.flash_fwd import FlashAttentionForwardBase
+from flash_sparse_attn.ops.cute.flash_fwd import FlashAttentionForwardBase
 
 
 class FlashAttentionForwardSm90(FlashAttentionForwardBase):
