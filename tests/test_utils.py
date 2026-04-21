@@ -4,27 +4,27 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import torch
 
-from flash_sparse_attn.ops.triton.flash_dense_bwd import (
+from flash_sparse_attn.ops.triton.flash_dense_backward import (
     _flash_dense_attn_base_backward,
     _flash_dense_attn_varlen_base_backward,
 )
-from flash_sparse_attn.ops.triton.flash_dense_fwd import (
+from flash_sparse_attn.ops.triton.flash_dense_forward import (
     _flash_dense_attn_base_forward,
     _flash_dense_attn_varlen_base_forward,
 )
-from flash_sparse_attn.ops.triton.flash_gated_bwd import (
+from flash_sparse_attn.ops.triton.flash_gated_backward import (
     _flash_gated_attn_base_backward,
     _flash_gated_attn_varlen_base_backward,
 )
-from flash_sparse_attn.ops.triton.flash_gated_fwd import (
+from flash_sparse_attn.ops.triton.flash_gated_forward import (
     _flash_gated_attn_base_forward,
     _flash_gated_attn_varlen_base_forward,
 )
-from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
+from flash_sparse_attn.ops.triton.flash_sparse_backward import (
     _flash_sparse_attn_base_backward,
     _flash_sparse_attn_varlen_base_backward,
 )
-from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
+from flash_sparse_attn.ops.triton.flash_sparse_forward import (
     _flash_sparse_attn_base_forward,
     _flash_sparse_attn_varlen_base_forward,
 )
