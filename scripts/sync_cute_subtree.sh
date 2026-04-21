@@ -14,7 +14,9 @@ NO_TEMPORARY_WORKTREE=0
 TEMP_WORKTREE_PATH=""
 TEMP_WORKTREE_BRANCH=""
 PREPARE_MERGE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_attn.cute before subtree merge"
+MERGE_COMMIT_MESSAGE="Merge upstream CuTe subtree updates"
 REWRITE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
+MERGE_CONFLICT_OPTION="ours"
 UPSTREAM_SPLIT_REF="HEAD"
 
 usage() {
@@ -263,6 +265,34 @@ commit_prefix_if_changed() {
     invoke_git -C "$repo" commit -m "$message"
 }
 
+cherry_pick_commit_back() {
+    local repo="$1"
+    local commit="$2"
+    local parent_count
+
+    parent_count="$(get_commit_parent_count "$repo" "$commit")"
+    if [[ "$parent_count" -gt 1 ]]; then
+        if invoke_git -C "$REPO_ROOT" cherry-pick -m 1 "$commit"; then
+            return 0
+        fi
+    else
+        if invoke_git -C "$REPO_ROOT" cherry-pick "$commit"; then
+            return 0
+        fi
+    fi
+
+    if git -C "$REPO_ROOT" rev-parse -q --verify CHERRY_PICK_HEAD >/dev/null 2>&1 \
+        && git -C "$REPO_ROOT" diff --cached --quiet \
+        && git -C "$REPO_ROOT" diff --quiet; then
+        echo "Cherry-pick $commit became empty after conflict resolution. Skipping ..."
+        invoke_git -C "$REPO_ROOT" cherry-pick --skip
+        return 0
+    fi
+
+    echo "Cherry-pick $commit failed with conflicts. Resolve manually and continue." >&2
+    exit 1
+}
+
 invoke_core_sync() {
     local work_repo_root="$1"
     local cutlass_repo="$work_repo_root/csrc/cutlass"
@@ -322,7 +352,7 @@ invoke_core_sync() {
 
         echo "Pulling upstream updates into $PREFIX ..."
         invoke_git -C "$work_repo_root" fetch "$UPSTREAM_REPO_FOR_SPLIT" "$TEMP_BRANCH"
-        invoke_git_no_merge_edit -C "$work_repo_root" merge -X theirs "-Xsubtree=$PREFIX" FETCH_HEAD
+        invoke_git_no_merge_edit -C "$work_repo_root" merge -m "$MERGE_COMMIT_MESSAGE" "-X$MERGE_CONFLICT_OPTION" "-Xsubtree=$PREFIX" FETCH_HEAD
     fi
 
     echo "Rewriting vendored CuTe imports to flash_sparse_attn.ops.cute ..."
@@ -369,11 +399,7 @@ invoke_temporary_worktree_sync() {
         [[ -z "$commit" ]] && continue
         echo "Cherry-picking $commit back into current worktree ..."
         ensure_git_identity "$REPO_ROOT"
-        if [[ "$(get_commit_parent_count "$temp_worktree" "$commit")" -gt 1 ]]; then
-            invoke_git -C "$REPO_ROOT" cherry-pick -m 1 "$commit"
-        else
-            invoke_git -C "$REPO_ROOT" cherry-pick "$commit"
-        fi
+        cherry_pick_commit_back "$temp_worktree" "$commit"
     done <<< "$commits"
 
     if [[ -n "$current_status" ]]; then
