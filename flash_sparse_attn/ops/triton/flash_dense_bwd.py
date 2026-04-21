@@ -7,13 +7,13 @@ import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
-    flash_backward_postprocess,
-    flash_backward_preprocess,
     launch_template,
     launch_grid,
     seqlen_info,
     block_info,
     mask,
+    flash_bwd_preprocess,
+    flash_bwd_postprocess,
 )
 
 
@@ -712,7 +712,7 @@ def _flash_dense_attn_base_backward(
         device=query.device,
     )
 
-    flash_backward_preprocess._flash_attn_bwd_preprocess(
+    flash_bwd_preprocess._flash_attn_bwd_preprocess(
         out=out,
         dout=dout,
         dpsum=dpsum,
@@ -793,7 +793,7 @@ def _flash_dense_attn_base_backward(
         num_ctas=num_ctas,
     )
 
-    flash_backward_postprocess._flash_attn_bwd_postprocess(
+    flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
         scale=softmax_scale,
@@ -901,7 +901,7 @@ def _flash_dense_attn_varlen_base_backward(
         device=query.device,
     )
 
-    flash_backward_preprocess._flash_attn_bwd_preprocess(
+    flash_bwd_preprocess._flash_attn_bwd_preprocess(
         out=out,
         dout=dout,
         dpsum=dpsum,
@@ -985,7 +985,7 @@ def _flash_dense_attn_varlen_base_backward(
         num_ctas=num_ctas,
     )
 
-    flash_backward_postprocess._flash_attn_bwd_postprocess(
+    flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
         scale=softmax_scale,
