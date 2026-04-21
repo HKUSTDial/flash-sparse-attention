@@ -7,6 +7,7 @@ import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
+    flash_combine,
     utils,
     launch_template,
     launch_grid,
@@ -14,12 +15,11 @@ from flash_sparse_attn.ops.triton import (
     block_info,
     activations,
     mask,
-    flash_fwd_combine,
 )
 
 
 @triton.jit
-def _fwd_inner_dense_base_kernel(
+def _fwd_inner_sparse_base_kernel(
     q_tile,
     k_tile,
     k_ptrs,
@@ -29,6 +29,7 @@ def _fwd_inner_dense_base_kernel(
     row_max,
     row_sum,
     softmax_scale_log2,
+    softmax_threshold_log2,
     m_block,
     n_block,
     n_block_min,
@@ -73,25 +74,28 @@ def _fwd_inner_dense_base_kernel(
         )
 
     # Apply online softmax
-    p, block_max, row_max, row_sum, row_scale, _ = activations.online_softmax(
-        acc_s=acc_s,
-        block_max=block_max,
-        row_max=row_max,
-        row_sum=row_sum,
-        scale_log2=softmax_scale_log2,
-        softmax_threshold_log2=float("-inf"),
-        CHECK_INF=CHECK_INF,
-        RESCALE_THRESHOLD=0.0,
+    p, block_max, row_max, row_sum, row_scale, skip_softmax = (
+        activations.online_softmax(
+            acc_s=acc_s,
+            block_max=block_max,
+            row_max=row_max,
+            row_sum=row_sum,
+            scale_log2=softmax_scale_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
+            CHECK_INF=CHECK_INF,
+            RESCALE_THRESHOLD=0.0,
+        )
     )
 
-    # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+    if not skip_softmax:
+        # Load value tile
+        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
 
-    # Rescale output accumulator
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+        # Rescale output accumulator
+        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
-    # Update output accumulator
-    acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+        # Update output accumulator
+        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
     # Advance value pointer
     v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
@@ -100,13 +104,14 @@ def _fwd_inner_dense_base_kernel(
 
 
 @triton.jit
-def _fwd_dense_base_kernel(
+def _fwd_base_sparse_kernel(
     Q,
     K,
     V,
     Out,
     Lse,
     softmax_scale_log2,
+    softmax_threshold,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -392,6 +397,17 @@ def _fwd_dense_base_kernel(
         order=(1, 0),
     )
 
+    # Get softmax threshold
+    softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
+        softmax_threshold=softmax_threshold,
+        m_block=m_block,
+        seqlen_q=actual_seqlen_q,
+        seqlen_k=actual_seqlen_k,
+        IS_CAUSAL=IS_CAUSAL,
+        TILE_M=TILE_M,
+        QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+    )
+
     # Load query tile
     if PACK_GQA:
         q_tile = tl.load(
@@ -416,7 +432,7 @@ def _fwd_dense_base_kernel(
     if IS_CAUSAL or IS_LOCAL:
         for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _fwd_inner_dense_base_kernel(
+                _fwd_inner_sparse_base_kernel(
                     q_tile=q_tile,
                     k_tile=k_tile,
                     k_ptrs=k_ptrs,
@@ -426,6 +442,7 @@ def _fwd_dense_base_kernel(
                     row_max=row_max,
                     row_sum=row_sum,
                     softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_max_no_mask,
@@ -447,7 +464,7 @@ def _fwd_dense_base_kernel(
         n_block = n_block_max - 1
 
         k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-            _fwd_inner_dense_base_kernel(
+            _fwd_inner_sparse_base_kernel(
                 q_tile=q_tile,
                 k_tile=k_tile,
                 k_ptrs=k_ptrs,
@@ -457,6 +474,7 @@ def _fwd_dense_base_kernel(
                 row_max=row_max,
                 row_sum=row_sum,
                 softmax_scale_log2=softmax_scale_log2,
+                softmax_threshold_log2=softmax_threshold_log2,
                 m_block=m_block,
                 n_block=n_block,
                 n_block_min=n_block,
@@ -498,7 +516,7 @@ def _fwd_dense_base_kernel(
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _fwd_inner_dense_base_kernel(
+                _fwd_inner_sparse_base_kernel(
                     q_tile=q_tile,
                     k_tile=k_tile,
                     k_ptrs=k_ptrs,
@@ -508,6 +526,7 @@ def _fwd_dense_base_kernel(
                     row_max=row_max,
                     row_sum=row_sum,
                     softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_min_no_mask,
@@ -546,7 +565,7 @@ def _fwd_dense_base_kernel(
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _fwd_inner_dense_base_kernel(
+                _fwd_inner_sparse_base_kernel(
                     q_tile=q_tile,
                     k_tile=k_tile,
                     k_ptrs=k_ptrs,
@@ -556,6 +575,7 @@ def _fwd_dense_base_kernel(
                     row_max=row_max,
                     row_sum=row_sum,
                     softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
                     m_block=m_block,
                     n_block=n_block,
                     n_block_min=n_block_min,
@@ -609,15 +629,16 @@ def _fwd_dense_base_kernel(
         tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
 
 
-def _flash_dense_attn_base_forward(
+def _flash_sparse_attn_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
+    softmax_threshold: float = None,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
@@ -626,6 +647,7 @@ def _flash_dense_attn_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    softmax_threshold = softmax_threshold or head_dim / seqlen_k
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
@@ -643,7 +665,7 @@ def _flash_dense_attn_base_forward(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_dense_launch_config(
+        launch_template.get_fwd_sparse_launch_config(
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
@@ -691,13 +713,14 @@ def _flash_dense_attn_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_dense_base_kernel[grid](
+    _fwd_base_sparse_kernel[grid](
         query,
         key,
         value,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        softmax_threshold,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -743,17 +766,17 @@ def _flash_dense_attn_base_forward(
     )
 
     if is_split_kv:
-        flash_fwd_combine._flash_attn_fwd_combine(
+        flash_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
             lse,
         )
 
-    return out, lse, softmax_scale
+    return out, lse, softmax_scale, softmax_threshold
 
 
-def _flash_dense_attn_varlen_base_forward(
+def _flash_sparse_attn_varlen_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -763,9 +786,10 @@ def _flash_dense_attn_varlen_base_forward(
     max_seqlen_k: int,
     is_causal: bool = False,
     softmax_scale: float = None,
+    softmax_threshold: float = None,
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
     num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
@@ -777,6 +801,7 @@ def _flash_dense_attn_varlen_base_forward(
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
+    softmax_threshold = softmax_threshold or head_dim / seqlen_k
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
@@ -794,7 +819,7 @@ def _flash_dense_attn_varlen_base_forward(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_dense_launch_config(
+        launch_template.get_fwd_sparse_launch_config(
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
@@ -842,13 +867,14 @@ def _flash_dense_attn_varlen_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_dense_base_kernel[grid](
+    _fwd_base_sparse_kernel[grid](
         query,
         key,
         value,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        softmax_threshold,
         0,
         query.stride(-2),
         query.stride(0),
@@ -894,7 +920,7 @@ def _flash_dense_attn_varlen_base_forward(
     )
 
     if is_split_kv:
-        flash_fwd_combine._flash_attn_fwd_combine(
+        flash_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
@@ -902,4 +928,4 @@ def _flash_dense_attn_varlen_base_forward(
             cu_seqlens_q=cu_seqlens_q,
         )
 
-    return out, lse, softmax_scale
+    return out, lse, softmax_scale, softmax_threshold
