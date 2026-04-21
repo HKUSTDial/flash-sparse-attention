@@ -8,8 +8,8 @@ import cutlass.cute as cute
 from cutlass import Float32, Int32, Uint32, const_expr
 
 from quack import layout_utils
-import flash_sparse_attn.ops.cute.utils as utils
-from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
+import flash_attn.cute.utils as utils
+from flash_attn.cute.seqlen_info import SeqlenInfoQK
 
 MaskGenFn: TypeAlias = Callable[[int], Uint32]
 MASK_R2P_CHUNK_SIZE: int = 32
