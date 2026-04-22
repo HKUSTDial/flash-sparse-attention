@@ -130,7 +130,7 @@ def _bwd_inner_gated_base_kernel(
             # Load LSE
             lse_log2 = tl.load(lse_ptrs, boundary_check=(0,))
 
-            # Advance LSE pointer
+            # Advance LSE pointers
             lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
 
             # Compute attention weights

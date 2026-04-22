@@ -14,7 +14,7 @@ from flash_sparse_attn.ops.triton import (
     block_info,
     activations,
     mask,
-    flash_fwd_combine,
+    flash_dec_combine,
 )
 
 
@@ -99,7 +99,7 @@ def _fwd_inner_gated_base_kernel(
 
         # Apply online softmax
         p, block_max, row_max, row_sum, row_scale, skip_softmax = (
-            activations.online_softmax(
+            activations.online_sparse_softmax(
                 acc_s=acc_s,
                 block_max=block_max,
                 row_max=row_max,
@@ -107,7 +107,6 @@ def _fwd_inner_gated_base_kernel(
                 scale_log2=softmax_scale_log2,
                 softmax_threshold_log2=softmax_threshold_log2,
                 CHECK_INF=CHECK_INF,
-                RESCALE_THRESHOLD=0.0,
             )
         )
 
@@ -121,7 +120,7 @@ def _fwd_inner_gated_base_kernel(
             # Update output accumulator
             acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
-        # Advance value pointer
+        # Advance value pointers
         v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
     else:
         # Advance key and value pointers
@@ -1095,7 +1094,7 @@ def _flash_gated_attn_base_forward(
     )
 
     if is_split_kv:
-        flash_fwd_combine._flash_attn_fwd_combine(
+        flash_dec_combine._flash_attn_dec_combine(
             out_partial,
             lse_partial,
             out,
@@ -1266,7 +1265,7 @@ def _flash_gated_attn_varlen_base_forward(
     )
 
     if is_split_kv:
-        flash_fwd_combine._flash_attn_fwd_combine(
+        flash_dec_combine._flash_attn_dec_combine(
             out_partial,
             lse_partial,
             out,

@@ -90,7 +90,7 @@ def _bwd_postprocess_kernel(
         order=(1, 0),
     )
 
-    # Advance dq_accum pointer
+    # Advance dq_accum pointers
     dq_accum_ptrs = tl.advance(dq_accum_ptrs, (m_block * TILE_M, 0))
 
     # Load accumulators
@@ -99,7 +99,7 @@ def _bwd_postprocess_kernel(
     # Scale dq
     dq = (acc_dq * scale).to(dQ.dtype.element_ty)
 
-    # Advance dq pointer
+    # Advance dq pointers
     dq_ptrs = tl.advance(dq_ptrs, (m_block * TILE_M, 0))
 
     # Store dq
@@ -144,7 +144,7 @@ def _bwd_postprocess_kernel(
             order=(0,),
         )
 
-        # Advance da_accum pointer
+        # Advance da_accum pointers
         da_accum_ptrs = tl.advance(da_accum_ptrs, (m_block * TILE_M,))
 
         # Load da accumulators
@@ -153,7 +153,7 @@ def _bwd_postprocess_kernel(
         # Scale da
         da = (acc_da * scale).to(dA.dtype.element_ty)
 
-        # Advance da pointer
+        # Advance da pointers
         da_ptrs = tl.advance(da_ptrs, (m_block * TILE_M,))
 
         # Store da
