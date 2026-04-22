@@ -76,7 +76,7 @@ def _fwd_inner_dense_base_kernel(
         acc_s=acc_s,
         row_max=row_max,
         row_sum=row_sum,
-        SCALE_LOG2=softmax_scale_log2,
+        scale_log2=softmax_scale_log2,
         CHECK_INF=CHECK_INF,
         RESCALE_THRESHOLD=0.0,
     )

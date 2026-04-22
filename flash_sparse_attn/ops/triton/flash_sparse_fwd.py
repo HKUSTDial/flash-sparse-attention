@@ -80,7 +80,7 @@ def _fwd_inner_sparse_base_kernel(
             block_max=block_max,
             row_max=row_max,
             row_sum=row_sum,
-            SCALE_LOG2=softmax_scale_log2,
+            scale_log2=softmax_scale_log2,
             SOFTMAX_THRESHOLD_LOG2=softmax_threshold_log2,
             CHECK_INF=CHECK_INF,
         )
