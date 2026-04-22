@@ -65,6 +65,7 @@ def ensure_contiguous(fn):
     return wrapper
 
 
+@functools.lru_cache(maxsize=4096)
 def num_splits_heuristic(
     seqlen_q: int,
     seqlen_k: int,
