@@ -196,6 +196,16 @@ class _CachedLauncher:
             )
             return
 
+        # CompiledKernel expects a concrete tuple grid; resolve callables now.
+        grid = self._grid
+        if callable(grid):
+            grid = grid(constexprs)
+        if not isinstance(grid, tuple):
+            grid = tuple(grid)
+        # Pad to 3D, matching Triton's launcher expectations.
+        if len(grid) < 3:
+            grid = grid + (1,) * (3 - len(grid))
+
         constexpr_items = tuple(sorted(constexprs.items()))
         key = _make_kernel_key(
             self._kernel.fn.__name__,
@@ -209,14 +219,14 @@ class _CachedLauncher:
         if compiled is None:
             compiled = self._kernel.warmup(
                 *args,
-                grid=self._grid,
+                grid=grid,
                 num_warps=num_warps,
                 num_stages=num_stages,
                 num_ctas=num_ctas,
                 **constexprs,
             )
             _COMPILED_KERNEL_CACHE[key] = compiled
-        compiled[self._grid](*args)
+        compiled[grid](*args)
 
 
 class CachedKernel:
