@@ -1,5 +1,7 @@
 import triton
 
+from flash_sparse_attn.ops.triton import cache_utils
+
 
 def get_fwd_grid(
     batch_size: int,
@@ -35,6 +37,9 @@ def get_fwd_grid(
     return grid
 
 
+get_fwd_grid = cache_utils.cache_grid_factory(get_fwd_grid)
+
+
 def get_bwd_grid(
     batch_size: int,
     seqlen_k: int,
@@ -60,6 +65,9 @@ def get_bwd_grid(
     return grid
 
 
+get_bwd_grid = cache_utils.cache_grid_factory(get_bwd_grid)
+
+
 def get_dec_combine_grid(
     batch_size: int,
     seqlen_q: int,
@@ -82,6 +90,9 @@ def get_dec_combine_grid(
         )
 
     return grid
+
+
+get_dec_combine_grid = cache_utils.cache_grid_factory(get_dec_combine_grid)
 
 
 def get_bwd_preprocess_grid(
@@ -109,6 +120,9 @@ def get_bwd_preprocess_grid(
     return grid
 
 
+get_bwd_preprocess_grid = cache_utils.cache_grid_factory(get_bwd_preprocess_grid)
+
+
 def get_bwd_postprocess_grid(
     batch_size: int,
     seqlen_q: int,
@@ -132,3 +146,6 @@ def get_bwd_postprocess_grid(
         )
 
     return grid
+
+
+get_bwd_postprocess_grid = cache_utils.cache_grid_factory(get_bwd_postprocess_grid)
