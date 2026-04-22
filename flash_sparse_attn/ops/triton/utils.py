@@ -88,7 +88,7 @@ def num_splits_heuristic(
     """
     total_mblocks = triton.cdiv(seqlen_q, TILE_M)
     num_n_blocks = triton.cdiv(seqlen_k, TILE_N)
-    max_splits = triton.next_power_of_2(num_SMs // 4)
+    max_splits = 1 << (max(num_SMs, 1).bit_length() - 1)
     if num_n_blocks <= 4:
         # 1 means no splitting
         return 1
