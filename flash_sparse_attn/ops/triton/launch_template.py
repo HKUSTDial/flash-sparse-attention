@@ -1,6 +1,6 @@
 import triton
 
-from flash_sparse_attn.ops.triton import utils
+from flash_sparse_attn.ops.triton import utils, cache_utils
 
 
 def get_fwd_dense_launch_config(
@@ -114,6 +114,11 @@ def get_fwd_dense_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
+get_fwd_dense_launch_config = cache_utils.cache_launch_config(
+    get_fwd_dense_launch_config
+)
+
+
 def get_fwd_sparse_launch_config(
     is_split_kv,
     pack_gqa,
@@ -223,6 +228,11 @@ def get_fwd_sparse_launch_config(
             raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
     else:
         raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+get_fwd_sparse_launch_config = cache_utils.cache_launch_config(
+    get_fwd_sparse_launch_config
+)
 
 
 def get_fwd_gated_launch_config(
@@ -336,6 +346,11 @@ def get_fwd_gated_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
+get_fwd_gated_launch_config = cache_utils.cache_launch_config(
+    get_fwd_gated_launch_config
+)
+
+
 def get_bwd_dense_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int, int]:
@@ -396,6 +411,11 @@ def get_bwd_dense_launch_config(
             raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
     else:
         raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+get_bwd_dense_launch_config = cache_utils.cache_launch_config(
+    get_bwd_dense_launch_config
+)
 
 
 def get_bwd_sparse_launch_config(
@@ -460,6 +480,11 @@ def get_bwd_sparse_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
+get_bwd_sparse_launch_config = cache_utils.cache_launch_config(
+    get_bwd_sparse_launch_config
+)
+
+
 def get_bwd_gated_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int, int]:
@@ -522,6 +547,11 @@ def get_bwd_gated_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
+get_bwd_gated_launch_config = cache_utils.cache_launch_config(
+    get_bwd_gated_launch_config
+)
+
+
 def get_dec_combine_launch_config(
     tile_k,
 ) -> tuple[int, int, int, int]:
@@ -558,10 +588,15 @@ def get_dec_combine_launch_config(
 
         # For RTX Pro 6000
         elif arch // 10 == 12:
-            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
+            tile_m = 1 if tile_k % 128 == 0 else (2 if tile_k % 64 == 0 else 4)
             return (tile_m, 4, 1, 1)
 
         else:
             raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
     else:
         raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+get_dec_combine_launch_config = cache_utils.cache_launch_config(
+    get_dec_combine_launch_config
+)
