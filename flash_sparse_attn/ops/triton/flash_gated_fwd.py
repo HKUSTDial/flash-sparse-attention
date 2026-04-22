@@ -105,7 +105,7 @@ def _fwd_inner_gated_base_kernel(
                 row_max=row_max,
                 row_sum=row_sum,
                 scale_log2=softmax_scale_log2,
-                SOFTMAX_THRESHOLD_LOG2=softmax_threshold_log2,
+                softmax_threshold_log2=softmax_threshold_log2,
                 CHECK_INF=CHECK_INF,
             )
         )
