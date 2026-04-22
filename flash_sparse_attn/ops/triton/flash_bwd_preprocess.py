@@ -174,31 +174,31 @@ def _bwd_preprocess_kernel(
     # Initialize accumulators
     acc_dq = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
-    # Advance output pointer
+    # Advance output pointers
     o_ptrs = tl.advance(o_ptrs, (m_block * TILE_M, 0))
 
     # Load o tile
     o_tile = tl.load(o_ptrs, boundary_check=(0, 1)).to(tl.float32)
 
-    # Advance do pointer
+    # Advance do pointers
     do_ptrs = tl.advance(do_ptrs, (m_block * TILE_M, 0))
 
     # Load do tile
     do_tile = tl.load(do_ptrs, boundary_check=(0, 1)).to(tl.float32)
 
-    # Advance dpsum pointer
+    # Advance dpsum pointers
     dpsum_ptrs = tl.advance(dpsum_ptrs, (m_block * TILE_M,))
 
     # Compute dpsum
     dpsum = tl.sum(o_tile * do_tile, axis=1)
 
-    # Advance acc_dq pointer
+    # Advance acc_dq pointers
     dq_accum_ptrs = tl.advance(dq_accum_ptrs, (m_block * TILE_M, 0))
 
     # Store dpsum
     tl.store(dpsum_ptrs, dpsum, boundary_check=(0,))
 
-    # Advance lse pointer
+    # Advance lse pointers
     lse_ptrs = tl.advance(lse_ptrs, (m_block * TILE_M,))
 
     # Load lse tile
@@ -211,7 +211,7 @@ def _bwd_preprocess_kernel(
     # Store dq_accum
     tl.store(dq_accum_ptrs, acc_dq, boundary_check=(0, 1))
 
-    # Advance lse_log2 pointer
+    # Advance lse_log2 pointers
     lse_log2_ptrs = tl.advance(lse_log2_ptrs, (m_block * TILE_M,))
 
     # Store lse_log2
