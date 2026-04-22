@@ -226,7 +226,18 @@ class _CachedLauncher:
                 **constexprs,
             )
             _COMPILED_KERNEL_CACHE[key] = compiled
-        compiled[grid](*args)
+
+        # Triton's CompiledKernel launcher expects the full declared arg list
+        # (runtime args interleaved with constexprs) in kernel-declaration order.
+        arg_names = self._kernel.arg_names
+        full_args = [None] * len(arg_names)
+        args_iter = iter(args)
+        for i, name in enumerate(arg_names):
+            if name in constexprs:
+                full_args[i] = constexprs[name]
+            else:
+                full_args[i] = next(args_iter)
+        compiled[grid](*full_args)
 
 
 class CachedKernel:
