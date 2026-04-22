@@ -7,6 +7,7 @@ import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
+    cache_utils,
     launch_template,
     launch_grid,
     seqlen_info,
@@ -688,6 +689,9 @@ def _bwd_sparse_base_kernel(
         )
     else:
         tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1))
+
+
+_bwd_sparse_base_kernel = cache_utils.wrap_kernel(_bwd_sparse_base_kernel)
 
 
 def _flash_sparse_attn_base_backward(
