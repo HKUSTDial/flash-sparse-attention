@@ -72,7 +72,7 @@ def online_sparse_softmax(
     row_max,
     row_sum,
     scale_log2,
-    SOFTMAX_THRESHOLD_LOG2: tl.constexpr,
+    softmax_threshold_log2,
     CHECK_INF: tl.constexpr,
 ):
     """
@@ -83,7 +83,7 @@ def online_sparse_softmax(
     :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
     :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
-    :param SOFTMAX_THRESHOLD_LOG2: Threshold in log2-domain for block-level skip. If > -inf and block max is below threshold relative to running max, skip softmax update.
+    :param softmax_threshold_log2: Threshold in log2-domain for block-level skip. If > -inf and block max is below threshold relative to running max, skip softmax update.
     :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
 
     :return p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
@@ -98,7 +98,7 @@ def online_sparse_softmax(
 
     # Update skip condition based on threshold
     block_max_diff_log2 = (block_max_curr - block_max) * scale_log2
-    skip_softmax = block_max_diff_log2 < SOFTMAX_THRESHOLD_LOG2
+    skip_softmax = block_max_diff_log2 < softmax_threshold_log2
 
     # Return zero attention weights
     if skip_softmax:
