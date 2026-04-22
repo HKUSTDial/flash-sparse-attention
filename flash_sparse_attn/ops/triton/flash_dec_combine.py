@@ -2,7 +2,12 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import launch_template, launch_grid, seqlen_info
+from flash_sparse_attn.ops.triton import (
+    cache_utils,
+    launch_template,
+    launch_grid,
+    seqlen_info,
+)
 
 
 @triton.jit
@@ -175,6 +180,9 @@ def _dec_combine_kernel(
 
     # Store LSE
     tl.store(lse_ptrs, lse, boundary_check=(0,))
+
+
+_dec_combine_kernel = cache_utils.wrap_kernel(_dec_combine_kernel)
 
 
 def _flash_attn_dec_combine(
