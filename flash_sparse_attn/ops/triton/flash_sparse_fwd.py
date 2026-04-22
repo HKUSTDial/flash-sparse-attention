@@ -14,7 +14,7 @@ from flash_sparse_attn.ops.triton import (
     block_info,
     activations,
     mask,
-    flash_fwd_combine,
+    flash_dec_combine,
 )
 
 
@@ -48,7 +48,7 @@ def _fwd_inner_sparse_base_kernel(
     # Compute attention scores
     acc_s = tl.dot(q_tile, k_tile)
 
-    # Advance key pointer
+    # Advance key pointers
     k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
     if n_block > n_block_min:
         # Load next key tile
@@ -75,15 +75,14 @@ def _fwd_inner_sparse_base_kernel(
 
     # Apply online softmax
     p, block_max, row_max, row_sum, row_scale, skip_softmax = (
-        activations.online_softmax(
+        activations.online_sparse_softmax(
             acc_s=acc_s,
             block_max=block_max,
             row_max=row_max,
             row_sum=row_sum,
-            scale_log2=softmax_scale_log2,
-            softmax_threshold_log2=softmax_threshold_log2,
+            SCALE_LOG2=softmax_scale_log2,
+            SOFTMAX_THRESHOLD_LOG2=softmax_threshold_log2,
             CHECK_INF=CHECK_INF,
-            RESCALE_THRESHOLD=0.0,
         )
     )
 
@@ -97,7 +96,7 @@ def _fwd_inner_sparse_base_kernel(
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
-    # Advance value pointer
+    # Advance value pointers
     v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
 
     return k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum
@@ -766,7 +765,7 @@ def _flash_sparse_attn_base_forward(
     )
 
     if is_split_kv:
-        flash_fwd_combine._flash_attn_fwd_combine(
+        flash_dec_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
@@ -920,7 +919,7 @@ def _flash_sparse_attn_varlen_base_forward(
     )
 
     if is_split_kv:
-        flash_fwd_combine._flash_attn_fwd_combine(
+        flash_dec_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
