@@ -8,6 +8,7 @@ import triton.language as tl
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
     utils,
+    cache_utils,
     launch_template,
     launch_grid,
     seqlen_info,
@@ -628,6 +629,9 @@ def _fwd_base_sparse_kernel(
         tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
 
 
+_fwd_base_sparse_kernel = cache_utils.wrap_kernel(_fwd_base_sparse_kernel)
+
+
 def _flash_sparse_attn_base_forward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -638,7 +642,7 @@ def _flash_sparse_attn_base_forward(
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
-    num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
+    num_SMs = cache_utils.num_sms(query.device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
@@ -789,7 +793,7 @@ def _flash_sparse_attn_varlen_base_forward(
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
-    num_SMs = torch.cuda.get_device_properties(query.device).multi_processor_count
+    num_SMs = cache_utils.num_sms(query.device)
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
