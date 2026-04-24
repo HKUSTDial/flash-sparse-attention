@@ -19,13 +19,17 @@ def _dec_combine_kernel(
     stride_ops,
     stride_opb,
     stride_oph,
+    stride_opm,
     stride_lps,
     stride_lpb,
     stride_lph,
+    stride_lpm,
     stride_ob,
     stride_oh,
+    stride_om,
     stride_lb,
     stride_lh,
+    stride_lm,
     cu_seqlens_q,
     seqused_q,
     num_splits,
@@ -56,7 +60,7 @@ def _dec_combine_kernel(
         offset_q,
         0,
         stride_opb,
-        1,
+        stride_opm,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -66,7 +70,7 @@ def _dec_combine_kernel(
         offset_q,
         0,
         stride_lpb,
-        1,
+        stride_lpm,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -76,7 +80,7 @@ def _dec_combine_kernel(
         offset_q,
         0,
         stride_ob,
-        1,
+        stride_om,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -86,7 +90,7 @@ def _dec_combine_kernel(
         offset_q,
         0,
         stride_lb,
-        1,
+        stride_lm,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -133,7 +137,7 @@ def _dec_combine_kernel(
     # Combine split outputs
     for _ in tl.range(0, num_splits):
         # Load partial LSE
-        lse_s = tl.load(lse_part_ptrs, boundary_check=(0,))
+        lse_s = tl.sum(tl.load(lse_part_ptrs, boundary_check=(0,)), axis=0)
 
         # Advance LSE pointers
         lse_part_ptrs = tl.advance(lse_part_ptrs, (1,))
@@ -144,7 +148,7 @@ def _dec_combine_kernel(
         exp_logic = tl.exp2(lse_s - new_e_max)
 
         # Load partial outputs
-        o_s = tl.load(out_part_ptrs, boundary_check=(0, 1))
+        o_s = tl.sum(tl.load(out_part_ptrs, boundary_check=(0, 1)), axis=0)
 
         # Advance output pointers
         out_part_ptrs = tl.advance(out_part_ptrs, (1, 0))
@@ -220,20 +224,24 @@ def _flash_attn_dec_combine(
         out_partial.stride(0),
         out_partial.stride(1),
         out_partial.stride(2),
+        1 if not is_varlen else out_partial.stride(1),
         lse_partial.stride(0),
         lse_partial.stride(1),
         lse_partial.stride(2),
+        1 if not is_varlen else lse_partial.stride(1),
         out.stride(0),
         out.stride(1),
+        1 if not is_varlen else out.stride(0),
         lse.stride(0),
         lse.stride(1),
+        1 if not is_varlen else lse.stride(0),
         cu_seqlens_q,
         seqused_q,
         num_splits,
         num_heads_q,
         head_dim,
         TILE_K=TILE_K,
-        HAS_CU_SEQLENS_Q=cu_seqlens_q is not None,
+        HAS_CU_SEQLENS_Q=is_varlen,
         HAS_SEQUSED_Q=seqused_q is not None,
         num_warps=num_warps,
         num_stages=num_stages,
