@@ -22,28 +22,6 @@ def get_device():
         return torch.device("cpu")
 
 
-def get_arch(device: torch.device):
-    """
-    Get the architecture string for the given device.
-
-    :param device: torch.device object
-
-    :return arch: Architecture model as a number
-    """
-    if device.type == "cuda":
-        major, minor = torch.cuda.get_device_capability(device)
-        sm = major * 10 + minor
-        return sm if sm >= 80 else -1
-    elif device.type == "xpu":
-        return -1
-    elif device.type == "mps":
-        return -1
-    elif device.type == "cpu":
-        return -1
-    else:
-        raise ValueError(f"Unsupported device: {device}")
-
-
 def ensure_contiguous(fn):
     """
     Decorator to ensure that all tensor inputs to the decorated function are contiguous.
