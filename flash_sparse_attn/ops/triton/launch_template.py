@@ -20,7 +20,7 @@ def get_fwd_dense_launch_config(
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
     device = utils.get_device()
-    arch = utils.get_arch(device)
+    arch = cache_utils.get_device_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
@@ -136,7 +136,7 @@ def get_fwd_sparse_launch_config(
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
     device = utils.get_device()
-    arch = utils.get_arch(device)
+    arch = cache_utils.get_device_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
@@ -252,7 +252,7 @@ def get_fwd_gated_launch_config(
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
     device = utils.get_device()
-    arch = utils.get_arch(device)
+    arch = cache_utils.get_device_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
@@ -362,7 +362,7 @@ def get_bwd_dense_launch_config(
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
     device = utils.get_device()
-    arch = utils.get_arch(device)
+    arch = cache_utils.get_device_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
@@ -429,7 +429,7 @@ def get_bwd_sparse_launch_config(
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
     device = utils.get_device()
-    arch = utils.get_arch(device)
+    arch = cache_utils.get_device_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
@@ -496,7 +496,7 @@ def get_bwd_gated_launch_config(
     :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
     device = utils.get_device()
-    arch = utils.get_arch(device)
+    arch = cache_utils.get_device_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
@@ -552,44 +552,115 @@ get_bwd_gated_launch_config = cache_utils.cache_launch_config(
 )
 
 
-def get_dec_combine_launch_config(
+def get_dec_dense_launch_config(
+    qheads_per_kvhead,
     tile_k,
-) -> tuple[int, int, int, int]:
+    device,
+    arch,
+) -> tuple[int, int, int, int, int]:
     """
-    Get launch configuration for decode combine kernel based on input parameters and device architecture.
+    Get launch configuration for decode dense kernel based on input parameters and device architecture.
 
+    :param qheads_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
+    :param device: The device to run the kernel on
+    :param arch: The architecture of the device
 
-    :return launch_config: Tuple of (tile_m, num_warps, num_stages, num_ctas) for launching the kernel
+    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
     """
-    device = utils.get_device()
-    arch = utils.get_arch(device)
 
     if arch == -1:
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
-    # NOTE: Setting num_ctas=2 for the decode combine kernel can trigger Triton's PlanCTA assertion
-    # Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
     if device.type == "cuda":
+        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+
         # For A100
         if arch // 10 == 8:
-            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
-            return (tile_m, 4, 1, 1)
+            if tile_k <= 64:
+                return (tile_m, 256, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 64, 4, 1, 1)
+            else:
+                return (tile_m, 64, 4, 1, 1)
 
         # For H100
         elif arch // 10 == 9:
-            tile_m = 8 if tile_k % 128 == 0 else (16 if tile_k % 64 == 0 else 32)
-            return (tile_m, 4, 1, 1)
+            if tile_k <= 64:
+                return (tile_m, 256, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 64, 4, 1, 1)
+            else:
+                return (tile_m, 64, 4, 1, 1)
 
         # For B200
         elif arch // 10 == 10:
-            tile_m = 16 if tile_k % 128 == 0 else (32 if tile_k % 64 == 0 else 64)
-            return (tile_m, 4, 1, 1)
+            # TODO: Tune launch config for SM 100
+            return (tile_m, 64, 4, 1, 1)
 
         # For RTX Pro 6000
         elif arch // 10 == 12:
-            tile_m = 1 if tile_k % 128 == 0 else (2 if tile_k % 64 == 0 else 4)
-            return (tile_m, 4, 1, 1)
+            if tile_k <= 64:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 64, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 32, 4, 1, 1)
+            else:
+                return (tile_m, 32, 4, 1, 1)
+        else:
+            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
+    else:
+        raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+get_dec_dense_launch_config = cache_utils.cache_launch_config(
+    get_dec_dense_launch_config
+)
+
+
+def get_dec_combine_launch_config(
+    tile_k,
+    device,
+    arch,
+) -> tuple[int, int, int]:
+    """
+    Get launch configuration for decode combine kernel based on input parameters and device architecture.
+
+    :param tile_k: Tile size in the K dimension
+    :param device: The device to run the kernel on
+    :param arch: The architecture of the device
+
+    :return launch_config: Tuple of (num_warps, num_stages, num_ctas) for launching the kernel
+    """
+
+    if arch == -1:
+        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
+
+    if device.type == "cuda":
+        # For A100
+        if arch // 10 == 8:
+            num_stages = max(min(8, 512 // tile_k), 1)
+            return (4, num_stages, 1)
+
+        # For H100
+        elif arch // 10 == 9:
+            num_stages = max(min(8, 512 // tile_k), 1)
+            return (4, num_stages, 1)
+
+        # For B200
+        elif arch // 10 == 10:
+            num_stages = max(min(16, 512 // tile_k), 1)
+            return (4, num_stages, 1)
+
+        # For RTX Pro 6000
+        elif arch // 10 == 12:
+            num_stages = max(min(4, 512 // tile_k), 1)
+            return (4, num_stages, 1)
 
         else:
             raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
