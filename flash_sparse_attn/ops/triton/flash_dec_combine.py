@@ -19,35 +19,30 @@ def _dec_combine_kernel(
     stride_ops,
     stride_opb,
     stride_oph,
-    stride_opm,
     stride_lps,
     stride_lpb,
     stride_lph,
     stride_ob,
     stride_oh,
-    stride_om,
     stride_lb,
     stride_lh,
     cu_seqlens_q,
     seqused_q,
     num_splits,
-    seqlen_q,
     num_heads_q,
     head_dim,
-    TILE_M: tl.constexpr,
     TILE_K: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
 ):
-    m_block = tl.program_id(0)
-    bh_idx = tl.program_id(1)
+    bh_idx = tl.program_id(0)
     batch_idx = bh_idx // num_heads_q
     head_idx = bh_idx - batch_idx * num_heads_q
 
     # Get seqlen info for this batch
-    offset_q, actual_seqlen_q = seqlen_info.get_seqlen_info(
+    offset_q, _ = seqlen_info.get_seqlen_info(
         batch_idx=batch_idx,
-        seqlen_static=seqlen_q,
+        seqlen_static=1,
         cu_seqlens=cu_seqlens_q,
         seqused=seqused_q,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
@@ -61,7 +56,7 @@ def _dec_combine_kernel(
         offset_q,
         0,
         stride_opb,
-        stride_opm,
+        1,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -81,7 +76,7 @@ def _dec_combine_kernel(
         offset_q,
         0,
         stride_ob,
-        stride_om,
+        1,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -99,49 +94,49 @@ def _dec_combine_kernel(
     # Create pointers
     out_part_ptrs = tl.make_block_ptr(
         base=out_part_base,
-        shape=(num_splits, actual_seqlen_q, head_dim),
-        strides=(stride_ops, stride_opm, 1),
-        offsets=(0, m_block * TILE_M, 0),
-        block_shape=(1, TILE_M, TILE_K),
-        order=(2, 1, 0),
+        shape=(num_splits, head_dim),
+        strides=(stride_ops, 1),
+        offsets=(0, 0),
+        block_shape=(1, TILE_K),
+        order=(1, 0),
     )
     lse_part_ptrs = tl.make_block_ptr(
         base=lse_part_base,
-        shape=(num_splits, actual_seqlen_q),
-        strides=(stride_lps, 1),
-        offsets=(0, m_block * TILE_M),
-        block_shape=(1, TILE_M),
-        order=(1, 0),
+        shape=(num_splits,),
+        strides=(stride_lps,),
+        offsets=(0,),
+        block_shape=(1,),
+        order=(0,),
     )
     out_ptrs = tl.make_block_ptr(
         base=out_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_om, 1),
-        offsets=(m_block * TILE_M, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=(head_dim,),
+        strides=(1,),
+        offsets=(0,),
+        block_shape=(TILE_K,),
+        order=(0,),
     )
     lse_ptrs = tl.make_block_ptr(
         base=lse_base,
-        shape=(actual_seqlen_q,),
+        shape=(1,),
         strides=(1,),
-        offsets=(m_block * TILE_M,),
-        block_shape=(TILE_M,),
+        offsets=(0,),
+        block_shape=(1,),
         order=(0,),
     )
 
     # Initialize accumulators
-    e_sum = tl.zeros((TILE_M,), dtype=tl.float32)
-    e_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
-    acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
+    e_sum = tl.full((), 0.0, dtype=tl.float32)
+    e_max = tl.full((), float("-inf"), dtype=tl.float32)
+    acc_o = tl.zeros((TILE_K,), dtype=tl.float32)
 
     # Combine split outputs
     for _ in tl.range(0, num_splits):
         # Load partial LSE
-        lse_s = tl.sum(tl.load(lse_part_ptrs, boundary_check=(0, 1)), axis=0)
+        lse_s = tl.load(lse_part_ptrs, boundary_check=(0,))
 
         # Advance LSE pointers
-        lse_part_ptrs = tl.advance(lse_part_ptrs, (1, 0))
+        lse_part_ptrs = tl.advance(lse_part_ptrs, (1,))
 
         # Compute normalized exponentials
         new_e_max = tl.maximum(lse_s, e_max)
@@ -149,28 +144,29 @@ def _dec_combine_kernel(
         exp_logic = tl.exp2(lse_s - new_e_max)
 
         # Load partial outputs
-        o_s = tl.sum(tl.load(out_part_ptrs, boundary_check=(0, 1, 2)), axis=0)
+        o_s = tl.load(out_part_ptrs, boundary_check=(0, 1))
 
         # Advance output pointers
-        out_part_ptrs = tl.advance(out_part_ptrs, (1, 0, 0))
+        out_part_ptrs = tl.advance(out_part_ptrs, (1, 0))
 
         # Compute scaled outputs
-        acc_o *= old_scale[:, None]
-        acc_o += exp_logic[:, None] * o_s
+        acc_o *= old_scale
+        acc_o += exp_logic * o_s
 
         # Update e_sum and e_max
         e_sum = e_sum * old_scale + exp_logic
         e_max = new_e_max
 
     # Normalize output
-    inv_sum = tl.where((e_sum == 0.0) | (e_sum != e_sum), 0.0, 1.0 / e_sum)
-    acc_o *= inv_sum[:, None]
+    # inv_sum = tl.where((e_sum == 0.0) | (e_sum != e_sum), 0.0, 1.0 / e_sum)
+    inv_sum = 1.0 / e_sum
+    acc_o *= inv_sum
 
     # Store output
     tl.store(
         out_ptrs,
         acc_o.to(Out.dtype.element_ty),
-        boundary_check=(0, 1),
+        boundary_check=(0,),
     )
 
     # Compute LSE
@@ -179,7 +175,7 @@ def _dec_combine_kernel(
     lse = tl.where(e_sum > 0.0, (e_max + tl.log2(e_sum)) * ln2, float("-inf"))
 
     # Store LSE
-    tl.store(lse_ptrs, lse, boundary_check=(0,))
+    tl.store(lse_ptrs, lse)
 
 
 _dec_combine_kernel = cache_utils.wrap_kernel(_dec_combine_kernel)
@@ -193,26 +189,26 @@ def _flash_attn_dec_combine(
     cu_seqlens_q: torch.Tensor = None,
     seqused_q: torch.Tensor = None,
 ):
+    device = out.device
+    arch = cache_utils.get_device_arch(device)
     is_varlen = cu_seqlens_q is not None
     num_splits = out_partial.shape[0]
     if not is_varlen:
-        batch_size, seqlen_q, num_heads_q, head_dim = out_partial.shape[1:]
+        batch_size, num_heads_q, head_dim = out_partial.shape[1:]
     else:
-        total_q, num_heads_q, head_dim = out_partial.shape[1:]
+        _, num_heads_q, head_dim = out_partial.shape[1:]
         batch_size = cu_seqlens_q.shape[0] - 1
-        seqlen_q = total_q
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, num_warps, num_stages, num_ctas = (
-        launch_template.get_dec_combine_launch_config(
-            tile_k=TILE_K,
-        )
+    num_warps, num_stages, num_ctas = launch_template.get_dec_combine_launch_config(
+        tile_k=TILE_K,
+        device=device,
+        arch=arch,
     )
 
     grid = launch_grid.get_dec_combine_grid(
         batch_size=batch_size,
-        seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
     )
 
@@ -222,24 +218,20 @@ def _flash_attn_dec_combine(
         out,
         lse,
         out_partial.stride(0),
-        out_partial.stride(1) if not is_varlen else 0,
-        out_partial.stride(-2),
-        out_partial.stride(-3),
+        out_partial.stride(1),
+        out_partial.stride(2),
         lse_partial.stride(0),
-        lse_partial.stride(1) if not is_varlen else 0,
-        lse_partial.stride(-2),
-        out.stride(0) if not is_varlen else 0,
-        out.stride(-2),
-        out.stride(-3) if not is_varlen else out.stride(0),
-        lse.stride(0) if not is_varlen else 0,
-        lse.stride(-2) if not is_varlen else lse.stride(0),
+        lse_partial.stride(1),
+        lse_partial.stride(2),
+        out.stride(0),
+        out.stride(1),
+        lse.stride(0),
+        lse.stride(1),
         cu_seqlens_q,
         seqused_q,
         num_splits,
-        seqlen_q,
         num_heads_q,
         head_dim,
-        TILE_M=TILE_M,
         TILE_K=TILE_K,
         HAS_CU_SEQLENS_Q=cu_seqlens_q is not None,
         HAS_SEQUSED_Q=seqused_q is not None,
