@@ -653,6 +653,8 @@ def _flash_dense_attn_base_forward(
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
@@ -812,6 +814,8 @@ def _flash_dense_attn_varlen_base_forward(
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
