@@ -50,7 +50,7 @@ def _dec_inner_dense_base_kernel(
     k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
     if n_block > n_block_min:
         # Load next key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     if IS_MASK:
         # Apply mask to attention scores
@@ -82,7 +82,7 @@ def _dec_inner_dense_base_kernel(
     )
 
     # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+    v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Rescale output accumulator
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
@@ -280,11 +280,11 @@ def _dec_dense_base_kernel(
     if n_block_min >= n_block_max:
         # Write LSE as -inf for proper handling
         lse_tile = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+        tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
         # Write output as zero for proper handling
         o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
-        tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
+        tl.store(out_ptrs, o_tile, boundary_check=(0, 1), cache_modifier=".wb")
         return
 
     q_ptrs = tl.make_block_ptr(
@@ -313,7 +313,7 @@ def _dec_dense_base_kernel(
     )
 
     # Load query tile
-    q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+    q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".ca")
 
     # Initialize accumulators
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
@@ -321,7 +321,7 @@ def _dec_dense_base_kernel(
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Process n_blocks with masking
     # First iteration with seqlen masking
@@ -371,7 +371,7 @@ def _dec_dense_base_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
                 _dec_inner_dense_base_kernel(
@@ -417,7 +417,7 @@ def _dec_dense_base_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
                 _dec_inner_dense_base_kernel(
@@ -455,13 +455,13 @@ def _dec_dense_base_kernel(
     )
 
     # Store LSE
-    tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+    tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
     # Final rescale
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store output
-    tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
+    tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
 _dec_dense_base_kernel = cache_utils.wrap_kernel(_dec_dense_base_kernel)
