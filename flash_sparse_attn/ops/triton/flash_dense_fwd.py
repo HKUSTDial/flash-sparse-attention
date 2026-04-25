@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import math
 import torch
@@ -15,7 +15,7 @@ from flash_sparse_attn.ops.triton import (
     block_info,
     activations,
     mask,
-    flash_dec_combine,
+    flash_fwd_combine,
 )
 
 
@@ -51,7 +51,7 @@ def _fwd_inner_dense_base_kernel(
     k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
     if n_block > n_block_min:
         # Load next key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     if IS_MASK:
         # Apply mask to attention scores
@@ -83,7 +83,7 @@ def _fwd_inner_dense_base_kernel(
     )
 
     # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+    v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Rescale output accumulator
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
@@ -336,9 +336,10 @@ def _fwd_dense_base_kernel(
                 lse_ptrs,
                 lse_tile,
                 mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+                cache_modifier=".wb",
             )
         else:
-            tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+            tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
         # Write output as zero for proper handling
         o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
@@ -348,9 +349,10 @@ def _fwd_dense_base_kernel(
                 o_tile,
                 mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
                 & (offs_kb < head_dim)[None, :],
+                cache_modifier=".wb",
             )
         else:
-            tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
+            tl.store(out_ptrs, o_tile, boundary_check=(0, 1), cache_modifier=".wb")
         return
 
     if not PACK_GQA:
@@ -397,9 +399,10 @@ def _fwd_dense_base_kernel(
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
             other=0.0,
+            cache_modifier=".ca",
         )
     else:
-        q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+        q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".ca")
 
     # Initialize accumulators
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
@@ -407,7 +410,7 @@ def _fwd_dense_base_kernel(
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
@@ -488,7 +491,7 @@ def _fwd_dense_base_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
                 _fwd_inner_dense_base_kernel(
@@ -535,7 +538,7 @@ def _fwd_dense_base_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
                 _fwd_inner_dense_base_kernel(
@@ -580,9 +583,10 @@ def _fwd_dense_base_kernel(
             lse_ptrs,
             lse_tile,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+            cache_modifier=".wb",
         )
     else:
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+        tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
     # Store output
     # When IS_SPLIT_KV, store float32 partial results.
@@ -595,9 +599,10 @@ def _fwd_dense_base_kernel(
             acc_o,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
+            cache_modifier=".wb",
         )
     else:
-        tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
+        tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
 _fwd_dense_base_kernel = cache_utils.wrap_kernel(_fwd_dense_base_kernel)
@@ -610,12 +615,14 @@ def _flash_dense_attn_base_forward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_size: Tuple[int, int] = (None, None),
+    is_split_kv: bool = False,
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    num_SMs = cache_utils.num_sms(query.device)
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
@@ -629,9 +636,13 @@ def _flash_dense_attn_base_forward(
         value,
         cu_seqlens_q=None,
         cu_seqlens_k=None,
+        seqused_q=None,
+        seqused_k=None,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -737,7 +748,7 @@ def _flash_dense_attn_base_forward(
     )
 
     if is_split_kv:
-        flash_dec_combine._flash_attn_dec_combine(
+        flash_fwd_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
@@ -758,15 +769,19 @@ def _flash_dense_attn_varlen_base_forward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_size: Tuple[int, int] = (None, None),
+    is_split_kv: bool = False,
     pack_gqa: bool = False,
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    num_SMs = cache_utils.num_sms(query.device)
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
@@ -780,9 +795,13 @@ def _flash_dense_attn_varlen_base_forward(
         value,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
+        seqused_q=seqused_q,
+        seqused_k=seqused_k,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -861,8 +880,8 @@ def _flash_dense_attn_varlen_base_forward(
         0 if not is_split_kv else lse_partial.stride(0),
         cu_seqlens_q,
         cu_seqlens_k,
-        None,
-        None,
+        seqused_q,
+        seqused_k,
         qheads_per_kvhead,
         num_splits,
         seqlen_q,
@@ -879,8 +898,8 @@ def _flash_dense_attn_varlen_base_forward(
         WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
-        HAS_SEQUSED_Q=False,
-        HAS_SEQUSED_K=False,
+        HAS_SEQUSED_Q=seqused_q is not None,
+        HAS_SEQUSED_K=seqused_k is not None,
         PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
@@ -888,12 +907,13 @@ def _flash_dense_attn_varlen_base_forward(
     )
 
     if is_split_kv:
-        flash_dec_combine._flash_attn_dec_combine(
+        flash_fwd_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
             lse,
             cu_seqlens_q=cu_seqlens_q,
+            seqused_q=seqused_q,
         )
 
     return out, lse, softmax_scale
