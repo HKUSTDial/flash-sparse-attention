@@ -43,7 +43,7 @@ def _bwd_inner_dense_base_kernel(
     MASK_LOCAL: tl.constexpr,
 ):
     # Load query tile
-    q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+    q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Advance query pointers
     q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
@@ -52,7 +52,7 @@ def _bwd_inner_dense_base_kernel(
     acc_s = tl.dot(k_tile, q_tile)
 
     # Load LSE
-    lse_log2 = tl.load(lse_ptrs, boundary_check=(0,))
+    lse_log2 = tl.load(lse_ptrs, boundary_check=(0,), cache_modifier=".cg")
 
     # Advance LSE pointers
     lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
@@ -80,7 +80,7 @@ def _bwd_inner_dense_base_kernel(
     p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(q_tile.dtype)
 
     # Load output gradients tile
-    do_tile = tl.load(do_ptrs, boundary_check=(0, 1))
+    do_tile = tl.load(do_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Advance output gradients pointers
     do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
@@ -92,7 +92,7 @@ def _bwd_inner_dense_base_kernel(
     acc_dp = tl.dot(v_tile, tl.trans(do_tile))
 
     # Load dpsum
-    dpsum = tl.load(dpsum_ptrs, boundary_check=(0,))
+    dpsum = tl.load(dpsum_ptrs, boundary_check=(0,), cache_modifier=".cg")
 
     # Advance dpsum pointers
     dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
@@ -387,10 +387,10 @@ def _bwd_dense_base_kernel(
         )
 
     # Load K tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Load V tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+    v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Initialize accumulators
     acc_dk = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
@@ -615,7 +615,7 @@ def _bwd_dense_base_kernel(
             sem="relaxed",
         )
     else:
-        tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1))
+        tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1), cache_modifier=".wb")
 
     # Scale key gradients
     acc_dk = acc_dk * softmax_scale
@@ -629,7 +629,7 @@ def _bwd_dense_base_kernel(
             sem="relaxed",
         )
     else:
-        tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1))
+        tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1), cache_modifier=".wb")
 
 
 _bwd_dense_base_kernel = cache_utils.wrap_kernel(_bwd_dense_base_kernel)
@@ -646,6 +646,8 @@ def _flash_dense_attn_base_backward(
     softmax_scale: float = None,
     window_size: Tuple[int, int] = (None, None),
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     window_size_left, window_size_right = window_size
@@ -668,6 +670,8 @@ def _flash_dense_attn_base_backward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -675,6 +679,8 @@ def _flash_dense_attn_base_backward(
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
         launch_template.get_bwd_dense_launch_config(
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
@@ -829,6 +835,8 @@ def _flash_dense_attn_varlen_base_backward(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
     total_q, num_heads_q, head_dim = query.shape
     total_k, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
@@ -854,6 +862,8 @@ def _flash_dense_attn_varlen_base_backward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -861,6 +871,8 @@ def _flash_dense_attn_varlen_base_backward(
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
         launch_template.get_bwd_dense_launch_config(
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
