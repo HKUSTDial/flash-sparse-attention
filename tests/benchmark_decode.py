@@ -8,9 +8,9 @@ from tqdm import tqdm
 from triton.testing import do_bench
 
 from flash_sparse_attn.ops.triton.interface import (
-    flash_dense_attn_func,
-    flash_sparse_attn_func,
-    flash_gated_attn_func,
+    flash_dense_attn_with_kvcache_func,
+    flash_sparse_attn_with_kvcache_func,
+    flash_gated_attn_with_kvcache_func,
 )
 from test_utils import (
     BenchmarkConfig,
@@ -42,14 +42,14 @@ def benchmark_triton_dense_decode(
         layout="bshd",
         input_source="llm",
     )
+    q = q.squeeze(1)
     softmax_scale = cfg.head_dim**-0.5
 
     def fn():
-        flash_dense_attn_func(
+        flash_dense_attn_with_kvcache_func(
             q,
             k,
             v,
-            is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
             window_size=(None, None),
         )
@@ -67,15 +67,15 @@ def benchmark_triton_sparse_decode(
         layout="bshd",
         input_source="llm",
     )
+    q = q.squeeze(1)
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
 
     def fn():
-        flash_sparse_attn_func(
+        flash_sparse_attn_with_kvcache_func(
             q,
             k,
             v,
-            is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
             window_size=(None, None),
@@ -94,9 +94,8 @@ def benchmark_triton_gated_decode(
         layout="bshd",
         input_source="llm",
     )
-    alpha = torch.randn(
-        cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
-    )
+    q = q.squeeze(1)
+    alpha = torch.randn(cfg.batch_size, cfg.num_heads, device=device, dtype=dtype)
     delta = torch.randn(
         cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
     )
@@ -105,13 +104,12 @@ def benchmark_triton_gated_decode(
     gate_threshold = 1.0
 
     def fn():
-        flash_gated_attn_func(
+        flash_gated_attn_with_kvcache_func(
             q,
             k,
             v,
             alpha,
             delta,
-            is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
             gate_threshold=gate_threshold,

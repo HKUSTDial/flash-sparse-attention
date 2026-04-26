@@ -1,5 +1,7 @@
 import triton
 
+from flash_sparse_attn.ops.triton import cache_utils
+
 
 def get_fwd_grid(
     batch_size: int,
@@ -35,6 +37,36 @@ def get_fwd_grid(
     return grid
 
 
+get_fwd_grid = cache_utils.cache_launch_grid(get_fwd_grid)
+
+
+def get_fwd_combine_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the forward combine kernel.
+
+    :param batch_size: Batch size
+    :param seqlen_q: Sequence length of queries
+    :param num_heads_q: Number of query heads
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            batch_size * num_heads_q,
+        )
+
+    return grid
+
+
+get_fwd_combine_grid = cache_utils.cache_launch_grid(get_fwd_combine_grid)
+
+
 def get_bwd_grid(
     batch_size: int,
     seqlen_k: int,
@@ -60,28 +92,7 @@ def get_bwd_grid(
     return grid
 
 
-def get_dec_combine_grid(
-    batch_size: int,
-    seqlen_q: int,
-    num_heads_q: int,
-):
-    """
-    Get the grid function for the decode combine kernel.
-
-    :param batch_size: Batch size
-    :param seqlen_q: Sequence length of queries
-    :param num_heads_q: Number of query heads
-
-    :return grid: Grid function
-    """
-
-    def grid(META):
-        return (
-            triton.cdiv(seqlen_q, META["TILE_M"]),
-            batch_size * num_heads_q,
-        )
-
-    return grid
+get_bwd_grid = cache_utils.cache_launch_grid(get_bwd_grid)
 
 
 def get_bwd_preprocess_grid(
@@ -109,6 +120,9 @@ def get_bwd_preprocess_grid(
     return grid
 
 
+get_bwd_preprocess_grid = cache_utils.cache_launch_grid(get_bwd_preprocess_grid)
+
+
 def get_bwd_postprocess_grid(
     batch_size: int,
     seqlen_q: int,
@@ -132,3 +146,55 @@ def get_bwd_postprocess_grid(
         )
 
     return grid
+
+
+get_bwd_postprocess_grid = cache_utils.cache_launch_grid(get_bwd_postprocess_grid)
+
+
+def get_dec_grid(
+    batch_size: int,
+    num_heads_kv: int,
+    num_splits: int,
+):
+    """
+    Get the grid function for the decode kernel.
+
+    :param batch_size: Batch size
+    :param num_heads_kv: Number of key/value heads
+    :param num_splits: Number of KV splits
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (
+            num_heads_kv,
+            batch_size * num_splits,
+        )
+
+    return grid
+
+
+get_dec_grid = cache_utils.cache_launch_grid(get_dec_grid)
+
+
+def get_dec_combine_grid(
+    batch_size: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the decode combine kernel.
+
+    :param batch_size: Batch size
+    :param num_heads_q: Number of query heads
+
+    :return grid: Grid function
+    """
+
+    def grid(META):
+        return (batch_size * num_heads_q,)
+
+    return grid
+
+
+get_dec_combine_grid = cache_utils.cache_launch_grid(get_dec_combine_grid)

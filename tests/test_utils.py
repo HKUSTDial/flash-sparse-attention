@@ -28,6 +28,14 @@ from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
     _flash_sparse_attn_base_forward,
     _flash_sparse_attn_varlen_base_forward,
 )
+from flash_sparse_attn.ops.triton.interface import (
+    flash_dense_attn_varlen_with_kvcache_func,
+    flash_dense_attn_with_kvcache_func,
+    flash_gated_attn_varlen_with_kvcache_func,
+    flash_gated_attn_with_kvcache_func,
+    flash_sparse_attn_varlen_with_kvcache_func,
+    flash_sparse_attn_with_kvcache_func,
+)
 
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B-Base"
@@ -898,6 +906,253 @@ def run_forward_varlen_case(
     )
     _assert_close(
         name=f"{kind}-varlen-forward",
+        got=out,
+        ref=out_ref,
+        rtol=_DEFAULT_RTOL[kind],
+        atol=_DEFAULT_ATOL[kind],
+    )
+
+
+def run_decode_base_case(
+    kind: KernelType,
+    batch_size: int,
+    seqlen_k: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_logsigmoid_gate: bool = True,
+    use_output_buffers: bool = False,
+    dtype: torch.dtype = CORRECTNESS_DTYPE,
+) -> None:
+    device = torch.device("cuda")
+    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=dtype)
+    k = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    v = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    alpha = (
+        torch.randn(batch_size, num_heads_q, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    delta = (
+        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    softmax_scale = head_dim**-0.5
+    threshold = head_dim / seqlen_k
+
+    out_buffer = torch.empty_like(q) if use_output_buffers else None
+    lse_buffer = (
+        torch.empty(batch_size, num_heads_q, device=device, dtype=torch.float32)
+        if use_output_buffers
+        else None
+    )
+
+    if kind == "dense":
+        out, lse = flash_dense_attn_with_kvcache_func(
+            q,
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            return_lse=True,
+            out=out_buffer,
+            lse=lse_buffer,
+        )
+        out_ref = reference_dense_forward(
+            q.unsqueeze(1),
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            is_causal=False,
+            window_size=window_size,
+        ).squeeze(1)
+    elif kind == "sparse":
+        out, lse = flash_sparse_attn_with_kvcache_func(
+            q,
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+            return_lse=True,
+            out=out_buffer,
+            lse=lse_buffer,
+        )
+        out_ref = reference_sparse_forward(
+            q.unsqueeze(1),
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            is_causal=False,
+            window_size=window_size,
+        ).squeeze(1)
+    else:
+        out, lse = flash_gated_attn_with_kvcache_func(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+            return_lse=True,
+            out=out_buffer,
+            lse=lse_buffer,
+        )
+        out_ref = reference_gated_forward(
+            q.unsqueeze(1),
+            k,
+            v,
+            alpha.unsqueeze(-1),
+            delta,
+            softmax_scale=softmax_scale,
+            is_causal=False,
+            window_size=window_size,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+        ).squeeze(1)
+
+    if use_output_buffers:
+        assert out.data_ptr() == out_buffer.data_ptr()
+        assert lse.data_ptr() == lse_buffer.data_ptr()
+
+    _assert_close(
+        name=f"{kind}-base-decode",
+        got=out,
+        ref=out_ref,
+        rtol=_DEFAULT_RTOL[kind],
+        atol=_DEFAULT_ATOL[kind],
+    )
+
+
+def run_decode_varlen_case(
+    kind: KernelType,
+    lens_k: Sequence[int],
+    num_heads_q: int,
+    num_heads_kv: int,
+    head_dim: int,
+    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_logsigmoid_gate: bool = True,
+    use_output_buffers: bool = False,
+    dtype: torch.dtype = CORRECTNESS_DTYPE,
+) -> None:
+    device = torch.device("cuda")
+    batch_size = len(lens_k)
+    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=dtype)
+    k = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_k
+        ],
+        dim=0,
+    )
+    v = torch.cat(
+        [
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            for seq_len in lens_k
+        ],
+        dim=0,
+    )
+    alpha = (
+        torch.randn(batch_size, num_heads_q, device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+    delta = (
+        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=dtype)
+        if kind == "gated"
+        else None
+    )
+
+    cu_seqlens_k = make_cu_seqlens(lens_k, device)
+    cu_seqlens_q_ref = make_cu_seqlens([1] * batch_size, device)
+    softmax_scale = head_dim**-0.5
+    threshold = head_dim / max(lens_k)
+
+    out_buffer = torch.empty_like(q) if use_output_buffers else None
+    lse_buffer = (
+        torch.empty(batch_size, num_heads_q, device=device, dtype=torch.float32)
+        if use_output_buffers
+        else None
+    )
+
+    if kind == "dense":
+        out, lse = flash_dense_attn_varlen_with_kvcache_func(
+            q,
+            k,
+            v,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_k=max(lens_k),
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+            return_lse=True,
+            out=out_buffer,
+            lse=lse_buffer,
+        )
+    elif kind == "sparse":
+        out, lse = flash_sparse_attn_varlen_with_kvcache_func(
+            q,
+            k,
+            v,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_k=max(lens_k),
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            window_size=window_size,
+            return_lse=True,
+            out=out_buffer,
+            lse=lse_buffer,
+        )
+    else:
+        out, lse = flash_gated_attn_varlen_with_kvcache_func(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_k=max(lens_k),
+            softmax_scale=softmax_scale,
+            softmax_threshold=threshold,
+            gate_threshold=threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=False,
+            window_size=window_size,
+            return_lse=True,
+            out=out_buffer,
+            lse=lse_buffer,
+        )
+
+    out_ref = _reference_varlen_forward(
+        kind,
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_seqlens_q_ref,
+        cu_seqlens_k=cu_seqlens_k,
+        softmax_scale=softmax_scale,
+        is_causal=False,
+        window_size=window_size,
+        alpha=alpha.transpose(0, 1) if alpha is not None else None,
+        delta=delta,
+        is_logsigmoid_gate=is_logsigmoid_gate,
+    )
+
+    if use_output_buffers:
+        assert out.data_ptr() == out_buffer.data_ptr()
+        assert lse.data_ptr() == lse_buffer.data_ptr()
+
+    _assert_close(
+        name=f"{kind}-varlen-decode",
         got=out,
         ref=out_ref,
         rtol=_DEFAULT_RTOL[kind],

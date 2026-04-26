@@ -2,8 +2,6 @@ from typing import Optional
 
 import torch
 
-from flash_sparse_attn.ops.triton import utils
-
 
 def assert_fwd_inputs(
     query: torch.Tensor,
@@ -13,9 +11,13 @@ def assert_fwd_inputs(
     delta: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    device: torch.device = None,
+    arch: int = None,
 ):
     """
     Assert the validity of inputs for the forward kernel.
@@ -27,18 +29,20 @@ def assert_fwd_inputs(
     :param delta: Delta tensor for gated attention
     :param cu_seqlens_q: Cumulative sequence lengths for queries
     :param cu_seqlens_k: Cumulative sequence lengths for keys
+    :param seqused_q: Sequence used for queries
+    :param seqused_k: Sequence used for keys
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param device: Device of the tensors
+    :param arch: Architecture model as a number
 
     :raises AssertionError: If any of the assertions fail
     """
-    device = query.device
-    arch = utils.get_arch(device)
-    assert query.is_cuda and key.is_cuda and value.is_cuda, (
-        "All inputs must be on CUDA device"
+    assert device == query.device == key.device == value.device, (
+        "All inputs must be on the same device"
     )
-    if arch // 10 >= 9:  # Hopper or newer
+    if device.type == "cuda" and arch // 10 >= 9:  # Hopper or newer
         assert query.dtype in [torch.float16, torch.bfloat16, torch.float8_e5m2], (
             "Input dtype must be float16, bfloat16, or float8_e5m2"
         )
@@ -55,22 +59,29 @@ def assert_fwd_inputs(
     assert head_dim % 16 == 0, (
         "head_dim must be a multiple of 16 for efficient memory access"
     )
-    assert head_dim <= 256, (
-        "head_dim must be less than or equal to 256 for efficient memory access"
+    assert head_dim <= 512, (
+        "head_dim must be less than or equal to 512 for efficient memory access"
     )
     if alpha is not None and delta is not None:
-        assert alpha.is_cuda and delta.is_cuda, (
-            "Alpha and Delta tensors must be on CUDA device"
+        assert device == alpha.device == delta.device, (
+            "All inputs must be on the same device"
         )
         assert alpha.dtype == delta.dtype == query.dtype, (
             "Alpha and Delta tensors must have the same dtype as query/key/value"
         )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
-        assert cu_seqlens_q.is_cuda and cu_seqlens_k.is_cuda, (
-            "All inputs must be on CUDA device"
+        assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
+            "All inputs must be on the same device"
         )
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
-            "cu_seqlen_q and cu_seqlen_k must be int32"
+            "cu_seqlens_q and cu_seqlens_k must be int32"
+        )
+    if seqused_q is not None and seqused_k is not None:
+        assert device == seqused_q.device == seqused_k.device, (
+            "All inputs must be on the same device"
+        )
+        assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
+            "seqused_q and seqused_k must be int32"
         )
 
 
@@ -90,6 +101,8 @@ def assert_bwd_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    device: torch.device = None,
+    arch: int = None,
 ):
     """
     Assert the validity of inputs for the backward base kernel.
@@ -109,20 +122,21 @@ def assert_bwd_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param device: Device of the tensors
+    :param arch: Architecture model as a number
 
     :raises AssertionError: If any of the assertions fail
     """
-    device = query.device
-    arch = utils.get_arch(device)
     assert (
-        query.is_cuda
-        and key.is_cuda
-        and value.is_cuda
-        and out.is_cuda
-        and dout.is_cuda
-        and lse.is_cuda
-    ), "All inputs must be on CUDA device"
-    if arch // 10 >= 9:  # Hopper or newer
+        device
+        == query.device
+        == key.device
+        == value.device
+        == out.device
+        == dout.device
+        == lse.device
+    ), "All inputs must be on the same device"
+    if device.type == "cuda" and arch // 10 >= 9:  # Hopper or newer
         assert query.dtype in [torch.float16, torch.bfloat16, torch.float8_e5m2], (
             "Input dtype must be float16, bfloat16, or float8_e5m2"
         )
@@ -142,27 +156,122 @@ def assert_bwd_inputs(
     assert head_dim % 16 == 0, (
         "head_dim must be a multiple of 16 for efficient memory access"
     )
-    assert head_dim <= 256, (
-        "head_dim must be less than or equal to 256 for efficient memory access"
+    assert head_dim <= 512, (
+        "head_dim must be less than or equal to 512 for efficient memory access"
     )
     if alpha is not None and delta is not None:
-        assert alpha.is_cuda and delta.is_cuda, (
-            "Alpha and Delta tensors must be on CUDA device"
+        assert device == alpha.device == delta.device, (
+            "All inputs must be on the same device"
         )
         assert alpha.dtype == delta.dtype == query.dtype, (
             "Alpha and Delta tensors must have the same dtype as query/key/value"
         )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
-        assert cu_seqlens_q.is_cuda and cu_seqlens_k.is_cuda, (
-            "All inputs must be on CUDA device"
+        assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
+            "All inputs must be on the same device"
         )
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
-            "cu_seqlen_q and cu_seqlen_k must be int32"
+            "cu_seqlens_q and cu_seqlens_k must be int32"
         )
     if seqused_q is not None and seqused_k is not None:
-        assert seqused_q.is_cuda and seqused_k.is_cuda, (
-            "All inputs must be on CUDA device"
+        assert device == seqused_q.device == seqused_k.device, (
+            "All inputs must be on the same device"
         )
         assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
             "seqused_q and seqused_k must be int32"
         )
+
+
+def assert_dec_inputs(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: Optional[torch.Tensor] = None,
+    delta: Optional[torch.Tensor] = None,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    num_heads_q: int = None,
+    num_heads_kv: int = None,
+    head_dim: int = None,
+    device: torch.device = None,
+    arch: int = None,
+):
+    """
+    Assert the validity of inputs for the decode kernel.
+
+    :param query: Query tensor
+    :param key: Key tensor
+    :param value: Value tensor
+    :param alpha: Alpha tensor for gated attention
+    :param delta: Delta tensor for gated attention
+    :param cu_seqlens_k: Cumulative sequence lengths for keys
+    :param seqused_k: Sequence used for keys
+    :param num_heads_q: Number of query heads
+    :param num_heads_kv: Number of key/value heads
+    :param head_dim: Head dimension
+    :param device: Device of the tensors
+    :param arch: Architecture model as a number
+
+    :raises AssertionError: If any of the assertions fail
+    """
+    assert device == query.device == key.device == value.device, (
+        "All inputs must be on the same device"
+    )
+    if device.type == "cuda" and arch // 10 >= 9:  # Hopper or newer
+        assert query.dtype in [torch.float16, torch.bfloat16, torch.float8_e5m2], (
+            "Input dtype must be float16, bfloat16, or float8_e5m2"
+        )
+    else:
+        assert query.dtype in [torch.float16, torch.bfloat16], (
+            "Input dtype must be float16 or bfloat16"
+        )
+    assert query.dtype == key.dtype == value.dtype, (
+        "All inputs must have the same dtype"
+    )
+    assert num_heads_q % num_heads_kv == 0, (
+        "num_heads_q must be divisible by num_heads_kv"
+    )
+    assert head_dim % 16 == 0, (
+        "head_dim must be a multiple of 16 for efficient memory access"
+    )
+    assert head_dim <= 512, (
+        "head_dim must be less than or equal to 512 for efficient memory access"
+    )
+    if alpha is not None and delta is not None:
+        assert device == alpha.device == delta.device, (
+            "All inputs must be on the same device"
+        )
+        assert alpha.dtype == delta.dtype == query.dtype, (
+            "Alpha and Delta tensors must have the same dtype as query/key/value"
+        )
+    if cu_seqlens_k is not None:
+        assert device == cu_seqlens_k.device, "All inputs must be on the same device"
+        assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
+    if seqused_k is not None:
+        assert device == seqused_k.device, "All inputs must be on the same device"
+        assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
+
+
+def assert_dec_outputs(
+    out: Optional[torch.Tensor],
+    lse: Optional[torch.Tensor],
+    dtype: torch.dtype,
+    device: torch.device,
+):
+    """
+    Assert the validity of optional output tensors for the decode kernel.
+
+    :param out: Optional output tensor
+    :param lse: Optional logsumexp tensor
+    :param dtype: Expected output tensor dtype
+    :param device: Expected output tensor device
+
+    :raises AssertionError: If any of the assertions fail
+    """
+    if out is not None:
+        assert out.dtype == dtype, "out must have the same dtype as query"
+        assert out.device == device, "out must be on the same device as query"
+
+    if lse is not None:
+        assert lse.dtype == torch.float32, "lse must have dtype torch.float32"
+        assert lse.device == device, "lse must be on the same device as query"
