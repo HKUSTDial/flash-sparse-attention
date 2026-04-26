@@ -682,6 +682,148 @@ get_dec_dense_launch_config = cache_utils.cache_launch_config(
 )
 
 
+def get_dec_sparse_launch_config(
+    qheads_per_kvhead: int,
+    tile_k: int,
+    device: torch.device,
+    arch: int,
+) -> tuple[int, int, int, int, int]:
+    """
+    Get launch configuration for decode sparse kernel based on input parameters and device architecture.
+
+    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param tile_k: Tile size in the K dimension
+    :param device: The device to run the kernel on
+    :param arch: The architecture of the device
+
+    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
+    """
+
+    if arch == -1:
+        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
+
+    if device.type == "cuda":
+        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+
+        # For A100
+        if arch // 10 == 8:
+            if tile_k <= 64:
+                return (tile_m, 256, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 64, 4, 1, 1)
+            else:
+                return (tile_m, 64, 4, 1, 1)
+
+        # For H100
+        elif arch // 10 == 9:
+            if tile_k <= 64:
+                return (tile_m, 256, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 64, 4, 1, 1)
+            else:
+                return (tile_m, 64, 4, 1, 1)
+
+        # For B200
+        elif arch // 10 == 10:
+            # TODO: Tune launch config for SM 100
+            return (tile_m, 64, 4, 1, 1)
+
+        # For RTX Pro 6000
+        elif arch // 10 == 12:
+            if tile_k <= 64:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 64, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 32, 4, 1, 1)
+            else:
+                return (tile_m, 32, 4, 1, 1)
+        else:
+            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
+    else:
+        raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+get_dec_sparse_launch_config = cache_utils.cache_launch_config(
+    get_dec_sparse_launch_config
+)
+
+
+def get_dec_gated_launch_config(
+    qheads_per_kvhead: int,
+    tile_k: int,
+    device: torch.device,
+    arch: int,
+) -> tuple[int, int, int, int, int]:
+    """
+    Get launch configuration for decode gated kernel based on input parameters and device architecture.
+
+    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param tile_k: Tile size in the K dimension
+    :param device: The device to run the kernel on
+    :param arch: The architecture of the device
+
+    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
+    """
+
+    if arch == -1:
+        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
+
+    if device.type == "cuda":
+        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+
+        # For A100
+        if arch // 10 == 8:
+            if tile_k <= 64:
+                return (tile_m, 256, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 64, 4, 1, 1)
+            else:
+                return (tile_m, 64, 4, 1, 1)
+
+        # For H100
+        elif arch // 10 == 9:
+            if tile_k <= 64:
+                return (tile_m, 256, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 64, 4, 1, 1)
+            else:
+                return (tile_m, 64, 4, 1, 1)
+
+        # For B200
+        elif arch // 10 == 10:
+            # TODO: Tune launch config for SM 100
+            return (tile_m, 64, 4, 1, 1)
+
+        # For RTX Pro 6000
+        elif arch // 10 == 12:
+            if tile_k <= 64:
+                return (tile_m, 128, 4, 1, 1)
+            elif tile_k <= 128:
+                return (tile_m, 64, 4, 1, 1)
+            elif tile_k <= 256:
+                return (tile_m, 32, 4, 1, 1)
+            else:
+                return (tile_m, 32, 4, 1, 1)
+        else:
+            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
+    else:
+        raise NotImplementedError(f"Unsupported device type: {device.type}")
+
+
+get_dec_gated_launch_config = cache_utils.cache_launch_config(
+    get_dec_gated_launch_config
+)
+
+
 def get_dec_combine_launch_config(
     tile_k: int,
     device: torch.device,
