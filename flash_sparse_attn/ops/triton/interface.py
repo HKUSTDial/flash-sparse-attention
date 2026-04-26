@@ -716,12 +716,10 @@ def flash_dense_attn_varlen_with_kvcache_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
-    seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
@@ -730,32 +728,28 @@ def flash_dense_attn_varlen_with_kvcache_func(
     """
     Flash dense attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
 
-    :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :param query: Query tensor of shape [batch_size, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
-    :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
-    :param seqused_q: Optional tensor indicating the actual sequence lengths for queries.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
-    :param out: Optional preallocated output tensor with shape [total_seqlen_q, num_heads_q, head_dim].
-    :param lse: Optional preallocated logsumexp tensor with shape [total_seqlen_q, num_heads_q].
+    :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
+    :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
 
-    :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
+    :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
     out, lse = _flash_dense_attn_varlen_base_decode(
         query=query,
         key=key,
         value=value,
-        cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
         window_size=window_size,
-        seqused_q=seqused_q,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
@@ -902,13 +896,11 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
     softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
-    seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
@@ -917,34 +909,30 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     """
     Flash sparse attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
 
-    :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :param query: Query tensor of shape [batch_size, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
-    :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
-    :param seqused_q: Optional tensor indicating the actual sequence lengths for queries.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
-    :param out: Optional preallocated output tensor with shape [total_seqlen_q, num_heads_q, head_dim].
-    :param lse: Optional preallocated logsumexp tensor with shape [total_seqlen_q, num_heads_q].
+    :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
+    :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
 
-    :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
+    :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
     out, lse = _flash_sparse_attn_varlen_base_decode(
         query=query,
         key=key,
         value=value,
-        cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
         window_size=window_size,
-        seqused_q=seqused_q,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
@@ -1138,7 +1126,6 @@ def flash_gated_attn_varlen_with_kvcache_func(
     value: torch.Tensor,
     alpha: torch.Tensor,
     delta: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
@@ -1147,7 +1134,6 @@ def flash_gated_attn_varlen_with_kvcache_func(
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
-    seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
@@ -1156,12 +1142,11 @@ def flash_gated_attn_varlen_with_kvcache_func(
     """
     Flash gated attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
 
-    :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
+    :param query: Query tensor of shape [batch_size, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
-    :param alpha: Tensor of shape [num_heads_q, total_seqlen_q] representing the sparsity pattern for queries.
+    :param alpha: Tensor of shape [batch_size, num_heads_q] representing the sparsity pattern for queries.
     :param delta: Tensor of shape [num_heads_kv, total_seqlen_k] representing the sparsity pattern for keys/values.
-    :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
@@ -1170,13 +1155,12 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
-    :param seqused_q: Optional tensor indicating the actual sequence lengths for queries.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
-    :param out: Optional preallocated output tensor with shape [total_seqlen_q, num_heads_q, head_dim].
-    :param lse: Optional preallocated logsumexp tensor with shape [total_seqlen_q, num_heads_q].
+    :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
+    :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
 
-    :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
+    :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
     out, lse = _flash_gated_attn_varlen_base_decode(
         query=query,
@@ -1184,7 +1168,6 @@ def flash_gated_attn_varlen_with_kvcache_func(
         value=value,
         alpha=alpha,
         delta=delta,
-        cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
@@ -1193,7 +1176,6 @@ def flash_gated_attn_varlen_with_kvcache_func(
         is_logsigmoid_gate=is_logsigmoid_gate,
         is_adapt_gate=is_adapt_gate,
         window_size=window_size,
-        seqused_q=seqused_q,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
