@@ -52,16 +52,12 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         is_causal: bool = False,
         softmax_scale: Optional[float] = None,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_split_kv: bool = False,
+        pack_gqa: bool = False,
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
-        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
-        pack_gqa = (
-            query.shape[2] != key.shape[2]
-            and query.shape[1] == 1
-            and query.shape[1] != key.shape[1]
-        )
         out, lse, softmax_scale = _flash_dense_attn_base_forward(
             query=query,
             key=key,
@@ -69,6 +65,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             window_size=window_size,
+            is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
         )
 
@@ -120,16 +117,12 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
+        is_split_kv: bool = False,
+        pack_gqa: bool = False,
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
-        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
-        pack_gqa = (
-            query.shape[1] != key.shape[1]
-            and max_seqlen_q == 1
-            and max_seqlen_q != max_seqlen_k
-        )
         out, lse, softmax_scale = _flash_dense_attn_varlen_base_forward(
             query=query,
             key=key,
@@ -141,6 +134,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             window_size=window_size,
+            is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
         )
 
@@ -215,16 +209,12 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         softmax_scale: Optional[float] = None,
         softmax_threshold: Optional[float] = None,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_split_kv: bool = False,
+        pack_gqa: bool = False,
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
-        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
-        pack_gqa = (
-            query.shape[2] != key.shape[2]
-            and query.shape[1] == 1
-            and query.shape[1] != key.shape[1]
-        )
         out, lse, softmax_scale, softmax_threshold = _flash_sparse_attn_base_forward(
             query=query,
             key=key,
@@ -233,6 +223,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
             window_size=window_size,
+            is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
         )
 
@@ -287,16 +278,12 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
+        is_split_kv: bool = False,
+        pack_gqa: bool = False,
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
-        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
-        pack_gqa = (
-            query.shape[1] != key.shape[1]
-            and max_seqlen_q == 1
-            and max_seqlen_q != max_seqlen_k
-        )
         out, lse, softmax_scale, softmax_threshold = (
             _flash_sparse_attn_varlen_base_forward(
                 query=query,
@@ -310,6 +297,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
                 softmax_scale=softmax_scale,
                 softmax_threshold=softmax_threshold,
                 window_size=window_size,
+                is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
             )
         )
@@ -392,16 +380,12 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_split_kv: bool = False,
+        pack_gqa: bool = False,
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
-        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
-        pack_gqa = (
-            query.shape[2] != key.shape[2]
-            and query.shape[1] == 1
-            and query.shape[1] != key.shape[1]
-        )
         out, lse, softmax_scale, softmax_threshold, gate_threshold = (
             _flash_gated_attn_base_forward(
                 query=query,
@@ -416,6 +400,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 is_logsigmoid_gate=is_logsigmoid_gate,
                 is_adapt_gate=is_adapt_gate,
                 window_size=window_size,
+                is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
             )
         )
@@ -484,16 +469,12 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         window_size: Tuple[Optional[int], Optional[int]] = (None, None),
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
+        is_split_kv: bool = False,
+        pack_gqa: bool = False,
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
-        # Set pack_gqa to True if query and key have different number of heads and sequence length is 1 to enable GQA optimization
-        pack_gqa = (
-            query.shape[1] != key.shape[1]
-            and max_seqlen_q == 1
-            and max_seqlen_q != max_seqlen_k
-        )
         out, lse, softmax_scale, softmax_threshold, gate_threshold = (
             _flash_gated_attn_varlen_base_forward(
                 query=query,
@@ -512,6 +493,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
                 is_logsigmoid_gate=is_logsigmoid_gate,
                 is_adapt_gate=is_adapt_gate,
                 window_size=window_size,
+                is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
             )
         )
@@ -596,6 +578,8 @@ def flash_dense_attn_func(
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -607,6 +591,8 @@ def flash_dense_attn_func(
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
@@ -618,6 +604,8 @@ def flash_dense_attn_func(
         is_causal,
         softmax_scale,
         window_size,
+        is_split_kv,
+        pack_gqa,
         return_lse,
     )
 
@@ -674,6 +662,8 @@ def flash_dense_attn_varlen_func(
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -691,6 +681,8 @@ def flash_dense_attn_varlen_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
+    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
@@ -708,6 +700,8 @@ def flash_dense_attn_varlen_func(
         window_size,
         seqused_q,
         seqused_k,
+        is_split_kv,
+        pack_gqa,
         return_lse,
     )
 
@@ -768,6 +762,8 @@ def flash_sparse_attn_func(
     softmax_scale: Optional[float] = None,
     softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -780,6 +776,8 @@ def flash_sparse_attn_func(
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
@@ -792,6 +790,8 @@ def flash_sparse_attn_func(
         softmax_scale,
         softmax_threshold,
         window_size,
+        is_split_kv,
+        pack_gqa,
         return_lse,
     )
 
@@ -852,6 +852,8 @@ def flash_sparse_attn_varlen_func(
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -870,6 +872,8 @@ def flash_sparse_attn_varlen_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
+    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
@@ -888,6 +892,8 @@ def flash_sparse_attn_varlen_func(
         window_size,
         seqused_q,
         seqused_k,
+        is_split_kv,
+        pack_gqa,
         return_lse,
     )
 
@@ -956,6 +962,8 @@ def flash_gated_attn_func(
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -973,6 +981,8 @@ def flash_gated_attn_func(
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
@@ -990,6 +1000,8 @@ def flash_gated_attn_func(
         is_logsigmoid_gate,
         is_adapt_gate,
         window_size,
+        is_split_kv,
+        pack_gqa,
         return_lse,
     )
 
@@ -1070,6 +1082,8 @@ def flash_gated_attn_varlen_func(
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -1093,6 +1107,8 @@ def flash_gated_attn_varlen_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
+    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
@@ -1116,6 +1132,8 @@ def flash_gated_attn_varlen_func(
         window_size,
         seqused_q,
         seqused_k,
+        is_split_kv,
+        pack_gqa,
         return_lse,
     )
 
