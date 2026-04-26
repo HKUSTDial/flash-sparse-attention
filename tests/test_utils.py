@@ -1036,7 +1036,6 @@ def run_decode_base_case(
 
 def run_decode_varlen_case(
     kind: KernelType,
-    lens_q: Sequence[int],
     lens_k: Sequence[int],
     num_heads_q: int,
     num_heads_kv: int,
@@ -1047,13 +1046,8 @@ def run_decode_varlen_case(
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
     device = torch.device("cuda")
-    q = torch.cat(
-        [
-            torch.randn(seq_len, num_heads_q, head_dim, device=device, dtype=dtype)
-            for seq_len in lens_q
-        ],
-        dim=0,
-    )
+    batch_size = len(lens_k)
+    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=dtype)
     k = torch.cat(
         [
             torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
@@ -1069,7 +1063,7 @@ def run_decode_varlen_case(
         dim=0,
     )
     alpha = (
-        torch.randn(num_heads_q, sum(lens_q), device=device, dtype=dtype)
+        torch.randn(batch_size, num_heads_q, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
@@ -1079,14 +1073,14 @@ def run_decode_varlen_case(
         else None
     )
 
-    cu_seqlens_q = make_cu_seqlens(lens_q, device)
     cu_seqlens_k = make_cu_seqlens(lens_k, device)
+    cu_seqlens_q_ref = make_cu_seqlens([1] * batch_size, device)
     softmax_scale = head_dim**-0.5
     threshold = head_dim / max(lens_k)
 
     out_buffer = torch.empty_like(q) if use_output_buffers else None
     lse_buffer = (
-        torch.empty(q.shape[0], num_heads_q, device=device, dtype=torch.float32)
+        torch.empty(batch_size, num_heads_q, device=device, dtype=torch.float32)
         if use_output_buffers
         else None
     )
@@ -1096,7 +1090,6 @@ def run_decode_varlen_case(
             q,
             k,
             v,
-            cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_k=max(lens_k),
             softmax_scale=softmax_scale,
@@ -1110,7 +1103,6 @@ def run_decode_varlen_case(
             q,
             k,
             v,
-            cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_k=max(lens_k),
             softmax_scale=softmax_scale,
@@ -1127,7 +1119,6 @@ def run_decode_varlen_case(
             v,
             alpha,
             delta,
-            cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_k=max(lens_k),
             softmax_scale=softmax_scale,
@@ -1146,12 +1137,12 @@ def run_decode_varlen_case(
         q,
         k,
         v,
-        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_q=cu_seqlens_q_ref,
         cu_seqlens_k=cu_seqlens_k,
         softmax_scale=softmax_scale,
         is_causal=False,
         window_size=window_size,
-        alpha=alpha,
+        alpha=alpha.transpose(0, 1) if alpha is not None else None,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
     )
