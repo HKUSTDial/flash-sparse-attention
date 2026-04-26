@@ -13,7 +13,6 @@ def test_sparse_varlen_decode_correctness(use_output_buffers: bool) -> None:
     set_seed(0)
     run_decode_varlen_case(
         kind="sparse",
-        lens_q=[1, 1, 1],
         lens_k=[53, 97, 129],
         num_heads_q=8,
         num_heads_kv=4,
