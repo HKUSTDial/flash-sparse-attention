@@ -53,7 +53,7 @@ def _fwd_inner_sparse_base_kernel(
     k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
     if n_block > n_block_min:
         # Load next key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     if IS_MASK:
         # Apply mask to attention scores
@@ -89,7 +89,7 @@ def _fwd_inner_sparse_base_kernel(
 
     if not skip_softmax:
         # Load value tile
-        v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+        v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
         # Rescale output accumulator
         acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
@@ -343,9 +343,10 @@ def _fwd_base_sparse_kernel(
                 lse_ptrs,
                 lse_tile,
                 mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+                cache_modifier=".wb",
             )
         else:
-            tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+            tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
         # Write output as zero for proper handling
         o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
@@ -355,9 +356,10 @@ def _fwd_base_sparse_kernel(
                 o_tile,
                 mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
                 & (offs_kb < head_dim)[None, :],
+                cache_modifier=".wb",
             )
         else:
-            tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
+            tl.store(out_ptrs, o_tile, boundary_check=(0, 1), cache_modifier=".wb")
         return
 
     if not PACK_GQA:
@@ -415,9 +417,10 @@ def _fwd_base_sparse_kernel(
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
             other=0.0,
+            cache_modifier=".ca",
         )
     else:
-        q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+        q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".ca")
 
     # Initialize accumulators
     block_max = tl.full((), float("-inf"), dtype=tl.float32)
@@ -426,7 +429,7 @@ def _fwd_base_sparse_kernel(
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
@@ -513,7 +516,7 @@ def _fwd_base_sparse_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
                 _fwd_inner_sparse_base_kernel(
@@ -562,7 +565,7 @@ def _fwd_base_sparse_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
                 _fwd_inner_sparse_base_kernel(
@@ -609,9 +612,10 @@ def _fwd_base_sparse_kernel(
             lse_ptrs,
             lse_tile,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+            cache_modifier=".wb",
         )
     else:
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+        tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
     # Store output
     # When IS_SPLIT_KV, store float32 partial results.
@@ -624,9 +628,10 @@ def _fwd_base_sparse_kernel(
             acc_o,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
+            cache_modifier=".wb",
         )
     else:
-        tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
+        tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
 _fwd_base_sparse_kernel = cache_utils.wrap_kernel(_fwd_base_sparse_kernel)
@@ -642,7 +647,9 @@ def _flash_sparse_attn_base_forward(
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
-    num_SMs = cache_utils.num_sms(query.device)
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
@@ -663,6 +670,8 @@ def _flash_sparse_attn_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -673,6 +682,8 @@ def _flash_sparse_attn_base_forward(
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
@@ -793,7 +804,9 @@ def _flash_sparse_attn_varlen_base_forward(
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
-    num_SMs = cache_utils.num_sms(query.device)
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
@@ -817,6 +830,8 @@ def _flash_sparse_attn_varlen_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -827,6 +842,8 @@ def _flash_sparse_attn_varlen_base_forward(
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
