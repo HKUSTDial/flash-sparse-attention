@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import launch_grid, seqlen_info
+from flash_sparse_attn.ops.triton import cache_utils, launch_grid, seqlen_info
 
 
 @triton.jit
@@ -158,6 +158,9 @@ def _bwd_postprocess_kernel(
 
         # Store da
         tl.store(da_ptrs, da, boundary_check=(0,))
+
+
+_bwd_postprocess_kernel = cache_utils.wrap_kernel(_bwd_postprocess_kernel)
 
 
 def _flash_attn_bwd_postprocess(

@@ -5,7 +5,12 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import launch_grid, seqlen_info, activations
+from flash_sparse_attn.ops.triton import (
+    cache_utils,
+    launch_grid,
+    seqlen_info,
+    activations,
+)
 
 
 @triton.jit
@@ -216,6 +221,9 @@ def _bwd_preprocess_kernel(
 
     # Store lse_log2
     tl.store(lse_log2_ptrs, lse_log2, boundary_check=(0,))
+
+
+_bwd_preprocess_kernel = cache_utils.wrap_kernel(_bwd_preprocess_kernel)
 
 
 def _flash_attn_bwd_preprocess(
