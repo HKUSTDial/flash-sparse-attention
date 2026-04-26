@@ -473,6 +473,8 @@ def _flash_dense_attn_base_decode(
     value: torch.Tensor,
     softmax_scale: float = None,
     window_size: Tuple[int, int] = (None, None),
+    out: Optional[torch.Tensor] = None,
+    lse: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
     arch = cache_utils.get_device_arch(device)
@@ -499,6 +501,12 @@ def _flash_dense_attn_base_decode(
         device=device,
         arch=arch,
     )
+    assert_inputs.assert_dec_outputs(
+        out=out,
+        lse=lse,
+        dtype=query.dtype,
+        device=device,
+    )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
@@ -519,8 +527,12 @@ def _flash_dense_attn_base_decode(
         TILE_N=TILE_N,
     )
 
-    out = torch.empty_like(query)
-    lse = torch.empty((batch_size, num_heads_q), dtype=torch.float32, device=device)
+    out = out if out is not None else torch.empty_like(query)
+    lse = (
+        lse
+        if lse is not None
+        else torch.empty((batch_size, num_heads_q), dtype=torch.float32, device=device)
+    )
 
     out_partial = torch.empty(
         (num_splits, batch_size, num_heads_q, head_dim),
@@ -608,6 +620,8 @@ def _flash_dense_attn_varlen_base_decode(
     window_size: Tuple[int, int] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    out: Optional[torch.Tensor] = None,
+    lse: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
     arch = cache_utils.get_device_arch(device)
@@ -636,6 +650,12 @@ def _flash_dense_attn_varlen_base_decode(
         device=device,
         arch=arch,
     )
+    assert_inputs.assert_dec_outputs(
+        out=out,
+        lse=lse,
+        dtype=query.dtype,
+        device=device,
+    )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
@@ -656,11 +676,15 @@ def _flash_dense_attn_varlen_base_decode(
         TILE_N=TILE_N,
     )
 
-    out = torch.empty_like(query)
-    lse = torch.empty(
-        (total_seqlen_q, num_heads_q),
-        dtype=torch.float32,
-        device=device,
+    out = out if out is not None else torch.empty_like(query)
+    lse = (
+        lse
+        if lse is not None
+        else torch.empty(
+            (total_seqlen_q, num_heads_q),
+            dtype=torch.float32,
+            device=device,
+        )
     )
 
     out_partial = torch.empty(
