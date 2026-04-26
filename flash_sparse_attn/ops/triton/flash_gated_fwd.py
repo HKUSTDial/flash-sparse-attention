@@ -58,7 +58,7 @@ def _fwd_inner_gated_base_kernel(
     d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
 
     # Load next delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
+    d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(tl.float32)
     d_max = tl.max(d_tile)
     d_min = tl.min(d_tile)
 
@@ -113,7 +113,7 @@ def _fwd_inner_gated_base_kernel(
 
         if not skip_softmax:
             # Load value tile
-            v_tile = tl.load(v_ptrs, boundary_check=(0, 1))
+            v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
             # Rescale output accumulator
             acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
@@ -148,7 +148,7 @@ def _fwd_inner_gated_base_kernel(
             acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
         # Load next key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
         # Compute attention scores for next tile
         acc_s += tl.dot(q_tile, k_tile)
@@ -436,9 +436,10 @@ def _fwd_gated_base_kernel(
                 lse_ptrs,
                 lse_tile,
                 mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+                cache_modifier=".wb",
             )
         else:
-            tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+            tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
         # Write output as zero for proper handling
         o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
@@ -448,9 +449,10 @@ def _fwd_gated_base_kernel(
                 o_tile,
                 mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
                 & (offs_kb < head_dim)[None, :],
+                cache_modifier=".wb",
             )
         else:
-            tl.store(out_ptrs, o_tile, boundary_check=(0, 1))
+            tl.store(out_ptrs, o_tile, boundary_check=(0, 1), cache_modifier=".wb")
         return
 
     if not PACK_GQA:
@@ -546,12 +548,13 @@ def _fwd_gated_base_kernel(
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
             other=0.0,
+            cache_modifier=".ca",
         )
     else:
-        q_tile = tl.load(q_ptrs, boundary_check=(0, 1))
+        q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".ca")
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
     # Initialize accumulators
     gate_max = tl.full((), float("-inf"), dtype=tl.float32)
@@ -566,14 +569,17 @@ def _fwd_gated_base_kernel(
             a_ptrs,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
             other=0.0,
+            cache_modifier=".ca",
         ).to(tl.float32)
     else:
-        a_tile = tl.load(a_ptrs, boundary_check=(0,)).to(tl.float32)
+        a_tile = tl.load(a_ptrs, boundary_check=(0,), cache_modifier=".ca").to(
+            tl.float32
+        )
     a_max = tl.max(a_tile)
     a_min = tl.min(a_tile)
 
     # Load delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
+    d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(tl.float32)
     d_max = tl.max(d_tile)
     d_min = tl.min(d_tile)
 
@@ -729,10 +735,12 @@ def _fwd_gated_base_kernel(
         )
 
         # Load key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
         # Load delta tile
-        d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
+        d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+            tl.float32
+        )
         d_max = tl.max(d_tile)
         d_min = tl.min(d_tile)
 
@@ -831,10 +839,12 @@ def _fwd_gated_base_kernel(
         )
 
         # Load key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1))
+        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
         # Load delta tile
-        d_tile = tl.load(d_ptrs, boundary_check=(0,)).to(tl.float32)
+        d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+            tl.float32
+        )
         d_max = tl.max(d_tile)
         d_min = tl.min(d_tile)
 
@@ -921,9 +931,10 @@ def _fwd_gated_base_kernel(
             lse_ptrs,
             lse_tile,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+            cache_modifier=".wb",
         )
     else:
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,))
+        tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
     # Store output
     # When IS_SPLIT_KV, store float32 partial results.
@@ -936,9 +947,10 @@ def _fwd_gated_base_kernel(
             acc_o,
             mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
+            cache_modifier=".wb",
         )
     else:
-        tl.store(out_ptrs, acc_o, boundary_check=(0, 1))
+        tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
 _fwd_gated_base_kernel = cache_utils.wrap_kernel(_fwd_gated_base_kernel)
@@ -959,7 +971,9 @@ def _flash_gated_attn_base_forward(
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
-    num_SMs = cache_utils.num_sms(query.device)
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
@@ -983,16 +997,20 @@ def _flash_gated_attn_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_sparse_launch_config(
+        launch_template.get_fwd_gated_launch_config(
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
@@ -1127,7 +1145,9 @@ def _flash_gated_attn_varlen_base_forward(
     window_size: Tuple[int, int] = (None, None),
     pack_gqa: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
-    num_SMs = cache_utils.num_sms(query.device)
+    device = query.device
+    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
@@ -1154,16 +1174,20 @@ def _flash_gated_attn_varlen_base_forward(
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
         head_dim=head_dim,
+        device=device,
+        arch=arch,
     )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_sparse_launch_config(
+        launch_template.get_fwd_gated_launch_config(
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
             qheads_per_kvhead=qheads_per_kvhead,
             tile_k=TILE_K,
+            device=device,
+            arch=arch,
         )
     )
 
