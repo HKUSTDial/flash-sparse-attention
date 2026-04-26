@@ -510,9 +510,7 @@ def _flash_sparse_attn_base_decode(
         query,
         key,
         value,
-        cu_seqlens_q=None,
         cu_seqlens_k=None,
-        seqused_q=None,
         seqused_k=None,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
@@ -633,13 +631,11 @@ def _flash_sparse_attn_varlen_base_decode(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: float = None,
     softmax_threshold: float = None,
     window_size: Tuple[int, int] = (None, None),
-    seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -647,9 +643,8 @@ def _flash_sparse_attn_varlen_base_decode(
     device = query.device
     arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
-    total_seqlen_q, num_heads_q, head_dim = query.shape
+    batch_size, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
-    batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_k = max_seqlen_k
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
@@ -663,9 +658,7 @@ def _flash_sparse_attn_varlen_base_decode(
         query,
         key,
         value,
-        cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
-        seqused_q=seqused_q,
         seqused_k=seqused_k,
         num_heads_q=num_heads_q,
         num_heads_kv=num_heads_kv,
@@ -704,19 +697,19 @@ def _flash_sparse_attn_varlen_base_decode(
         lse
         if lse is not None
         else torch.empty(
-            (total_seqlen_q, num_heads_q),
+            (batch_size, num_heads_q),
             dtype=torch.float32,
             device=device,
         )
     )
 
     out_partial = torch.empty(
-        (num_splits, total_seqlen_q, num_heads_q, head_dim),
+        (num_splits, batch_size, num_heads_q, head_dim),
         dtype=torch.float32,
         device=device,
     )
     lse_partial = torch.empty(
-        (num_splits, total_seqlen_q, num_heads_q),
+        (num_splits, batch_size, num_heads_q),
         dtype=torch.float32,
         device=device,
     )
@@ -735,9 +728,9 @@ def _flash_sparse_attn_varlen_base_decode(
         lse_partial,
         softmax_scale_log2,
         softmax_threshold_log2,
-        0,
-        query.stride(-2),
         query.stride(0),
+        query.stride(-2),
+        1,
         0,
         key.stride(-2),
         key.stride(0),
@@ -745,16 +738,17 @@ def _flash_sparse_attn_varlen_base_decode(
         value.stride(-2),
         value.stride(0),
         0,
-        out_partial.stride(-2),
         out_partial.stride(1),
+        out_partial.stride(-2),
+        1,
         out_partial.stride(0),
-        0,
-        lse_partial.stride(-1),
         lse_partial.stride(1),
+        lse_partial.stride(-1),
+        1,
         lse_partial.stride(0),
-        cu_seqlens_q,
+        None,
         cu_seqlens_k,
-        seqused_q,
+        None,
         seqused_k,
         num_splits,
         seqlen_q=qheads_per_kvhead,
@@ -767,9 +761,9 @@ def _flash_sparse_attn_varlen_base_decode(
         IS_LOCAL=is_local,
         WINDOW_SIZE_LEFT=window_size_left,
         WINDOW_SIZE_RIGHT=window_size_right,
-        HAS_CU_SEQLENS_Q=True,
+        HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=True,
-        HAS_SEQUSED_Q=seqused_q is not None,
+        HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=seqused_k is not None,
         num_warps=num_warps,
         num_stages=num_stages,
@@ -781,8 +775,6 @@ def _flash_sparse_attn_varlen_base_decode(
         lse_partial,
         out,
         lse,
-        cu_seqlens_q=cu_seqlens_q,
-        seqused_q=seqused_q,
     )
 
     return out, lse
