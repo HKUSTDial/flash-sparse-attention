@@ -262,3 +262,28 @@ def assert_dec_inputs(
         assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
             "seqused_q and seqused_k must be int32"
         )
+
+
+def assert_dec_outputs(
+    out: Optional[torch.Tensor],
+    lse: Optional[torch.Tensor],
+    dtype: torch.dtype,
+    device: torch.device,
+):
+    """
+    Assert the validity of optional output tensors for the decode kernel.
+
+    :param out: Optional output tensor
+    :param lse: Optional logsumexp tensor
+    :param dtype: Expected output tensor dtype
+    :param device: Expected output tensor device
+
+    :raises AssertionError: If any of the assertions fail
+    """
+    if out is not None:
+        assert out.dtype == dtype, "out must have the same dtype as query"
+        assert out.device == device, "out must be on the same device as query"
+
+    if lse is not None:
+        assert lse.dtype == torch.float32, "lse must have dtype torch.float32"
+        assert lse.device == device, "lse must be on the same device as query"
