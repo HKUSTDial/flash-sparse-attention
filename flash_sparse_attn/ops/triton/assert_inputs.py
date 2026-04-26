@@ -188,9 +188,7 @@ def assert_dec_inputs(
     value: torch.Tensor,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
-    cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
-    seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     num_heads_q: int = None,
     num_heads_kv: int = None,
@@ -206,9 +204,7 @@ def assert_dec_inputs(
     :param value: Value tensor
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
-    :param cu_seqlens_q: Cumulative sequence lengths for queries
     :param cu_seqlens_k: Cumulative sequence lengths for keys
-    :param seqused_q: Sequence used for queries
     :param seqused_k: Sequence used for keys
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
@@ -248,20 +244,12 @@ def assert_dec_inputs(
         assert alpha.dtype == delta.dtype == query.dtype, (
             "Alpha and Delta tensors must have the same dtype as query/key/value"
         )
-    if cu_seqlens_q is not None and cu_seqlens_k is not None:
-        assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
-            "All inputs must be on the same device"
-        )
-        assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
-            "cu_seqlens_q and cu_seqlens_k must be int32"
-        )
-    if seqused_q is not None and seqused_k is not None:
-        assert device == seqused_q.device == seqused_k.device, (
-            "All inputs must be on the same device"
-        )
-        assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
-            "seqused_q and seqused_k must be int32"
-        )
+    if cu_seqlens_k is not None:
+        assert device == cu_seqlens_k.device, "All inputs must be on the same device"
+        assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
+    if seqused_k is not None:
+        assert device == seqused_k.device, "All inputs must be on the same device"
+        assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
 
 
 def assert_dec_outputs(
