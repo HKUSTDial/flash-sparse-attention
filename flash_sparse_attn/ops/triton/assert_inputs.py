@@ -186,6 +186,9 @@ def assert_dec_inputs(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
@@ -202,6 +205,9 @@ def assert_dec_inputs(
     :param query: Query tensor
     :param key: Key tensor
     :param value: Value tensor
+    :param query_scale: Optional query scale tensor for quantized inputs
+    :param key_scale: Optional key scale tensor for quantized inputs
+    :param value_scale: Optional value scale tensor for quantized inputs
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
     :param cu_seqlens_k: Cumulative sequence lengths for keys
@@ -221,6 +227,24 @@ def assert_dec_inputs(
         assert query.dtype in [torch.float16, torch.bfloat16, torch.float8_e5m2], (
             "Input dtype must be float16, bfloat16, or float8_e5m2"
         )
+        if query.dtype == torch.float8_e5m2:
+            assert (
+                query_scale is not None
+                and key_scale is not None
+                and value_scale is not None
+            ), "Scale tensors must be provided for float8 inputs"
+            assert query_scale.dtype in [
+                torch.float32,
+                torch.float16,
+                torch.bfloat16,
+                torch.float8_e8m0fnu,
+            ], "Scale tensors must be float32, float16, bfloat16, or float8_e8m0fnu"
+            assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
+                "All scale tensors must have the same dtype"
+            )
+            assert (
+                query_scale.device == key_scale.device == value_scale.device == device
+            ), "All scale tensors must be on the same device as query/key/value"
     else:
         assert query.dtype in [torch.float16, torch.bfloat16], (
             "Input dtype must be float16 or bfloat16"
@@ -250,28 +274,3 @@ def assert_dec_inputs(
     if seqused_k is not None:
         assert device == seqused_k.device, "All inputs must be on the same device"
         assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
-
-
-def assert_dec_outputs(
-    out: Optional[torch.Tensor],
-    lse: Optional[torch.Tensor],
-    dtype: torch.dtype,
-    device: torch.device,
-):
-    """
-    Assert the validity of optional output tensors for the decode kernel.
-
-    :param out: Optional output tensor
-    :param lse: Optional logsumexp tensor
-    :param dtype: Expected output tensor dtype
-    :param device: Expected output tensor device
-
-    :raises AssertionError: If any of the assertions fail
-    """
-    if out is not None:
-        assert out.dtype == dtype, "out must have the same dtype as query"
-        assert out.device == device, "out must be on the same device as query"
-
-    if lse is not None:
-        assert lse.dtype == torch.float32, "lse must have dtype torch.float32"
-        assert lse.device == device, "lse must be on the same device as query"
