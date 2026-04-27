@@ -615,6 +615,9 @@ def flash_dense_attn_with_kvcache_func(
     key: torch.Tensor,
     value: torch.Tensor,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
@@ -627,6 +630,9 @@ def flash_dense_attn_with_kvcache_func(
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -639,6 +645,9 @@ def flash_dense_attn_with_kvcache_func(
         key=key,
         value=value,
         softmax_scale=softmax_scale,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
         window_size=window_size,
         out=out,
         lse=lse,
@@ -713,6 +722,9 @@ def flash_dense_attn_varlen_with_kvcache_func(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
@@ -728,6 +740,9 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
@@ -743,6 +758,9 @@ def flash_dense_attn_varlen_with_kvcache_func(
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
         window_size=window_size,
         seqused_k=seqused_k,
         out=out,
@@ -802,6 +820,9 @@ def flash_sparse_attn_with_kvcache_func(
     value: torch.Tensor,
     softmax_scale: Optional[float] = None,
     softmax_threshold: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
@@ -815,6 +836,9 @@ def flash_sparse_attn_with_kvcache_func(
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -828,6 +852,9 @@ def flash_sparse_attn_with_kvcache_func(
         value=value,
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
         window_size=window_size,
         out=out,
         lse=lse,
@@ -906,6 +933,9 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
     softmax_threshold: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
@@ -922,6 +952,9 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
@@ -938,6 +971,9 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
         window_size=window_size,
         seqused_k=seqused_k,
         out=out,
@@ -1016,7 +1052,9 @@ def flash_gated_attn_with_kvcache_func(
     softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
-    is_adapt_gate: bool = True,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
@@ -1034,7 +1072,9 @@ def flash_gated_attn_with_kvcache_func(
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
-    :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -1052,7 +1092,9 @@ def flash_gated_attn_with_kvcache_func(
         softmax_threshold=softmax_threshold,
         gate_threshold=gate_threshold,
         is_logsigmoid_gate=is_logsigmoid_gate,
-        is_adapt_gate=is_adapt_gate,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
         window_size=window_size,
         out=out,
         lse=lse,
@@ -1150,7 +1192,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
     softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
-    is_adapt_gate: bool = True,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     seqused_k: Optional[torch.Tensor] = None,
     return_lse: bool = False,
@@ -1171,7 +1215,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
-    :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
@@ -1192,7 +1238,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
         softmax_threshold=softmax_threshold,
         gate_threshold=gate_threshold,
         is_logsigmoid_gate=is_logsigmoid_gate,
-        is_adapt_gate=is_adapt_gate,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
         window_size=window_size,
         seqused_k=seqused_k,
         out=out,
