@@ -94,6 +94,8 @@ class BenchmarkResult:
     triton_gated_tflops: Optional[float]
     fa_dense_tflops: Optional[float]
     cudnn_dense_tflops: Optional[float]
+    triton_dense_fp8_ms: Optional[float] = None
+    triton_dense_fp8_tflops: Optional[float] = None
     error_message: Optional[str] = None
 
 
@@ -913,6 +915,14 @@ def run_forward_varlen_case(
     )
 
 
+def _quantize_per_tensor_fp8(x: torch.Tensor):
+    """Quantize a tensor to float8_e5m2 with per-tensor scale."""
+    amax = x.abs().amax().clamp(min=1e-12)
+    scale = amax / torch.finfo(torch.float8_e5m2).max
+    x_fp8 = (x / scale).to(torch.float8_e5m2)
+    return x_fp8, scale.to(torch.bfloat16)
+
+
 def run_decode_base_case(
     kind: KernelType,
     batch_size: int,
@@ -926,25 +936,145 @@ def run_decode_base_case(
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
     device = torch.device("cuda")
-    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=dtype)
+    is_fp8 = dtype == torch.float8_e5m2
+
+    # For FP8: generate in bf16, then quantize
+    gen_dtype = torch.bfloat16 if is_fp8 else dtype
+    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=gen_dtype)
     k = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=gen_dtype
     )
     v = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=gen_dtype
     )
     alpha = (
-        torch.randn(batch_size, num_heads_q, device=device, dtype=dtype)
+        torch.randn(batch_size, num_heads_q, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=dtype)
+        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
     softmax_scale = head_dim**-0.5
     threshold = head_dim / seqlen_k
+
+    if is_fp8:
+        q_fp8, q_scale = _quantize_per_tensor_fp8(q)
+        k_fp8, k_scale = _quantize_per_tensor_fp8(k)
+        v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+
+        out_buffer = (
+            torch.empty(
+                batch_size, num_heads_q, head_dim, device=device, dtype=torch.bfloat16
+            )
+            if use_output_buffers
+            else None
+        )
+        lse_buffer = (
+            torch.empty(batch_size, num_heads_q, device=device, dtype=torch.float32)
+            if use_output_buffers
+            else None
+        )
+
+        if kind == "dense":
+            out, lse = flash_dense_attn_with_kvcache_func(
+                q_fp8,
+                k_fp8,
+                v_fp8,
+                softmax_scale=softmax_scale,
+                query_scale=q_scale,
+                key_scale=k_scale,
+                value_scale=v_scale,
+                window_size=window_size,
+                return_lse=True,
+                out=out_buffer,
+                lse=lse_buffer,
+            )
+        elif kind == "sparse":
+            out, lse = flash_sparse_attn_with_kvcache_func(
+                q_fp8,
+                k_fp8,
+                v_fp8,
+                softmax_scale=softmax_scale,
+                softmax_threshold=threshold,
+                query_scale=q_scale,
+                key_scale=k_scale,
+                value_scale=v_scale,
+                window_size=window_size,
+                return_lse=True,
+                out=out_buffer,
+                lse=lse_buffer,
+            )
+        else:
+            out, lse = flash_gated_attn_with_kvcache_func(
+                q_fp8,
+                k_fp8,
+                v_fp8,
+                alpha,
+                delta,
+                softmax_scale=softmax_scale,
+                softmax_threshold=threshold,
+                gate_threshold=threshold,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+                is_adapt_gate=False,
+                query_scale=q_scale,
+                key_scale=k_scale,
+                value_scale=v_scale,
+                window_size=window_size,
+                return_lse=True,
+                out=out_buffer,
+                lse=lse_buffer,
+            )
+
+        # Reference: dequantize then compute
+        q_deq = q_fp8.to(torch.bfloat16) * q_scale
+        k_deq = k_fp8.to(torch.bfloat16) * k_scale
+        v_deq = v_fp8.to(torch.bfloat16) * v_scale
+        if kind == "dense":
+            out_ref = reference_dense_forward(
+                q_deq.unsqueeze(1),
+                k_deq,
+                v_deq,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+            ).squeeze(1)
+        elif kind == "sparse":
+            out_ref = reference_sparse_forward(
+                q_deq.unsqueeze(1),
+                k_deq,
+                v_deq,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+            ).squeeze(1)
+        else:
+            out_ref = reference_gated_forward(
+                q_deq.unsqueeze(1),
+                k_deq,
+                v_deq,
+                alpha.unsqueeze(-1),
+                delta,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+            ).squeeze(1)
+
+        if use_output_buffers:
+            assert out.data_ptr() == out_buffer.data_ptr()
+            assert lse.data_ptr() == lse_buffer.data_ptr()
+
+        _assert_close(
+            name=f"{kind}-base-decode-fp8",
+            got=out,
+            ref=out_ref,
+            rtol=1.5e-1,
+            atol=1.5e-1,
+        )
+        return
 
     out_buffer = torch.empty_like(q) if use_output_buffers else None
     lse_buffer = (
@@ -1047,28 +1177,31 @@ def run_decode_varlen_case(
 ) -> None:
     device = torch.device("cuda")
     batch_size = len(lens_k)
-    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=dtype)
+    is_fp8 = dtype == torch.float8_e5m2
+
+    gen_dtype = torch.bfloat16 if is_fp8 else dtype
+    q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=gen_dtype)
     k = torch.cat(
         [
-            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=gen_dtype)
             for seq_len in lens_k
         ],
         dim=0,
     )
     v = torch.cat(
         [
-            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
+            torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=gen_dtype)
             for seq_len in lens_k
         ],
         dim=0,
     )
     alpha = (
-        torch.randn(batch_size, num_heads_q, device=device, dtype=dtype)
+        torch.randn(batch_size, num_heads_q, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=dtype)
+        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
@@ -1077,6 +1210,112 @@ def run_decode_varlen_case(
     cu_seqlens_q_ref = make_cu_seqlens([1] * batch_size, device)
     softmax_scale = head_dim**-0.5
     threshold = head_dim / max(lens_k)
+
+    if is_fp8:
+        q_fp8, q_scale = _quantize_per_tensor_fp8(q)
+        k_fp8, k_scale = _quantize_per_tensor_fp8(k)
+        v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+
+        out_buffer = (
+            torch.empty(
+                batch_size, num_heads_q, head_dim, device=device, dtype=torch.bfloat16
+            )
+            if use_output_buffers
+            else None
+        )
+        lse_buffer = (
+            torch.empty(batch_size, num_heads_q, device=device, dtype=torch.float32)
+            if use_output_buffers
+            else None
+        )
+
+        if kind == "dense":
+            out, lse = flash_dense_attn_varlen_with_kvcache_func(
+                q_fp8,
+                k_fp8,
+                v_fp8,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_k=max(lens_k),
+                softmax_scale=softmax_scale,
+                query_scale=q_scale,
+                key_scale=k_scale,
+                value_scale=v_scale,
+                window_size=window_size,
+                return_lse=True,
+                out=out_buffer,
+                lse=lse_buffer,
+            )
+        elif kind == "sparse":
+            out, lse = flash_sparse_attn_varlen_with_kvcache_func(
+                q_fp8,
+                k_fp8,
+                v_fp8,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_k=max(lens_k),
+                softmax_scale=softmax_scale,
+                softmax_threshold=threshold,
+                query_scale=q_scale,
+                key_scale=k_scale,
+                value_scale=v_scale,
+                window_size=window_size,
+                return_lse=True,
+                out=out_buffer,
+                lse=lse_buffer,
+            )
+        else:
+            out, lse = flash_gated_attn_varlen_with_kvcache_func(
+                q_fp8,
+                k_fp8,
+                v_fp8,
+                alpha,
+                delta,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_k=max(lens_k),
+                softmax_scale=softmax_scale,
+                softmax_threshold=threshold,
+                gate_threshold=threshold,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+                is_adapt_gate=False,
+                query_scale=q_scale,
+                key_scale=k_scale,
+                value_scale=v_scale,
+                window_size=window_size,
+                return_lse=True,
+                out=out_buffer,
+                lse=lse_buffer,
+            )
+
+        # Reference: dequantize then compute
+        q_deq = q_fp8.to(torch.bfloat16) * q_scale
+        k_deq = k_fp8.to(torch.bfloat16) * k_scale
+        v_deq = v_fp8.to(torch.bfloat16) * v_scale
+        out_ref = _reference_varlen_forward(
+            kind,
+            q_deq,
+            k_deq,
+            v_deq,
+            cu_seqlens_q=cu_seqlens_q_ref,
+            cu_seqlens_k=cu_seqlens_k,
+            softmax_scale=softmax_scale,
+            is_causal=False,
+            window_size=window_size,
+            alpha=alpha.transpose(0, 1) if alpha is not None else None,
+            delta=delta,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+        )
+
+        if use_output_buffers:
+            assert out.data_ptr() == out_buffer.data_ptr()
+            assert lse.data_ptr() == lse_buffer.data_ptr()
+
+        _assert_close(
+            name=f"{kind}-varlen-decode-fp8",
+            got=out,
+            ref=out_ref,
+            rtol=1.5e-1,
+            atol=1.5e-1,
+        )
+        return
 
     out_buffer = torch.empty_like(q) if use_output_buffers else None
     lse_buffer = (
