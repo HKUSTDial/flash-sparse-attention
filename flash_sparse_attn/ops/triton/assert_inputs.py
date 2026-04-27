@@ -265,9 +265,17 @@ def assert_dec_inputs(
         assert device == alpha.device == delta.device, (
             "All inputs must be on the same device"
         )
-        assert alpha.dtype == delta.dtype == query.dtype, (
-            "Alpha and Delta tensors must have the same dtype as query/key/value"
-        )
+        if query.dtype != torch.float8_e5m2:
+            assert alpha.dtype == delta.dtype == query.dtype, (
+                "Alpha and Delta tensors must have the same dtype as query/key/value"
+            )
+        else:
+            assert alpha.dtype in [torch.float16, torch.bfloat16], (
+                "Alpha tensor must be float16 or bfloat16 for FP8 inputs"
+            )
+            assert alpha.dtype == delta.dtype, (
+                "Alpha and Delta tensors must have the same dtype"
+            )
     if cu_seqlens_k is not None:
         assert device == cu_seqlens_k.device, "All inputs must be on the same device"
         assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
