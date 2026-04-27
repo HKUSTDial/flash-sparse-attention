@@ -1366,6 +1366,7 @@ def _flash_gated_attn_base_decode(
     window_size: Tuple[int, int] = (None, None),
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
     arch = cache_utils.get_device_arch(device)
@@ -1383,23 +1384,24 @@ def _flash_gated_attn_base_decode(
     gate_threshold_log2 = math.log2(gate_threshold)
     qheads_per_kvhead = num_heads_q // num_heads_kv
 
-    assert_inputs.assert_dec_inputs(
-        query,
-        key,
-        value,
-        alpha=alpha,
-        delta=delta,
-        query_scale=query_scale,
-        key_scale=key_scale,
-        value_scale=value_scale,
-        cu_seqlens_k=None,
-        seqused_k=None,
-        num_heads_q=num_heads_q,
-        num_heads_kv=num_heads_kv,
-        head_dim=head_dim,
-        device=device,
-        arch=arch,
-    )
+    if not skip_checks:
+        assert_inputs.assert_dec_inputs(
+            query,
+            key,
+            value,
+            alpha=alpha,
+            delta=delta,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
+            cu_seqlens_k=None,
+            seqused_k=None,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
+            device=device,
+            arch=arch,
+        )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
@@ -1424,23 +1426,29 @@ def _flash_gated_attn_base_decode(
     out = (
         out
         if out is not None
-        else torch.empty(query.shape, dtype=out_dtype, device=device)
+        else cache_utils.get_static_buffer(
+            query.shape, out_dtype, device, tag="dec_out"
+        )
     )
     lse = (
         lse
         if lse is not None
-        else torch.empty((batch_size, num_heads_q), dtype=torch.float32, device=device)
+        else cache_utils.get_static_buffer(
+            (batch_size, num_heads_q), torch.float32, device, tag="dec_lse"
+        )
     )
 
-    out_partial = torch.empty(
+    out_partial = cache_utils.get_static_buffer(
         (num_splits, batch_size, num_heads_q, head_dim),
-        dtype=torch.float32,
-        device=query.device,
+        torch.float32,
+        device,
+        tag="dec_out_partial",
     )
-    lse_partial = torch.empty(
+    lse_partial = cache_utils.get_static_buffer(
         (num_splits, batch_size, num_heads_q),
-        dtype=torch.float32,
-        device=query.device,
+        torch.float32,
+        device,
+        tag="dec_lse_partial",
     )
 
     grid = launch_grid.get_dec_grid(
@@ -1600,6 +1608,7 @@ def _flash_gated_attn_varlen_base_decode(
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
     arch = cache_utils.get_device_arch(device)
@@ -1618,23 +1627,24 @@ def _flash_gated_attn_varlen_base_decode(
     gate_threshold_log2 = math.log2(gate_threshold)
     qheads_per_kvhead = num_heads_q // num_heads_kv
 
-    assert_inputs.assert_dec_inputs(
-        query,
-        key,
-        value,
-        alpha=alpha,
-        delta=delta,
-        query_scale=query_scale,
-        key_scale=key_scale,
-        value_scale=value_scale,
-        cu_seqlens_k=cu_seqlens_k,
-        seqused_k=seqused_k,
-        num_heads_q=num_heads_q,
-        num_heads_kv=num_heads_kv,
-        head_dim=head_dim,
-        device=device,
-        arch=arch,
-    )
+    if not skip_checks:
+        assert_inputs.assert_dec_inputs(
+            query,
+            key,
+            value,
+            alpha=alpha,
+            delta=delta,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_k=seqused_k,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
+            device=device,
+            arch=arch,
+        )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
@@ -1659,27 +1669,29 @@ def _flash_gated_attn_varlen_base_decode(
     out = (
         out
         if out is not None
-        else torch.empty(query.shape, dtype=out_dtype, device=device)
+        else cache_utils.get_static_buffer(
+            query.shape, out_dtype, device, tag="dec_out"
+        )
     )
     lse = (
         lse
         if lse is not None
-        else torch.empty(
-            (batch_size, num_heads_q),
-            dtype=torch.float32,
-            device=device,
+        else cache_utils.get_static_buffer(
+            (batch_size, num_heads_q), torch.float32, device, tag="dec_lse"
         )
     )
 
-    out_partial = torch.empty(
+    out_partial = cache_utils.get_static_buffer(
         (num_splits, batch_size, num_heads_q, head_dim),
-        dtype=torch.float32,
-        device=device,
+        torch.float32,
+        device,
+        tag="dec_out_partial",
     )
-    lse_partial = torch.empty(
+    lse_partial = cache_utils.get_static_buffer(
         (num_splits, batch_size, num_heads_q),
-        dtype=torch.float32,
-        device=device,
+        torch.float32,
+        device,
+        tag="dec_lse_partial",
     )
 
     grid = launch_grid.get_dec_grid(
