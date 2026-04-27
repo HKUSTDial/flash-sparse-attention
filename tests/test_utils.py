@@ -96,6 +96,10 @@ class BenchmarkResult:
     cudnn_dense_tflops: Optional[float]
     triton_dense_fp8_ms: Optional[float] = None
     triton_dense_fp8_tflops: Optional[float] = None
+    triton_sparse_fp8_ms: Optional[float] = None
+    triton_sparse_fp8_tflops: Optional[float] = None
+    triton_gated_fp8_ms: Optional[float] = None
+    triton_gated_fp8_tflops: Optional[float] = None
     error_message: Optional[str] = None
 
 
@@ -1018,7 +1022,6 @@ def run_decode_base_case(
                 softmax_threshold=threshold,
                 gate_threshold=threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
-                is_adapt_gate=False,
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
@@ -1133,7 +1136,6 @@ def run_decode_base_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            is_adapt_gate=False,
             window_size=window_size,
             return_lse=True,
             out=out_buffer,
@@ -1275,7 +1277,6 @@ def run_decode_varlen_case(
                 softmax_threshold=threshold,
                 gate_threshold=threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
-                is_adapt_gate=False,
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
@@ -1364,7 +1365,6 @@ def run_decode_varlen_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            is_adapt_gate=False,
             window_size=window_size,
             return_lse=True,
             out=out_buffer,
