@@ -617,6 +617,7 @@ def _flash_dense_attn_base_forward(
     window_size: Tuple[int, int] = (None, None),
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
     arch = cache_utils.get_device_arch(device)
@@ -630,20 +631,21 @@ def _flash_dense_attn_base_forward(
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    assert_inputs.assert_fwd_inputs(
-        query,
-        key,
-        value,
-        cu_seqlens_q=None,
-        cu_seqlens_k=None,
-        seqused_q=None,
-        seqused_k=None,
-        num_heads_q=num_heads_q,
-        num_heads_kv=num_heads_kv,
-        head_dim=head_dim,
-        device=device,
-        arch=arch,
-    )
+    if not skip_checks:
+        assert_inputs.assert_fwd_inputs(
+            query,
+            key,
+            value,
+            cu_seqlens_q=None,
+            cu_seqlens_k=None,
+            seqused_q=None,
+            seqused_k=None,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
+            device=device,
+            arch=arch,
+        )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
@@ -775,6 +777,7 @@ def _flash_dense_attn_varlen_base_forward(
     pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
     arch = cache_utils.get_device_arch(device)
@@ -791,20 +794,21 @@ def _flash_dense_attn_varlen_base_forward(
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
 
-    assert_inputs.assert_fwd_inputs(
-        query,
-        key,
-        value,
-        cu_seqlens_q=cu_seqlens_q,
-        cu_seqlens_k=cu_seqlens_k,
-        seqused_q=seqused_q,
-        seqused_k=seqused_k,
-        num_heads_q=num_heads_q,
-        num_heads_kv=num_heads_kv,
-        head_dim=head_dim,
-        device=device,
-        arch=arch,
-    )
+    if not skip_checks:
+        assert_inputs.assert_fwd_inputs(
+            query,
+            key,
+            value,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
+            device=device,
+            arch=arch,
+        )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 

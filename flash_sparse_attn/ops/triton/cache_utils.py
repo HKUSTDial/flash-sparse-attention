@@ -8,6 +8,7 @@ import torch
 _COMPILED_KERNEL_CACHE_MAXSIZE = 4096
 _COMPILED_KERNEL_CACHE: OrderedDict = OrderedDict()
 _LAUNCHER_CACHE_MAXSIZE = 1024
+_STATIC_BUFFER_POOL: dict[tuple, torch.Tensor] = {}
 
 
 def _compiled_cache_get(key):
@@ -22,6 +23,16 @@ def _compiled_cache_put(key, compiled):
     _COMPILED_KERNEL_CACHE.move_to_end(key)
     if len(_COMPILED_KERNEL_CACHE) > _COMPILED_KERNEL_CACHE_MAXSIZE:
         _COMPILED_KERNEL_CACHE.popitem(last=False)
+
+
+def get_static_buffer(shape, dtype, device, tag=""):
+    key = (shape, dtype, device.type, device.index, tag)
+    buf = _STATIC_BUFFER_POOL.get(key)
+    if buf is not None and buf.shape == shape:
+        return buf
+    buf = torch.empty(shape, dtype=dtype, device=device)
+    _STATIC_BUFFER_POOL[key] = buf
+    return buf
 
 
 @functools.lru_cache(maxsize=8)
