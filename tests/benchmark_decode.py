@@ -148,7 +148,85 @@ def benchmark_triton_gated_decode(
             softmax_threshold=softmax_threshold,
             gate_threshold=gate_threshold,
             is_logsigmoid_gate=False,
-            is_adapt_gate=False,
+            window_size=(None, None),
+        )
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_sparse_decode_fp8(
+    cfg: BenchmarkConfig, device: str = "cuda"
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=torch.bfloat16,
+        layout="bshd",
+        input_source="random",
+    )
+    q = q.squeeze(1)
+
+    q_fp8, q_scale = _quantize_per_tensor_fp8(q)
+    k_fp8, k_scale = _quantize_per_tensor_fp8(k)
+    v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+
+    softmax_scale = cfg.head_dim**-0.5
+    softmax_threshold = 1.0
+
+    def fn():
+        flash_sparse_attn_with_kvcache_func(
+            q_fp8,
+            k_fp8,
+            v_fp8,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
+            query_scale=q_scale,
+            key_scale=k_scale,
+            value_scale=v_scale,
+            window_size=(None, None),
+        )
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_gated_decode_fp8(
+    cfg: BenchmarkConfig, device: str = "cuda"
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=torch.bfloat16,
+        layout="bshd",
+        input_source="random",
+    )
+    q = q.squeeze(1)
+
+    q_fp8, q_scale = _quantize_per_tensor_fp8(q)
+    k_fp8, k_scale = _quantize_per_tensor_fp8(k)
+    v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+
+    alpha = torch.randn(cfg.batch_size, cfg.num_heads, device=device, dtype=torch.bfloat16)
+    delta = torch.randn(
+        cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=torch.bfloat16
+    )
+    softmax_scale = cfg.head_dim**-0.5
+    softmax_threshold = 1.0
+    gate_threshold = 1.0
+
+    def fn():
+        flash_gated_attn_with_kvcache_func(
+            q_fp8,
+            k_fp8,
+            v_fp8,
+            alpha,
+            delta,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
+            gate_threshold=gate_threshold,
+            is_logsigmoid_gate=False,
+            query_scale=q_scale,
+            key_scale=k_scale,
+            value_scale=v_scale,
             window_size=(None, None),
         )
 
@@ -218,7 +296,9 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
         triton_dense_ms = benchmark_triton_dense_decode(cfg)
         triton_dense_fp8_ms = benchmark_triton_dense_decode_fp8(cfg)
         triton_sparse_ms = benchmark_triton_sparse_decode(cfg)
+        triton_sparse_fp8_ms = benchmark_triton_sparse_decode_fp8(cfg)
         triton_gated_ms = benchmark_triton_gated_decode(cfg)
+        triton_gated_fp8_ms = benchmark_triton_gated_decode_fp8(cfg)
         fa_dense_ms = benchmark_fa_decode(cfg)
         cudnn_dense_ms = benchmark_cudnn_decode(cfg)
 
@@ -226,7 +306,9 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
         triton_dense_tflops = flops / triton_dense_ms * 1e-9
         triton_dense_fp8_tflops = flops / triton_dense_fp8_ms * 1e-9
         triton_sparse_tflops = flops / triton_sparse_ms * 1e-9
+        triton_sparse_fp8_tflops = flops / triton_sparse_fp8_ms * 1e-9
         triton_gated_tflops = flops / triton_gated_ms * 1e-9
+        triton_gated_fp8_tflops = flops / triton_gated_fp8_ms * 1e-9
         fa_dense_tflops = flops / fa_dense_ms * 1e-9 if fa_dense_ms else None
         cudnn_dense_tflops = flops / cudnn_dense_ms * 1e-9 if cudnn_dense_ms else None
 
@@ -244,6 +326,10 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             cudnn_dense_tflops=cudnn_dense_tflops,
             triton_dense_fp8_ms=triton_dense_fp8_ms,
             triton_dense_fp8_tflops=triton_dense_fp8_tflops,
+            triton_sparse_fp8_ms=triton_sparse_fp8_ms,
+            triton_sparse_fp8_tflops=triton_sparse_fp8_tflops,
+            triton_gated_fp8_ms=triton_gated_fp8_ms,
+            triton_gated_fp8_tflops=triton_gated_fp8_tflops,
         )
     except Exception as exc:
         full_error = f"{exc}\n{traceback.format_exc()}"
@@ -285,7 +371,9 @@ def print_results(results: List[BenchmarkResult]) -> None:
                 format_tflops(r.triton_dense_tflops),
                 format_tflops(r.triton_dense_fp8_tflops),
                 format_tflops(r.triton_sparse_tflops),
+                format_tflops(r.triton_sparse_fp8_tflops),
                 format_tflops(r.triton_gated_tflops),
+                format_tflops(r.triton_gated_fp8_tflops),
                 format_tflops(r.fa_dense_tflops),
                 format_tflops(r.cudnn_dense_tflops),
             ]
@@ -303,7 +391,9 @@ def print_results(results: List[BenchmarkResult]) -> None:
         "Triton Dense TFLOPS",
         "Triton Dense FP8 TFLOPS",
         "Triton Sparse TFLOPS",
+        "Triton Sparse FP8 TFLOPS",
         "Triton Gated TFLOPS",
+        "Triton Gated FP8 TFLOPS",
         "FA TFLOPS",
         "cuDNN TFLOPS",
     ]
