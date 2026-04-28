@@ -144,6 +144,7 @@ def finalize(
     scale_log2,
     final_scale,
     IS_LOG2: tl.constexpr,
+    CHECK_NAN: tl.constexpr,
 ):
     """
     Finalize online softmax by computing output scale and logsumexp.
@@ -152,18 +153,23 @@ def finalize(
     :param row_sum: Final sum values per row of shape [BLOCK_M].
     :param final_scale: Scaling factor to be applied to the output.
     :param IS_LOG2: Boolean flag indicating if the returned logsumexp should be in log2-space.
+    :param CHECK_NAN: Boolean flag indicating if nan values in row_sum should be checked and set to 1 to avoid returning nan.
 
     :return row_scale: Final scaling factors per row of shape [BLOCK_M].
     :return lse: Logsumexp values per row of shape [BLOCK_M].
     """
     # if row_sum is zero or nan, set it to 1 to avoid division by zero
-    acc_o_is_zero_or_nan = (row_sum == 0.0) | (row_sum != row_sum)
-    row_scale = tl.where(acc_o_is_zero_or_nan, 1.0, 1.0 / row_sum) * final_scale
-    lse = tl.where(
-        acc_o_is_zero_or_nan,
-        float("-inf"),
-        row_max * scale_log2 + tl.log2(row_sum),
-    )
+    if CHECK_NAN:
+        acc_o_is_zero_or_nan = (row_sum == 0.0) | (row_sum != row_sum)
+        row_scale = tl.where(acc_o_is_zero_or_nan, 1.0, final_scale / row_sum)
+        lse = tl.where(
+            acc_o_is_zero_or_nan,
+            float("-inf"),
+            row_max * scale_log2 + tl.log2(row_sum),
+        )
+    else:
+        row_scale = final_scale / row_sum
+        lse = row_max * scale_log2 + tl.log2(row_sum)
     if not IS_LOG2:
         # ln2 = math.log(2.0)
         ln2 = 0.6931471805599453
