@@ -126,6 +126,7 @@ def _dec_dense_base_kernel(
     seqused_q,
     seqused_k,
     num_splits,
+    stride_cu_seqlens_k_h,
     seqlen_q,
     seqlen_k,
     head_dim,
@@ -140,12 +141,17 @@ def _dec_dense_base_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
+    HAS_HEAD_SPECIAL_SEQLENS_K: tl.constexpr,
 ):
     head_idx = tl.program_id(0)
     batch_split_idx = tl.program_id(1)
     batch_idx = batch_split_idx // num_splits
     split_idx = batch_split_idx - batch_idx * num_splits
     head_kv_idx = head_idx
+
+    # Offset cu_seqlens_k for per-head varlen
+    if HAS_HEAD_SPECIAL_SEQLENS_K:
+        cu_seqlens_k = cu_seqlens_k + head_kv_idx * stride_cu_seqlens_k_h
 
     # Get seqlen info for this batch
     (
@@ -502,6 +508,7 @@ def _dec_dense_sm90_kernel(
     seqused_q,
     seqused_k,
     num_splits,
+    stride_cu_seqlens_k_h,
     seqlen_q,
     seqlen_k,
     head_dim,
@@ -516,12 +523,17 @@ def _dec_dense_sm90_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
+    HAS_HEAD_SPECIAL_SEQLENS_K: tl.constexpr,
 ):
     head_idx = tl.program_id(0)
     batch_split_idx = tl.program_id(1)
     batch_idx = batch_split_idx // num_splits
     split_idx = batch_split_idx - batch_idx * num_splits
     head_kv_idx = head_idx
+
+    # Offset cu_seqlens_k for per-head varlen
+    if HAS_HEAD_SPECIAL_SEQLENS_K:
+        cu_seqlens_k = cu_seqlens_k + head_kv_idx * stride_cu_seqlens_k_h
 
     # Get seqlen info for this batch
     (
@@ -985,6 +997,7 @@ def _flash_dense_attn_base_decode(
             None,
             None,
             num_splits,
+            0,
             seqlen_q=qheads_per_kvhead,
             seqlen_k=seqlen_k,
             head_dim=head_dim,
@@ -999,6 +1012,7 @@ def _flash_dense_attn_base_decode(
             HAS_CU_SEQLENS_K=False,
             HAS_SEQUSED_Q=False,
             HAS_SEQUSED_K=False,
+            HAS_HEAD_SPECIAL_SEQLENS_K=False,
             num_warps=num_warps,
             num_stages=num_stages,
             num_ctas=num_ctas,
@@ -1036,6 +1050,7 @@ def _flash_dense_attn_base_decode(
             None,
             None,
             num_splits,
+            0,
             seqlen_q=qheads_per_kvhead,
             seqlen_k=seqlen_k,
             head_dim=head_dim,
@@ -1050,6 +1065,7 @@ def _flash_dense_attn_base_decode(
             HAS_CU_SEQLENS_K=False,
             HAS_SEQUSED_Q=False,
             HAS_SEQUSED_K=False,
+            HAS_HEAD_SPECIAL_SEQLENS_K=False,
             num_warps=num_warps,
             num_stages=num_stages,
             num_ctas=num_ctas,
@@ -1093,6 +1109,8 @@ def _flash_dense_attn_varlen_base_decode(
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qheads_per_kvhead = num_heads_q // num_heads_kv
+    head_special = cu_seqlens_k.ndim == 2
+    stride_cu_seqlens_k_h = cu_seqlens_k.stride(0) if head_special else 0
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -1195,6 +1213,7 @@ def _flash_dense_attn_varlen_base_decode(
             None,
             seqused_k,
             num_splits,
+            stride_cu_seqlens_k_h,
             seqlen_q=qheads_per_kvhead,
             seqlen_k=seqlen_k,
             head_dim=head_dim,
@@ -1209,6 +1228,7 @@ def _flash_dense_attn_varlen_base_decode(
             HAS_CU_SEQLENS_K=True,
             HAS_SEQUSED_Q=False,
             HAS_SEQUSED_K=seqused_k is not None,
+            HAS_HEAD_SPECIAL_SEQLENS_K=head_special,
             num_warps=num_warps,
             num_stages=num_stages,
             num_ctas=num_ctas,
@@ -1246,6 +1266,7 @@ def _flash_dense_attn_varlen_base_decode(
             None,
             seqused_k,
             num_splits,
+            stride_cu_seqlens_k_h,
             seqlen_q=qheads_per_kvhead,
             seqlen_k=seqlen_k,
             head_dim=head_dim,
@@ -1260,6 +1281,7 @@ def _flash_dense_attn_varlen_base_decode(
             HAS_CU_SEQLENS_K=True,
             HAS_SEQUSED_Q=False,
             HAS_SEQUSED_K=seqused_k is not None,
+            HAS_HEAD_SPECIAL_SEQLENS_K=head_special,
             num_warps=num_warps,
             num_stages=num_stages,
             num_ctas=num_ctas,
