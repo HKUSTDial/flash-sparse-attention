@@ -682,7 +682,7 @@ def flash_dense_attn_varlen_func(
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
-    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
+    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1] or [num_heads_kv, batch_size + 1] for per-head variable-length support.
     :param max_seqlen_q: Maximum sequence length for queries.
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param is_causal: Whether to apply a causal mask.
@@ -737,7 +737,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param query: Query tensor of shape [batch_size, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
-    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
+    :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1] or [num_heads_kv, batch_size + 1] for per-head variable-length support.
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
