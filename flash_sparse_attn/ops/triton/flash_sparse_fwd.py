@@ -603,8 +603,8 @@ def _fwd_base_sparse_kernel(
         scale_log2=softmax_scale_log2,
         final_scale=1.0,
         IS_LOG2=IS_SPLIT_KV,
+        CHECK_NAN=True,
     )
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store LSE
     if PACK_GQA:
@@ -616,6 +616,9 @@ def _fwd_base_sparse_kernel(
         )
     else:
         tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
+
+    # Finalize rescale
+    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store output
     # When IS_SPLIT_KV, store float32 partial results.
