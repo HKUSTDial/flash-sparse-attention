@@ -6,23 +6,7 @@ import torch
 
 
 _COMPILED_KERNEL_CACHE_MAXSIZE = 4096
-_COMPILED_KERNEL_CACHE: OrderedDict = OrderedDict()
-_LAUNCHER_CACHE_MAXSIZE = 1024
 _STATIC_BUFFER_POOL: dict[tuple, torch.Tensor] = {}
-
-
-def _compiled_cache_get(key):
-    compiled = _COMPILED_KERNEL_CACHE.get(key)
-    if compiled is not None:
-        _COMPILED_KERNEL_CACHE.move_to_end(key)
-    return compiled
-
-
-def _compiled_cache_put(key, compiled):
-    _COMPILED_KERNEL_CACHE[key] = compiled
-    _COMPILED_KERNEL_CACHE.move_to_end(key)
-    if len(_COMPILED_KERNEL_CACHE) > _COMPILED_KERNEL_CACHE_MAXSIZE:
-        _COMPILED_KERNEL_CACHE.popitem(last=False)
 
 
 def get_static_buffer(shape, dtype, device, tag=""):
@@ -73,16 +57,25 @@ def cache_launch_config(fn):
 
     :return wrapper: Wrapped function with cache.
     """
+    params = list(inspect.signature(fn).parameters.keys())
+    device_idx = params.index("device") if "device" in params else None
+    arch_idx = params.index("arch") if "arch" in params else None
     cached = functools.lru_cache(maxsize=None)(
         lambda _arch, *args, **kwargs: fn(*args, **kwargs)
     )
-    signature = inspect.signature(fn)
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        bound = signature.bind_partial(*args, **kwargs)
-        device = bound.arguments.get("device")
-        arch = bound.arguments.get("arch")
+        device = (
+            args[device_idx]
+            if (device_idx is not None and device_idx < len(args))
+            else kwargs.get("device")
+        )
+        arch = (
+            args[arch_idx]
+            if (arch_idx is not None and arch_idx < len(args))
+            else kwargs.get("arch")
+        )
         return cached((device.type, arch), *args, **kwargs)
 
     return wrapper
@@ -100,68 +93,31 @@ def cache_launch_grid(fn, maxsize: int = 512):
     return functools.lru_cache(maxsize=maxsize)(fn)
 
 
-def _arg_spec(arg):
-    """
-    Build a lightweight per-argument fingerprint matching Triton's default
-    specialization.
-
-    :param arg: Runtime argument passed to a Triton kernel.
-
-    :return spec: Hashable specialization tag.
-    """
-    if torch.is_tensor(arg):
-        return arg.dtype, arg.device.type, arg.device.index, (arg.data_ptr() % 16) == 0
-    if isinstance(arg, bool):
-        return arg
-    if isinstance(arg, int):
-        return int, arg == 1, (arg % 16) == 0
-    if isinstance(arg, float):
-        return float
-    return arg
-
-
 class CachedKernel:
     """
     Wrap a `triton.jit`-decorated function so that each launch reuses a
     previously-compiled `CompiledKernel` when the specialization matches.
     """
 
-    __slots__ = ("_kernel", "_launcher_cache")
+    __slots__ = ("_kernel", "_cache")
 
     def __init__(self, kernel):
         self._kernel = kernel
-        self._launcher_cache = OrderedDict()
-
-    @staticmethod
-    def _normalize_static_grid(grid):
-        grid = tuple(grid)
-        if len(grid) < 3:
-            grid = grid + (1,) * (3 - len(grid))
-        return grid
+        self._cache = OrderedDict()
 
     def __getitem__(self, grid):
-        try:
-            cache_key = grid if callable(grid) else self._normalize_static_grid(grid)
-            cached_launcher = self._launcher_cache.get(cache_key)
-            if cached_launcher is not None:
-                self._launcher_cache.move_to_end(cache_key)
-                return cached_launcher
-        except TypeError:
-            cache_key = None
-
         kernel = self._kernel
-        kernel_fn_name = kernel.fn.__name__
         kernel_warmup = kernel.warmup
         kernel_arg_names = kernel.arg_names
-        is_tensor = torch.is_tensor
-        arg_spec = _arg_spec
-        compiled_cache_get = _compiled_cache_get
-        compiled_cache_put = _compiled_cache_put
-        get_arch = get_device_arch
-
+        cache = self._cache
+        maxsize = _COMPILED_KERNEL_CACHE_MAXSIZE
+        tensor_indices = None
         static_grid = None
+
         if not callable(grid):
-            static_grid = self._normalize_static_grid(grid)
+            static_grid = tuple(grid)
+            if len(static_grid) < 3:
+                static_grid = static_grid + (1,) * (3 - len(static_grid))
 
         def launcher(
             *args,
@@ -170,25 +126,30 @@ class CachedKernel:
             num_ctas: int = 1,
             **constexprs,
         ):
-            launch_grid = static_grid
-            if launch_grid is None:
-                launch_grid = grid
-                launch_grid = launch_grid(constexprs)
-                launch_grid = CachedKernel._normalize_static_grid(launch_grid)
+            nonlocal tensor_indices
 
-            device = next(a.device for a in args if is_tensor(a))
-            constexpr_items = tuple(constexprs.items()) if constexprs else ()
+            if static_grid is not None:
+                launch_grid = static_grid
+            else:
+                launch_grid = tuple(grid(constexprs))
+                if len(launch_grid) < 3:
+                    launch_grid = launch_grid + (1,) * (3 - len(launch_grid))
+
+            if tensor_indices is None:
+                tensor_indices = tuple(
+                    i for i, a in enumerate(args) if torch.is_tensor(a)
+                )
+
             key = (
-                kernel_fn_name,
-                (device.type, get_arch(device)),
-                tuple(arg_spec(a) for a in args),
-                constexpr_items,
+                tuple((args[i].dtype, args[i].device.type) for i in tensor_indices),
+                tuple(constexprs.values()) if constexprs else (),
                 num_warps,
                 num_stages,
                 num_ctas,
             )
-            compiled = compiled_cache_get(key)
-            if compiled is None:
+
+            runner = cache.get(key)
+            if runner is None:
                 compiled = kernel_warmup(
                     *args,
                     grid=launch_grid,
@@ -197,10 +158,15 @@ class CachedKernel:
                     num_ctas=num_ctas,
                     **constexprs,
                 )
-                compiled_cache_put(key, compiled)
+                runner = compiled[launch_grid]
+                cache[key] = runner
+                if len(cache) > maxsize:
+                    cache.popitem(last=False)
+            else:
+                cache.move_to_end(key)
 
             if not constexprs:
-                compiled[launch_grid](*args)
+                runner(*args)
                 return
 
             args_iter = iter(args)
@@ -208,13 +174,8 @@ class CachedKernel:
                 constexprs[name] if name in constexprs else next(args_iter)
                 for name in kernel_arg_names
             ]
-            compiled[launch_grid](*full_args)
+            runner(*full_args)
 
-        if cache_key is not None:
-            self._launcher_cache[cache_key] = launcher
-            self._launcher_cache.move_to_end(cache_key)
-            if len(self._launcher_cache) > _LAUNCHER_CACHE_MAXSIZE:
-                self._launcher_cache.popitem(last=False)
         return launcher
 
     def __getattr__(self, name):
