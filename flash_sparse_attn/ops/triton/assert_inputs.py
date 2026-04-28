@@ -76,6 +76,13 @@ def assert_fwd_inputs(
         assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
             "cu_seqlens_q and cu_seqlens_k must be int32"
         )
+        assert cu_seqlens_k.ndim in (1, 2), (
+            "cu_seqlens_k must be 1D (batch_size+1,) or 2D (num_heads_kv, batch_size+1)"
+        )
+        if cu_seqlens_k.ndim == 2:
+            assert cu_seqlens_k.shape[0] == num_heads_kv, (
+                f"cu_seqlens_k 2D shape[0] must be num_heads_kv={num_heads_kv}, got {cu_seqlens_k.shape[0]}"
+            )
     if seqused_q is not None and seqused_k is not None:
         assert device == seqused_q.device == seqused_k.device, (
             "All inputs must be on the same device"
@@ -279,6 +286,13 @@ def assert_dec_inputs(
     if cu_seqlens_k is not None:
         assert device == cu_seqlens_k.device, "All inputs must be on the same device"
         assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
+        assert cu_seqlens_k.ndim in (1, 2), (
+            "cu_seqlens_k must be 1D (batch_size+1,) or 2D (num_heads_kv, batch_size+1)"
+        )
+        if cu_seqlens_k.ndim == 2:
+            assert cu_seqlens_k.shape[0] == num_heads_kv, (
+                f"cu_seqlens_k 2D shape[0] must be num_heads_kv={num_heads_kv}, got {cu_seqlens_k.shape[0]}"
+            )
     if seqused_k is not None:
         assert device == seqused_k.device, "All inputs must be on the same device"
         assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
