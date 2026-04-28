@@ -154,7 +154,7 @@ out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
 out = fsa.flash_dense_attn_with_kvcache_func(q, k, v)
 
 # Sparse attention
-out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, threshold=0.01)
+out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
 
 # Gated attention
 out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
@@ -196,7 +196,7 @@ def test_sparse_forward():
     q = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
     k = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
     v = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
-    out = flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.0)
+    out = flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
     assert out.shape == (B, S, H, D)
 
 
@@ -206,9 +206,9 @@ def test_dense_decode():
 
     B, H, D, S_kv = 2, 8, 64, 256
     q = torch.randn(B, H, D, dtype=torch.float16, device="cuda")
-    k_cache = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
-    v_cache = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
-    out = flash_dense_attn_with_kvcache_func(q, k_cache, v_cache, is_causal=False)
+    k = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
+    v = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
+    out = flash_dense_attn_with_kvcache_func(q, k, v, is_causal=False)
     assert out.shape == (B, H, D)
 """
 
