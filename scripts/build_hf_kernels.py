@@ -14,7 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 TRITON_SRC = REPO_ROOT / "flash_sparse_attn" / "ops" / "triton"
-PKG_NAME = "flash_sparse_attention"
+PKG_NAME = "flash-sparse-attention"
+PKG_IMPORT_NAME = "flash_sparse_attention"
 
 
 PUBLIC_FUNCTIONS = [
@@ -170,13 +171,13 @@ Originally from [HKUSTDial/flash-sparse-attention](https://github.com/HKUSTDial/
 
 
 def generate_tests() -> str:
-    return """import pytest
+    return f"""import pytest
 import torch
 
 
 @pytest.mark.kernels_ci
 def test_dense_forward():
-    from flash_sparse_attention import flash_dense_attn_func
+    from {PKG_IMPORT_NAME} import flash_dense_attn_func
 
     B, S, H, D = 2, 128, 8, 64
     q = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
@@ -189,19 +190,19 @@ def test_dense_forward():
 
 @pytest.mark.kernels_ci
 def test_sparse_forward():
-    from flash_sparse_attention import flash_sparse_attn_func
+    from {PKG_IMPORT_NAME} import flash_sparse_attn_func
 
     B, S, H, D = 2, 128, 8, 64
     q = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
     k = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
     v = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
-    out = flash_sparse_attn_func(q, k, v, is_causal=True, threshold=0.0)
+    out = flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.0)
     assert out.shape == (B, S, H, D)
 
 
 @pytest.mark.kernels_ci
 def test_dense_decode():
-    from flash_sparse_attention import flash_dense_attn_with_kvcache_func
+    from {PKG_IMPORT_NAME} import flash_dense_attn_with_kvcache_func
 
     B, H, D, S_kv = 2, 8, 64, 256
     q = torch.randn(B, H, D, dtype=torch.float16, device="cuda")
@@ -237,7 +238,7 @@ def check_init_exports(pkg_dir: Path) -> list[str]:
 
 
 def run_checks(out_dir: Path) -> bool:
-    pkg_dir = out_dir / "torch-ext" / PKG_NAME
+    pkg_dir = out_dir / "torch-ext" / PKG_IMPORT_NAME
     ok = True
 
     missing_files = check_all_files_present(pkg_dir)
@@ -289,7 +290,7 @@ def build(
         shutil.rmtree(out_dir)
         print(f"Cleaned {out_dir}")
 
-    pkg_dir = out_dir / "torch-ext" / PKG_NAME
+    pkg_dir = out_dir / "torch-ext" / PKG_IMPORT_NAME
     pkg_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "tests").mkdir(exist_ok=True)
 
@@ -333,12 +334,19 @@ To publish to HuggingFace Hub:
        curl -fsSL https://raw.githubusercontent.com/huggingface/kernels/main/install.sh | bash
 
   2. Login to HuggingFace:
-       huggingface-cli login
+       hf auth login
 
-  3. Build and upload:
+  3. Build the kernel package:
        cd {out_dir}
-       kernel-builder build-and-copy -L    # local build + verify
-       kernel-builder build-and-upload -L  # build + upload to {repo_id}
+       export NIX_BUILD_CORES=1
+       export NIX_CONFIG="max-jobs = 1
+       extra-substituters = https://huggingface.cachix.org
+       extra-trusted-public-keys = huggingface.cachix.org-1:ynTPbLS0W8ofXd9fDjk1KvoFky9K2jhxe6r4nXAkc/o=
+       "
+       kernel-builder build-and-copy -L
+
+  4. Upload to Hub:
+       kernel-builder upload --repo-type model
 """)
     else:
         print("\nSome checks failed. Fix the issues above before publishing.")
@@ -351,7 +359,7 @@ def main() -> None:
         "--output-dir", default="huggingface_kernels", help="Output directory"
     )
     parser.add_argument(
-        "--repo-id", default="HKUSTDial/flash-sparse-attention", help="Hub repo ID"
+        "--repo-id", default="JingzeShi/flash-sparse-attention", help="Hub repo ID"
     )
     parser.add_argument("--version", type=int, default=1, help="Kernel version")
     parser.add_argument(
