@@ -64,6 +64,23 @@ pip install .
 ```
 
 
+### 通过 HuggingFace Kernel 使用
+
+也可以直接从 [HuggingFace Kernel](https://github.com/huggingface/kernels) 加载 kernel，无需安装本包：
+
+```python
+from kernels import get_kernel
+
+fsa = get_kernel("JingzeShi/flash-sparse-attention", version=1)
+
+out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
+out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
+out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
+```
+
+需要先安装 `pip install kernels`。
+
+
 ## 快速开始
 
 ### 基本用法
