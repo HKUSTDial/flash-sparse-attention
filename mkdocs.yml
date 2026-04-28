@@ -39,6 +39,7 @@ markdown_extensions:
 
 nav:
   - API: api.md
+  - HuggingFace Kernel Hub: huggingface_kernels_guide.md
 
 watch:
   - flash_sparse_attn
