@@ -452,12 +452,13 @@ def _dec_dense_base_kernel(
         scale_log2=softmax_scale_log2,
         final_scale=1.0,
         IS_LOG2=True,
+        CHECK_NAN=False,
     )
 
     # Store LSE
     tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
-    # Final rescale
+    # Finalize rescale
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store output
@@ -842,12 +843,13 @@ def _dec_dense_sm90_kernel(
         scale_log2=softmax_scale_log2,
         final_scale=final_scale,
         IS_LOG2=True,
+        CHECK_NAN=False,
     )
 
     # Store LSE
     tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
 
-    # Final rescale
+    # Finalize rescale
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store output
