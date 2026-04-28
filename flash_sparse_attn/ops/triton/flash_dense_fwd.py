@@ -127,6 +127,7 @@ def _fwd_dense_base_kernel(
     seqused_k,
     qhead_per_kvhead,
     num_splits,
+    stride_cu_seqlens_k_h,
     seqlen_q,
     seqlen_k,
     head_dim,
@@ -143,6 +144,7 @@ def _fwd_dense_base_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
+    HAS_HEAD_SPECIAL_SEQLENS_K: tl.constexpr,
     PACK_GQA: tl.constexpr,
 ):
     m_block = tl.program_id(0)
@@ -158,6 +160,10 @@ def _fwd_dense_base_kernel(
         head_kv_idx = head_idx
     else:
         head_kv_idx = head_idx // qhead_per_kvhead
+
+    # Offset cu_seqlens_k for per-head varlen
+    if HAS_HEAD_SPECIAL_SEQLENS_K:
+        cu_seqlens_k = cu_seqlens_k + head_kv_idx * stride_cu_seqlens_k_h
 
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
     offs_kb = tl.arange(0, TILE_K)
@@ -732,6 +738,7 @@ def _flash_dense_attn_base_forward(
         None,
         qheads_per_kvhead,
         num_splits,
+        0,
         seqlen_q,
         seqlen_k,
         head_dim,
@@ -748,6 +755,7 @@ def _flash_dense_attn_base_forward(
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
+        HAS_HEAD_SPECIAL_SEQLENS_K=False,
         PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
@@ -796,6 +804,8 @@ def _flash_dense_attn_varlen_base_forward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qheads_per_kvhead = num_heads_q // num_heads_kv
     qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    head_special = cu_seqlens_k.ndim == 2
+    stride_cu_seqlens_k_h = cu_seqlens_k.stride(0) if head_special else 0
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -895,6 +905,7 @@ def _flash_dense_attn_varlen_base_forward(
         seqused_k,
         qheads_per_kvhead,
         num_splits,
+        stride_cu_seqlens_k_h,
         seqlen_q,
         seqlen_k,
         head_dim,
@@ -911,6 +922,7 @@ def _flash_dense_attn_varlen_base_forward(
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
+        HAS_HEAD_SPECIAL_SEQLENS_K=head_special,
         PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
