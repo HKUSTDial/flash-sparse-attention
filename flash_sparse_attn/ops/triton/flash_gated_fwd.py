@@ -972,6 +972,7 @@ def _flash_gated_attn_base_forward(
     is_logsigmoid_gate: bool = False,
     is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
+    is_split_kv: bool = False,
     pack_gqa: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
@@ -980,7 +981,6 @@ def _flash_gated_attn_base_forward(
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
@@ -1148,6 +1148,7 @@ def _flash_gated_attn_varlen_base_forward(
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
+    is_split_kv: bool = False,
     pack_gqa: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
@@ -1159,7 +1160,6 @@ def _flash_gated_attn_varlen_base_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    is_split_kv = seqlen_q == 1 and seqlen_q != seqlen_k
     window_size_left, window_size_right = window_size
     is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
