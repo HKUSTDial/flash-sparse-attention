@@ -622,6 +622,7 @@ def flash_dense_attn_with_kvcache_func(
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash dense attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -637,6 +638,7 @@ def flash_dense_attn_with_kvcache_func(
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
+    :param skip_checks: Whether to skip input validation checks for faster performance.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads].
     """
@@ -651,6 +653,7 @@ def flash_dense_attn_with_kvcache_func(
         window_size=window_size,
         out=out,
         lse=lse,
+        skip_checks=skip_checks,
     )
 
     if return_lse:
@@ -730,6 +733,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash dense attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -748,6 +752,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
+    :param skip_checks: Whether to skip input validation checks for faster performance.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
@@ -765,6 +770,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
         seqused_k=seqused_k,
         out=out,
         lse=lse,
+        skip_checks=skip_checks,
     )
 
     if return_lse:
@@ -827,6 +833,7 @@ def flash_sparse_attn_with_kvcache_func(
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash sparse attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -843,6 +850,7 @@ def flash_sparse_attn_with_kvcache_func(
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
+    :param skip_checks: Whether to skip input validation checks for faster performance.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads].
     """
@@ -858,6 +866,7 @@ def flash_sparse_attn_with_kvcache_func(
         window_size=window_size,
         out=out,
         lse=lse,
+        skip_checks=skip_checks,
     )
 
     if return_lse:
@@ -941,6 +950,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash sparse attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -960,6 +970,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
+    :param skip_checks: Whether to skip input validation checks for faster performance.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
@@ -978,6 +989,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         seqused_k=seqused_k,
         out=out,
         lse=lse,
+        skip_checks=skip_checks,
     )
 
     if return_lse:
@@ -1059,6 +1071,7 @@ def flash_gated_attn_with_kvcache_func(
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash gated attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -1079,6 +1092,7 @@ def flash_gated_attn_with_kvcache_func(
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
+    :param skip_checks: Whether to skip input validation checks for faster performance.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads].
     """
@@ -1098,6 +1112,7 @@ def flash_gated_attn_with_kvcache_func(
         window_size=window_size,
         out=out,
         lse=lse,
+        skip_checks=skip_checks,
     )
 
     if return_lse:
@@ -1200,6 +1215,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    skip_checks: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash gated attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -1223,6 +1239,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
+    :param skip_checks: Whether to skip input validation checks for faster performance.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
@@ -1245,6 +1262,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
         seqused_k=seqused_k,
         out=out,
         lse=lse,
+        skip_checks=skip_checks,
     )
 
     if return_lse:
