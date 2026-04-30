@@ -1,350 +1,80 @@
 """
 SM100 (Blackwell) warp-specialized dense forward attention kernel.
 
-Architecture: 5-partition persistent kernel using Gluon SM100 primitives.
-  - Partition 0 (load):     TMA load Q/K/V -> SMEM
-  - Partition 1 (mma):      tcgen05_mma Q*K^T -> S, P*V -> O
-  - Partition 2 (softmax0): online softmax on upper SPLIT_M rows
-  - Partition 3 (softmax1): online softmax on lower SPLIT_M rows
-  - Partition 4 (epilogue): TMA store O -> HBM
+Architecture: 6-partition persistent kernel using Gluon SM100 primitives.
+  - Partition 0 (rescale):   rescale O accumulator + finalize (scale + LSE writeback)
+  - Partition 1 (softmax):   online softmax on upper SPLIT_M rows (tile_id=0)
+  - Partition 2 (softmax):   online softmax on lower SPLIT_M rows (tile_id=1)
+  - Partition 3 (mma):       tcgen05_mma Q*K^T -> S, P*V -> O
+  - Partition 4 (load):      TMA load Q/K/V -> SMEM
+  - Partition 5 (store):     TMA store O -> HBM
 """
 
 from typing import Tuple, Optional
-import copy
-import math
+from dataclasses import dataclass, fields
 import torch
 import triton
 
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
-from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton.experimental.gluon.language.nvidia.blackwell import (
-    TensorMemoryLayout,
-    allocate_tensor_memory,
-    tensor_memory_descriptor,
-    tensor_memory_descriptor_type,
     tma,
     mbarrier,
     tcgen05_mma,
     tcgen05_commit,
-    float2,
 )
-from triton.experimental.gluon.language.nvidia.blackwell.float2 import Float2Tensor
 
 from flash_sparse_attn.ops.gluon import (
     assert_inputs,
     utils,
     cache_utils,
-    launch_template,
-    launch_grid,
-    flash_fwd_combine,
+)
+from flash_sparse_attn.ops.gluon.utils import (
+    borrow_s_as_p,
+)
+from flash_sparse_attn.ops.gluon.activations import rescale_o, finalize, online_softmax
+from flash_sparse_attn.ops.gluon.scheduling import (
+    SharedMemoryChannel,
+    TensorMemoryChannel,
+    get_desc_channel,
+    issue_async_tma_load,
+    AttentionConfig,
+    ProgramScheduler,
 )
 
 
-# ===-----------------------------------------------------------------------===#
-# Layout Utilities
-# ===-----------------------------------------------------------------------===#
-
-
-@gluon.constexpr_function
-def get_mma_instr_shape(shape, element_ty):
-    m = 128 if shape[0] >= 128 else 64
-    n = 256 if shape[1] >= 256 else shape[1]
-    k = 256 // element_ty.primitive_bitwidth
-    return (m, n, k)
-
-
-# ===-----------------------------------------------------------------------===#
-# Channel / Barrier Infrastructure
-# ===-----------------------------------------------------------------------===#
-
-
-@gluon.aggregate
-class BarrierCounter:
-    index: gl.tensor
-    phase: gl.tensor
-    num_barriers: gl.constexpr
-
-    @gluon.must_use_result
-    @gluon.jit
-    def increment(self):
-        if self.num_barriers == 1:
-            return BarrierCounter(gl.to_tensor(0), self.phase ^ 1, self.num_barriers)
-        next_index = self.index + 1
-        rollover = next_index == self.num_barriers
-        index = gl.where(rollover, 0, next_index)
-        phase = gl.where(rollover, self.phase ^ 1, self.phase)
-        return BarrierCounter(index, phase, self.num_barriers)
-
-
-def Channel(T, alloc_fn):
-
-    @gluon.aggregate
-    class ChannelType:
-        mem: T
-        ready_bars: gl.shared_memory_descriptor
-        empty_bars: gl.shared_memory_descriptor
-        num_buffers: gl.constexpr
-        num_consumers: gl.constexpr
-
-        @gluon.jit
-        def alloc(shape: gl.constexpr, dtype: gl.constexpr, layout: gl.constexpr,
-                  num_buffers: gl.constexpr, num_consumers: gl.constexpr = 1):
-            mem = alloc_fn(dtype, [num_buffers] + shape, layout)
-            ready_bars = gl.allocate_shared_memory(
-                gl.int64, [num_buffers, 1], mbarrier.MBarrierLayout()
-            )
-            empty_bars = gl.allocate_shared_memory(
-                gl.int64, [num_buffers, 1], mbarrier.MBarrierLayout()
-            )
-            for i in gl.static_range(num_buffers):
-                mbarrier.init(ready_bars.index(i), count=1)
-                mbarrier.init(empty_bars.index(i), count=num_consumers)
-                mbarrier.arrive(empty_bars.index(i), count=num_consumers)
-            return ChannelType(mem, ready_bars, empty_bars, num_buffers, num_consumers)
-
-        @gluon.jit
-        def acquire_producer(self, counter):
-            index, phase = counter.index, counter.phase
-            mem = self.mem.index(index)
-            ready_bar = self.ready_bars.index(index)
-            empty_bar = self.empty_bars.index(index)
-            mbarrier.wait(empty_bar, phase)
-            return mem, ready_bar
-
-        @gluon.jit
-        def acquire_consumer(self, counter):
-            index, phase = counter.index, counter.phase
-            mem = self.mem.index(index)
-            ready_bar = self.ready_bars.index(index)
-            empty_bar = self.empty_bars.index(index)
-            mbarrier.wait(ready_bar, phase)
-            return mem, empty_bar
-
-        @gluon.jit
-        def create_counter(self):
-            return BarrierCounter(gl.to_tensor(0), gl.to_tensor(0), self.num_buffers)
-
-        @gluon.jit
-        def create_producer(self):
-            return Producer(self, self.create_counter())
-
-        @gluon.jit
-        def create_consumer(self):
-            return Consumer(self, self.create_counter())
-
-        @gluon.jit
-        def release(self):
-            if isinstance(self.mem, gl.shared_memory_descriptor):
-                self.mem._keep_alive()
-            for i in gl.static_range(self.num_buffers):
-                mbarrier.invalidate(self.ready_bars.index(i))
-                mbarrier.invalidate(self.empty_bars.index(i))
-
-    @gluon.aggregate
-    class Producer:
-        channel: ChannelType
-        counter: BarrierCounter
-
-        @gluon.jit
-        def acquire(self):
-            mem, ready_bar = self.channel.acquire_producer(self.counter)
-            next = Producer(self.channel, self.counter.increment())
-            return mem, ready_bar, next
-
-    @gluon.aggregate
-    class Consumer:
-        channel: ChannelType
-        counter: BarrierCounter
-
-        @gluon.jit
-        def acquire(self):
-            mem, empty_bar = self.channel.acquire_consumer(self.counter)
-            next = Consumer(self.channel, self.counter.increment())
-            return mem, empty_bar, next
-
-    return ChannelType, Producer, Consumer
-
-
-SharedMemoryChannel, SharedMemoryProducer, SharedMemoryConsumer = Channel(
-    gl.shared_memory_descriptor, gl.allocate_shared_memory
-)
-TensorMemoryChannel, TensorMemoryProducer, TensorMemoryConsumer = Channel(
-    tensor_memory_descriptor, allocate_tensor_memory
-)
-
 
 @gluon.jit
-def get_desc_channel(desc, num_buffers: gl.constexpr, num_consumers: gl.constexpr = 1):
-    shape: gl.constexpr = desc.block_type.shape
-    layout: gl.constexpr = desc.layout
-    return SharedMemoryChannel.alloc(shape, desc.dtype, layout, num_buffers, num_consumers)
-
-
-@gluon.jit
-def issue_async_tma_load(smem, bar, desc, offset_y, offset_x=0):
-    mbarrier.expect(bar, desc.get_tma_size())
-    from triton.experimental.gluon.language.nvidia.blackwell import fence_async_shared
-    fence_async_shared()
-    tma.async_copy_global_to_shared(desc, [offset_y, offset_x], smem, bar)
-
-
-# ===-----------------------------------------------------------------------===#
-# Persistent Tile Scheduler
-# ===-----------------------------------------------------------------------===#
-
-
-@gluon.aggregate
-class ProgramInfo:
-    start_m: gl.tensor
-    offset_y: gl.tensor
-    qo_offset_y: gl.tensor
-
-    @gluon.jit
-    def get_loop_bounds(self, BLOCK_N: gl.constexpr, N_CTX: gl.tensor, IS_CAUSAL: gl.constexpr):
-        lo = gl.to_tensor(0)
-        if IS_CAUSAL:
-            hi = gl.minimum((self.start_m + 1) * BLOCK_N, N_CTX)
-        else:
-            hi = N_CTX
-        return lo, hi
-
-
-@gluon.aggregate
-class ProgramScheduler:
-    start_pid: gl.tensor
-    num_tiles: gl.tensor
-    num_pid_m: gl.tensor
-    num_pid_n: gl.tensor
-    GROUP_SIZE_N: gl.constexpr
-    BLOCK_M: gl.constexpr
-    SPLIT_M: gl.constexpr
-
-    @gluon.jit
-    def create(BLOCK_M: gl.constexpr, SPLIT_M: gl.constexpr, GROUP_SIZE_N: gl.constexpr,
-               num_pid_m, num_pid_n, NUM_SMS: gl.constexpr):
-        start_pid = gl.program_id(0)
-        num_tiles = num_pid_m * num_pid_n
-        return ProgramScheduler(start_pid, num_tiles, num_pid_m, num_pid_n,
-                                GROUP_SIZE_N, BLOCK_M, SPLIT_M)
-
-    @gluon.jit
-    def get_program(self, pid):
-        if self.GROUP_SIZE_N > 1:
-            group_id = pid // (self.GROUP_SIZE_N * self.num_pid_m)
-            first_pid_in_group = group_id * self.GROUP_SIZE_N
-            group_size = gl.minimum(self.num_pid_n - first_pid_in_group, self.GROUP_SIZE_N)
-            pid_m = (pid % (group_size * self.num_pid_m)) // group_size
-            pid_n = first_pid_in_group + (pid % (group_size * self.num_pid_m)) % group_size
-        else:
-            pid_m = pid // self.num_pid_n
-            pid_n = pid % self.num_pid_n
-
-        start_m = pid_m
-        offset_y = pid_n * self.BLOCK_M
-        qo_offset_y = offset_y + pid_m * self.BLOCK_M
-        return ProgramInfo(start_m, offset_y, qo_offset_y)
-
-
-# ===-----------------------------------------------------------------------===#
-# TMEM Helpers
-# ===-----------------------------------------------------------------------===#
-
-
-@gluon.jit
-def _borrow_s_as_p(config_block_n, s_tmem, dtype, qk_shape, p_tmem_layout):
-    p_tmem = s_tmem.slice(0, config_block_n // 2)
-    return p_tmem._reinterpret(dtype, qk_shape, p_tmem_layout)
-
-
-@gluon.jit
-def _borrow_s_as_alpha(split_m, s_tmem, block_n):
-    alpha_layout: gl.constexpr = TensorMemoryLayout([split_m, 1], col_stride=1)
-    alpha_tmem = s_tmem.slice(block_n // 2, 1)
-    return alpha_tmem._reinterpret(gl.float32, [split_m, 1], alpha_layout)
-
-
-@gluon.jit
-def _borrow_s_for_epilogue(split_m, s_tmem, block_n):
-    layout: gl.constexpr = TensorMemoryLayout([split_m, 1], col_stride=1)
-    m_i_tmem = s_tmem.slice(block_n // 2 + 1, 1)
-    l_i_tmem = s_tmem.slice(block_n // 2 + 2, 1)
-    m_i_tmem = m_i_tmem._reinterpret(gl.float32, [split_m, 1], layout)
-    l_i_tmem = l_i_tmem._reinterpret(gl.float32, [split_m, 1], layout)
-    return m_i_tmem, l_i_tmem
-
-
-# ===-----------------------------------------------------------------------===#
-# Inner Softmax Kernel
-# ===-----------------------------------------------------------------------===#
-
-
-@gluon.jit
-def _fwd_inner_dense_softmax(
-    s_tmem,
-    s_bar,
-    corr_producer,
-    corr_bar,
-    offs_m,
-    m_i,
-    l_i,
-    n_block,
-    N_CTX,
-    sm_scale,
-    SPLIT_M: gl.constexpr,
-    BLOCK_N: gl.constexpr,
-    IS_CAUSAL: gl.constexpr,
-    qk_layout: gl.constexpr,
-    qk_slice_dim1: gl.constexpr,
+def _attn_fwd_softmax(
+    tile_id: gl.constexpr, config, chnls, use_tmem_red: gl.constexpr
 ):
-    """Online softmax on one SPLIT_M x BLOCK_N tile loaded from TMEM."""
-    # Load S tile from TMEM
-    qk = s_tmem.load(qk_layout)
-
-    # Scale
-    qk = qk * sm_scale
-
-    # Causal mask
-    if IS_CAUSAL:
-        offs_n = n_block * BLOCK_N + gl.arange(0, BLOCK_N)
-        mask = offs_m[:, None] >= offs_n[None, :]
-        qk = gl.where(mask, qk, float("-inf"))
-
-    # Boundary mask
-    offs_n = n_block * BLOCK_N + gl.arange(0, BLOCK_N)
-    boundary_mask = offs_n[None, :] < N_CTX
-    qk = gl.where(boundary_mask, qk, float("-inf"))
-
-    # Online softmax: new_max, exp, new_sum
-    row_max_new = gl.max(qk, axis=1)
-    row_max_new = gl.maximum(m_i, row_max_new)
-
-    # Correction factor for previous accumulator
-    alpha = gl.exp2((m_i - row_max_new) * 1.44269504)
-
-    # exp(qk - new_max)
-    p = gl.exp2((qk - row_max_new[:, None]) * 1.44269504)
-
-    # Update running sum
-    l_i_new = l_i * alpha + gl.sum(p, axis=1)
-
-    # Store alpha for MMA partition to rescale O
-    alpha_tmem = _borrow_s_as_alpha(SPLIT_M, s_tmem, BLOCK_N)
-    alpha_2d_layout: gl.constexpr = TensorMemoryLayout([SPLIT_M, 1], col_stride=1)
-    alpha_tmem.store(gl.convert_layout(alpha.expand_dims(1), alpha_2d_layout))
-
-    # Store P back to TMEM for P*V MMA
-    p_half = p.to(s_tmem.type.element_ty)
-    s_tmem.store(p_half)
-
-    # Signal MMA partition that softmax is done
-    mbarrier.arrive(s_bar, count=1)
-
-    # Signal correction
-    _, corr_bar_new, corr_producer = corr_producer.acquire()
-    mbarrier.arrive(corr_bar, count=1)
-
-    return row_max_new, l_i_new, corr_producer, corr_bar_new
+    (
+        q_tma_chnl,
+        kv_tma_chnl,
+        o_tmem_chnl,
+        o_smem_chnl,
+        s0_tmem_chnl,
+        s1_tmem_chnl,
+        scale0_mbarrier_chnl,
+        scale1_mbarrier_chnl,
+        exp_turnstile_mbarrier,
+    ) = chnls
+    if tile_id == 0:
+        s_chnl = s0_tmem_chnl
+        scale_chnl = scale0_mbarrier_chnl
+        exp_chnl = exp_turnstile_mbarrier.create_producer()
+    else:
+        s_chnl = s1_tmem_chnl
+        scale_chnl = scale1_mbarrier_chnl
+        exp_chnl = exp_turnstile_mbarrier.create_consumer()
+    online_softmax(
+        tile_id,
+        config,
+        s_chnl,
+        scale_chnl,
+        exp_chnl,
+        use_tmem_red,
+    )
 
 
 # ===-----------------------------------------------------------------------===#
@@ -353,48 +83,50 @@ def _fwd_inner_dense_softmax(
 
 
 @gluon.jit
-def _attn_fwd_load(
-    scheduler, q_chnl, kv_chnl,
-    desc_q, desc_k, desc_v,
-    N_CTX,
-    BLOCK_N: gl.constexpr,
-    SPLIT_M: gl.constexpr,
-    NUM_SMS: gl.constexpr,
-    IS_CAUSAL: gl.constexpr,
-    NUM_KV_BUFFERS: gl.constexpr,
-):
-    q_producer = q_chnl.create_producer()
-    kv_producer = kv_chnl.create_producer()
+def _attn_fwd_load(config, chnls, descs):
+    (
+        q_tma_chnl,
+        kv_tma_chnl,
+        o_tmem_chnl,
+        o_smem_chnl,
+        s0_tmem_chnl,
+        s1_tmem_chnl,
+        scale0_mbarrier_chnl,
+        scale1_mbarrier_chnl,
+        exp_turnstile_mbarrier,
+    ) = chnls
+    desc_q, desc_k, desc_v, desc_o = descs
 
-    for pid in range(scheduler.start_pid, scheduler.num_tiles, NUM_SMS):
+    q_producer = q_tma_chnl.create_producer()
+    kv_producer = kv_tma_chnl.create_producer()
+
+    scheduler = ProgramScheduler.create(config)
+    for pid in range(scheduler.start_pid, scheduler.num_tiles, config.NUM_SMS):
         prog = scheduler.get_program(pid)
-        lo, hi = prog.get_loop_bounds(BLOCK_N, N_CTX, IS_CAUSAL)
+        n_start, n_end = prog.get_loop_bounds()
+        num_kv_tiles = (n_end - n_start) // config.TILE_N
 
-        # Load Q tile 0 (upper SPLIT_M)
+        q0_offset = prog.qo_offset + config.SPLIT_M * 0
         q0_smem, q0_bar, q_producer = q_producer.acquire()
-        issue_async_tma_load(q0_smem, q0_bar, desc_q, prog.qo_offset_y + SPLIT_M * 0)
+        issue_async_tma_load(q0_smem, q0_bar, desc_q, q0_offset)
 
-        # Load first K tile
+        offs_kv_tma = prog.kv_offset + n_end - config.TILE_N
         k_smem, k_bar, kv_producer = kv_producer.acquire()
-        issue_async_tma_load(k_smem, k_bar, desc_k, prog.offset_y + lo)
+        issue_async_tma_load(k_smem, k_bar, desc_k, offs_kv_tma)
 
-        # Load Q tile 1 (lower SPLIT_M)
+        q1_offset = prog.qo_offset + config.SPLIT_M * 1
         q1_smem, q1_bar, q_producer = q_producer.acquire()
-        issue_async_tma_load(q1_smem, q1_bar, desc_q, prog.qo_offset_y + SPLIT_M * 1)
+        issue_async_tma_load(q1_smem, q1_bar, desc_q, q1_offset)
 
-        # Load first V tile
         v_smem, v_bar, kv_producer = kv_producer.acquire()
-        issue_async_tma_load(v_smem, v_bar, desc_v, prog.offset_y + lo)
+        issue_async_tma_load(v_smem, v_bar, desc_v, offs_kv_tma)
 
-        # Pipeline remaining KV tiles
-        for start_n in range(lo + BLOCK_N, hi, BLOCK_N):
+        for i in range(1, num_kv_tiles):
+            offs_kv_tma = prog.kv_offset + n_end - (1 + i) * config.TILE_N
             k_smem, k_bar, kv_producer = kv_producer.acquire()
-            issue_async_tma_load(k_smem, k_bar, desc_k, prog.offset_y + start_n)
+            issue_async_tma_load(k_smem, k_bar, desc_k, offs_kv_tma)
             v_smem, v_bar, kv_producer = kv_producer.acquire()
-            issue_async_tma_load(v_smem, v_bar, desc_v, prog.offset_y + start_n)
-
-    q_chnl.release()
-    kv_chnl.release()
+            issue_async_tma_load(v_smem, v_bar, desc_v, offs_kv_tma)
 
 
 # ===-----------------------------------------------------------------------===#
@@ -403,331 +135,484 @@ def _attn_fwd_load(
 
 
 @gluon.jit
-def _attn_fwd_mma(
-    scheduler, q_chnl, kv_chnl, s0_chnl, s1_chnl, o_chnl, c0_chnl, c1_chnl,
-    desc_o, N_CTX,
-    BLOCK_M: gl.constexpr,
-    BLOCK_N: gl.constexpr,
-    HEAD_DIM: gl.constexpr,
-    SPLIT_M: gl.constexpr,
-    NUM_SMS: gl.constexpr,
-    IS_CAUSAL: gl.constexpr,
-    dtype: gl.constexpr,
-):
-    q_consumer = q_chnl.create_consumer()
-    kv_consumer = kv_chnl.create_consumer()
-    s0_producer = s0_chnl.create_producer()
-    s1_producer = s1_chnl.create_producer()
-    o0_consumer = o_chnl.create_consumer() if o_chnl is not None else None
-    c0_consumer = c0_chnl.create_consumer()
-    c1_consumer = c1_chnl.create_consumer()
+def _attn_fwd_mma(config, chnls, descs):
+    (
+        q_tma_chnl,
+        kv_tma_chnl,
+        o_tmem_chnl,
+        o_smem_chnl,
+        s0_tmem_chnl,
+        s1_tmem_chnl,
+        scale0_mbarrier_chnl,
+        scale1_mbarrier_chnl,
+        exp_turnstile_mbarrier,
+    ) = chnls
+    desc_q, desc_k, desc_v, desc_o = descs
 
-    qk_shape: gl.constexpr = (SPLIT_M, BLOCK_N)
-    mma_instr: gl.constexpr = get_mma_instr_shape(qk_shape, dtype)
-    s_tmem_layout: gl.constexpr = TensorMemoryLayout(
-        [mma_instr[0], BLOCK_N // 2 + 3], col_stride=1
-    )
-    o_tmem_layout: gl.constexpr = TensorMemoryLayout(
-        [mma_instr[0], HEAD_DIM // 2], col_stride=1
-    )
+    q_consumer = q_tma_chnl.create_consumer()
+    kv_consumer = kv_tma_chnl.create_consumer()
+    o_producer = o_tmem_chnl.create_producer()
 
-    for pid in range(scheduler.start_pid, scheduler.num_tiles, NUM_SMS):
+    s0_producer = s0_tmem_chnl.create_producer()
+    s1_producer = s1_tmem_chnl.create_producer()
+
+    scheduler = ProgramScheduler.create(config)
+    for pid in range(scheduler.start_pid, scheduler.num_tiles, config.NUM_SMS):
         prog = scheduler.get_program(pid)
-        lo, hi = prog.get_loop_bounds(BLOCK_N, N_CTX, IS_CAUSAL)
-        num_steps = (hi - lo) // BLOCK_N
+        n_start, n_end = prog.get_loop_bounds()
+        num_mmas = (n_end - n_start) // config.TILE_N
 
-        # Allocate TMEM for S (scores) and O (output) for both subtiles
-        s0_tmem = allocate_tensor_memory(dtype, [SPLIT_M, BLOCK_N // 2 + 3], s_tmem_layout)
-        s1_tmem = allocate_tensor_memory(dtype, [SPLIT_M, BLOCK_N // 2 + 3], s_tmem_layout)
-        o0_tmem = allocate_tensor_memory(dtype, [SPLIT_M, HEAD_DIM // 2], o_tmem_layout)
-        o1_tmem = allocate_tensor_memory(dtype, [SPLIT_M, HEAD_DIM // 2], o_tmem_layout)
-
-        # Load Q tiles
         q0_smem, q0_bar, q_consumer = q_consumer.acquire()
-        mbarrier.arrive(q0_bar, count=1)
-        q1_smem, q1_bar, q_consumer = q_consumer.acquire()
-        mbarrier.arrive(q1_bar, count=1)
-
-        for step in range(num_steps):
-            n_block = lo // BLOCK_N + step
-
-            # Get K tile
-            k_smem, k_bar, kv_consumer = kv_consumer.acquire()
-
-            # Q0 * K^T -> S0
-            s0_smem, s0_bar, s0_producer = s0_producer.acquire()
-            from triton.experimental.gluon.language.nvidia.blackwell import fence_async_shared
-            fence_async_shared()
-            tcgen05_mma(q0_smem, k_smem, s0_tmem, transpose_b=True)
-            tcgen05_commit(s0_bar)
-
-            # Q1 * K^T -> S1
-            s1_smem, s1_bar, s1_producer = s1_producer.acquire()
-            tcgen05_mma(q1_smem, k_smem, s1_tmem, transpose_b=True)
-            tcgen05_commit(s1_bar)
-
-            mbarrier.arrive(k_bar, count=1)
-
-            # Wait for softmax to produce P, then P * V -> O
-            v_smem, v_bar, kv_consumer = kv_consumer.acquire()
-
-            # Wait for softmax0 correction
-            _, c0_bar, c0_consumer = c0_consumer.acquire()
-            mbarrier.arrive(c0_bar, count=1)
-
-            # P0 * V -> O0
-            fence_async_shared()
-            tcgen05_mma(s0_tmem, v_smem, o0_tmem)
-            tcgen05_commit(s0_bar)
-
-            # Wait for softmax1 correction
-            _, c1_bar, c1_consumer = c1_consumer.acquire()
-            mbarrier.arrive(c1_bar, count=1)
-
-            # P1 * V -> O1
-            tcgen05_mma(s1_tmem, v_smem, o1_tmem)
-            tcgen05_commit(s1_bar)
-
-            mbarrier.arrive(v_bar, count=1)
-
-    q_chnl.release()
-    kv_chnl.release()
-    s0_chnl.release()
-    s1_chnl.release()
-    c0_chnl.release()
-    c1_chnl.release()
-
-
-# ===-----------------------------------------------------------------------===#
-# Partition: Softmax (online softmax on SPLIT_M rows)
-# ===-----------------------------------------------------------------------===#
-
-
-@gluon.jit
-def _attn_fwd_softmax_tile(
-    tile_id, scheduler, s_chnl, corr_chnl,
-    N_CTX, sm_scale,
-    BLOCK_M: gl.constexpr,
-    BLOCK_N: gl.constexpr,
-    SPLIT_M: gl.constexpr,
-    NUM_SMS: gl.constexpr,
-    IS_CAUSAL: gl.constexpr,
-    qk_layout: gl.constexpr,
-    qk_slice_dim1: gl.constexpr,
-):
-    s_consumer = s_chnl.create_consumer()
-    corr_producer = corr_chnl.create_producer()
-    _, corr_bar, corr_producer = corr_producer.acquire()
-
-    for pid in range(scheduler.start_pid, scheduler.num_tiles, NUM_SMS):
-        prog = scheduler.get_program(pid)
-        lo, hi = prog.get_loop_bounds(BLOCK_N, N_CTX, IS_CAUSAL)
-        num_steps = (hi - lo) // BLOCK_N
-
-        offs_m = prog.start_m * BLOCK_M + gl.arange(
-            tile_id * SPLIT_M, (1 + tile_id) * SPLIT_M
+        k_smem, k_bar, kv_consumer = kv_consumer.acquire()
+        s0_tmem, s0_bar, s0_producer = s0_producer.acquire()
+        tcgen05_mma(
+            q0_smem, k_smem.permute((1, 0)), s0_tmem, use_acc=False, mbarriers=[s0_bar]
         )
 
-        m_i = gl.full([SPLIT_M], float("-inf"), gl.float32, qk_slice_dim1)
-        l_i = gl.full([SPLIT_M], 0.0, gl.float32, qk_slice_dim1)
+        q1_smem, q1_bar, q_consumer = q_consumer.acquire()
+        s1_tmem, s1_bar, s1_producer = s1_producer.acquire()
+        tcgen05_mma(
+            q1_smem,
+            k_smem.permute((1, 0)),
+            s1_tmem,
+            use_acc=False,
+            mbarriers=[s1_bar, k_bar],
+        )
 
-        for step in range(num_steps):
-            n_block = lo // BLOCK_N + step
+        v_smem, v_bar, kv_consumer = kv_consumer.acquire()
+        o0_tmem, o0_bar, o_producer = o_producer.acquire()
+        s0_tmem, s0_bar, s0_producer = s0_producer.acquire()
+        p0_tmem = borrow_s_as_p(config, s0_tmem)
+        tcgen05_mma(p0_tmem, v_smem, o0_tmem, use_acc=False, mbarriers=[o0_bar])
+        o1_init = False
 
-            s_tmem, s_bar, s_consumer = s_consumer.acquire()
-
-            m_i, l_i, corr_producer, corr_bar = _fwd_inner_dense_softmax(
-                s_tmem=s_tmem,
-                s_bar=s_bar,
-                corr_producer=corr_producer,
-                corr_bar=corr_bar,
-                offs_m=offs_m,
-                m_i=m_i,
-                l_i=l_i,
-                n_block=n_block,
-                N_CTX=N_CTX,
-                sm_scale=sm_scale,
-                SPLIT_M=SPLIT_M,
-                BLOCK_N=BLOCK_N,
-                IS_CAUSAL=IS_CAUSAL,
-                qk_layout=qk_layout,
-                qk_slice_dim1=qk_slice_dim1,
+        for _ in range(num_mmas - 1):
+            k_smem, k_bar, kv_consumer = kv_consumer.acquire()
+            tcgen05_mma(
+                q0_smem,
+                k_smem.permute((1, 0)),
+                s0_tmem,
+                use_acc=False,
+                mbarriers=[s0_bar],
             )
 
-        # Store final m_i and l_i to TMEM for epilogue rescale
-        s_tmem, s_bar, s_consumer = s_consumer.acquire()
-        m_i_tmem, l_i_tmem = _borrow_s_for_epilogue(SPLIT_M, s_tmem, BLOCK_N)
-        alpha_2d_layout: gl.constexpr = TensorMemoryLayout([SPLIT_M, 1], col_stride=1)
-        m_i_tmem.store(gl.convert_layout(m_i.expand_dims(1), alpha_2d_layout))
-        l_i_tmem.store(gl.convert_layout(l_i.expand_dims(1), alpha_2d_layout))
+            o1_tmem, o1_bar, o_producer = o_producer.acquire()
+            s1_tmem, s1_bar, s1_producer = s1_producer.acquire()
+            p1_tmem = borrow_s_as_p(config, s1_tmem)
+            tcgen05_mma(
+                p1_tmem, v_smem, o1_tmem, use_acc=o1_init, mbarriers=[o1_bar, v_bar]
+            )
+            o1_init = True
 
-        mbarrier.arrive(corr_bar, count=1)
-        _, corr_bar, corr_producer = corr_producer.acquire()
-        mbarrier.arrive(s_bar, count=1)
+            tcgen05_mma(
+                q1_smem,
+                k_smem.permute((1, 0)),
+                s1_tmem,
+                use_acc=False,
+                mbarriers=[s1_bar, k_bar],
+            )
 
-    s_chnl.release()
-    corr_chnl.release()
+            v_smem, v_bar, kv_consumer = kv_consumer.acquire()
+            o0_tmem, o0_bar, o_producer = o_producer.acquire()
+            s0_tmem, s0_bar, s0_producer = s0_producer.acquire()
+            p0_tmem = borrow_s_as_p(config, s0_tmem)
+            tcgen05_mma(p0_tmem, v_smem, o0_tmem, mbarriers=[o0_bar])
 
+        tcgen05_commit(q0_bar)
+        tcgen05_commit(q1_bar)
 
-@gluon.jit
-def _attn_fwd_softmax0(scheduler, chnls, N_CTX, sm_scale,
-                        BLOCK_M: gl.constexpr, BLOCK_N: gl.constexpr,
-                        SPLIT_M: gl.constexpr, NUM_SMS: gl.constexpr,
-                        IS_CAUSAL: gl.constexpr,
-                        qk_layout: gl.constexpr, qk_slice_dim1: gl.constexpr):
-    q_chnl, kv_chnl, o_chnl, epi_chnl, s0_chnl, s1_chnl, c0_chnl, c1_chnl = chnls
-    _attn_fwd_softmax_tile(0, scheduler, s0_chnl, c0_chnl, N_CTX, sm_scale,
-                           BLOCK_M, BLOCK_N, SPLIT_M, NUM_SMS, IS_CAUSAL,
-                           qk_layout, qk_slice_dim1)
-
-
-@gluon.jit
-def _attn_fwd_softmax1(scheduler, chnls, N_CTX, sm_scale,
-                        BLOCK_M: gl.constexpr, BLOCK_N: gl.constexpr,
-                        SPLIT_M: gl.constexpr, NUM_SMS: gl.constexpr,
-                        IS_CAUSAL: gl.constexpr,
-                        qk_layout: gl.constexpr, qk_slice_dim1: gl.constexpr):
-    q_chnl, kv_chnl, o_chnl, epi_chnl, s0_chnl, s1_chnl, c0_chnl, c1_chnl = chnls
-    _attn_fwd_softmax_tile(1, scheduler, s1_chnl, c1_chnl, N_CTX, sm_scale,
-                           BLOCK_M, BLOCK_N, SPLIT_M, NUM_SMS, IS_CAUSAL,
-                           qk_layout, qk_slice_dim1)
+        o1_tmem, o1_bar, o_producer = o_producer.acquire()
+        s1_tmem, s1_bar, s1_producer = s1_producer.acquire()
+        p1_tmem = borrow_s_as_p(config, s1_tmem)
+        tcgen05_mma(
+            p1_tmem,
+            v_smem,
+            o1_tmem,
+            use_acc=o1_init,
+            mbarriers=[o1_bar, v_bar, s0_bar, s1_bar],
+        )
 
 
 # ===-----------------------------------------------------------------------===#
-# Partition: Epilogue (rescale O, TMA store)
+# Partition: Rescale (rescale O + finalize writeback)
 # ===-----------------------------------------------------------------------===#
 
 
 @gluon.jit
-def _attn_fwd_epilogue(
-    scheduler, epi_chnl, desc_o,
-    SPLIT_M: gl.constexpr,
-    NUM_SMS: gl.constexpr,
-):
-    epi_consumer = epi_chnl.create_consumer()
+def _attn_fwd_rescale(config, chnls, Lse):
+    (
+        q_tma_chnl,
+        kv_tma_chnl,
+        o_tmem_chnl,
+        o_smem_chnl,
+        s0_tmem_chnl,
+        s1_tmem_chnl,
+        scale0_mbarrier_chnl,
+        scale1_mbarrier_chnl,
+        exp_turnstile_mbarrier,
+    ) = chnls
 
-    for pid in range(scheduler.start_pid, scheduler.num_tiles, NUM_SMS):
+    s0_tmem = s0_tmem_chnl.mem.index(0)
+    s1_tmem = s1_tmem_chnl.mem.index(0)
+    scale0_consumer = scale0_mbarrier_chnl.create_consumer()
+    scale1_consumer = scale1_mbarrier_chnl.create_consumer()
+    o_tmem_consumer = o_tmem_chnl.create_consumer()
+
+    o_smem_producer = o_smem_chnl.create_producer()
+
+    scheduler = ProgramScheduler.create(config)
+    for pid in range(scheduler.start_pid, scheduler.num_tiles, config.NUM_SMS):
+        prog = scheduler.get_program(pid)
+        n_start, n_end = prog.get_loop_bounds()
+        num_corrections = (n_end - n_start) // config.TILE_N
+
+        _, scale0_bar, scale0_consumer = scale0_consumer.acquire()
+        mbarrier.arrive(scale0_bar, count=1)
+        _, scale1_bar, scale1_consumer = scale1_consumer.acquire()
+        mbarrier.arrive(scale1_bar, count=1)
+
+        for i in range(num_corrections - 1):
+            scale0_consumer, o_tmem_consumer = rescale_o(
+                config, s0_tmem, scale0_consumer, o_tmem_consumer
+            )
+            scale1_consumer, o_tmem_consumer = rescale_o(
+                config, s1_tmem, scale1_consumer, o_tmem_consumer
+            )
+
+        scale0_consumer, o_smem_producer, o_tmem_consumer = finalize(
+            config,
+            prog,
+            s0_tmem,
+            Lse,
+            scale0_consumer,
+            o_smem_producer,
+            o_tmem_consumer,
+            final_scale=1.0,
+            CHECK_NAN=True,
+            tile_id=0,
+        )
+        scale1_consumer, o_smem_producer, o_tmem_consumer = finalize(
+            config,
+            prog,
+            s1_tmem,
+            Lse,
+            scale1_consumer,
+            o_smem_producer,
+            o_tmem_consumer,
+            final_scale=1.0,
+            CHECK_NAN=True,
+            tile_id=1,
+        )
+
+
+# ===-----------------------------------------------------------------------===#
+# Partition: Store (TMA store O -> HBM)
+# ===-----------------------------------------------------------------------===#
+
+
+@gluon.jit
+def _attn_fwd_store(config, chnls, descs):
+    (
+        q_tma_chnl,
+        kv_tma_chnl,
+        o_tmem_chnl,
+        o_smem_chnl,
+        s0_tmem_chnl,
+        s1_tmem_chnl,
+        scale0_mbarrier_chnl,
+        scale1_mbarrier_chnl,
+        exp_turnstile_mbarrier,
+    ) = chnls
+    desc_q, desc_k, desc_v, desc_o = descs
+
+    o_smem_consumer = o_smem_chnl.create_consumer()
+    scheduler = ProgramScheduler.create(config)
+    for pid in range(scheduler.start_pid, scheduler.num_tiles, config.NUM_SMS):
         prog = scheduler.get_program(pid)
 
-        # Store O tile 0
-        o0_smem, o0_bar, epi_consumer = epi_consumer.acquire()
-        tma.async_copy_shared_to_global(desc_o, [prog.qo_offset_y + SPLIT_M * 0, 0], o0_smem)
+        o0_smem, o0_bar, o_smem_consumer = o_smem_consumer.acquire()
+        tma.async_copy_shared_to_global(
+            desc_o, [prog.qo_offset + config.SPLIT_M * 0, 0], o0_smem
+        )
 
-        # Store O tile 1
-        o1_smem, o1_bar, epi_consumer = epi_consumer.acquire()
-        tma.async_copy_shared_to_global(desc_o, [prog.qo_offset_y + SPLIT_M * 1, 0], o1_smem)
+        o1_smem, o1_bar, o_smem_consumer = o_smem_consumer.acquire()
+        tma.async_copy_shared_to_global(
+            desc_o, [prog.qo_offset + config.SPLIT_M * 1, 0], o1_smem
+        )
 
         tma.store_wait(1)
         mbarrier.arrive(o0_bar, count=1)
         tma.store_wait(0)
         mbarrier.arrive(o1_bar, count=1)
 
-    epi_chnl.release()
-
 
 # ===-----------------------------------------------------------------------===#
-# Main Kernel (warp-specialized)
+# Kernel Entry Point
 # ===-----------------------------------------------------------------------===#
 
 
-@gluon.jit(do_not_specialize=["Z", "H", "N_CTX"])
-def _fwd_dense_base_kernel(
-    sm_scale, Lse,
-    Z, H, N_CTX,
-    desc_q, desc_k, desc_v, desc_o,
-    BLOCK_M: gl.constexpr,
-    BLOCK_N: gl.constexpr,
-    HEAD_DIM: gl.constexpr,
+def attention_repr(specialization):
+    name = "gluon_attention"
+    if specialization.constants["dtype"] == gl.float8e5:
+        name = "cutlass_" + name
+    return name
+
+
+@gluon.jit(
+    do_not_specialize=["batch_size", "num_heads", "seqlen_q", "seqlen_k"],
+    repr=attention_repr,
+)
+def attention_kernel(
+    softmax_scale_log2,
+    Lse,
+    batch_size,
+    num_heads,
+    seqlen_q,
+    seqlen_k,
+    desc_q,
+    desc_k,
+    desc_v,
+    desc_o,
+    TILE_M: gl.constexpr,
+    TILE_N: gl.constexpr,
+    TILE_K: gl.constexpr,
     GROUP_SIZE_N: gl.constexpr,
     NUM_SMS: gl.constexpr,
-    SPLIT_M: gl.constexpr,
+    SPLIT_EXP_FACTOR: gl.constexpr,
     IS_CAUSAL: gl.constexpr,
+    IS_LOCAL: gl.constexpr,
+    WINDOW_SIZE_LEFT: gl.constexpr,
+    WINDOW_SIZE_RIGHT: gl.constexpr,
     dtype: gl.constexpr,
+    num_warps: gl.constexpr,
+    use_tmem_red: gl.constexpr,
     NUM_KV_BUFFERS: gl.constexpr,
+    USE_EXP2_TURNSTILE: gl.constexpr,
 ):
-    num_pid_m = triton.cdiv(N_CTX, BLOCK_M)
-    num_pid_n = Z * H
-
-    scheduler = ProgramScheduler.create(
-        BLOCK_M, SPLIT_M, GROUP_SIZE_N, num_pid_m, num_pid_n, NUM_SMS
+    config = AttentionConfig(
+        softmax_scale_log2,
+        batch_size,
+        num_heads,
+        seqlen_q,
+        seqlen_k,
+        TILE_M,
+        TILE_N,
+        TILE_K,
+        GROUP_SIZE_N,
+        NUM_SMS,
+        IS_CAUSAL,
+        IS_LOCAL,
+        WINDOW_SIZE_LEFT,
+        WINDOW_SIZE_RIGHT,
+        SPLIT_EXP_FACTOR,
+        dtype,
+        num_warps,
+        NUM_KV_BUFFERS,
+        USE_EXP2_TURNSTILE,
     )
 
-    # Allocate channels
-    q_chnl = get_desc_channel(desc_q, num_buffers=2)
-    kv_chnl = get_desc_channel(desc_k, num_buffers=NUM_KV_BUFFERS)
-    epi_chnl = SharedMemoryChannel.alloc(
-        desc_o.block_type.shape, dtype, gl.constexpr(desc_o.layout), num_buffers=2
+    q_tma_chnl = get_desc_channel(desc_q, num_buffers=2)
+    kv_tma_chnl = get_desc_channel(desc_k, num_buffers=config.num_kv_buffers)
+    o_tmem_chnl = TensorMemoryChannel.alloc(
+        config.o_shape, gl.float32, config.o_tmem_layout, num_buffers=2
     )
-
-    qk_shape: gl.constexpr = (SPLIT_M, BLOCK_N)
-    mma_instr: gl.constexpr = get_mma_instr_shape(qk_shape, dtype)
-    s_tmem_layout: gl.constexpr = TensorMemoryLayout(
-        [mma_instr[0], BLOCK_N // 2 + 3], col_stride=1
+    o_smem_chnl = SharedMemoryChannel.alloc(
+        config.o_shape, config.dtype, gl.constexpr(desc_o.layout), num_buffers=2
     )
-    o_tmem_layout: gl.constexpr = TensorMemoryLayout(
-        [mma_instr[0], HEAD_DIM // 2], col_stride=1
+    s0_tmem_chnl = TensorMemoryChannel.alloc(
+        config.qk_shape, gl.float32, config.qk_tmem_layout, num_buffers=1
     )
-    s0_chnl = TensorMemoryChannel.alloc(
-        [SPLIT_M, BLOCK_N // 2 + 3], gl.float32, s_tmem_layout, num_buffers=1
+    s1_tmem_chnl = TensorMemoryChannel.alloc(
+        config.qk_shape, gl.float32, config.qk_tmem_layout, num_buffers=1
     )
-    s1_chnl = TensorMemoryChannel.alloc(
-        [SPLIT_M, BLOCK_N // 2 + 3], gl.float32, s_tmem_layout, num_buffers=1
-    )
-    o_chnl = TensorMemoryChannel.alloc(
-        [SPLIT_M, HEAD_DIM // 2], gl.float32, o_tmem_layout, num_buffers=2
-    )
-    c0_chnl = SharedMemoryChannel.alloc(
+    scale0_mbarrier_chnl = SharedMemoryChannel.alloc(
         [1], gl.int8, gl.constexpr(mbarrier.MBarrierLayout()), num_buffers=1
     )
-    c1_chnl = SharedMemoryChannel.alloc(
+    scale1_mbarrier_chnl = SharedMemoryChannel.alloc(
+        [1], gl.int8, gl.constexpr(mbarrier.MBarrierLayout()), num_buffers=1
+    )
+    exp_turnstile_mbarrier = SharedMemoryChannel.alloc(
         [1], gl.int8, gl.constexpr(mbarrier.MBarrierLayout()), num_buffers=1
     )
 
-    chnls = (q_chnl, kv_chnl, o_chnl, epi_chnl, s0_chnl, s1_chnl, c0_chnl, c1_chnl)
-
-    qk_layout: gl.constexpr = TensorMemoryLayout(
-        [mma_instr[0], BLOCK_N // 2], col_stride=1
+    chnls = (
+        q_tma_chnl,
+        kv_tma_chnl,
+        o_tmem_chnl,
+        o_smem_chnl,
+        s0_tmem_chnl,
+        s1_tmem_chnl,
+        scale0_mbarrier_chnl,
+        scale1_mbarrier_chnl,
+        exp_turnstile_mbarrier,
     )
-    qk_slice_dim1: gl.constexpr = gl.SliceLayout(1, qk_layout)
+    descs = (desc_q, desc_k, desc_v, desc_o)
+    gl.warp_specialize(
+        [
+            (_attn_fwd_rescale, (config, chnls, Lse)),
+            (_attn_fwd_softmax, (0, config, chnls, use_tmem_red)),
+            (_attn_fwd_softmax, (1, config, chnls, use_tmem_red)),
+            (_attn_fwd_mma, (config, chnls, descs)),
+            (_attn_fwd_load, (config, chnls, descs)),
+            (_attn_fwd_store, (config, chnls, descs)),
+        ],
+        [4, 4, 1, 1, 1],
+        [192, 192, 24, 24, 24],
+    )
 
-    # Warp-specialized dispatch:
-    #   partition 0: MMA (4 warps, high register count)
-    #   partition 1: softmax0 (1 warp)
-    #   partition 2: softmax1 (1 warp)
-    #   partition 3: load (1 warp, low register count)
-    #   partition 4: epilogue (1 warp, low register count)
-    gl.warp_specialize([
-        (_attn_fwd_mma, (
-            scheduler, q_chnl, kv_chnl, s0_chnl, s1_chnl, o_chnl, c0_chnl, c1_chnl,
-            desc_o, N_CTX,
-            BLOCK_M, BLOCK_N, HEAD_DIM, SPLIT_M, NUM_SMS, IS_CAUSAL, dtype,
-        )),
-        (_attn_fwd_softmax0, (
-            scheduler, chnls, N_CTX, sm_scale,
-            BLOCK_M, BLOCK_N, SPLIT_M, NUM_SMS, IS_CAUSAL, qk_layout, qk_slice_dim1,
-        )),
-        (_attn_fwd_softmax1, (
-            scheduler, chnls, N_CTX, sm_scale,
-            BLOCK_M, BLOCK_N, SPLIT_M, NUM_SMS, IS_CAUSAL, qk_layout, qk_slice_dim1,
-        )),
-        (_attn_fwd_load, (
-            scheduler, q_chnl, kv_chnl,
-            desc_q, desc_k, desc_v,
-            N_CTX, BLOCK_N, SPLIT_M, NUM_SMS, IS_CAUSAL, NUM_KV_BUFFERS,
-        )),
-        (_attn_fwd_epilogue, (
-            scheduler, epi_chnl, desc_o, SPLIT_M, NUM_SMS,
-        )),
-    ], [4, 1, 1, 1], [128, 64, 64, 24, 24])
+    q_tma_chnl.release()
+    kv_tma_chnl.release()
+    o_tmem_chnl.release()
+    o_smem_chnl.release()
+    s0_tmem_chnl.release()
+    s1_tmem_chnl.release()
+    scale0_mbarrier_chnl.release()
+    scale1_mbarrier_chnl.release()
+    exp_turnstile_mbarrier.release()
 
-    q_chnl.release()
-    kv_chnl.release()
-    o_chnl.release()
-    epi_chnl.release()
-    s0_chnl.release()
-    s1_chnl.release()
-    c0_chnl.release()
-    c1_chnl.release()
+
+# ===-----------------------------------------------------------------------===#
+# KernelConfig + select_kernel_config
+# ===-----------------------------------------------------------------------===#
+
+
+def is_cuda():
+    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+
+
+def is_blackwell():
+    return is_cuda() and torch.cuda.get_device_capability()[0] == 10
+
+
+def is_blackwell_ultra():
+    return is_cuda() and torch.cuda.get_device_capability()[0:2] == (10, 3)
+
+
+@dataclass(frozen=True, slots=True)
+class KernelConfig:
+    TILE_M: int = 256
+    TILE_N: int = 128
+    GROUP_SIZE_N: int | None = None
+    SPLIT_EXP_FACTOR: int | None = None
+    NUM_WARPS: int = 4
+    MAXNREG: int = 128
+    OCCUPANCY: int = 1
+    USE_TMEM_RED: bool = False
+    NUM_KV_BUFFERS: int | None = None
+    USE_EXP2_TURNSTILE: bool | None = None
+
+
+def _default_split_exp_factor(head_dim: int) -> int:
+    return max(1, 256 // head_dim)
+
+
+def _default_num_kv_buffers(head_dim: int, dtype: torch.dtype) -> int:
+    is_fp16 = dtype in [torch.float16, torch.bfloat16]
+    if is_fp16:
+        return 3 if head_dim == 128 else 6
+    return 4 if head_dim == 128 else 8
+
+
+def select_kernel_config(
+    head_dim: int,
+    seqlen: int,
+    dtype: torch.dtype,
+    causal: bool,
+    use_tmem_red: bool,
+    override: KernelConfig | None = None,
+) -> KernelConfig:
+    is_fp8 = dtype == torch.float8_e5m2
+    is_bf16 = dtype == torch.bfloat16
+    is_bwu = is_blackwell_ultra()
+
+    block_m = 256
+    block_n = 128
+    group_size_n = 1
+    split_exp_factor = _default_split_exp_factor(head_dim)
+    num_warps = 4
+    maxnreg = 128
+    occupancy = 1
+    use_selected_tmem_red = (use_tmem_red or (is_bwu and not causal)) and not causal
+    num_kv_buffers = _default_num_kv_buffers(head_dim, dtype)
+    use_exp2_turnstile = head_dim == 64
+
+    if causal:
+        group_size_n = 8 if head_dim == 64 or seqlen <= 2048 else 4
+
+    if head_dim == 128:
+        split_exp_factor = 4
+        if not causal and is_bf16 and seqlen <= 2048:
+            group_size_n = 4
+    elif not causal and head_dim == 64 and use_selected_tmem_red:
+        split_exp_factor = 1
+        if seqlen <= 1024:
+            num_kv_buffers = 2
+        elif seqlen >= 8192:
+            maxnreg = 112
+    elif causal and head_dim == 64:
+        num_kv_buffers = 2
+        if seqlen <= 1024:
+            split_exp_factor = 2
+        else:
+            use_exp2_turnstile = False
+
+    if is_fp8:
+        if causal and head_dim == 64:
+            group_size_n = 8 if seqlen <= 2048 else 4
+            split_exp_factor = 4 if seqlen <= 2048 else 2
+            maxnreg = 112 if seqlen >= 4096 else 128
+            use_selected_tmem_red = False
+            num_kv_buffers = 2
+            use_exp2_turnstile = seqlen <= 1024
+        elif causal and head_dim == 128:
+            group_size_n = 8 if seqlen <= 2048 else 4
+            split_exp_factor = 2 if seqlen <= 2048 else 8
+            maxnreg = 128
+            use_selected_tmem_red = False
+            num_kv_buffers = 4
+            use_exp2_turnstile = False
+        elif not causal and head_dim == 64:
+            group_size_n = 1
+            split_exp_factor = 2
+            maxnreg = 128
+            use_selected_tmem_red = is_bwu
+            num_kv_buffers = 2 if seqlen <= 1024 else 8
+            use_exp2_turnstile = True
+        elif not causal and head_dim == 128:
+            group_size_n = 1
+            split_exp_factor = 4 if seqlen <= 2048 else 8
+            maxnreg = 128
+            use_selected_tmem_red = is_bwu
+            num_kv_buffers = 4
+            use_exp2_turnstile = False
+        else:
+            group_size_n = 4 if causal else 1
+            split_exp_factor = _default_split_exp_factor(head_dim)
+            use_selected_tmem_red = use_tmem_red and not causal
+
+    config = KernelConfig(
+        TILE_M=block_m,
+        TILE_N=block_n,
+        GROUP_SIZE_N=group_size_n,
+        SPLIT_EXP_FACTOR=split_exp_factor,
+        NUM_WARPS=num_warps,
+        MAXNREG=maxnreg,
+        OCCUPANCY=occupancy,
+        USE_TMEM_RED=use_selected_tmem_red,
+        NUM_KV_BUFFERS=num_kv_buffers,
+        USE_EXP2_TURNSTILE=use_exp2_turnstile,
+    )
+    if override is None:
+        return config
+
+    values = {
+        field.name: getattr(override, field.name) for field in fields(KernelConfig)
+    }
+    values = {
+        name: getattr(config, name) if value is None else value
+        for name, value in values.items()
+    }
+    return KernelConfig(**values)
 
 
 # ===-----------------------------------------------------------------------===#
@@ -745,94 +630,118 @@ def _flash_dense_attn_base_forward(
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     skip_checks: bool = False,
+    use_tmem_red: bool = False,
+    kernel_config_override: KernelConfig | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
-    num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    window_size_left, window_size_right = window_size
-    is_local = window_size_left is not None or window_size_right is not None
-    softmax_scale = softmax_scale or 1.0 / (head_dim ** 0.5)
-    qheads_per_kvhead = num_heads_q // num_heads_kv
+    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
 
     if not skip_checks:
+        arch = cache_utils.get_device_arch(device)
         assert_inputs.assert_fwd_inputs(
-            query, key, value,
-            cu_seqlens_q=None, cu_seqlens_k=None,
-            seqused_q=None, seqused_k=None,
-            num_heads_q=num_heads_q, num_heads_kv=num_heads_kv,
-            head_dim=head_dim, device=device, arch=arch,
-        )
-
-    TILE_K = max(triton.next_power_of_2(head_dim), 16)
-
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_dense_launch_config(
-            is_split_kv=is_split_kv,
-            pack_gqa=pack_gqa,
-            qheads_per_kvhead=qheads_per_kvhead,
-            tile_k=TILE_K,
+            query,
+            key,
+            value,
+            cu_seqlens_q=None,
+            cu_seqlens_k=None,
+            seqused_q=None,
+            seqused_k=None,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
             device=device,
             arch=arch,
         )
+
+    TILE_K = head_dim
+    is_local = window_size[0] is not None or window_size[1] is not None
+    window_size_left = window_size[0] if window_size[0] is not None else None
+    window_size_right = window_size[1] if window_size[1] is not None else None
+    p = select_kernel_config(
+        TILE_K,
+        seqlen_q,
+        query.dtype,
+        is_causal,
+        use_tmem_red,
+        override=kernel_config_override,
     )
 
-    BLOCK_M = TILE_M
-    BLOCK_N = TILE_N
-    SPLIT_M = BLOCK_M // 2
-    HEAD_DIM = head_dim
-    GROUP_SIZE_N = 4
-    NUM_KV_BUFFERS = 4
+    TILE_M = p.TILE_M
+    TILE_N = p.TILE_N
+    SPLIT_M = TILE_M // 2
+    GROUP_SIZE_N = p.GROUP_SIZE_N
+    NUM_SMS = (
+        torch.cuda.get_device_properties(device).multi_processor_count * p.OCCUPANCY
+    )
 
     out = torch.empty_like(query)
     lse = torch.empty(
         (batch_size, num_heads_q, seqlen_q),
         dtype=torch.float32,
-        device=query.device,
+        device=device,
     )
 
-    # Flatten to 2D for TMA: [batch * heads * seqlen, head_dim]
-    y_dim = batch_size * num_heads_q * seqlen_q
+    qo_m_dim = batch_size * num_heads_q * seqlen_q
+    kv_n_dim = batch_size * num_heads_q * seqlen_k
 
     desc_q = utils.make_tensor_desc(
-        query, shape=[y_dim, HEAD_DIM], strides=[HEAD_DIM, 1],
-        block_shape=[SPLIT_M, HEAD_DIM],
+        query,
+        shape=[qo_m_dim, TILE_K],
+        strides=[TILE_K, 1],
+        block_shape=[SPLIT_M, TILE_K],
     )
     desc_k = utils.make_tensor_desc(
-        key, shape=[y_dim, HEAD_DIM], strides=[HEAD_DIM, 1],
-        block_shape=[BLOCK_N, HEAD_DIM],
+        key, shape=[kv_n_dim, TILE_K], strides=[TILE_K, 1], block_shape=[TILE_N, TILE_K]
     )
     desc_v = utils.make_tensor_desc(
-        value, shape=[y_dim, HEAD_DIM], strides=[HEAD_DIM, 1],
-        block_shape=[BLOCK_N, HEAD_DIM],
+        value,
+        shape=[kv_n_dim, TILE_K],
+        strides=[TILE_K, 1],
+        block_shape=[TILE_N, TILE_K],
     )
     desc_o = utils.make_tensor_desc(
-        out, shape=[y_dim, HEAD_DIM], strides=[HEAD_DIM, 1],
-        block_shape=[SPLIT_M, HEAD_DIM],
+        out,
+        shape=[qo_m_dim, TILE_K],
+        strides=[TILE_K, 1],
+        block_shape=[SPLIT_M, TILE_K],
     )
-
-    num_pid_m = triton.cdiv(seqlen_q, BLOCK_M)
-    num_pid_n = batch_size * num_heads_q
-    NUM_SMS = num_SMs
-    grid = min(NUM_SMS, num_pid_m * num_pid_n)
 
     dtype_gl = utils.torch_dtype_to_gluon(query.dtype)
 
-    _fwd_dense_base_kernel[(grid,)](
-        softmax_scale, lse,
-        batch_size, num_heads_q, seqlen_q,
-        desc_q, desc_k, desc_v, desc_o,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        HEAD_DIM=HEAD_DIM,
-        GROUP_SIZE_N=GROUP_SIZE_N,
-        NUM_SMS=NUM_SMS,
-        SPLIT_M=SPLIT_M,
+    softmax_scale_log2 = softmax_scale * 1.44269504
+    num_pid_m = triton.cdiv(seqlen_q, TILE_M)
+    num_pid_n = batch_size * num_heads_q
+    grid = min(NUM_SMS, num_pid_m * num_pid_n)
+
+    attention_kernel[(grid,)](
+        softmax_scale_log2,
+        lse,
+        batch_size,
+        num_heads_q,
+        seqlen_q,
+        seqlen_k,
+        desc_q,
+        desc_k,
+        desc_v,
+        desc_o,
+        TILE_M,
+        TILE_N,
+        TILE_K,
+        GROUP_SIZE_N,
+        NUM_SMS,
+        SPLIT_EXP_FACTOR=p.SPLIT_EXP_FACTOR,
         IS_CAUSAL=is_causal,
+        IS_LOCAL=is_local,
+        WINDOW_SIZE_LEFT=window_size_left,
+        WINDOW_SIZE_RIGHT=window_size_right,
         dtype=dtype_gl,
-        NUM_KV_BUFFERS=NUM_KV_BUFFERS,
-        num_warps=num_warps,
+        num_warps=p.NUM_WARPS,
+        maxnreg=p.MAXNREG,
+        use_tmem_red=p.USE_TMEM_RED,
+        NUM_KV_BUFFERS=p.NUM_KV_BUFFERS,
+        USE_EXP2_TURNSTILE=p.USE_EXP2_TURNSTILE,
     )
 
     return out, lse, softmax_scale
@@ -855,7 +764,6 @@ def _flash_dense_attn_varlen_base_forward(
     seqused_k: Optional[torch.Tensor] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    # TODO: SM100 varlen support — for now fall back to non-varlen path
     raise NotImplementedError(
         "SM100 Gluon varlen forward is not yet implemented. "
         "Use the Triton backend for varlen attention."
