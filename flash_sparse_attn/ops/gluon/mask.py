@@ -1,91 +1,68 @@
-import triton
-import triton.language as tl
+"""
+SM100 (Blackwell) attention mask using bitmask trick for R2P layout.
+
+Unified apply_mask with MASK_CAUSAL / MASK_LOCAL flags,
+matching the Triton mask.apply_mask interface.
+"""
+
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
 
 
-@triton.jit
+@gluon.jit
+def _mask_scalar_right(acc_s, col_limit_right, s, i):
+    col_lim_right_s = col_limit_right - s
+    col_lim_right_cur = max(col_lim_right_s, 0)
+    mask = -1 << col_lim_right_cur
+    mask_i_bit = (mask & (1 << i)) == 0
+    return gl.where(mask_i_bit, acc_s, -float("inf"))
+
+
+@gluon.jit
+def _mask_scalar_left(acc_s, col_limit_left, s, i):
+    col_lim_left_s = col_limit_left - s
+    col_lim_left_cur = min(max(col_lim_left_s, 0), 16)
+    mask = (1 << col_lim_left_cur) - 1
+    mask_i_bit = (mask & (1 << i)) == 0
+    return gl.where(mask_i_bit, acc_s, -float("inf"))
+
+
+@gluon.jit
 def apply_mask(
     acc_s,
-    m_block,
-    n_block,
+    offs_m,
+    start_n,
     seqlen_q,
     seqlen_k,
-    MASK_SEQLEN: tl.constexpr,
-    MASK_CAUSAL: tl.constexpr,
-    MASK_LOCAL: tl.constexpr,
-    TILE_M: tl.constexpr,
-    TILE_N: tl.constexpr,
-    WINDOW_SIZE_LEFT: tl.constexpr,
-    WINDOW_SIZE_RIGHT: tl.constexpr,
-    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
-    SWAP_AB: tl.constexpr,
+    MASK_SEQLEN: gl.constexpr,
+    MASK_CAUSAL: gl.constexpr,
+    MASK_LOCAL: gl.constexpr,
+    WINDOW_SIZE_LEFT: gl.constexpr,
+    WINDOW_SIZE_RIGHT: gl.constexpr,
 ):
-    """
-    Apply seqlen, causal, and local masks to the attention scores.
-
-    :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-    :param m_block: Current block index along the M dimension.
-    :param n_block: Current block index along the N dimension.
-    :param seqlen_q: The sequence length of the query.
-    :param seqlen_k: The sequence length of the key.
-    :param MASK_SEQLEN: Boolean flag indicating if seqlen masking should be applied.
-    :param MASK_CAUSAL: Boolean flag indicating if causal masking should be applied.
-    :param MASK_LOCAL: Boolean flag indicating if local masking should be applied.
-    :param TILE_M: Tile size along the M dimension.
-    :param TILE_N: Tile size along the N dimension.
-    :param WINDOW_SIZE_LEFT: Left window size for local masking.
-    :param WINDOW_SIZE_RIGHT: Right window size for local masking.
-    :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
-    :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
-
-    :return acc_s: Masked attention scores tensor of shape [BLOCK_M, BLOCK_N].
-    """
-    tl.static_assert(
-        not (MASK_CAUSAL and MASK_LOCAL),
-        "MASK_CAUSAL and MASK_LOCAL cannot be both True",
-    )
-    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-    offs_n = n_block * TILE_N + tl.arange(0, TILE_N)
-
-    if SWAP_AB:
-        tl.static_assert(
-            QHEADS_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PACKGQA > 1 not supported"
-        )
-        q_idx = offs_m[None, :]
-        k_idx = offs_n[:, None]
-    else:
-        q_idx = offs_m[:, None]
-        k_idx = offs_n[None, :]
-        if QHEADS_PER_KVHEAD_PACKGQA > 1:
-            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
+    offs_n = gl.arange(0, acc_s.shape[1])[None, :]
+    s = offs_n & ~0xF
+    i = offs_n & 0xF
+    causal_offset = seqlen_k - seqlen_q
 
     if MASK_SEQLEN:
-        acc_s = tl.where(
-            (k_idx < seqlen_k) & (q_idx < seqlen_q),
-            acc_s,
-            float("-inf"),
-        )
+        col_limit_right = seqlen_k - start_n
+        acc_s = gl.map_elementwise(_mask_scalar_right, acc_s, col_limit_right, s, i)
 
-    if MASK_CAUSAL or MASK_LOCAL:
-        causal_offset = seqlen_k - seqlen_q
+    if MASK_CAUSAL:
+        col_limit_right = (offs_m + causal_offset - start_n + 1)[:, None]
+        acc_s = gl.map_elementwise(_mask_scalar_right, acc_s, col_limit_right, s, i)
 
-        if MASK_CAUSAL:
-            acc_s = tl.where(
-                q_idx + causal_offset >= k_idx,
-                acc_s,
-                float("-inf"),
-            )
-        else:
-            if WINDOW_SIZE_RIGHT is not None:
-                acc_s = tl.where(
-                    q_idx + causal_offset + WINDOW_SIZE_RIGHT >= k_idx,
-                    acc_s,
-                    float("-inf"),
-                )
-            if WINDOW_SIZE_LEFT is not None:
-                acc_s = tl.where(
-                    q_idx + causal_offset - WINDOW_SIZE_LEFT <= k_idx,
-                    acc_s,
-                    float("-inf"),
-                )
+    if MASK_LOCAL:
+        if WINDOW_SIZE_RIGHT is not None:
+            col_limit_right = (
+                offs_m + causal_offset + WINDOW_SIZE_RIGHT - start_n + 1
+            )[:, None]
+            acc_s = gl.map_elementwise(_mask_scalar_right, acc_s, col_limit_right, s, i)
+        if WINDOW_SIZE_LEFT is not None:
+            col_limit_left = (offs_m + causal_offset - WINDOW_SIZE_LEFT - start_n)[
+                :, None
+            ]
+            acc_s = gl.map_elementwise(_mask_scalar_left, acc_s, col_limit_left, s, i)
 
     return acc_s
