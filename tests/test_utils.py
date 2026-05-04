@@ -517,15 +517,16 @@ def reference_gated_forward(
     is_logsigmoid_gate: bool,
 ) -> torch.Tensor:
     scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
-    delta_h = delta.float()
-    if alpha.shape[1] != delta.shape[1]:
-        if alpha.shape[1] % delta.shape[1] != 0:
+    alpha_h = alpha.transpose(1, 2).float()
+    delta_h = delta.transpose(1, 2).float()
+    if alpha_h.shape[1] != delta_h.shape[1]:
+        if alpha_h.shape[1] % delta_h.shape[1] != 0:
             raise ValueError(
-                f"Q heads ({alpha.shape[1]}) must be divisible by Delta heads ({delta.shape[1]})"
+                f"Q heads ({alpha_h.shape[1]}) must be divisible by Delta heads ({delta_h.shape[1]})"
             )
-        repeat = alpha.shape[1] // delta.shape[1]
+        repeat = alpha_h.shape[1] // delta_h.shape[1]
         delta_h = torch.repeat_interleave(delta_h, repeats=repeat, dim=1)
-    raw_gate = alpha.float().unsqueeze(-1) * delta_h.unsqueeze(-2)
+    raw_gate = alpha_h.unsqueeze(-1) * delta_h.unsqueeze(-2)
     gate = torch.nn.functional.logsigmoid(raw_gate) if is_logsigmoid_gate else raw_gate
     scores = scores + gate * softmax_scale
     vh = v.transpose(1, 2).float()
@@ -567,8 +568,8 @@ def _reference_varlen_forward(
         ki = k[ks:ke].unsqueeze(0)
         vi = v[ks:ke].unsqueeze(0)
         if kind == "gated":
-            ai = alpha[:, qs:qe].unsqueeze(0)
-            di = delta[:, ks:ke].unsqueeze(0)
+            ai = alpha[qs:qe, :].unsqueeze(0)
+            di = delta[ks:ke, :].unsqueeze(0)
             out_i = reference_gated_forward(
                 qi,
                 ki,
@@ -600,6 +601,65 @@ def _reference_varlen_forward(
             )
         outs.append(out_i.squeeze(0))
     return torch.cat(outs, dim=0)
+
+
+def _reference_varlen_decode(
+    kind: KernelType,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    softmax_scale: float,
+    window_size: Tuple[Optional[int], Optional[int]],
+    alpha: Optional[torch.Tensor] = None,
+    delta: Optional[torch.Tensor] = None,
+    is_logsigmoid_gate: bool = True,
+) -> torch.Tensor:
+    batch_size = q.shape[0]
+    outs: List[torch.Tensor] = []
+
+    for idx in range(batch_size):
+        ks = int(cu_seqlens_k[idx].item())
+        ke = int(cu_seqlens_k[idx + 1].item())
+
+        qi = q[idx : idx + 1].unsqueeze(1)
+        ki = k[ks:ke].unsqueeze(0)
+        vi = v[ks:ke].unsqueeze(0)
+
+        if kind == "gated":
+            ai = alpha[idx : idx + 1].unsqueeze(1)
+            di = delta[ks:ke, :].unsqueeze(0)
+            out_i = reference_gated_forward(
+                qi,
+                ki,
+                vi,
+                ai,
+                di,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+            )
+        elif kind == "sparse":
+            out_i = reference_sparse_forward(
+                qi,
+                ki,
+                vi,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+            )
+        else:
+            out_i = reference_dense_forward(
+                qi,
+                ki,
+                vi,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+            )
+        outs.append(out_i.squeeze(0).squeeze(0))
+    return torch.stack(outs, dim=0)
 
 
 def _assert_close(
@@ -704,12 +764,12 @@ def run_forward_base_case(
         batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
     )
     alpha = (
-        torch.randn(batch_size, num_heads_q, seqlen_q, device=device, dtype=dtype)
+        torch.randn(batch_size, seqlen_q, num_heads_q, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=dtype)
+        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
@@ -868,12 +928,12 @@ def run_forward_varlen_case(
         dim=0,
     )
     alpha = (
-        torch.randn(num_heads_q, sum(lens_q), device=device, dtype=dtype)
+        torch.randn(sum(lens_q), num_heads_q, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=dtype)
+        torch.randn(sum(lens_k), num_heads_kv, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
@@ -957,7 +1017,7 @@ def run_decode_base_case(
         else None
     )
     delta = (
-        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=gen_dtype)
+        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
@@ -1058,7 +1118,7 @@ def run_decode_base_case(
                 q_deq.unsqueeze(1),
                 k_deq,
                 v_deq,
-                alpha.unsqueeze(-1),
+                alpha.unsqueeze(1),
                 delta,
                 softmax_scale=softmax_scale,
                 is_causal=False,
@@ -1145,7 +1205,7 @@ def run_decode_base_case(
             q.unsqueeze(1),
             k,
             v,
-            alpha.unsqueeze(-1),
+            alpha.unsqueeze(1),
             delta,
             softmax_scale=softmax_scale,
             is_causal=False,
@@ -1203,13 +1263,12 @@ def run_decode_varlen_case(
         else None
     )
     delta = (
-        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=gen_dtype)
+        torch.randn(sum(lens_k), num_heads_kv, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
 
     cu_seqlens_k = make_cu_seqlens(lens_k, device)
-    cu_seqlens_q_ref = make_cu_seqlens([1] * batch_size, device)
     softmax_scale = head_dim**-0.5
     threshold = head_dim / max(lens_k)
 
@@ -1290,17 +1349,15 @@ def run_decode_varlen_case(
         q_deq = q_fp8.to(torch.bfloat16) * q_scale
         k_deq = k_fp8.to(torch.bfloat16) * k_scale
         v_deq = v_fp8.to(torch.bfloat16) * v_scale
-        out_ref = _reference_varlen_forward(
+        out_ref = _reference_varlen_decode(
             kind,
             q_deq,
             k_deq,
             v_deq,
-            cu_seqlens_q=cu_seqlens_q_ref,
             cu_seqlens_k=cu_seqlens_k,
             softmax_scale=softmax_scale,
-            is_causal=False,
             window_size=window_size,
-            alpha=alpha.transpose(0, 1) if alpha is not None else None,
+            alpha=alpha,
             delta=delta,
             is_logsigmoid_gate=is_logsigmoid_gate,
         )
@@ -1371,17 +1428,15 @@ def run_decode_varlen_case(
             lse=lse_buffer,
         )
 
-    out_ref = _reference_varlen_forward(
+    out_ref = _reference_varlen_decode(
         kind,
         q,
         k,
         v,
-        cu_seqlens_q=cu_seqlens_q_ref,
         cu_seqlens_k=cu_seqlens_k,
         softmax_scale=softmax_scale,
-        is_causal=False,
         window_size=window_size,
-        alpha=alpha.transpose(0, 1) if alpha is not None else None,
+        alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
     )
@@ -1427,12 +1482,12 @@ def run_backward_base_case(
         batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
     )
     alpha = (
-        torch.randn(batch_size, num_heads_q, seqlen_q, device=device, dtype=dtype)
+        torch.randn(batch_size, seqlen_q, num_heads_q, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=dtype)
+        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
@@ -1610,12 +1665,12 @@ def run_backward_varlen_case(
         dim=0,
     )
     alpha = (
-        torch.randn(num_heads_q, sum(lens_q), device=device, dtype=dtype)
+        torch.randn(sum(lens_q), num_heads_q, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=dtype)
+        torch.randn(sum(lens_k), num_heads_kv, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
