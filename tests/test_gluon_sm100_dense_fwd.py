@@ -54,28 +54,45 @@ def reference_attention(q, k, v, softmax_scale, is_causal):
 @pytest.mark.parametrize(
     "batch_size,seqlen_q,seqlen_k,num_heads_q,num_heads_kv,head_dim",
     [
-        (2, 128, 128, 8, 8, 64),       # basic MHA
-        (2, 256, 256, 8, 8, 128),      # larger head_dim
-        (1, 512, 512, 16, 4, 64),      # GQA
-        (2, 128, 256, 8, 8, 64),       # seqlen_q != seqlen_k
-        (4, 64, 64, 4, 4, 64),         # small
+        (2, 128, 128, 8, 8, 64),  # basic MHA
+        (2, 256, 256, 8, 8, 128),  # larger head_dim
+        (1, 512, 512, 16, 4, 64),  # GQA
+        (2, 128, 256, 8, 8, 64),  # seqlen_q != seqlen_k
+        (4, 64, 64, 4, 4, 64),  # small
     ],
 )
 def test_correctness(
-    batch_size, seqlen_q, seqlen_k, num_heads_q, num_heads_kv, head_dim,
-    is_causal, dtype,
+    batch_size,
+    seqlen_q,
+    seqlen_k,
+    num_heads_q,
+    num_heads_kv,
+    head_dim,
+    is_causal,
+    dtype,
 ):
-    from flash_sparse_attn.ops.gluon.flash_dense_fwd import _flash_dense_attn_base_forward
+    from flash_sparse_attn.ops.gluon.flash_dense_fwd import (
+        _flash_dense_attn_base_forward,
+    )
 
     torch.manual_seed(42)
     device = "cuda"
 
-    q = torch.randn(batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype)
-    k = torch.randn(batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype)
-    v = torch.randn(batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype)
+    q = torch.randn(
+        batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
+    )
+    k = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
+    v = torch.randn(
+        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+    )
 
     out, lse, softmax_scale = _flash_dense_attn_base_forward(
-        q, k, v, is_causal=is_causal,
+        q,
+        k,
+        v,
+        is_causal=is_causal,
     )
     out_ref = reference_attention(q, k, v, softmax_scale, is_causal)
 
@@ -103,7 +120,9 @@ def test_correctness(
 )
 def test_performance(batch_size, seqlen, num_heads, head_dim, is_causal):
     """Benchmark SM100 kernel vs PyTorch SDPA. Prints TFLOPS, does not assert."""
-    from flash_sparse_attn.ops.gluon.flash_dense_fwd import _flash_dense_attn_base_forward
+    from flash_sparse_attn.ops.gluon.flash_dense_fwd import (
+        _flash_dense_attn_base_forward,
+    )
 
     torch.manual_seed(42)
     device = "cuda"
