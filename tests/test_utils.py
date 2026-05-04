@@ -603,6 +603,65 @@ def _reference_varlen_forward(
     return torch.cat(outs, dim=0)
 
 
+def _reference_varlen_decode(
+    kind: KernelType,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    softmax_scale: float,
+    window_size: Tuple[Optional[int], Optional[int]],
+    alpha: Optional[torch.Tensor] = None,
+    delta: Optional[torch.Tensor] = None,
+    is_logsigmoid_gate: bool = True,
+) -> torch.Tensor:
+    batch_size = q.shape[0]
+    outs: List[torch.Tensor] = []
+
+    for idx in range(batch_size):
+        ks = int(cu_seqlens_k[idx].item())
+        ke = int(cu_seqlens_k[idx + 1].item())
+
+        qi = q[idx : idx + 1].unsqueeze(1)
+        ki = k[ks:ke].unsqueeze(0)
+        vi = v[ks:ke].unsqueeze(0)
+
+        if kind == "gated":
+            ai = alpha[idx : idx + 1].unsqueeze(1)
+            di = delta[:, ks:ke].transpose(0, 1).unsqueeze(0)
+            out_i = reference_gated_forward(
+                qi,
+                ki,
+                vi,
+                ai,
+                di,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+                is_logsigmoid_gate=is_logsigmoid_gate,
+            )
+        elif kind == "sparse":
+            out_i = reference_sparse_forward(
+                qi,
+                ki,
+                vi,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+            )
+        else:
+            out_i = reference_dense_forward(
+                qi,
+                ki,
+                vi,
+                softmax_scale=softmax_scale,
+                is_causal=False,
+                window_size=window_size,
+            )
+        outs.append(out_i.squeeze(0).squeeze(0))
+    return torch.stack(outs, dim=0)
+
+
 def _assert_close(
     name: str, got: torch.Tensor, ref: torch.Tensor, rtol: float, atol: float
 ) -> None:
@@ -1210,7 +1269,6 @@ def run_decode_varlen_case(
     )
 
     cu_seqlens_k = make_cu_seqlens(lens_k, device)
-    cu_seqlens_q_ref = make_cu_seqlens([1] * batch_size, device)
     softmax_scale = head_dim**-0.5
     threshold = head_dim / max(lens_k)
 
@@ -1291,18 +1349,16 @@ def run_decode_varlen_case(
         q_deq = q_fp8.to(torch.bfloat16) * q_scale
         k_deq = k_fp8.to(torch.bfloat16) * k_scale
         v_deq = v_fp8.to(torch.bfloat16) * v_scale
-        out_ref = _reference_varlen_forward(
+        out_ref = _reference_varlen_decode(
             kind,
             q_deq,
             k_deq,
             v_deq,
-            cu_seqlens_q=cu_seqlens_q_ref,
             cu_seqlens_k=cu_seqlens_k,
             softmax_scale=softmax_scale,
-            is_causal=False,
             window_size=window_size,
-            alpha=alpha if alpha is None else alpha,
-            delta=delta.transpose(0, 1) if delta is not None else None,
+            alpha=alpha,
+            delta=delta,
             is_logsigmoid_gate=is_logsigmoid_gate,
         )
 
@@ -1372,18 +1428,16 @@ def run_decode_varlen_case(
             lse=lse_buffer,
         )
 
-    out_ref = _reference_varlen_forward(
+    out_ref = _reference_varlen_decode(
         kind,
         q,
         k,
         v,
-        cu_seqlens_q=cu_seqlens_q_ref,
         cu_seqlens_k=cu_seqlens_k,
         softmax_scale=softmax_scale,
-        is_causal=False,
         window_size=window_size,
-        alpha=alpha if alpha is None else alpha,
-        delta=delta.transpose(0, 1) if delta is not None else None,
+        alpha=alpha,
+        delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
     )
 
