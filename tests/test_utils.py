@@ -628,7 +628,7 @@ def _reference_varlen_decode(
 
         if kind == "gated":
             ai = alpha[idx : idx + 1].unsqueeze(1)
-            di = delta[:, ks:ke].transpose(0, 1).unsqueeze(0)
+            di = delta[ks:ke, :].unsqueeze(0)
             out_i = reference_gated_forward(
                 qi,
                 ki,
@@ -1017,7 +1017,7 @@ def run_decode_base_case(
         else None
     )
     delta = (
-        torch.randn(batch_size, num_heads_kv, seqlen_k, device=device, dtype=gen_dtype)
+        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
@@ -1119,7 +1119,7 @@ def run_decode_base_case(
                 k_deq,
                 v_deq,
                 alpha.unsqueeze(1),
-                delta.transpose(1, 2),
+                delta,
                 softmax_scale=softmax_scale,
                 is_causal=False,
                 window_size=window_size,
@@ -1206,7 +1206,7 @@ def run_decode_base_case(
             k,
             v,
             alpha.unsqueeze(1),
-            delta.transpose(1, 2),
+            delta,
             softmax_scale=softmax_scale,
             is_causal=False,
             window_size=window_size,
@@ -1263,7 +1263,7 @@ def run_decode_varlen_case(
         else None
     )
     delta = (
-        torch.randn(num_heads_kv, sum(lens_k), device=device, dtype=gen_dtype)
+        torch.randn(sum(lens_k), num_heads_kv, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
