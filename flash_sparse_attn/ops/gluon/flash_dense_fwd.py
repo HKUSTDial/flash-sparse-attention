@@ -11,7 +11,6 @@ Architecture: 6-partition persistent kernel using Gluon SM100 primitives.
 """
 
 from typing import Tuple, Optional
-from dataclasses import dataclass, fields
 import torch
 import triton
 
@@ -36,21 +35,22 @@ from flash_sparse_attn.ops.gluon.activations import rescale_o, finalize, online_
 from flash_sparse_attn.ops.gluon.scheduling import (
     SharedMemoryChannel,
     TensorMemoryChannel,
-    get_desc_channel,
     issue_async_tma_load,
+    convert_smem_for_mma,
     AttentionConfig,
     ProgramScheduler,
 )
-
+from flash_sparse_attn.ops.gluon.launch_template import (
+    KernelConfig,
+    get_fwd_launch_config,
+)
 
 
 @gluon.jit
-def _attn_fwd_softmax(
-    tile_id: gl.constexpr, config, chnls, use_tmem_red: gl.constexpr
-):
+def _attn_fwd_softmax(tile_id: gl.constexpr, config, chnls, use_tmem_red: gl.constexpr):
     (
-        q_tma_chnl,
-        kv_tma_chnl,
+        q_smem_chnl,
+        kv_smem_chnl,
         o_tmem_chnl,
         o_smem_chnl,
         s0_tmem_chnl,
@@ -85,8 +85,8 @@ def _attn_fwd_softmax(
 @gluon.jit
 def _attn_fwd_load(config, chnls, descs):
     (
-        q_tma_chnl,
-        kv_tma_chnl,
+        q_smem_chnl,
+        kv_smem_chnl,
         o_tmem_chnl,
         o_smem_chnl,
         s0_tmem_chnl,
@@ -97,8 +97,8 @@ def _attn_fwd_load(config, chnls, descs):
     ) = chnls
     desc_q, desc_k, desc_v, desc_o = descs
 
-    q_producer = q_tma_chnl.create_producer()
-    kv_producer = kv_tma_chnl.create_producer()
+    q_producer = q_smem_chnl.create_producer()
+    kv_producer = kv_smem_chnl.create_producer()
 
     scheduler = ProgramScheduler.create(config)
     for pid in range(scheduler.start_pid, scheduler.num_tiles, config.NUM_SMS):
@@ -106,27 +106,42 @@ def _attn_fwd_load(config, chnls, descs):
         n_start, n_end = prog.get_loop_bounds()
         num_kv_tiles = (n_end - n_start) // config.TILE_N
 
-        q0_offset = prog.qo_offset + config.SPLIT_M * 0
         q0_smem, q0_bar, q_producer = q_producer.acquire()
-        issue_async_tma_load(q0_smem, q0_bar, desc_q, q0_offset)
+        issue_async_tma_load(
+            q0_smem, q0_bar, desc_q, prog.batch_idx, prog.head_q_idx, prog.seq_offset
+        )
 
-        offs_kv_tma = prog.kv_offset + n_end - config.TILE_N
+        offs_kv_seq = n_end - config.TILE_N
         k_smem, k_bar, kv_producer = kv_producer.acquire()
-        issue_async_tma_load(k_smem, k_bar, desc_k, offs_kv_tma)
+        issue_async_tma_load(
+            k_smem, k_bar, desc_k, prog.batch_idx, prog.head_kv_idx, offs_kv_seq
+        )
 
-        q1_offset = prog.qo_offset + config.SPLIT_M * 1
         q1_smem, q1_bar, q_producer = q_producer.acquire()
-        issue_async_tma_load(q1_smem, q1_bar, desc_q, q1_offset)
+        issue_async_tma_load(
+            q1_smem,
+            q1_bar,
+            desc_q,
+            prog.batch_idx,
+            prog.head_q_idx,
+            prog.seq_offset + config.SPLIT_M,
+        )
 
         v_smem, v_bar, kv_producer = kv_producer.acquire()
-        issue_async_tma_load(v_smem, v_bar, desc_v, offs_kv_tma)
+        issue_async_tma_load(
+            v_smem, v_bar, desc_v, prog.batch_idx, prog.head_kv_idx, offs_kv_seq
+        )
 
         for i in range(1, num_kv_tiles):
-            offs_kv_tma = prog.kv_offset + n_end - (1 + i) * config.TILE_N
+            offs_kv_seq = n_end - (1 + i) * config.TILE_N
             k_smem, k_bar, kv_producer = kv_producer.acquire()
-            issue_async_tma_load(k_smem, k_bar, desc_k, offs_kv_tma)
+            issue_async_tma_load(
+                k_smem, k_bar, desc_k, prog.batch_idx, prog.head_kv_idx, offs_kv_seq
+            )
             v_smem, v_bar, kv_producer = kv_producer.acquire()
-            issue_async_tma_load(v_smem, v_bar, desc_v, offs_kv_tma)
+            issue_async_tma_load(
+                v_smem, v_bar, desc_v, prog.batch_idx, prog.head_kv_idx, offs_kv_seq
+            )
 
 
 # ===-----------------------------------------------------------------------===#
@@ -137,8 +152,8 @@ def _attn_fwd_load(config, chnls, descs):
 @gluon.jit
 def _attn_fwd_mma(config, chnls, descs):
     (
-        q_tma_chnl,
-        kv_tma_chnl,
+        q_smem_chnl,
+        kv_smem_chnl,
         o_tmem_chnl,
         o_smem_chnl,
         s0_tmem_chnl,
@@ -149,8 +164,8 @@ def _attn_fwd_mma(config, chnls, descs):
     ) = chnls
     desc_q, desc_k, desc_v, desc_o = descs
 
-    q_consumer = q_tma_chnl.create_consumer()
-    kv_consumer = kv_tma_chnl.create_consumer()
+    q_consumer = q_smem_chnl.create_consumer()
+    kv_consumer = kv_smem_chnl.create_consumer()
     o_producer = o_tmem_chnl.create_producer()
 
     s0_producer = s0_tmem_chnl.create_producer()
@@ -166,14 +181,18 @@ def _attn_fwd_mma(config, chnls, descs):
         k_smem, k_bar, kv_consumer = kv_consumer.acquire()
         s0_tmem, s0_bar, s0_producer = s0_producer.acquire()
         tcgen05_mma(
-            q0_smem, k_smem.permute((1, 0)), s0_tmem, use_acc=False, mbarriers=[s0_bar]
+            convert_smem_for_mma(q0_smem),
+            convert_smem_for_mma(k_smem).permute((1, 0)),
+            s0_tmem,
+            use_acc=False,
+            mbarriers=[s0_bar],
         )
 
         q1_smem, q1_bar, q_consumer = q_consumer.acquire()
         s1_tmem, s1_bar, s1_producer = s1_producer.acquire()
         tcgen05_mma(
-            q1_smem,
-            k_smem.permute((1, 0)),
+            convert_smem_for_mma(q1_smem),
+            convert_smem_for_mma(k_smem).permute((1, 0)),
             s1_tmem,
             use_acc=False,
             mbarriers=[s1_bar, k_bar],
@@ -183,14 +202,20 @@ def _attn_fwd_mma(config, chnls, descs):
         o0_tmem, o0_bar, o_producer = o_producer.acquire()
         s0_tmem, s0_bar, s0_producer = s0_producer.acquire()
         p0_tmem = borrow_s_as_p(config, s0_tmem)
-        tcgen05_mma(p0_tmem, v_smem, o0_tmem, use_acc=False, mbarriers=[o0_bar])
+        tcgen05_mma(
+            p0_tmem,
+            convert_smem_for_mma(v_smem),
+            o0_tmem,
+            use_acc=False,
+            mbarriers=[o0_bar],
+        )
         o1_init = False
 
         for _ in range(num_mmas - 1):
             k_smem, k_bar, kv_consumer = kv_consumer.acquire()
             tcgen05_mma(
-                q0_smem,
-                k_smem.permute((1, 0)),
+                convert_smem_for_mma(q0_smem),
+                convert_smem_for_mma(k_smem).permute((1, 0)),
                 s0_tmem,
                 use_acc=False,
                 mbarriers=[s0_bar],
@@ -200,13 +225,17 @@ def _attn_fwd_mma(config, chnls, descs):
             s1_tmem, s1_bar, s1_producer = s1_producer.acquire()
             p1_tmem = borrow_s_as_p(config, s1_tmem)
             tcgen05_mma(
-                p1_tmem, v_smem, o1_tmem, use_acc=o1_init, mbarriers=[o1_bar, v_bar]
+                p1_tmem,
+                convert_smem_for_mma(v_smem),
+                o1_tmem,
+                use_acc=o1_init,
+                mbarriers=[o1_bar, v_bar],
             )
             o1_init = True
 
             tcgen05_mma(
-                q1_smem,
-                k_smem.permute((1, 0)),
+                convert_smem_for_mma(q1_smem),
+                convert_smem_for_mma(k_smem).permute((1, 0)),
                 s1_tmem,
                 use_acc=False,
                 mbarriers=[s1_bar, k_bar],
@@ -216,7 +245,9 @@ def _attn_fwd_mma(config, chnls, descs):
             o0_tmem, o0_bar, o_producer = o_producer.acquire()
             s0_tmem, s0_bar, s0_producer = s0_producer.acquire()
             p0_tmem = borrow_s_as_p(config, s0_tmem)
-            tcgen05_mma(p0_tmem, v_smem, o0_tmem, mbarriers=[o0_bar])
+            tcgen05_mma(
+                p0_tmem, convert_smem_for_mma(v_smem), o0_tmem, mbarriers=[o0_bar]
+            )
 
         tcgen05_commit(q0_bar)
         tcgen05_commit(q1_bar)
@@ -226,7 +257,7 @@ def _attn_fwd_mma(config, chnls, descs):
         p1_tmem = borrow_s_as_p(config, s1_tmem)
         tcgen05_mma(
             p1_tmem,
-            v_smem,
+            convert_smem_for_mma(v_smem),
             o1_tmem,
             use_acc=o1_init,
             mbarriers=[o1_bar, v_bar, s0_bar, s1_bar],
@@ -241,8 +272,8 @@ def _attn_fwd_mma(config, chnls, descs):
 @gluon.jit
 def _attn_fwd_rescale(config, chnls, Lse):
     (
-        q_tma_chnl,
-        kv_tma_chnl,
+        q_smem_chnl,
+        kv_smem_chnl,
         o_tmem_chnl,
         o_smem_chnl,
         s0_tmem_chnl,
@@ -313,8 +344,8 @@ def _attn_fwd_rescale(config, chnls, Lse):
 @gluon.jit
 def _attn_fwd_store(config, chnls, descs):
     (
-        q_tma_chnl,
-        kv_tma_chnl,
+        q_smem_chnl,
+        kv_smem_chnl,
         o_tmem_chnl,
         o_smem_chnl,
         s0_tmem_chnl,
@@ -332,12 +363,14 @@ def _attn_fwd_store(config, chnls, descs):
 
         o0_smem, o0_bar, o_smem_consumer = o_smem_consumer.acquire()
         tma.async_copy_shared_to_global(
-            desc_o, [prog.qo_offset + config.SPLIT_M * 0, 0], o0_smem
+            desc_o, [prog.batch_idx, prog.head_q_idx, prog.seq_offset, 0], o0_smem
         )
 
         o1_smem, o1_bar, o_smem_consumer = o_smem_consumer.acquire()
         tma.async_copy_shared_to_global(
-            desc_o, [prog.qo_offset + config.SPLIT_M * 1, 0], o1_smem
+            desc_o,
+            [prog.batch_idx, prog.head_q_idx, prog.seq_offset + config.SPLIT_M, 0],
+            o1_smem,
         )
 
         tma.store_wait(1)
@@ -359,14 +392,21 @@ def attention_repr(specialization):
 
 
 @gluon.jit(
-    do_not_specialize=["batch_size", "num_heads", "seqlen_q", "seqlen_k"],
+    do_not_specialize=[
+        "batch_size",
+        "num_heads_q",
+        "num_heads_kv",
+        "seqlen_q",
+        "seqlen_k",
+    ],
     repr=attention_repr,
 )
 def attention_kernel(
     softmax_scale_log2,
     Lse,
     batch_size,
-    num_heads,
+    num_heads_q,
+    num_heads_kv,
     seqlen_q,
     seqlen_k,
     desc_q,
@@ -392,7 +432,8 @@ def attention_kernel(
     config = AttentionConfig(
         softmax_scale_log2,
         batch_size,
-        num_heads,
+        num_heads_q,
+        num_heads_kv,
         seqlen_q,
         seqlen_k,
         TILE_M,
@@ -411,19 +452,26 @@ def attention_kernel(
         USE_EXP2_TURNSTILE,
     )
 
-    q_tma_chnl = get_desc_channel(desc_q, num_buffers=2)
-    kv_tma_chnl = get_desc_channel(desc_k, num_buffers=config.num_kv_buffers)
+    q_smem_chnl = SharedMemoryChannel.alloc(
+        config.qo_smem_shape, config.dtype, gl.constexpr(desc_q.layout), num_buffers=2
+    )
+    kv_smem_chnl = SharedMemoryChannel.alloc(
+        config.kv_smem_shape,
+        config.dtype,
+        gl.constexpr(desc_k.layout),
+        num_buffers=config.num_kv_buffers,
+    )
     o_tmem_chnl = TensorMemoryChannel.alloc(
-        config.o_shape, gl.float32, config.o_tmem_layout, num_buffers=2
+        config.o_tmem_shape, gl.float32, config.o_tmem_layout, num_buffers=2
     )
     o_smem_chnl = SharedMemoryChannel.alloc(
-        config.o_shape, config.dtype, gl.constexpr(desc_o.layout), num_buffers=2
+        config.qo_smem_shape, config.dtype, gl.constexpr(desc_o.layout), num_buffers=2
     )
     s0_tmem_chnl = TensorMemoryChannel.alloc(
-        config.qk_shape, gl.float32, config.qk_tmem_layout, num_buffers=1
+        config.s_tmem_shape, gl.float32, config.s_tmem_layout, num_buffers=1
     )
     s1_tmem_chnl = TensorMemoryChannel.alloc(
-        config.qk_shape, gl.float32, config.qk_tmem_layout, num_buffers=1
+        config.s_tmem_shape, gl.float32, config.s_tmem_layout, num_buffers=1
     )
     scale0_mbarrier_chnl = SharedMemoryChannel.alloc(
         [1], gl.int8, gl.constexpr(mbarrier.MBarrierLayout()), num_buffers=1
@@ -436,8 +484,8 @@ def attention_kernel(
     )
 
     chnls = (
-        q_tma_chnl,
-        kv_tma_chnl,
+        q_smem_chnl,
+        kv_smem_chnl,
         o_tmem_chnl,
         o_smem_chnl,
         s0_tmem_chnl,
@@ -460,8 +508,8 @@ def attention_kernel(
         [192, 192, 24, 24, 24],
     )
 
-    q_tma_chnl.release()
-    kv_tma_chnl.release()
+    q_smem_chnl.release()
+    kv_smem_chnl.release()
     o_tmem_chnl.release()
     o_smem_chnl.release()
     s0_tmem_chnl.release()
@@ -469,150 +517,6 @@ def attention_kernel(
     scale0_mbarrier_chnl.release()
     scale1_mbarrier_chnl.release()
     exp_turnstile_mbarrier.release()
-
-
-# ===-----------------------------------------------------------------------===#
-# KernelConfig + select_kernel_config
-# ===-----------------------------------------------------------------------===#
-
-
-def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
-
-
-def is_blackwell():
-    return is_cuda() and torch.cuda.get_device_capability()[0] == 10
-
-
-def is_blackwell_ultra():
-    return is_cuda() and torch.cuda.get_device_capability()[0:2] == (10, 3)
-
-
-@dataclass(frozen=True, slots=True)
-class KernelConfig:
-    TILE_M: int = 256
-    TILE_N: int = 128
-    GROUP_SIZE_N: int | None = None
-    SPLIT_EXP_FACTOR: int | None = None
-    NUM_WARPS: int = 4
-    MAXNREG: int = 128
-    OCCUPANCY: int = 1
-    USE_TMEM_RED: bool = False
-    NUM_KV_BUFFERS: int | None = None
-    USE_EXP2_TURNSTILE: bool | None = None
-
-
-def _default_split_exp_factor(head_dim: int) -> int:
-    return max(1, 256 // head_dim)
-
-
-def _default_num_kv_buffers(head_dim: int, dtype: torch.dtype) -> int:
-    is_fp16 = dtype in [torch.float16, torch.bfloat16]
-    if is_fp16:
-        return 3 if head_dim == 128 else 6
-    return 4 if head_dim == 128 else 8
-
-
-def select_kernel_config(
-    head_dim: int,
-    seqlen: int,
-    dtype: torch.dtype,
-    causal: bool,
-    use_tmem_red: bool,
-    override: KernelConfig | None = None,
-) -> KernelConfig:
-    is_fp8 = dtype == torch.float8_e5m2
-    is_bf16 = dtype == torch.bfloat16
-    is_bwu = is_blackwell_ultra()
-
-    block_m = 256
-    block_n = 128
-    group_size_n = 1
-    split_exp_factor = _default_split_exp_factor(head_dim)
-    num_warps = 4
-    maxnreg = 128
-    occupancy = 1
-    use_selected_tmem_red = (use_tmem_red or (is_bwu and not causal)) and not causal
-    num_kv_buffers = _default_num_kv_buffers(head_dim, dtype)
-    use_exp2_turnstile = head_dim == 64
-
-    if causal:
-        group_size_n = 8 if head_dim == 64 or seqlen <= 2048 else 4
-
-    if head_dim == 128:
-        split_exp_factor = 4
-        if not causal and is_bf16 and seqlen <= 2048:
-            group_size_n = 4
-    elif not causal and head_dim == 64 and use_selected_tmem_red:
-        split_exp_factor = 1
-        if seqlen <= 1024:
-            num_kv_buffers = 2
-        elif seqlen >= 8192:
-            maxnreg = 112
-    elif causal and head_dim == 64:
-        num_kv_buffers = 2
-        if seqlen <= 1024:
-            split_exp_factor = 2
-        else:
-            use_exp2_turnstile = False
-
-    if is_fp8:
-        if causal and head_dim == 64:
-            group_size_n = 8 if seqlen <= 2048 else 4
-            split_exp_factor = 4 if seqlen <= 2048 else 2
-            maxnreg = 112 if seqlen >= 4096 else 128
-            use_selected_tmem_red = False
-            num_kv_buffers = 2
-            use_exp2_turnstile = seqlen <= 1024
-        elif causal and head_dim == 128:
-            group_size_n = 8 if seqlen <= 2048 else 4
-            split_exp_factor = 2 if seqlen <= 2048 else 8
-            maxnreg = 128
-            use_selected_tmem_red = False
-            num_kv_buffers = 4
-            use_exp2_turnstile = False
-        elif not causal and head_dim == 64:
-            group_size_n = 1
-            split_exp_factor = 2
-            maxnreg = 128
-            use_selected_tmem_red = is_bwu
-            num_kv_buffers = 2 if seqlen <= 1024 else 8
-            use_exp2_turnstile = True
-        elif not causal and head_dim == 128:
-            group_size_n = 1
-            split_exp_factor = 4 if seqlen <= 2048 else 8
-            maxnreg = 128
-            use_selected_tmem_red = is_bwu
-            num_kv_buffers = 4
-            use_exp2_turnstile = False
-        else:
-            group_size_n = 4 if causal else 1
-            split_exp_factor = _default_split_exp_factor(head_dim)
-            use_selected_tmem_red = use_tmem_red and not causal
-
-    config = KernelConfig(
-        TILE_M=block_m,
-        TILE_N=block_n,
-        GROUP_SIZE_N=group_size_n,
-        SPLIT_EXP_FACTOR=split_exp_factor,
-        NUM_WARPS=num_warps,
-        MAXNREG=maxnreg,
-        OCCUPANCY=occupancy,
-        USE_TMEM_RED=use_selected_tmem_red,
-        NUM_KV_BUFFERS=num_kv_buffers,
-        USE_EXP2_TURNSTILE=use_exp2_turnstile,
-    )
-    if override is None:
-        return config
-
-    values = {
-        field.name: getattr(override, field.name) for field in fields(KernelConfig)
-    }
-    values = {
-        name: getattr(config, name) if value is None else value
-        for name, value in values.items()
-    }
-    return KernelConfig(**values)
 
 
 # ===-----------------------------------------------------------------------===#
@@ -659,7 +563,7 @@ def _flash_dense_attn_base_forward(
     is_local = window_size[0] is not None or window_size[1] is not None
     window_size_left = window_size[0] if window_size[0] is not None else None
     window_size_right = window_size[1] if window_size[1] is not None else None
-    p = select_kernel_config(
+    launch_config = get_fwd_launch_config(
         TILE_K,
         seqlen_q,
         query.dtype,
@@ -668,12 +572,13 @@ def _flash_dense_attn_base_forward(
         override=kernel_config_override,
     )
 
-    TILE_M = p.TILE_M
-    TILE_N = p.TILE_N
+    TILE_M = launch_config.TILE_M
+    TILE_N = launch_config.TILE_N
     SPLIT_M = TILE_M // 2
-    GROUP_SIZE_N = p.GROUP_SIZE_N
+    GROUP_SIZE_N = launch_config.GROUP_SIZE_N
     NUM_SMS = (
-        torch.cuda.get_device_properties(device).multi_processor_count * p.OCCUPANCY
+        torch.cuda.get_device_properties(device).multi_processor_count
+        * launch_config.OCCUPANCY
     )
 
     out = torch.empty_like(query)
@@ -683,43 +588,64 @@ def _flash_dense_attn_base_forward(
         device=device,
     )
 
-    qo_m_dim = batch_size * num_heads_q * seqlen_q
-    kv_n_dim = batch_size * num_heads_q * seqlen_k
-
     desc_q = utils.make_tensor_desc(
         query,
-        shape=[qo_m_dim, TILE_K],
-        strides=[TILE_K, 1],
-        block_shape=[SPLIT_M, TILE_K],
+        shape=[batch_size, num_heads_q, seqlen_q, head_dim],
+        strides=[
+            seqlen_q * num_heads_q * head_dim,
+            head_dim,
+            num_heads_q * head_dim,
+            1,
+        ],
+        block_shape=[1, 1, SPLIT_M, TILE_K],
     )
     desc_k = utils.make_tensor_desc(
-        key, shape=[kv_n_dim, TILE_K], strides=[TILE_K, 1], block_shape=[TILE_N, TILE_K]
+        key,
+        shape=[batch_size, num_heads_kv, seqlen_k, head_dim],
+        strides=[
+            seqlen_k * num_heads_kv * head_dim,
+            head_dim,
+            num_heads_kv * head_dim,
+            1,
+        ],
+        block_shape=[1, 1, TILE_N, TILE_K],
     )
     desc_v = utils.make_tensor_desc(
         value,
-        shape=[kv_n_dim, TILE_K],
-        strides=[TILE_K, 1],
-        block_shape=[TILE_N, TILE_K],
+        shape=[batch_size, num_heads_kv, seqlen_k, head_dim],
+        strides=[
+            seqlen_k * num_heads_kv * head_dim,
+            head_dim,
+            num_heads_kv * head_dim,
+            1,
+        ],
+        block_shape=[1, 1, TILE_N, TILE_K],
     )
     desc_o = utils.make_tensor_desc(
         out,
-        shape=[qo_m_dim, TILE_K],
-        strides=[TILE_K, 1],
-        block_shape=[SPLIT_M, TILE_K],
+        shape=[batch_size, num_heads_q, seqlen_q, head_dim],
+        strides=[
+            seqlen_q * num_heads_q * head_dim,
+            head_dim,
+            num_heads_q * head_dim,
+            1,
+        ],
+        block_shape=[1, 1, SPLIT_M, TILE_K],
     )
 
     dtype_gl = utils.torch_dtype_to_gluon(query.dtype)
 
     softmax_scale_log2 = softmax_scale * 1.44269504
-    num_pid_m = triton.cdiv(seqlen_q, TILE_M)
-    num_pid_n = batch_size * num_heads_q
-    grid = min(NUM_SMS, num_pid_m * num_pid_n)
+    num_tiles_m = triton.cdiv(seqlen_q, TILE_M)
+    num_tiles_bh = batch_size * num_heads_q
+    grid = min(NUM_SMS, num_tiles_m * num_tiles_bh)
 
     attention_kernel[(grid,)](
         softmax_scale_log2,
         lse,
         batch_size,
         num_heads_q,
+        num_heads_kv,
         seqlen_q,
         seqlen_k,
         desc_q,
@@ -731,17 +657,17 @@ def _flash_dense_attn_base_forward(
         TILE_K,
         GROUP_SIZE_N,
         NUM_SMS,
-        SPLIT_EXP_FACTOR=p.SPLIT_EXP_FACTOR,
+        SPLIT_EXP_FACTOR=launch_config.SPLIT_EXP_FACTOR,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
         WINDOW_SIZE_LEFT=window_size_left,
         WINDOW_SIZE_RIGHT=window_size_right,
         dtype=dtype_gl,
-        num_warps=p.NUM_WARPS,
-        maxnreg=p.MAXNREG,
-        use_tmem_red=p.USE_TMEM_RED,
-        NUM_KV_BUFFERS=p.NUM_KV_BUFFERS,
-        USE_EXP2_TURNSTILE=p.USE_EXP2_TURNSTILE,
+        num_warps=launch_config.NUM_WARPS,
+        maxnreg=launch_config.MAXNREG,
+        use_tmem_red=launch_config.USE_TMEM_RED,
+        NUM_KV_BUFFERS=launch_config.NUM_KV_BUFFERS,
+        USE_EXP2_TURNSTILE=launch_config.USE_EXP2_TURNSTILE,
     )
 
     return out, lse, softmax_scale
