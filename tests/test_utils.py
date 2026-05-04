@@ -1059,8 +1059,8 @@ def run_decode_base_case(
                 q_deq.unsqueeze(1),
                 k_deq,
                 v_deq,
-                alpha.unsqueeze(-1),
-                delta,
+                alpha.unsqueeze(1),
+                delta.transpose(1, 2),
                 softmax_scale=softmax_scale,
                 is_causal=False,
                 window_size=window_size,
@@ -1146,8 +1146,8 @@ def run_decode_base_case(
             q.unsqueeze(1),
             k,
             v,
-            alpha.unsqueeze(-1),
-            delta,
+            alpha.unsqueeze(1),
+            delta.transpose(1, 2),
             softmax_scale=softmax_scale,
             is_causal=False,
             window_size=window_size,
@@ -1301,8 +1301,8 @@ def run_decode_varlen_case(
             softmax_scale=softmax_scale,
             is_causal=False,
             window_size=window_size,
-            alpha=alpha.transpose(0, 1) if alpha is not None else None,
-            delta=delta,
+            alpha=alpha if alpha is None else alpha,
+            delta=delta.transpose(0, 1) if delta is not None else None,
             is_logsigmoid_gate=is_logsigmoid_gate,
         )
 
@@ -1382,8 +1382,8 @@ def run_decode_varlen_case(
         softmax_scale=softmax_scale,
         is_causal=False,
         window_size=window_size,
-        alpha=alpha.transpose(0, 1) if alpha is not None else None,
-        delta=delta,
+        alpha=alpha if alpha is None else alpha,
+        delta=delta.transpose(0, 1) if delta is not None else None,
         is_logsigmoid_gate=is_logsigmoid_gate,
     )
 
