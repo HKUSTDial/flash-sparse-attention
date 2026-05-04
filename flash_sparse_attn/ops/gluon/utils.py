@@ -154,13 +154,13 @@ def borrow_s_as_p(config, s_tmem):
     """
     Reinterpret the lower half of the S accumulator TMEM as the P (exp2 result) buffer.
 
-    :param config: AttentionConfig with dtype, qk_shape, p_tmem_layout.
+    :param config: AttentionConfig with dtype, s_tmem_shape, p_tmem_layout.
     :param s_tmem: S accumulator tensor memory descriptor.
 
     :return: TMEM descriptor reinterpreted for P storage.
     """
     p_tmem = s_tmem.slice(0, config.TILE_N // 2)
-    return p_tmem._reinterpret(config.dtype, config.qk_shape, config.p_tmem_layout)
+    return p_tmem._reinterpret(config.dtype, config.s_tmem_shape, config.p_tmem_layout)
 
 
 @gluon.jit
@@ -319,7 +319,7 @@ def compute_and_store_exp2(config, acc_s, p_tmem):
 
 
 @gluon.jit
-def subtiled_qk_load(config, s_tmem, use_tmem_red: gl.constexpr):
+def subtiled_s_load(config, s_tmem, use_tmem_red: gl.constexpr):
     SIZE: gl.constexpr = s_tmem.shape[1] // config.SPLIT_QK_LOAD_FACTOR
     acc_s_splits = ()
     if use_tmem_red:
