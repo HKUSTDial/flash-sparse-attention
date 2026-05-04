@@ -147,18 +147,14 @@ TensorMemoryChannel, TensorMemoryProducer, TensorMemoryConsumer = Channel(
 
 
 @gluon.jit
-def get_desc_channel(desc, num_buffers: gl.constexpr, num_consumers: gl.constexpr = 1):
-    shape: gl.constexpr = desc.block_type.shape
-    layout: gl.constexpr = desc.layout
-    return SharedMemoryChannel.alloc(
-        shape, desc.dtype, layout, num_buffers, num_consumers
-    )
+def issue_async_tma_load(smem, bar, desc, batch_idx, head_idx, seq_offset):
+    mbarrier.expect(bar, desc.block_type.nbytes)
+    tma.async_load(desc, [batch_idx, head_idx, seq_offset, 0], bar, smem)
 
 
 @gluon.jit
-def issue_async_tma_load(smem, bar, desc, offset):
-    mbarrier.expect(bar, desc.block_type.nbytes)
-    tma.async_load(desc, [offset, 0], bar, smem)
+def convert_smem_for_mma(smem):
+    return smem.reshape([smem.shape[-2], smem.shape[-1]])
 
 
 # ===-----------------------------------------------------------------------===#
@@ -170,7 +166,9 @@ def issue_async_tma_load(smem, bar, desc, offset):
 class AttentionConfig:
     softmax_scale_log2: gl.tensor
     batch_size: gl.tensor
-    num_heads: gl.tensor
+    num_heads_q: gl.tensor
+    num_heads_kv: gl.tensor
+    qheads_per_kvhead: gl.tensor
     seqlen_q: gl.tensor
     seqlen_k: gl.tensor
 
@@ -187,25 +185,24 @@ class AttentionConfig:
     WINDOW_SIZE_LEFT: gl.constexpr
     WINDOW_SIZE_RIGHT: gl.constexpr
 
-    SPLIT_D_FACTOR: gl.constexpr
+    SPLIT_K_FACTOR: gl.constexpr
     SPLIT_EXP_FACTOR: gl.constexpr
     SPLIT_QK_LOAD_FACTOR: gl.constexpr
     SPLIT_M: gl.constexpr
-    SPLIT_D: gl.constexpr
+    SPLIT_K: gl.constexpr
 
-    q_shape: gl.constexpr
-    k_shape: gl.constexpr
-    v_shape: gl.constexpr
-    qk_shape: gl.constexpr
-    o_shape: gl.constexpr
+    qo_smem_shape: gl.constexpr
+    kv_smem_shape: gl.constexpr
+    s_tmem_shape: gl.constexpr
+    o_tmem_shape: gl.constexpr
 
-    qk_tmem_layout: gl.constexpr
+    s_tmem_layout: gl.constexpr
     o_tmem_layout: gl.constexpr
     p_tmem_layout: gl.constexpr
 
-    qk_layout: gl.constexpr
+    s_instr_layout: gl.constexpr
     o_splitn_layout: gl.constexpr
-    row_scale_2d_layout: gl.constexpr
+    row_scale_tmem_layout: gl.constexpr
 
     num_kv_buffers: gl.constexpr
     use_exp2_turnstile: gl.constexpr
@@ -215,7 +212,8 @@ class AttentionConfig:
         self,
         softmax_scale_log2,
         batch_size,
-        num_heads,
+        num_heads_q,
+        num_heads_kv,
         seqlen_q,
         seqlen_k,
         TILE_M,
@@ -235,7 +233,9 @@ class AttentionConfig:
     ):
         self.softmax_scale_log2 = softmax_scale_log2
         self.batch_size = batch_size
-        self.num_heads = num_heads
+        self.num_heads_q = num_heads_q
+        self.num_heads_kv = num_heads_kv
+        self.qheads_per_kvhead = num_heads_q // num_heads_kv
         self.seqlen_q = seqlen_q
         self.seqlen_k = seqlen_k
 
@@ -252,53 +252,52 @@ class AttentionConfig:
         self.WINDOW_SIZE_LEFT = gl.constexpr(WINDOW_SIZE_LEFT)
         self.WINDOW_SIZE_RIGHT = gl.constexpr(WINDOW_SIZE_RIGHT)
 
-        self.SPLIT_D_FACTOR = gl.constexpr(2)
+        self.SPLIT_K_FACTOR = gl.constexpr(2)
         self.SPLIT_EXP_FACTOR = gl.constexpr(SPLIT_EXP_FACTOR)
         self.SPLIT_QK_LOAD_FACTOR = gl.constexpr(
             2 if (not IS_CAUSAL and not IS_LOCAL) else 1
         )
         self.SPLIT_M = gl.constexpr(self.TILE_M // 2)
-        self.SPLIT_D = gl.constexpr(self.TILE_K // self.SPLIT_D_FACTOR)
+        self.SPLIT_K = gl.constexpr(self.TILE_K // self.SPLIT_K_FACTOR)
 
-        self.q_shape = gl.constexpr([self.SPLIT_M, self.TILE_K])
-        self.k_shape = gl.constexpr([self.TILE_N, self.TILE_K])
-        self.qk_shape = gl.constexpr([self.SPLIT_M, self.TILE_N])
-        self.v_shape = gl.constexpr([self.TILE_N, self.TILE_K])
-        self.o_shape = gl.constexpr([self.SPLIT_M, self.TILE_K])
+        self.qo_smem_shape = gl.constexpr([1, 1, self.SPLIT_M, self.TILE_K])
+        self.kv_smem_shape = gl.constexpr([1, 1, self.TILE_N, self.TILE_K])
+        self.s_tmem_shape = gl.constexpr([self.SPLIT_M, self.TILE_N])
+        self.o_tmem_shape = gl.constexpr([self.SPLIT_M, self.TILE_K])
 
-        qk_instr_shape = get_mma_instr_shape(self.qk_shape, gl.float32)
-        o_instr_shape = get_mma_instr_shape(self.o_shape, gl.float32)
-        self.qk_tmem_layout = gl.constexpr(
-            TensorMemoryLayout((qk_instr_shape[0], qk_instr_shape[1]), col_stride=1)
+        s_instr_shape = get_mma_instr_shape(self.s_tmem_shape, gl.float32)
+        o_instr_shape = get_mma_instr_shape(self.o_tmem_shape, gl.float32)
+        self.s_tmem_layout = gl.constexpr(
+            TensorMemoryLayout((s_instr_shape[0], s_instr_shape[1]), col_stride=1)
         )
         self.o_tmem_layout = gl.constexpr(
             TensorMemoryLayout((o_instr_shape[0], o_instr_shape[1]), col_stride=1)
         )
         self.p_tmem_layout = gl.constexpr(
-            TensorMemoryLayout((qk_instr_shape[0], qk_instr_shape[1]), col_stride=1)
+            TensorMemoryLayout((s_instr_shape[0], s_instr_shape[1]), col_stride=1)
         )
         o_splitn_tmem_layout: gl.constexpr = TensorMemoryLayout(
-            (o_instr_shape[0], o_instr_shape[1] // self.SPLIT_D_FACTOR), col_stride=1
+            (o_instr_shape[0], o_instr_shape[1] // self.SPLIT_K_FACTOR), col_stride=1
         )
-        qk_tmem_ty: gl.constexpr = tensor_memory_descriptor_type(
-            gl.float32, self.qk_shape, self.qk_tmem_layout, self.qk_shape
+        s_tmem_ty: gl.constexpr = tensor_memory_descriptor_type(
+            gl.float32, self.s_tmem_shape, self.s_tmem_layout, self.s_tmem_shape
         )
         o_splitn_tmem_ty: gl.constexpr = tensor_memory_descriptor_type(
             gl.float32,
-            [self.o_shape[0], self.o_shape[1] // self.SPLIT_D_FACTOR],
+            [self.o_tmem_shape[0], self.o_tmem_shape[1] // self.SPLIT_K_FACTOR],
             o_splitn_tmem_layout,
-            self.o_shape,
+            self.o_tmem_shape,
         )
 
-        self.qk_layout = gl.constexpr(
-            qk_tmem_ty.get_reg_layout(
+        self.s_instr_layout = gl.constexpr(
+            s_tmem_ty.get_reg_layout(
                 num_warps=self.num_warps, instr_variant="32x32b_splitn"
             )
         )
         self.o_splitn_layout = gl.constexpr(
             o_splitn_tmem_ty.get_reg_layout(num_warps=self.num_warps)
         )
-        self.row_scale_2d_layout = gl.constexpr(
+        self.row_scale_tmem_layout = gl.constexpr(
             gl.BlockedLayout([1, 1], [32, 1], [self.num_warps, 1], [0, 1])
         )
 
@@ -308,18 +307,20 @@ class AttentionConfig:
     @gluon.jit
     def get_program(self, pid_m, pid_n):
         m_block = pid_m
-        head_idx = pid_n
-        batch_idx = head_idx // self.num_heads
-        head_in_batch = head_idx % self.num_heads
-        kv_offset = (
-            batch_idx * (self.seqlen_k * self.num_heads) + head_in_batch * self.seqlen_k
+        batch_head_idx = pid_n
+        batch_idx = batch_head_idx // self.num_heads_q
+        head_q_idx = batch_head_idx % self.num_heads_q
+        head_kv_idx = head_q_idx // self.qheads_per_kvhead
+        seq_offset = m_block * self.TILE_M
+        return AttentionProgram(
+            self,
+            m_block,
+            batch_head_idx,
+            batch_idx,
+            head_q_idx,
+            head_kv_idx,
+            seq_offset,
         )
-        qo_offset = (
-            batch_idx * (self.seqlen_q * self.num_heads)
-            + head_in_batch * self.seqlen_q
-            + m_block * self.TILE_M
-        )
-        return AttentionProgram(self, m_block, head_idx, kv_offset, qo_offset)
 
 
 # ===-----------------------------------------------------------------------===#
@@ -331,9 +332,11 @@ class AttentionConfig:
 class AttentionProgram:
     config: AttentionConfig
     m_block: gl.tensor
-    head_idx: gl.tensor
-    kv_offset: gl.tensor
-    qo_offset: gl.tensor
+    batch_head_idx: gl.tensor
+    batch_idx: gl.tensor
+    head_q_idx: gl.tensor
+    head_kv_idx: gl.tensor
+    seq_offset: gl.tensor
 
     @gluon.jit
     def get_n_block_min_max(self):
@@ -405,26 +408,26 @@ class AttentionProgram:
 class ProgramScheduler:
     config: AttentionConfig
     start_pid: gl.tensor
-    num_pid_n: gl.tensor
-    num_pid_in_group: gl.tensor
+    num_tiles_bh: gl.tensor
+    tiles_per_group: gl.tensor
     num_tiles: gl.tensor
 
     @gluon.jit
     def create(config):
         start_pid = gl.program_id(0)
-        num_pid_m = gl.cdiv(config.seqlen_q, config.TILE_M)
-        num_pid_n = config.batch_size * config.num_heads
-        num_pid_in_group = num_pid_m * config.GROUP_SIZE_N
-        num_tiles = num_pid_m * num_pid_n
+        num_tiles_m = gl.cdiv(config.seqlen_q, config.TILE_M)
+        num_tiles_bh = config.batch_size * config.num_heads_q
+        tiles_per_group = num_tiles_m * config.GROUP_SIZE_N
+        num_tiles = num_tiles_m * num_tiles_bh
         return ProgramScheduler(
-            config, start_pid, num_pid_n, num_pid_in_group, num_tiles
+            config, start_pid, num_tiles_bh, tiles_per_group, num_tiles
         )
 
     @gluon.jit
     def get_program(self, tile_id):
-        group_id = tile_id // self.num_pid_in_group
+        group_id = tile_id // self.tiles_per_group
         first_pid_n = group_id * self.config.GROUP_SIZE_N
-        group_size_n = min(self.num_pid_n - first_pid_n, self.config.GROUP_SIZE_N)
+        group_size_n = min(self.num_tiles_bh - first_pid_n, self.config.GROUP_SIZE_N)
         pid_n = first_pid_n + (tile_id % group_size_n)
-        pid_m = (tile_id % self.num_pid_in_group) // group_size_n
+        pid_m = (tile_id % self.tiles_per_group) // group_size_n
         return self.config.get_program(pid_m, pid_n)
