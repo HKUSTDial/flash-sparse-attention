@@ -148,8 +148,8 @@ class CachedKernel:
                 num_ctas,
             )
 
-            runner = cache.get(key)
-            if runner is None:
+            compiled = cache.get(key)
+            if compiled is None:
                 compiled = kernel_warmup(
                     *args,
                     grid=launch_grid,
@@ -158,12 +158,13 @@ class CachedKernel:
                     num_ctas=num_ctas,
                     **constexprs,
                 )
-                runner = compiled[launch_grid]
-                cache[key] = runner
+                cache[key] = compiled
                 if len(cache) > maxsize:
                     cache.popitem(last=False)
             else:
                 cache.move_to_end(key)
+
+            runner = compiled[launch_grid]
 
             if not constexprs:
                 runner(*args)
