@@ -98,10 +98,10 @@ def benchmark_triton_gated_forward(
         input_source="llm",
     )
     alpha = torch.randn(
-        cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
+        cfg.batch_size, cfg.seqlen_q, cfg.num_heads, device=device, dtype=dtype
     )
     delta = torch.randn(
-        cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
+        cfg.batch_size, cfg.seqlen_k, cfg.num_kv_heads, device=device, dtype=dtype
     )
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
