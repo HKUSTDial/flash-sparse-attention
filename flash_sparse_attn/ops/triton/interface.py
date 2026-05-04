@@ -1020,8 +1020,8 @@ def flash_gated_attn_func(
     :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param alpha: Tensor of shape [batch_size, num_heads, seqlen_q] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
+    :param alpha: Tensor of shape [batch_size, seqlen_q, num_heads] representing the sparsity pattern for queries.
+    :param delta: Tensor of shape [batch_size, seqlen_k, num_kv_heads] representing the sparsity pattern for keys/values.
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax.
@@ -1149,8 +1149,8 @@ def flash_gated_attn_varlen_func(
     :param query: Query tensor of shape [total_seqlen_q, num_heads_q, head_dim].
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
-    :param alpha: Tensor of shape [num_heads_q, total_seqlen_q] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [num_heads_kv, total_seqlen_k] representing the sparsity pattern for keys/values.
+    :param alpha: Tensor of shape [total_seqlen_q, num_heads_q] representing the sparsity pattern for queries.
+    :param delta: Tensor of shape [total_seqlen_k, num_heads_kv] representing the sparsity pattern for keys/values.
     :param cu_seqlens_q: Cumulative sequence lengths for queries, shape [batch_size + 1].
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_q: Maximum sequence length for queries.
