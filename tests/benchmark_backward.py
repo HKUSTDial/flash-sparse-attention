@@ -119,10 +119,10 @@ def benchmark_triton_gated_backward(
     k = k.requires_grad_(True)
     v = v.requires_grad_(True)
     alpha = torch.randn(
-        cfg.batch_size, cfg.num_heads, cfg.seqlen_q, device=device, dtype=dtype
+        cfg.batch_size, cfg.seqlen_q, cfg.num_heads, device=device, dtype=dtype
     ).requires_grad_(True)
     delta = torch.randn(
-        cfg.batch_size, cfg.num_kv_heads, cfg.seqlen_k, device=device, dtype=dtype
+        cfg.batch_size, cfg.seqlen_k, cfg.num_kv_heads, device=device, dtype=dtype
     ).requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
