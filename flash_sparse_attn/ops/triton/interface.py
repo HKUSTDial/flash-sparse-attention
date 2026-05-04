@@ -1080,7 +1080,7 @@ def flash_gated_attn_with_kvcache_func(
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param alpha: Tensor of shape [batch_size, num_heads] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [batch_size, num_kv_heads, seqlen_k] representing the sparsity pattern for keys/values.
+    :param delta: Tensor of shape [batch_size, seqlen_k, num_kv_heads] representing the sparsity pattern for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
@@ -1224,7 +1224,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param key: Key tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param value: Value tensor of shape [total_seqlen_k, num_heads_kv, head_dim].
     :param alpha: Tensor of shape [batch_size, num_heads_q] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [num_heads_kv, total_seqlen_k] representing the sparsity pattern for keys/values.
+    :param delta: Tensor of shape [total_seqlen_k, num_heads_kv] representing the sparsity pattern for keys/values.
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
