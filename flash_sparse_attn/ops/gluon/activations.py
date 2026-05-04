@@ -17,7 +17,7 @@ from flash_sparse_attn.ops.gluon.utils import (
     get_split_n_layout,
     split_n,
     compute_and_store_exp2,
-    subtiled_qk_load,
+    subtiled_s_load,
 )
 from flash_sparse_attn.ops.gluon.mask import apply_mask
 from flash_sparse_attn.ops.gluon.scheduling import ProgramScheduler
@@ -133,25 +133,27 @@ def finalize(
 
     _, scale_bar, scale_consumer = scale_consumer.acquire()
     row_max_tmem, row_sum_tmem = borrow_s_for_finalize(config, s_tmem)
-    row_max = row_max_tmem.load(config.row_scale_2d_layout).reshape([config.SPLIT_M])
+    row_max = row_max_tmem.load(config.row_scale_tmem_layout).reshape([config.SPLIT_M])
     row_max = gl.convert_layout(row_max, row_scale_layout)
-    row_sum = row_sum_tmem.load(config.row_scale_2d_layout).reshape([config.SPLIT_M])
+    row_sum = row_sum_tmem.load(config.row_scale_tmem_layout).reshape([config.SPLIT_M])
     row_sum = gl.convert_layout(row_sum, row_scale_layout)
     mbarrier.arrive(scale_bar, count=1)
 
     if CHECK_NAN:
         row_sum = gl.where(row_sum == 0.0, 1.0, row_sum)
 
-    o_smem, o_smem_bar, o_smem_producer = o_smem_producer.acquire()
+    o_smem_raw, o_smem_bar, o_smem_producer = o_smem_producer.acquire()
     o_tmem, o_bar, o_tmem_consumer = o_tmem_consumer.acquire()
+
+    o_smem = o_smem_raw.reshape([o_smem_raw.shape[-2], o_smem_raw.shape[-1]])
 
     contigDimSize: gl.constexpr = (
         o_smem.type.layout.swizzle_byte_width
         * 8
         // o_smem.type.element_ty.primitive_bitwidth
     )
-    if o_smem.type.shape[1] // config.SPLIT_D_FACTOR >= contigDimSize:
-        SPLIT_N_FACTOR: gl.constexpr = config.SPLIT_D_FACTOR
+    if o_smem.type.shape[1] // config.SPLIT_K_FACTOR >= contigDimSize:
+        SPLIT_N_FACTOR: gl.constexpr = config.SPLIT_K_FACTOR
     else:
         SPLIT_N_FACTOR: gl.constexpr = 1
     gl.static_assert(
@@ -161,12 +163,12 @@ def finalize(
     SPLIT_N: gl.constexpr = o_smem.type.shape[1] // SPLIT_N_FACTOR
 
     scale = float2.pack(
-        (final_scale / row_sum)[:, None].broadcast_to(config.o_shape[0], SPLIT_N),
+        (final_scale / row_sum)[:, None].broadcast_to(config.o_tmem_shape[0], SPLIT_N),
         axis=1,
     )
     for i in gl.static_range(SPLIT_N_FACTOR):
-        o_ref = o_tmem.slice(i * SPLIT_N, SPLIT_N)
-        o = float2.pack(o_ref.load(config.o_splitn_layout), axis=1)
+        o_tmem_slice = o_tmem.slice(i * SPLIT_N, SPLIT_N)
+        o = float2.pack(o_tmem_slice.load(config.o_splitn_layout), axis=1)
         o = o * scale
         o_smem.slice(i * SPLIT_N, SPLIT_N, dim=1).store(
             float2.unpack(o, axis=1).to(config.dtype)
@@ -180,7 +182,7 @@ def finalize(
     coalesced: gl.constexpr = gl.BlockedLayout([1], [32], [config.num_warps], [0])
     offs_m = prog.m_block * config.TILE_M + tile_id * config.SPLIT_M
     offs_m += gl.arange(0, config.SPLIT_M, coalesced)
-    lse_ptrs = Lse + prog.head_idx * config.seqlen_q + offs_m
+    lse_ptrs = Lse + prog.batch_head_idx * config.seqlen_q + offs_m
     gl.store(lse_ptrs, gl.convert_layout(row_max, coalesced))
 
     return scale_consumer, o_smem_producer, o_tmem_consumer
@@ -206,18 +208,18 @@ def rescale_o(config, s_tmem, scale_consumer, o_tmem_consumer):
     o_tmem, o_bar, o_tmem_consumer = o_tmem_consumer.acquire()
 
     _, scale_bar, scale_consumer = scale_consumer.acquire()
-    row_scale = borrow_s_as_row_scale(config, s_tmem).load(config.row_scale_2d_layout)
+    row_scale = borrow_s_as_row_scale(config, s_tmem).load(config.row_scale_tmem_layout)
     mbarrier.arrive(scale_bar, count=1)
     row_scale = gl.convert_layout(row_scale.reshape([config.SPLIT_M]), row_scale_layout)
 
     row_scale = float2.pack(
-        row_scale[:, None].broadcast_to(config.o_shape[0], config.SPLIT_D), axis=1
+        row_scale[:, None].broadcast_to(config.o_tmem_shape[0], config.SPLIT_K), axis=1
     )
-    for i in gl.static_range(config.SPLIT_D_FACTOR):
-        o_ref = o_tmem.slice(i * config.SPLIT_D, config.SPLIT_D)
-        o = float2.pack(o_ref.load(config.o_splitn_layout), axis=1)
+    for i in gl.static_range(config.SPLIT_K_FACTOR):
+        o_tmem_slice = o_tmem.slice(i * config.SPLIT_K, config.SPLIT_K)
+        o = float2.pack(o_tmem_slice.load(config.o_splitn_layout), axis=1)
         o = o * row_scale
-        o_ref.store(float2.unpack(o, axis=1))
+        o_tmem_slice.store(float2.unpack(o, axis=1))
     mbarrier.arrive(o_bar, count=1)
     return scale_consumer, o_tmem_consumer
 
@@ -333,7 +335,7 @@ def online_softmax_inner(
     for i in range(num_blocks):
         start_n = n_end - (1 + i) * config.TILE_N
         s_tmem, s_bar, s_consumer = s_consumer.acquire()
-        acc_s, acc_s_max = subtiled_qk_load(config, s_tmem, use_tmem_red)
+        acc_s, acc_s_max = subtiled_s_load(config, s_tmem, use_tmem_red)
 
         if IS_MASK:
             acc_s = apply_mask(
@@ -362,7 +364,7 @@ def online_softmax_inner(
 
         row_scale_tmem = borrow_s_as_row_scale(config, s_tmem)
         row_scale_tmem.store(
-            gl.convert_layout(row_scale.expand_dims(1), config.row_scale_2d_layout)
+            gl.convert_layout(row_scale.expand_dims(1), config.row_scale_tmem_layout)
         )
         mbarrier.arrive(scale_bar, count=1)
 
@@ -427,8 +429,8 @@ def online_softmax(
     :param exp_turnstile: Exp2 turnstile for pipelining between softmax0 and softmax1.
     :param use_tmem_red: Whether to use TMEM hardware reduction for per-row max.
     """
-    qk_slice_dim1: gl.constexpr = gl.SliceLayout(1, config.qk_layout)
-    sum_layout: gl.constexpr = get_split_n_layout(config.qk_layout)
+    s_slice_dim1: gl.constexpr = gl.SliceLayout(1, config.s_instr_layout)
+    sum_layout: gl.constexpr = get_split_n_layout(config.s_instr_layout)
 
     s_consumer = s_chnl.create_consumer()
     scale_producer = corr_chnl.create_producer()
@@ -441,7 +443,7 @@ def online_softmax(
         offs_m = prog.m_block * config.TILE_M
         offs_m += gl.arange(tile_id * config.SPLIT_M, (1 + tile_id) * config.SPLIT_M)
 
-        row_max = gl.full([config.SPLIT_M], -float("inf"), gl.float32, qk_slice_dim1)
+        row_max = gl.full([config.SPLIT_M], -float("inf"), gl.float32, s_slice_dim1)
         row_sum = gl.full(
             [config.SPLIT_M], 0.0, gl.float32, gl.SliceLayout(1, sum_layout)
         )
@@ -545,10 +547,10 @@ def online_softmax(
         s_tmem, s_bar, s_consumer = s_consumer.acquire()
         row_max_tmem, row_sum_tmem = borrow_s_for_finalize(config, s_tmem)
         row_max_tmem.store(
-            gl.convert_layout(row_max.expand_dims(1), config.row_scale_2d_layout)
+            gl.convert_layout(row_max.expand_dims(1), config.row_scale_tmem_layout)
         )
         row_sum_tmem.store(
-            gl.convert_layout(row_sum.expand_dims(1), config.row_scale_2d_layout)
+            gl.convert_layout(row_sum.expand_dims(1), config.row_scale_tmem_layout)
         )
 
         mbarrier.arrive(scale_bar, count=1)
