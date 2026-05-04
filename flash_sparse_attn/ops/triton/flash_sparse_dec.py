@@ -248,7 +248,7 @@ def _dec_sparse_base_kernel(
         IS_SPLIT_KV=True,
         WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
         WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        QHEAD_PER_KVHEAD_PACKGQA=1,
     )
     n_block_min_no_mask = block_info.get_n_block_min_before_local_mask(
         seqlen_q=actual_seqlen_q,
@@ -259,7 +259,7 @@ def _dec_sparse_base_kernel(
         TILE_M=TILE_M,
         IS_LOCAL=IS_LOCAL,
         WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        QHEAD_PER_KVHEAD_PACKGQA=1,
     )
 
     # Clamp to split's range so the no-mask loop stays within bounds
@@ -356,7 +356,7 @@ def _dec_sparse_base_kernel(
             TILE_N=TILE_N,
             WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
             WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEADS_PER_KVHEAD_PACKGQA=1,
             IS_MASK=True,
             MASK_LOCAL=False,
             CHECK_INF=True,
@@ -407,7 +407,7 @@ def _dec_sparse_base_kernel(
                     TILE_N=TILE_N,
                     WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
                     WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    QHEADS_PER_KVHEAD_PACKGQA=1,
                     IS_MASK=False,
                     MASK_LOCAL=False,
                     CHECK_INF=False,
@@ -455,7 +455,7 @@ def _dec_sparse_base_kernel(
                     TILE_N=TILE_N,
                     WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
                     WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    QHEADS_PER_KVHEAD_PACKGQA=1,
                     IS_MASK=True,
                     MASK_LOCAL=True,
                     CHECK_INF=True,
@@ -635,7 +635,7 @@ def _dec_sparse_sm90_kernel(
         IS_SPLIT_KV=True,
         WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
         WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        QHEAD_PER_KVHEAD_PACKGQA=1,
     )
     n_block_min_no_mask = block_info.get_n_block_min_before_local_mask(
         seqlen_q=actual_seqlen_q,
@@ -646,7 +646,7 @@ def _dec_sparse_sm90_kernel(
         TILE_M=TILE_M,
         IS_LOCAL=IS_LOCAL,
         WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        QHEAD_PER_KVHEAD_PACKGQA=1,
     )
 
     # Clamp to split's range so the no-mask loop stays within bounds
@@ -756,7 +756,7 @@ def _dec_sparse_sm90_kernel(
             TILE_N=TILE_N,
             WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
             WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEADS_PER_KVHEAD_PACKGQA=1,
             IS_MASK=True,
             MASK_LOCAL=False,
             CHECK_INF=True,
@@ -806,7 +806,7 @@ def _dec_sparse_sm90_kernel(
                     TILE_N=TILE_N,
                     WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
                     WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    QHEADS_PER_KVHEAD_PACKGQA=1,
                     IS_MASK=False,
                     MASK_LOCAL=False,
                     CHECK_INF=False,
@@ -853,7 +853,7 @@ def _dec_sparse_sm90_kernel(
                     TILE_N=TILE_N,
                     WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
                     WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                    QHEADS_PER_KVHEAD_PACKGQA=1,
                     IS_MASK=True,
                     MASK_LOCAL=True,
                     CHECK_INF=True,
