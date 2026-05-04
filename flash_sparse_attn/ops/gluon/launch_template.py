@@ -1,880 +1,149 @@
-"""
-NOTE: Setting num_ctas=2 for the kernel can trigger Triton's PlanCTA assertion
-Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
-
-TODO: Better heuristic algorithm for launch configuration to
-maximize utilization across different devices
-"""
-
 import torch
 import triton
 
+from dataclasses import dataclass, fields
 from flash_sparse_attn.ops.gluon import cache_utils
 
 
-def get_fwd_dense_launch_config(
-    is_split_kv: bool,
-    pack_gqa: bool,
-    qheads_per_kvhead: int,
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for forward dense kernel based on input parameters and device architecture.
+def is_cuda():
+    return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
-    :param is_split_kv: Whether the attention is split KV
-    :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
 
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
+def is_blackwell():
+    return is_cuda() and torch.cuda.get_device_capability()[0] == 10
 
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
-    if device.type == "cuda":
-        # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
-        if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 16:
-                tile_m = triton.next_power_of_2(qheads_per_kvhead)
-            else:
-                tile_m = 16
+def is_blackwell_ultra():
+    return is_cuda() and torch.cuda.get_device_capability()[0:2] == (10, 3)
+
+
+@dataclass(frozen=True, slots=True)
+class KernelConfig:
+    TILE_M: int = 256
+    TILE_N: int = 128
+    GROUP_SIZE_N: int | None = None
+    SPLIT_EXP_FACTOR: int | None = None
+    NUM_WARPS: int = 4
+    MAXNREG: int = 128
+    OCCUPANCY: int = 1
+    USE_TMEM_RED: bool = False
+    NUM_KV_BUFFERS: int | None = None
+    USE_EXP2_TURNSTILE: bool | None = None
+
+
+def _default_split_exp_factor(head_dim: int) -> int:
+    return max(1, 256 // head_dim)
+
+
+def _default_num_kv_buffers(head_dim: int, dtype: torch.dtype) -> int:
+    is_fp16 = dtype in [torch.float16, torch.bfloat16]
+    if is_fp16:
+        return 3 if head_dim == 128 else 6
+    return 4 if head_dim == 128 else 8
+
+
+def get_fwd_launch_config(
+    head_dim: int,
+    seqlen: int,
+    dtype: torch.dtype,
+    is_causal: bool,
+    use_tmem_red: bool,
+    override: KernelConfig | None = None,
+) -> KernelConfig:
+    is_fp8 = dtype == torch.float8_e5m2
+    is_bf16 = dtype == torch.bfloat16
+    is_bwu = is_blackwell_ultra()
+
+    block_m = 256
+    block_n = 128
+    group_size_n = 1
+    split_exp_factor = _default_split_exp_factor(head_dim)
+    num_warps = 4
+    maxnreg = 128
+    occupancy = 1
+    use_selected_tmem_red = (
+        use_tmem_red or (is_bwu and not is_causal)
+    ) and not is_causal
+    num_kv_buffers = _default_num_kv_buffers(head_dim, dtype)
+    use_exp2_turnstile = head_dim == 64
+
+    if is_causal:
+        group_size_n = 8 if head_dim == 64 or seqlen <= 2048 else 4
+
+    if head_dim == 128:
+        split_exp_factor = 4
+        if not is_causal and is_bf16 and seqlen <= 2048:
+            group_size_n = 4
+    elif not is_causal and head_dim == 64 and use_selected_tmem_red:
+        split_exp_factor = 1
+        if seqlen <= 1024:
+            num_kv_buffers = 2
+        elif seqlen >= 8192:
+            maxnreg = 112
+    elif is_causal and head_dim == 64:
+        num_kv_buffers = 2
+        if seqlen <= 1024:
+            split_exp_factor = 2
         else:
-            # will be set based on architecture and tile_k
-            tile_m = None
+            use_exp2_turnstile = False
 
-        # For A100
-        if arch // 10 == 8:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (64, 64, 4, 1, 1)
-                else:
-                    return (64, 64, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 256, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 64, 4, 1, 1)
-                else:
-                    return (tile_m, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (64, 64, 4, 1, 1)
-                else:
-                    return (64, 64, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 256, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 64, 4, 1, 1)
-                else:
-                    return (tile_m, 64, 4, 1, 1)
-
-        # For B200 — SM100 warp-specialized persistent kernel
-        elif arch // 10 == 10:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 8, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 8, 1, 1)
-                elif tile_k <= 256:
-                    return (128, 64, 8, 1, 1)
-                else:
-                    return (64, 64, 8, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (64, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (32, 32, 4, 1, 1)
-                else:
-                    return (32, 32, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 32, 4, 1, 1)
-                else:
-                    return (tile_m, 32, 4, 1, 1)
+    if is_fp8:
+        if is_causal and head_dim == 64:
+            group_size_n = 8 if seqlen <= 2048 else 4
+            split_exp_factor = 4 if seqlen <= 2048 else 2
+            maxnreg = 112 if seqlen >= 4096 else 128
+            use_selected_tmem_red = False
+            num_kv_buffers = 2
+            use_exp2_turnstile = seqlen <= 1024
+        elif is_causal and head_dim == 128:
+            group_size_n = 8 if seqlen <= 2048 else 4
+            split_exp_factor = 2 if seqlen <= 2048 else 8
+            maxnreg = 128
+            use_selected_tmem_red = False
+            num_kv_buffers = 4
+            use_exp2_turnstile = False
+        elif not is_causal and head_dim == 64:
+            group_size_n = 1
+            split_exp_factor = 2
+            maxnreg = 128
+            use_selected_tmem_red = is_bwu
+            num_kv_buffers = 2 if seqlen <= 1024 else 8
+            use_exp2_turnstile = True
+        elif not is_causal and head_dim == 128:
+            group_size_n = 1
+            split_exp_factor = 4 if seqlen <= 2048 else 8
+            maxnreg = 128
+            use_selected_tmem_red = is_bwu
+            num_kv_buffers = 4
+            use_exp2_turnstile = False
         else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_fwd_dense_launch_config = cache_utils.cache_launch_config(
-    get_fwd_dense_launch_config
-)
-
-
-def get_fwd_sparse_launch_config(
-    is_split_kv: bool,
-    pack_gqa: bool,
-    qheads_per_kvhead: int,
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for forward sparse kernel based on input parameters and device architecture.
-
-    :param is_split_kv: Whether the attention is split KV
-    :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
-        if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 16:
-                tile_m = triton.next_power_of_2(qheads_per_kvhead)
-            else:
-                tile_m = 16
-        else:
-            # will be set based on architecture and tile_k
-            tile_m = None
-
-        # For A100
-        if arch // 10 == 8:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (64, 64, 4, 1, 1)
-                else:
-                    return (64, 64, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 256, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 64, 4, 1, 1)
-                else:
-                    return (tile_m, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (64, 64, 4, 1, 1)
-                else:
-                    return (64, 64, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 256, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 64, 4, 1, 1)
-                else:
-                    return (tile_m, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            if not is_split_kv:
-                return (64, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (64, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (32, 32, 4, 1, 1)
-                else:
-                    return (32, 32, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 32, 4, 1, 1)
-                else:
-                    return (tile_m, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_fwd_sparse_launch_config = cache_utils.cache_launch_config(
-    get_fwd_sparse_launch_config
-)
-
-
-def get_fwd_gated_launch_config(
-    is_split_kv: bool,
-    pack_gqa: bool,
-    qheads_per_kvhead: int,
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for forward sparse kernel based on input parameters and device architecture.
-
-    :param is_split_kv: Whether the attention is split KV
-    :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
-        if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 16:
-                tile_m = triton.next_power_of_2(qheads_per_kvhead)
-            else:
-                tile_m = 16
-        else:
-            # will be set based on architecture and tile_k
-            tile_m = None
-
-        # For A100
-        if arch // 10 == 8:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (64, 64, 4, 1, 1)
-                else:
-                    return (64, 64, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 256, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 64, 4, 1, 1)
-                else:
-                    return (tile_m, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (64, 64, 4, 1, 1)
-                else:
-                    return (64, 64, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 256, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 64, 4, 1, 1)
-                else:
-                    return (tile_m, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            if not is_split_kv:
-                return (64, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if not is_split_kv:
-                if tile_k <= 64:
-                    return (128, 64, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (64, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (32, 32, 4, 1, 1)
-                else:
-                    return (32, 32, 4, 1, 1)
-            else:
-                if tile_k <= 64:
-                    return (tile_m, 128, 4, 1, 1)
-                elif tile_k <= 128:
-                    return (tile_m, 64, 4, 1, 1)
-                elif tile_k <= 256:
-                    return (tile_m, 32, 4, 1, 1)
-                else:
-                    return (tile_m, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_fwd_gated_launch_config = cache_utils.cache_launch_config(
-    get_fwd_gated_launch_config
-)
-
-
-def get_fwd_combine_launch_config(
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int]:
-    """
-    Get launch configuration for forward combine kernel based on input parameters and device architecture.
-
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # For A100
-        if arch // 10 == 8:
-            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
-            return (tile_m, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            tile_m = 8 if tile_k % 128 == 0 else (16 if tile_k % 64 == 0 else 32)
-            return (tile_m, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            tile_m = 16 if tile_k % 128 == 0 else (32 if tile_k % 64 == 0 else 64)
-            return (tile_m, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
-            return (tile_m, 4, 1, 1)
-
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_fwd_combine_launch_config = cache_utils.cache_launch_config(
-    get_fwd_combine_launch_config
-)
-
-
-def get_bwd_dense_launch_config(
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for backward dense kernel based on input parameters and device architecture.
-
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # For A100
-        if arch // 10 == 8:
-            if tile_k <= 64:
-                return (128, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (128, 64, 4, 1, 1)
-            elif tile_k <= 256:
-                return (64, 64, 4, 1, 1)
-            else:
-                return (64, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if tile_k <= 64:
-                return (256, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (128, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (128, 64, 4, 1, 1)
-            else:
-                return (128, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            return (64, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if tile_k <= 64:
-                return (64, 128, 8, 1, 1)
-            elif tile_k <= 128:
-                return (64, 64, 8, 1, 1)
-            elif tile_k <= 256:
-                return (32, 32, 4, 1, 1)
-            else:
-                return (32, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_bwd_dense_launch_config = cache_utils.cache_launch_config(
-    get_bwd_dense_launch_config
-)
-
-
-def get_bwd_sparse_launch_config(
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for backward sparse kernel based on input parameters and device architecture.
-
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # For A100
-        if arch // 10 == 8:
-            if tile_k <= 64:
-                return (128, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (128, 64, 4, 1, 1)
-            elif tile_k <= 256:
-                return (64, 64, 4, 1, 1)
-            else:
-                return (64, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if tile_k <= 64:
-                return (256, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (128, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (128, 64, 4, 1, 1)
-            else:
-                return (128, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            return (64, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if tile_k <= 64:
-                return (64, 128, 8, 1, 1)
-            elif tile_k <= 128:
-                return (64, 64, 8, 1, 1)
-            elif tile_k <= 256:
-                return (32, 32, 4, 1, 1)
-            else:
-                return (32, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_bwd_sparse_launch_config = cache_utils.cache_launch_config(
-    get_bwd_sparse_launch_config
-)
-
-
-def get_bwd_gated_launch_config(
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for backward sparse kernel based on input parameters and device architecture.
-
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # For A100
-        if arch // 10 == 8:
-            if tile_k <= 64:
-                return (128, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (128, 64, 4, 1, 1)
-            elif tile_k <= 256:
-                return (64, 64, 4, 1, 1)
-            else:
-                return (64, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if tile_k <= 64:
-                return (256, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (128, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (128, 64, 4, 1, 1)
-            else:
-                return (128, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            return (64, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if tile_k <= 64:
-                return (64, 128, 8, 1, 1)
-            elif tile_k <= 128:
-                return (64, 64, 8, 1, 1)
-            elif tile_k <= 256:
-                return (32, 32, 4, 1, 1)
-            else:
-                return (32, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_bwd_gated_launch_config = cache_utils.cache_launch_config(
-    get_bwd_gated_launch_config
-)
-
-
-def get_dec_dense_launch_config(
-    qheads_per_kvhead: int,
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for decode dense kernel based on input parameters and device architecture.
-
-    :param qheads_per_kvhead: Number of query heads per key/value head
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
-
-        # For A100
-        if arch // 10 == 8:
-            if tile_k <= 64:
-                return (tile_m, 256, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if tile_k <= 64:
-                return (tile_m, 256, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            return (tile_m, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if tile_k <= 64:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 64, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 32, 4, 1, 1)
-            else:
-                return (tile_m, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_dec_dense_launch_config = cache_utils.cache_launch_config(
-    get_dec_dense_launch_config
-)
-
-
-def get_dec_sparse_launch_config(
-    qheads_per_kvhead: int,
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for decode sparse kernel based on input parameters and device architecture.
-
-    :param qheads_per_kvhead: Number of query heads per key/value head
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
-
-        # For A100
-        if arch // 10 == 8:
-            if tile_k <= 64:
-                return (tile_m, 256, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if tile_k <= 64:
-                return (tile_m, 256, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            return (tile_m, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if tile_k <= 64:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 64, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 32, 4, 1, 1)
-            else:
-                return (tile_m, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_dec_sparse_launch_config = cache_utils.cache_launch_config(
-    get_dec_sparse_launch_config
-)
-
-
-def get_dec_gated_launch_config(
-    qheads_per_kvhead: int,
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int, int, int]:
-    """
-    Get launch configuration for decode gated kernel based on input parameters and device architecture.
-
-    :param qheads_per_kvhead: Number of query heads per key/value head
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (tile_m, tile_n, num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
-
-        # For A100
-        if arch // 10 == 8:
-            if tile_k <= 64:
-                return (tile_m, 256, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            if tile_k <= 64:
-                return (tile_m, 256, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 64, 4, 1, 1)
-            else:
-                return (tile_m, 64, 4, 1, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            # TODO: Tune launch config for SM 100
-            return (tile_m, 64, 4, 1, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            if tile_k <= 64:
-                return (tile_m, 128, 4, 1, 1)
-            elif tile_k <= 128:
-                return (tile_m, 64, 4, 1, 1)
-            elif tile_k <= 256:
-                return (tile_m, 32, 4, 1, 1)
-            else:
-                return (tile_m, 32, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_dec_gated_launch_config = cache_utils.cache_launch_config(
-    get_dec_gated_launch_config
-)
-
-
-def get_dec_combine_launch_config(
-    tile_k: int,
-    device: torch.device,
-    arch: int,
-) -> tuple[int, int, int]:
-    """
-    Get launch configuration for decode combine kernel based on input parameters and device architecture.
-
-    :param tile_k: Tile size in the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
-
-    :return launch_config: Tuple of (num_warps, num_stages, num_ctas) for launching the kernel
-    """
-
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        # For A100
-        if arch // 10 == 8:
-            num_stages = max(min(8, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-
-        # For H100
-        elif arch // 10 == 9:
-            num_stages = max(min(8, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-
-        # For B200
-        elif arch // 10 == 10:
-            num_stages = max(min(16, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-
-        # For RTX Pro 6000
-        elif arch // 10 == 12:
-            num_stages = max(min(4, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
-
-
-get_dec_combine_launch_config = cache_utils.cache_launch_config(
-    get_dec_combine_launch_config
-)
+            group_size_n = 4 if is_causal else 1
+            split_exp_factor = _default_split_exp_factor(head_dim)
+            use_selected_tmem_red = use_tmem_red and not is_causal
+
+    config = KernelConfig(
+        TILE_M=block_m,
+        TILE_N=block_n,
+        GROUP_SIZE_N=group_size_n,
+        SPLIT_EXP_FACTOR=split_exp_factor,
+        NUM_WARPS=num_warps,
+        MAXNREG=maxnreg,
+        OCCUPANCY=occupancy,
+        USE_TMEM_RED=use_selected_tmem_red,
+        NUM_KV_BUFFERS=num_kv_buffers,
+        USE_EXP2_TURNSTILE=use_exp2_turnstile,
+    )
+    if override is None:
+        return config
+
+    values = {
+        field.name: getattr(override, field.name) for field in fields(KernelConfig)
+    }
+    values = {
+        name: getattr(config, name) if value is None else value
+        for name, value in values.items()
+    }
+    return KernelConfig(**values)
+
+
+get_fwd_launch_config = cache_utils.cache_launch_config(get_fwd_launch_config)
