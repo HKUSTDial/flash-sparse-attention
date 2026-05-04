@@ -245,8 +245,10 @@ def _bwd_gated_base_kernel(
     stride_vn,
     stride_ab,
     stride_ah,
+    stride_am,
     stride_db,
     stride_dh,
+    stride_dn,
     stride_dob,
     stride_doh,
     stride_dom,
@@ -267,8 +269,10 @@ def _bwd_gated_base_kernel(
     stride_dvn,
     stride_dab,
     stride_dah,
+    stride_dam,
     stride_ddb,
     stride_ddh,
+    stride_ddn,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
@@ -364,7 +368,7 @@ def _bwd_gated_base_kernel(
         offset_q,
         padded_offset_q,
         stride_ab,
-        1,
+        stride_am,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -374,7 +378,7 @@ def _bwd_gated_base_kernel(
         offset_k,
         padded_offset_k,
         stride_db,
-        1,
+        stride_dn,
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
@@ -444,7 +448,7 @@ def _bwd_gated_base_kernel(
         offset_q,
         padded_offset_q,
         stride_dab,
-        1,
+        stride_dam,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=True,
     )
@@ -454,7 +458,7 @@ def _bwd_gated_base_kernel(
         offset_k,
         padded_offset_k,
         stride_ddb,
-        1,
+        stride_ddn,
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
@@ -513,7 +517,7 @@ def _bwd_gated_base_kernel(
     d_ptrs = tl.make_block_ptr(
         base=d_base,
         shape=(actual_seqlen_k,),
-        strides=(1,),
+        strides=(stride_dn,),
         offsets=(n_block * TILE_N,),
         block_shape=(TILE_N,),
         order=(0,),
@@ -538,7 +542,7 @@ def _bwd_gated_base_kernel(
         dd_ptrs = seqlen_info.make_ptrs(
             base_ptrs=dd_base,
             mn_block=n_block,
-            stride_seq=1,
+            stride_seq=stride_ddn,
             TILE_MN=TILE_N,
             TILE_K=1,
             SWAP_AB=False,
@@ -563,7 +567,7 @@ def _bwd_gated_base_kernel(
         dd_ptrs = tl.make_block_ptr(
             base=dd_base,
             shape=(actual_seqlen_k,),
-            strides=(1,),
+            strides=(stride_ddn,),
             offsets=(n_block * TILE_N,),
             block_shape=(TILE_N,),
             order=(0,),
@@ -600,7 +604,7 @@ def _bwd_gated_base_kernel(
         a_ptrs = tl.make_block_ptr(
             base=a_base,
             shape=(actual_seqlen_q,),
-            strides=(1,),
+            strides=(stride_am,),
             offsets=(m_block_min * TILE_M,),
             block_shape=(TILE_M,),
             order=(0,),
@@ -641,7 +645,7 @@ def _bwd_gated_base_kernel(
             da_accum_ptrs = seqlen_info.make_ptrs(
                 base_ptrs=da_base,
                 mn_block=m_block,
-                stride_seq=1,
+                stride_seq=stride_dam,
                 TILE_MN=TILE_M,
                 TILE_K=1,
                 SWAP_AB=False,
@@ -726,7 +730,7 @@ def _bwd_gated_base_kernel(
         a_ptrs = tl.make_block_ptr(
             base=a_base,
             shape=(actual_seqlen_q,),
-            strides=(1,),
+            strides=(stride_am,),
             offsets=(m_block_min_no_mask * TILE_M,),
             block_shape=(TILE_M,),
             order=(0,),
@@ -767,7 +771,7 @@ def _bwd_gated_base_kernel(
             da_accum_ptrs = seqlen_info.make_ptrs(
                 base_ptrs=da_base,
                 mn_block=m_block,
-                stride_seq=1,
+                stride_seq=stride_dam,
                 TILE_MN=TILE_M,
                 TILE_K=1,
                 SWAP_AB=False,
@@ -852,7 +856,7 @@ def _bwd_gated_base_kernel(
         a_ptrs = tl.make_block_ptr(
             base=a_base,
             shape=(actual_seqlen_q,),
-            strides=(1,),
+            strides=(stride_am,),
             offsets=(m_block_max_no_mask * TILE_M,),
             block_shape=(TILE_M,),
             order=(0,),
@@ -893,7 +897,7 @@ def _bwd_gated_base_kernel(
             da_accum_ptrs = seqlen_info.make_ptrs(
                 base_ptrs=da_base,
                 mn_block=m_block,
-                stride_seq=1,
+                stride_seq=stride_dam,
                 TILE_MN=TILE_M,
                 TILE_K=1,
                 SWAP_AB=False,
@@ -1159,8 +1163,10 @@ def _flash_gated_attn_base_backward(
         value.stride(-2),
         value.stride(-3),
         alpha.stride(0),
+        alpha.stride(-1),
         alpha.stride(-2),
         delta.stride(0),
+        delta.stride(-1),
         delta.stride(-2),
         dout.stride(0),
         dout.stride(-2),
@@ -1182,8 +1188,10 @@ def _flash_gated_attn_base_backward(
         dv_accum.stride(-3),
         da_accum.stride(0),
         da_accum.stride(-2),
+        da_accum.stride(-1),
         dd_accum.stride(0),
         dd_accum.stride(-2),
+        dd_accum.stride(-1),
         None,
         None,
         None,
@@ -1223,7 +1231,7 @@ def _flash_gated_attn_base_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
-    dd.copy_(dd_accum)
+    dd.copy_(dd_accum.transpose(-1, -2))
 
     return dq, dk, dv, da, dd
 
@@ -1393,8 +1401,10 @@ def _flash_gated_attn_varlen_base_backward(
         value.stride(-2),
         value.stride(0),
         0,
+        alpha.stride(-1),
         alpha.stride(-2),
         0,
+        delta.stride(-1),
         delta.stride(-2),
         0,
         dout.stride(-2),
@@ -1416,8 +1426,10 @@ def _flash_gated_attn_varlen_base_backward(
         dv_accum.stride(0),
         0,
         da_accum.stride(0),
+        da_accum.stride(-1),
         0,
         dd_accum.stride(0),
+        dd_accum.stride(-1),
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
@@ -1460,6 +1472,6 @@ def _flash_gated_attn_varlen_base_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
-    dd.copy_(dd_accum)
+    dd.copy_(dd_accum.transpose(-1, -2))
 
     return dq, dk, dv, da, dd
