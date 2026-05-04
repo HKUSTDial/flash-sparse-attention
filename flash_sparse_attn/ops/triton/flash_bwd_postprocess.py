@@ -21,8 +21,10 @@ def _bwd_postprocess_kernel(
     stride_dqm,
     stride_daab,
     stride_daah,
+    stride_daam,
     stride_dab,
     stride_dah,
+    stride_dam,
     cu_seqlens_q,
     seqused_q,
     seqlen_q,
@@ -112,7 +114,7 @@ def _bwd_postprocess_kernel(
             offset_q,
             padded_offset_q,
             stride_daab,
-            1,
+            stride_daam,
             HAS_CU_SEQLENS_Q,
             USE_PADDED=True,
         )
@@ -122,7 +124,7 @@ def _bwd_postprocess_kernel(
             offset_q,
             padded_offset_q,
             stride_dab,
-            1,
+            stride_dam,
             HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
@@ -130,7 +132,7 @@ def _bwd_postprocess_kernel(
         da_accum_ptrs = tl.make_block_ptr(
             base=da_accum_base,
             shape=(actual_seqlen_q,),
-            strides=(1,),
+            strides=(stride_daam,),
             offsets=(0,),
             block_shape=(TILE_M,),
             order=(0,),
@@ -138,7 +140,7 @@ def _bwd_postprocess_kernel(
         da_ptrs = tl.make_block_ptr(
             base=da_base,
             shape=(actual_seqlen_q,),
-            strides=(1,),
+            strides=(stride_dam,),
             offsets=(0,),
             block_shape=(TILE_M,),
             order=(0,),
@@ -202,7 +204,9 @@ def _flash_attn_bwd_postprocess(
         da_accum.stride(1)
         if (has_da and not is_varlen)
         else (da_accum.stride(0) if has_da else 0),
+        da_accum.stride(-1) if has_da else 0,
         da.stride(0) if (has_da and not is_varlen) else 0,
+        da.stride(-1) if has_da else 0,
         da.stride(-2) if has_da else 0,
         cu_seqlens_q,
         seqused_q,
