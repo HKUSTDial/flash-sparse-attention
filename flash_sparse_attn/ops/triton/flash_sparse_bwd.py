@@ -12,6 +12,7 @@ from flash_sparse_attn.ops.triton import (
     launch_grid,
     seqlen_info,
     block_info,
+    activations,
     mask,
     flash_bwd_preprocess,
     flash_bwd_postprocess,
@@ -90,7 +91,7 @@ def _bwd_inner_sparse_base_kernel(
         lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
 
         # Compute attention weights
-        p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
+        p = activations.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
             q_tile.dtype
         )
 
