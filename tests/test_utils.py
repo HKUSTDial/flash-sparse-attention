@@ -984,7 +984,7 @@ def _quantize_per_tensor_fp8(x: torch.Tensor):
     amax = x.abs().amax().clamp(min=1e-12)
     scale = amax / torch.finfo(torch.float8_e5m2).max
     x_fp8 = (x / scale).to(torch.float8_e5m2)
-    return x_fp8, scale.to(torch.bfloat16)
+    return x_fp8, scale.to(torch.float32)
 
 
 def run_decode_base_case(

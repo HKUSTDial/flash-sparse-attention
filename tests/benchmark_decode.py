@@ -12,13 +12,13 @@ from flash_sparse_attn.ops.triton.interface import (
     flash_sparse_attn_with_kvcache_func,
     flash_gated_attn_with_kvcache_func,
 )
+from flash_sparse_attn.ops.triton import quant
 from test_utils import (
     BenchmarkConfig,
     BenchmarkResult,
     format_tflops,
     generate_inputs,
     generate_decode_configs,
-    _quantize_per_tensor_fp8,
 )
 
 
@@ -70,9 +70,10 @@ def benchmark_triton_dense_decode_fp8(
     )
     q = q.squeeze(1)
 
-    q_fp8, q_scale = _quantize_per_tensor_fp8(q)
-    k_fp8, k_scale = _quantize_per_tensor_fp8(k)
-    v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+    # Pre-quantize outside benchmark loop
+    q_fp8, q_scale = quant.quantize_fp8(q)
+    k_fp8, k_scale = quant.quantize_fp8(k)
+    v_fp8, v_scale = quant.quantize_fp8(v)
 
     softmax_scale = cfg.head_dim**-0.5
 
@@ -86,6 +87,7 @@ def benchmark_triton_dense_decode_fp8(
             key_scale=k_scale,
             value_scale=v_scale,
             window_size=(None, None),
+            is_quant=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -166,9 +168,9 @@ def benchmark_triton_sparse_decode_fp8(
     )
     q = q.squeeze(1)
 
-    q_fp8, q_scale = _quantize_per_tensor_fp8(q)
-    k_fp8, k_scale = _quantize_per_tensor_fp8(k)
-    v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+    q_fp8, q_scale = quant.quantize_fp8(q)
+    k_fp8, k_scale = quant.quantize_fp8(k)
+    v_fp8, v_scale = quant.quantize_fp8(v)
 
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
@@ -184,6 +186,7 @@ def benchmark_triton_sparse_decode_fp8(
             key_scale=k_scale,
             value_scale=v_scale,
             window_size=(None, None),
+            is_quant=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -201,9 +204,9 @@ def benchmark_triton_gated_decode_fp8(
     )
     q = q.squeeze(1)
 
-    q_fp8, q_scale = _quantize_per_tensor_fp8(q)
-    k_fp8, k_scale = _quantize_per_tensor_fp8(k)
-    v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+    q_fp8, q_scale = quant.quantize_fp8(q)
+    k_fp8, k_scale = quant.quantize_fp8(k)
+    v_fp8, v_scale = quant.quantize_fp8(v)
 
     alpha = torch.randn(
         cfg.batch_size, cfg.num_heads, device=device, dtype=torch.bfloat16
@@ -234,6 +237,7 @@ def benchmark_triton_gated_decode_fp8(
             key_scale=k_scale,
             value_scale=v_scale,
             window_size=(None, None),
+            is_quant=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
