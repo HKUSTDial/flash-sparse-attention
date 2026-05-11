@@ -16,11 +16,12 @@ from flash_sparse_attn.ops.triton import (
     mask,
     flash_bwd_preprocess,
     flash_bwd_postprocess,
+    kernel_repr,
 )
 
 
 @triton.jit
-def _bwd_inner_sparse_base_kernel(
+def _bwd_inner_sparse_kernel(
     acc_dk,
     acc_dv,
     block_max,
@@ -137,8 +138,8 @@ def _bwd_inner_sparse_base_kernel(
     return acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs
 
 
-@triton.jit
-def _bwd_sparse_base_kernel(
+@triton.jit(repr=kernel_repr.bwd_sparse_repr)
+def _bwd_sparse_kernel(
     Q,
     K,
     V,
@@ -477,7 +478,7 @@ def _bwd_sparse_base_kernel(
             )
 
             acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                _bwd_inner_sparse_base_kernel(
+                _bwd_inner_sparse_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
                     block_max=block_max,
@@ -558,7 +559,7 @@ def _bwd_sparse_base_kernel(
             )
 
             acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                _bwd_inner_sparse_base_kernel(
+                _bwd_inner_sparse_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
                     block_max=block_max,
@@ -639,7 +640,7 @@ def _bwd_sparse_base_kernel(
             )
 
             acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                _bwd_inner_sparse_base_kernel(
+                _bwd_inner_sparse_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
                     block_max=block_max,
@@ -692,10 +693,10 @@ def _bwd_sparse_base_kernel(
         tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1), cache_modifier=".wb")
 
 
-_bwd_sparse_base_kernel = cache_utils.wrap_kernel(_bwd_sparse_base_kernel)
+_bwd_sparse_kernel = cache_utils.wrap_kernel(_bwd_sparse_kernel)
 
 
-def _flash_sparse_attn_base_backward(
+def _flash_sparse_attn_backward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -804,7 +805,7 @@ def _flash_sparse_attn_base_backward(
         batch_size=batch_size,
     )
 
-    _bwd_sparse_base_kernel[grid](
+    _bwd_sparse_kernel[grid](
         query,
         key,
         value,
@@ -883,7 +884,7 @@ def _flash_sparse_attn_base_backward(
     return dq, dk, dv
 
 
-def _flash_sparse_attn_varlen_base_backward(
+def _flash_sparse_attn_varlen_backward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -1007,7 +1008,7 @@ def _flash_sparse_attn_varlen_base_backward(
         batch_size=batch_size,
     )
 
-    _bwd_sparse_base_kernel[grid](
+    _bwd_sparse_kernel[grid](
         query,
         key,
         value,

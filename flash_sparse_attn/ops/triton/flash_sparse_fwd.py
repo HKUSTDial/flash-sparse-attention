@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import math
 import torch
@@ -16,11 +16,12 @@ from flash_sparse_attn.ops.triton import (
     activations,
     mask,
     flash_dec_combine,
+    kernel_repr,
 )
 
 
 @triton.jit
-def _fwd_inner_sparse_base_kernel(
+def _fwd_inner_sparse_kernel(
     q_tile,
     k_tile,
     k_ptrs,
@@ -103,8 +104,8 @@ def _fwd_inner_sparse_base_kernel(
     return k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum
 
 
-@triton.jit
-def _fwd_base_sparse_kernel(
+@triton.jit(repr=kernel_repr.fwd_sparse_repr)
+def _fwd_sparse_kernel(
     Q,
     K,
     V,
@@ -435,7 +436,7 @@ def _fwd_base_sparse_kernel(
     if IS_CAUSAL or IS_LOCAL:
         for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _fwd_inner_sparse_base_kernel(
+                _fwd_inner_sparse_kernel(
                     q_tile=q_tile,
                     k_tile=k_tile,
                     k_ptrs=k_ptrs,
@@ -467,7 +468,7 @@ def _fwd_base_sparse_kernel(
         n_block = n_block_max - 1
 
         k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-            _fwd_inner_sparse_base_kernel(
+            _fwd_inner_sparse_kernel(
                 q_tile=q_tile,
                 k_tile=k_tile,
                 k_ptrs=k_ptrs,
@@ -519,7 +520,7 @@ def _fwd_base_sparse_kernel(
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _fwd_inner_sparse_base_kernel(
+                _fwd_inner_sparse_kernel(
                     q_tile=q_tile,
                     k_tile=k_tile,
                     k_ptrs=k_ptrs,
@@ -568,7 +569,7 @@ def _fwd_base_sparse_kernel(
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _fwd_inner_sparse_base_kernel(
+                _fwd_inner_sparse_kernel(
                     q_tile=q_tile,
                     k_tile=k_tile,
                     k_ptrs=k_ptrs,
@@ -637,10 +638,10 @@ def _fwd_base_sparse_kernel(
         tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
-_fwd_base_sparse_kernel = cache_utils.wrap_kernel(_fwd_base_sparse_kernel)
+_fwd_sparse_kernel = cache_utils.wrap_kernel(_fwd_sparse_kernel)
 
 
-def _flash_sparse_attn_base_forward(
+def _flash_sparse_attn_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -732,7 +733,7 @@ def _flash_sparse_attn_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_base_sparse_kernel[grid](
+    _fwd_sparse_kernel[grid](
         query,
         key,
         value,
@@ -795,7 +796,7 @@ def _flash_sparse_attn_base_forward(
     return out, lse, softmax_scale, softmax_threshold
 
 
-def _flash_sparse_attn_varlen_base_forward(
+def _flash_sparse_attn_varlen_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -894,7 +895,7 @@ def _flash_sparse_attn_varlen_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_base_sparse_kernel[grid](
+    _fwd_sparse_kernel[grid](
         query,
         key,
         value,

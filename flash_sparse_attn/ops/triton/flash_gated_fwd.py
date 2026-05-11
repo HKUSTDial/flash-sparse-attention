@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import math
 import torch
@@ -16,11 +16,12 @@ from flash_sparse_attn.ops.triton import (
     activations,
     mask,
     flash_dec_combine,
+    kernel_repr,
 )
 
 
 @triton.jit
-def _fwd_inner_gated_base_kernel(
+def _fwd_inner_gated_kernel(
     skip_gate_curr,
     acc_s,
     acc_o,
@@ -167,8 +168,8 @@ def _fwd_inner_gated_base_kernel(
     )
 
 
-@triton.jit
-def _fwd_gated_base_kernel(
+@triton.jit(repr=kernel_repr.fwd_gated_repr)
+def _fwd_gated_kernel(
     Q,
     K,
     V,
@@ -622,7 +623,7 @@ def _fwd_gated_base_kernel(
                 block_max,
                 row_max,
                 row_sum,
-            ) = _fwd_inner_gated_base_kernel(
+            ) = _fwd_inner_gated_kernel(
                 skip_gate_curr=skip_gate_curr,
                 acc_s=acc_s,
                 acc_o=acc_o,
@@ -671,7 +672,7 @@ def _fwd_gated_base_kernel(
             block_max,
             row_max,
             row_sum,
-        ) = _fwd_inner_gated_base_kernel(
+        ) = _fwd_inner_gated_kernel(
             skip_gate_curr=skip_gate_curr,
             acc_s=acc_s,
             acc_o=acc_o,
@@ -778,7 +779,7 @@ def _fwd_gated_base_kernel(
                 block_max,
                 row_max,
                 row_sum,
-            ) = _fwd_inner_gated_base_kernel(
+            ) = _fwd_inner_gated_kernel(
                 skip_gate_curr=skip_gate_curr,
                 acc_s=acc_s,
                 acc_o=acc_o,
@@ -882,7 +883,7 @@ def _fwd_gated_base_kernel(
                 block_max,
                 row_max,
                 row_sum,
-            ) = _fwd_inner_gated_base_kernel(
+            ) = _fwd_inner_gated_kernel(
                 skip_gate_curr=skip_gate_curr,
                 acc_s=acc_s,
                 acc_o=acc_o,
@@ -958,10 +959,10 @@ def _fwd_gated_base_kernel(
         tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
-_fwd_gated_base_kernel = cache_utils.wrap_kernel(_fwd_gated_base_kernel)
+_fwd_gated_kernel = cache_utils.wrap_kernel(_fwd_gated_kernel)
 
 
-def _flash_gated_attn_base_forward(
+def _flash_gated_attn_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -1061,7 +1062,7 @@ def _flash_gated_attn_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_gated_base_kernel[grid](
+    _fwd_gated_kernel[grid](
         query,
         key,
         value,
@@ -1135,7 +1136,7 @@ def _flash_gated_attn_base_forward(
     return out, lse, softmax_scale, softmax_threshold, gate_threshold
 
 
-def _flash_gated_attn_varlen_base_forward(
+def _flash_gated_attn_varlen_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -1242,7 +1243,7 @@ def _flash_gated_attn_varlen_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_gated_base_kernel[grid](
+    _fwd_gated_kernel[grid](
         query,
         key,
         value,
