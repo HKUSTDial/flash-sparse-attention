@@ -16,11 +16,12 @@ from flash_sparse_attn.ops.triton import (
     activations,
     mask,
     flash_fwd_combine,
+    kernel_repr,
 )
 
 
 @triton.jit
-def _fwd_inner_dense_base_kernel(
+def _fwd_inner_dense_kernel(
     q_tile,
     k_tile,
     k_ptrs,
@@ -97,8 +98,8 @@ def _fwd_inner_dense_base_kernel(
     return k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum
 
 
-@triton.jit
-def _fwd_dense_base_kernel(
+@triton.jit(repr=kernel_repr.fwd_dense_repr)
+def _fwd_dense_kernel(
     Q,
     K,
     V,
@@ -415,37 +416,35 @@ def _fwd_dense_base_kernel(
     # Process n_blocks with masking
     if IS_CAUSAL or IS_LOCAL:
         for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
-                _fwd_inner_dense_base_kernel(
-                    q_tile=q_tile,
-                    k_tile=k_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    acc_o=acc_o,
-                    row_max=row_max,
-                    row_sum=row_sum,
-                    softmax_scale_log2=softmax_scale_log2,
-                    m_block=m_block,
-                    n_block=n_block,
-                    n_block_min=n_block_max_no_mask,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                    IS_MASK=True,
-                    MASK_CAUSAL=IS_CAUSAL,
-                    MASK_LOCAL=IS_LOCAL,
-                    CHECK_INF=True,
-                )
+            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
+                q_tile=q_tile,
+                k_tile=k_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                acc_o=acc_o,
+                row_max=row_max,
+                row_sum=row_sum,
+                softmax_scale_log2=softmax_scale_log2,
+                m_block=m_block,
+                n_block=n_block,
+                n_block_min=n_block_max_no_mask,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                IS_MASK=True,
+                MASK_CAUSAL=IS_CAUSAL,
+                MASK_LOCAL=IS_LOCAL,
+                CHECK_INF=True,
             )
     else:
         # First iteration with seqlen masking
         n_block = n_block_max - 1
 
-        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_base_kernel(
+        k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
             q_tile=q_tile,
             k_tile=k_tile,
             k_ptrs=k_ptrs,
@@ -493,31 +492,29 @@ def _fwd_dense_base_kernel(
         )
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
-                _fwd_inner_dense_base_kernel(
-                    q_tile=q_tile,
-                    k_tile=k_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    acc_o=acc_o,
-                    row_max=row_max,
-                    row_sum=row_sum,
-                    softmax_scale_log2=softmax_scale_log2,
-                    m_block=m_block,
-                    n_block=n_block,
-                    n_block_min=n_block_min_no_mask,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                    IS_MASK=IS_LOCAL,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=False,
-                    CHECK_INF=IS_LOCAL,
-                )
+            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
+                q_tile=q_tile,
+                k_tile=k_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                acc_o=acc_o,
+                row_max=row_max,
+                row_sum=row_sum,
+                softmax_scale_log2=softmax_scale_log2,
+                m_block=m_block,
+                n_block=n_block,
+                n_block_min=n_block_min_no_mask,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                IS_MASK=IS_LOCAL,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
+                CHECK_INF=IS_LOCAL,
             )
 
     # Process n_blocks with masking
@@ -540,31 +537,29 @@ def _fwd_dense_base_kernel(
         )
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
         for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
-                _fwd_inner_dense_base_kernel(
-                    q_tile=q_tile,
-                    k_tile=k_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    acc_o=acc_o,
-                    row_max=row_max,
-                    row_sum=row_sum,
-                    softmax_scale_log2=softmax_scale_log2,
-                    m_block=m_block,
-                    n_block=n_block,
-                    n_block_min=n_block_min,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                    WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                    QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                    IS_MASK=True,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=True,
-                    CHECK_INF=True,
-                )
+            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
+                q_tile=q_tile,
+                k_tile=k_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                acc_o=acc_o,
+                row_max=row_max,
+                row_sum=row_sum,
+                softmax_scale_log2=softmax_scale_log2,
+                m_block=m_block,
+                n_block=n_block,
+                n_block_min=n_block_min,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
+                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
+                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                IS_MASK=True,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=True,
+                CHECK_INF=True,
             )
 
     # Finalize softmax
@@ -608,10 +603,10 @@ def _fwd_dense_base_kernel(
         tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
 
 
-_fwd_dense_base_kernel = cache_utils.wrap_kernel(_fwd_dense_base_kernel)
+_fwd_dense_kernel = cache_utils.wrap_kernel(_fwd_dense_kernel)
 
 
-def _flash_dense_attn_base_forward(
+def _flash_dense_attn_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -703,7 +698,7 @@ def _flash_dense_attn_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_dense_base_kernel[grid](
+    _fwd_dense_kernel[grid](
         query,
         key,
         value,
@@ -765,7 +760,7 @@ def _flash_dense_attn_base_forward(
     return out, lse, softmax_scale
 
 
-def _flash_dense_attn_varlen_base_forward(
+def _flash_dense_attn_varlen_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -866,7 +861,7 @@ def _flash_dense_attn_varlen_base_forward(
         num_splits=num_splits,
     )
 
-    _fwd_dense_base_kernel[grid](
+    _fwd_dense_kernel[grid](
         query,
         key,
         value,
