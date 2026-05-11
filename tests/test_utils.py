@@ -5,28 +5,28 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import torch
 
 from flash_sparse_attn.ops.triton.flash_dense_bwd import (
-    _flash_dense_attn_base_backward,
-    _flash_dense_attn_varlen_base_backward,
+    _flash_dense_attn_backward,
+    _flash_dense_attn_varlen_backward,
 )
 from flash_sparse_attn.ops.triton.flash_dense_fwd import (
-    _flash_dense_attn_base_forward,
-    _flash_dense_attn_varlen_base_forward,
+    _flash_dense_attn_forward,
+    _flash_dense_attn_varlen_forward,
 )
 from flash_sparse_attn.ops.triton.flash_gated_bwd import (
-    _flash_gated_attn_base_backward,
-    _flash_gated_attn_varlen_base_backward,
+    _flash_gated_attn_backward,
+    _flash_gated_attn_varlen_backward,
 )
 from flash_sparse_attn.ops.triton.flash_gated_fwd import (
-    _flash_gated_attn_base_forward,
-    _flash_gated_attn_varlen_base_forward,
+    _flash_gated_attn_forward,
+    _flash_gated_attn_varlen_forward,
 )
 from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
-    _flash_sparse_attn_base_backward,
-    _flash_sparse_attn_varlen_base_backward,
+    _flash_sparse_attn_backward,
+    _flash_sparse_attn_varlen_backward,
 )
 from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
-    _flash_sparse_attn_base_forward,
-    _flash_sparse_attn_varlen_base_forward,
+    _flash_sparse_attn_forward,
+    _flash_sparse_attn_varlen_forward,
 )
 from flash_sparse_attn.ops.triton.interface import (
     flash_dense_attn_varlen_with_kvcache_func,
@@ -701,7 +701,7 @@ def _run_forward_base(
     softmax_scale = q.shape[-1] ** -0.5
     threshold = q.shape[-1] / k.shape[1]
     if kind == "dense":
-        out, _, _ = _flash_dense_attn_base_forward(
+        out, _, _ = _flash_dense_attn_forward(
             q,
             k,
             v,
@@ -711,7 +711,7 @@ def _run_forward_base(
             pack_gqa=False,
         )
     elif kind == "sparse":
-        out, _, _, _ = _flash_sparse_attn_base_forward(
+        out, _, _, _ = _flash_sparse_attn_forward(
             q,
             k,
             v,
@@ -722,7 +722,7 @@ def _run_forward_base(
             pack_gqa=False,
         )
     else:
-        out, _, _, _, _ = _flash_gated_attn_base_forward(
+        out, _, _, _, _ = _flash_gated_attn_forward(
             q,
             k,
             v,
@@ -842,7 +842,7 @@ def _run_forward_varlen(
     softmax_scale = q.shape[-1] ** -0.5
     threshold = q.shape[-1] / max_seqlen_k
     if kind == "dense":
-        out, _, _ = _flash_dense_attn_varlen_base_forward(
+        out, _, _ = _flash_dense_attn_varlen_forward(
             q,
             k,
             v,
@@ -856,7 +856,7 @@ def _run_forward_varlen(
             pack_gqa=False,
         )
     elif kind == "sparse":
-        out, _, _, _ = _flash_sparse_attn_varlen_base_forward(
+        out, _, _, _ = _flash_sparse_attn_varlen_forward(
             q,
             k,
             v,
@@ -871,7 +871,7 @@ def _run_forward_varlen(
             pack_gqa=False,
         )
     else:
-        out, _, _, _, _ = _flash_gated_attn_varlen_base_forward(
+        out, _, _, _, _ = _flash_gated_attn_varlen_forward(
             q,
             k,
             v,
@@ -1503,7 +1503,7 @@ def run_backward_base_case(
     threshold = head_dim / seqlen_k
 
     if kind == "dense":
-        out, lse, _ = _flash_dense_attn_base_forward(
+        out, lse, _ = _flash_dense_attn_forward(
             q,
             k,
             v,
@@ -1513,7 +1513,7 @@ def run_backward_base_case(
             pack_gqa=False,
         )
     elif kind == "sparse":
-        out, lse, _, _ = _flash_sparse_attn_base_forward(
+        out, lse, _, _ = _flash_sparse_attn_forward(
             q,
             k,
             v,
@@ -1524,7 +1524,7 @@ def run_backward_base_case(
             pack_gqa=False,
         )
     else:
-        out, lse, _, _, _ = _flash_gated_attn_base_forward(
+        out, lse, _, _, _ = _flash_gated_attn_forward(
             q,
             k,
             v,
@@ -1543,7 +1543,7 @@ def run_backward_base_case(
     dout = torch.randn_like(out)
 
     if kind == "dense":
-        kernel_grads = _flash_dense_attn_base_backward(
+        kernel_grads = _flash_dense_attn_backward(
             q,
             k,
             v,
@@ -1555,7 +1555,7 @@ def run_backward_base_case(
             window_size=window_size,
         )
     elif kind == "sparse":
-        kernel_grads = _flash_sparse_attn_base_backward(
+        kernel_grads = _flash_sparse_attn_backward(
             q,
             k,
             v,
@@ -1568,7 +1568,7 @@ def run_backward_base_case(
             window_size=window_size,
         )
     else:
-        kernel_grads = _flash_gated_attn_base_backward(
+        kernel_grads = _flash_gated_attn_backward(
             q,
             k,
             v,
@@ -1690,7 +1690,7 @@ def run_backward_varlen_case(
     threshold = head_dim / max_seqlen_k
 
     if kind == "dense":
-        out, lse, _ = _flash_dense_attn_varlen_base_forward(
+        out, lse, _ = _flash_dense_attn_varlen_forward(
             q,
             k,
             v,
@@ -1704,7 +1704,7 @@ def run_backward_varlen_case(
             pack_gqa=False,
         )
     elif kind == "sparse":
-        out, lse, _, _ = _flash_sparse_attn_varlen_base_forward(
+        out, lse, _, _ = _flash_sparse_attn_varlen_forward(
             q,
             k,
             v,
@@ -1719,7 +1719,7 @@ def run_backward_varlen_case(
             pack_gqa=False,
         )
     else:
-        out, lse, _, _, _ = _flash_gated_attn_varlen_base_forward(
+        out, lse, _, _, _ = _flash_gated_attn_varlen_forward(
             q,
             k,
             v,
@@ -1741,7 +1741,7 @@ def run_backward_varlen_case(
 
     dout = torch.randn_like(out)
     if kind == "dense":
-        kernel_grads = _flash_dense_attn_varlen_base_backward(
+        kernel_grads = _flash_dense_attn_varlen_backward(
             q,
             k,
             v,
@@ -1757,7 +1757,7 @@ def run_backward_varlen_case(
             window_size=window_size,
         )
     elif kind == "sparse":
-        kernel_grads = _flash_sparse_attn_varlen_base_backward(
+        kernel_grads = _flash_sparse_attn_varlen_backward(
             q,
             k,
             v,
@@ -1774,7 +1774,7 @@ def run_backward_varlen_case(
             window_size=window_size,
         )
     else:
-        kernel_grads = _flash_gated_attn_varlen_base_backward(
+        kernel_grads = _flash_gated_attn_varlen_backward(
             q,
             k,
             v,
