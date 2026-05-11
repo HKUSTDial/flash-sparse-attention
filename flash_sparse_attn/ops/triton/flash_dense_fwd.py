@@ -106,6 +106,9 @@ def _fwd_dense_kernel(
     Out,
     Lse,
     softmax_scale_log2,
+    query_scale,
+    key_scale,
+    value_scale,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -393,6 +396,14 @@ def _fwd_dense_kernel(
         order=(1, 0),
     )
 
+    # Load scales
+    q_scale = tl.load(query_scale)
+    k_scale = tl.load(key_scale)
+    v_scale = tl.load(value_scale)
+
+    # Rescale softmax scale
+    softmax_scale_log2 = softmax_scale_log2 * q_scale * k_scale
+
     # Load query tile
     if PACK_GQA:
         q_tile = tl.load(
@@ -567,7 +578,7 @@ def _fwd_dense_kernel(
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
-        final_scale=1.0,
+        final_scale=v_scale,
         IS_LOG2=IS_SPLIT_KV,
         CHECK_NAN=True,
     )
@@ -590,7 +601,7 @@ def _fwd_dense_kernel(
     # When IS_SPLIT_KV, store float32 partial results.
     # Otherwise, convert back to input dtype.
     if not IS_SPLIT_KV:
-        acc_o = acc_o.to(q_tile.dtype)
+        acc_o = acc_o.to(Out.dtype.element_ty)
     if PACK_GQA:
         tl.store(
             out_ptrs,
@@ -612,9 +623,15 @@ def _flash_dense_attn_forward(
     value: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[int, int] = (None, None),
+    is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    out: Optional[torch.Tensor] = None,
+    lse: Optional[torch.Tensor] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
@@ -634,6 +651,9 @@ def _flash_dense_attn_forward(
             query,
             key,
             value,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
             cu_seqlens_q=None,
             cu_seqlens_k=None,
             seqused_q=None,
@@ -641,8 +661,8 @@ def _flash_dense_attn_forward(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            is_quant=is_quant,
             device=device,
-            arch=arch,
         )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -670,11 +690,16 @@ def _flash_dense_attn_forward(
         else 1
     )
 
-    out = torch.empty_like(query)
-    lse = torch.empty(
-        (batch_size, num_heads_q, seqlen_q),
-        dtype=torch.float32,
-        device=query.device,
+    out_dtype = torch.bfloat16 if is_quant else query.dtype
+    out = out if out is not None else torch.empty_like(query, dtype=out_dtype)
+    lse = (
+        lse
+        if lse is not None
+        else torch.empty(
+            (batch_size, num_heads_q, seqlen_q),
+            dtype=torch.float32,
+            device=query.device,
+        )
     )
 
     if is_split_kv:
@@ -688,6 +713,11 @@ def _flash_dense_attn_forward(
             dtype=torch.float32,
             device=query.device,
         )
+
+    if not is_quant:
+        query_scale = torch.ones(1, device=device, dtype=torch.float32)
+        key_scale = torch.ones(1, device=device, dtype=torch.float32)
+        value_scale = torch.ones(1, device=device, dtype=torch.float32)
 
     grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
@@ -705,6 +735,9 @@ def _flash_dense_attn_forward(
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        query_scale,
+        key_scale,
+        value_scale,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -770,11 +803,17 @@ def _flash_dense_attn_varlen_forward(
     max_seqlen_k: int,
     is_causal: bool = False,
     softmax_scale: float = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[int, int] = (None, None),
+    is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    out: Optional[torch.Tensor] = None,
+    lse: Optional[torch.Tensor] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
@@ -797,6 +836,9 @@ def _flash_dense_attn_varlen_forward(
             query,
             key,
             value,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             seqused_q=seqused_q,
@@ -804,8 +846,8 @@ def _flash_dense_attn_varlen_forward(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            is_quant=is_quant,
             device=device,
-            arch=arch,
         )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -833,7 +875,8 @@ def _flash_dense_attn_varlen_forward(
         else 1
     )
 
-    out = torch.empty_like(query)
+    out_dtype = torch.bfloat16 if is_quant else query.dtype
+    out = torch.empty_like(query, dtype=out_dtype)
     lse = torch.empty(
         (num_heads_q, total_seqlen_q),
         dtype=torch.float32,
@@ -852,6 +895,11 @@ def _flash_dense_attn_varlen_forward(
             device=query.device,
         )
 
+    if not is_quant:
+        query_scale = torch.ones(1, device=device, dtype=torch.float32)
+        key_scale = torch.ones(1, device=device, dtype=torch.float32)
+        value_scale = torch.ones(1, device=device, dtype=torch.float32)
+
     grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
@@ -868,6 +916,9 @@ def _flash_dense_attn_varlen_forward(
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         softmax_scale_log2,
+        query_scale,
+        key_scale,
+        value_scale,
         0,
         query.stride(-2),
         query.stride(0),
