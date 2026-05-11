@@ -135,7 +135,7 @@ def _bwd_inner_gated_base_kernel(
             lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
 
             # Compute attention weights
-            p = activations.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
+            p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
                 q_tile.dtype
             )
 
