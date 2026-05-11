@@ -4,43 +4,7 @@ import triton.language as tl
 
 @triton.jit
 def check_inf(x):
-    return tl.maximum(x, -1e6)
-
-
-@triton.jit
-def exp2(x):
-    """
-    Compute 2^x, using fast hardware approximation on CUDA and default implementation on other backends.
-
-    :param x: Input tensor of shape [BLOCK_M, BLOCK_N].
-
-    :return: Tensor of shape [BLOCK_M, BLOCK_N] containing 2^x values.
-    """
-    if tl.target_info.is_cuda():
-        return tl.inline_asm_elementwise(
-            "ex2.approx.ftz.f32 $0, $1;",
-            "=r, r",
-            [x],
-            dtype=tl.float32,
-            is_pure=True,
-            pack=1,
-        )
-    else:
-        return tl.exp2(x)
-
-
-@triton.jit
-def exp(x):
-    """
-    Compute e^x, using fast hardware approximation on CUDA and default implementation on other backends.
-
-    :param x: Input tensor of shape [BLOCK_M, BLOCK_N].
-
-    :return: Tensor of shape [BLOCK_M, BLOCK_N] containing e^x values.
-    """
-    log2_e: tl.constexpr = 1.4426950408889634
-    x *= log2_e
-    return exp2(x)
+    return tl.where(x == float("-inf"), 0.0, x)
 
 
 @triton.jit
@@ -84,15 +48,15 @@ def online_softmax(
     if RESCALE_THRESHOLD > 0.0:
         # Triton can only skip computation at block granularity
         if tl.min(acc_scale_log2) < -RESCALE_THRESHOLD:
-            row_scale = exp2(acc_scale_log2)
+            row_scale = tl.exp2(acc_scale_log2)
         else:
             row_max_new = row_max
             row_scale = acc_scale_log2 * 0.0 + 1.0
     else:
-        row_scale = exp2(acc_scale_log2)
+        row_scale = tl.exp2(acc_scale_log2)
 
     # Compute attention weights
-    p = exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
+    p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
 
     # Update row sum
     row_sum_cur = tl.sum(p, axis=1)
@@ -161,10 +125,10 @@ def online_sparse_softmax(
         acc_scale_log2 = (row_max - row_max_new) * scale_log2
 
         # Compute row scale
-        row_scale = exp2(acc_scale_log2)
+        row_scale = tl.exp2(acc_scale_log2)
 
         # Compute attention weights
-        p = exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
+        p = tl.exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
 
         # Update row sum
         row_sum_cur = tl.sum(p, axis=1)
@@ -208,7 +172,7 @@ def finalize(
         lse = row_max * scale_log2 + tl.log2(row_sum)
     if not IS_LOG2:
         # ln2 = math.log(2.0)
-        ln2: tl.constexpr = 0.6931471805599453
+        ln2 = 0.6931471805599453
         lse *= ln2
     return row_scale, lse
 
@@ -238,18 +202,6 @@ def rescale_o(
 
 
 @triton.jit
-def sigmoid(x):
-    """
-    Compute sigmoid of x.
-
-    :param x: Input tensor of shape [BLOCK_M, BLOCK_N].
-
-    :return: Tensor of shape [BLOCK_M, BLOCK_N] containing sigmoid values.
-    """
-    return 1.0 / (1.0 + exp(-x))
-
-
-@triton.jit
 def log_sigmoid(x, FASTMATH: tl.constexpr):
     """
     Compute log-sigmoid of x.
@@ -265,7 +217,7 @@ def log_sigmoid(x, FASTMATH: tl.constexpr):
         out = tl.minimum(x, 0.0) - 0.05674870 * xc2 + 0.37664706 * xc - 0.65169323
         return out
     else:
-        out = tl.minimum(x, 0.0) - tl.log(1.0 + exp(-tl.abs(x)))
+        out = tl.minimum(x, 0.0) - tl.log(1.0 + tl.exp(-tl.abs(x)))
         return out
 
 
