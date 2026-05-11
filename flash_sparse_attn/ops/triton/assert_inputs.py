@@ -7,6 +7,9 @@ def assert_fwd_inputs(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
@@ -16,8 +19,8 @@ def assert_fwd_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    is_quant: bool = False,
     device: torch.device = None,
-    arch: int = None,
 ):
     """
     Assert the validity of inputs for the forward kernel.
@@ -25,6 +28,9 @@ def assert_fwd_inputs(
     :param query: Query tensor
     :param key: Key tensor
     :param value: Value tensor
+    :param query_scale: Optional query scale tensor for quantized inputs
+    :param key_scale: Optional key scale tensor for quantized inputs
+    :param value_scale: Optional value scale tensor for quantized inputs
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
     :param cu_seqlens_q: Cumulative sequence lengths for queries
@@ -34,17 +40,31 @@ def assert_fwd_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param is_quant: Whether the inputs are quantized
     :param device: Device of the tensors
-    :param arch: Architecture model as a number
 
     :raises AssertionError: If any of the assertions fail
     """
     assert device == query.device == key.device == value.device, (
         "All inputs must be on the same device"
     )
-    if device.type == "cuda" and arch // 10 >= 9:  # Hopper or newer
-        assert query.dtype in [torch.float16, torch.bfloat16, torch.float8_e5m2], (
-            "Input dtype must be float16, bfloat16, or float8_e5m2"
+    if is_quant:
+        assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
+            "Input dtype must be float8_e5m2 or float8_e4m3fn"
+        )
+        assert (
+            query_scale is not None
+            and key_scale is not None
+            and value_scale is not None
+        ), "Scale tensors must be provided for quantized inputs"
+        assert query_scale.dtype in [
+            torch.float32,
+        ], "Scale tensors must be float32"
+        assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
+            "All scale tensors must have the same dtype"
+        )
+        assert query_scale.device == key_scale.device == value_scale.device == device, (
+            "All scale tensors must be on the same device as query/key/value"
         )
     else:
         assert query.dtype in [torch.float16, torch.bfloat16], (
@@ -196,8 +216,8 @@ def assert_dec_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    is_quant: bool = False,
     device: torch.device = None,
-    arch: int = None,
 ):
     """
     Assert the validity of inputs for the decode kernel.
@@ -215,36 +235,32 @@ def assert_dec_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param is_quant: Whether the inputs are quantized
     :param device: Device of the tensors
-    :param arch: Architecture model as a number
 
     :raises AssertionError: If any of the assertions fail
     """
     assert device == query.device == key.device == value.device, (
         "All inputs must be on the same device"
     )
-    if device.type == "cuda" and arch // 10 >= 9:  # Hopper or newer
-        assert query.dtype in [torch.float16, torch.bfloat16, torch.float8_e5m2], (
-            "Input dtype must be float16, bfloat16, or float8_e5m2"
+    if is_quant:
+        assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
+            "Input dtype must be float8_e5m2 or float8_e4m3fn"
         )
-        if query.dtype == torch.float8_e5m2:
-            assert (
-                query_scale is not None
-                and key_scale is not None
-                and value_scale is not None
-            ), "Scale tensors must be provided for float8 inputs"
-            assert query_scale.dtype in [
-                torch.float32,
-                torch.float16,
-                torch.bfloat16,
-                torch.float8_e8m0fnu,
-            ], "Scale tensors must be float32, float16, bfloat16, or float8_e8m0fnu"
-            assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
-                "All scale tensors must have the same dtype"
-            )
-            assert (
-                query_scale.device == key_scale.device == value_scale.device == device
-            ), "All scale tensors must be on the same device as query/key/value"
+        assert (
+            query_scale is not None
+            and key_scale is not None
+            and value_scale is not None
+        ), "Scale tensors must be provided for quantized inputs"
+        assert query_scale.dtype in [
+            torch.float32,
+        ], "Scale tensors must be float32"
+        assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
+            "All scale tensors must have the same dtype"
+        )
+        assert query_scale.device == key_scale.device == value_scale.device == device, (
+            "All scale tensors must be on the same device as query/key/value"
+        )
     else:
         assert query.dtype in [torch.float16, torch.bfloat16], (
             "Input dtype must be float16 or bfloat16"
