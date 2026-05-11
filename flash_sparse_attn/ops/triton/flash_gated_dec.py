@@ -820,8 +820,8 @@ def _flash_gated_attn_decode(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            is_quant=is_quant,
             device=device,
-            arch=arch,
         )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -1008,8 +1008,8 @@ def _flash_gated_attn_varlen_decode(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            is_quant=is_quant,
             device=device,
-            arch=arch,
         )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
