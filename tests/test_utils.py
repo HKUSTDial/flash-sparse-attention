@@ -998,6 +998,7 @@ def run_decode_base_case(
     is_logsigmoid_gate: bool = True,
     use_output_buffers: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
+    is_quant: bool = False,
 ) -> None:
     device = torch.device("cuda")
     is_fp8 = dtype == torch.float8_e5m2
@@ -1153,6 +1154,7 @@ def run_decode_base_case(
             v,
             softmax_scale=softmax_scale,
             window_size=window_size,
+            is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
@@ -1173,6 +1175,7 @@ def run_decode_base_case(
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
             window_size=window_size,
+            is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
@@ -1197,6 +1200,7 @@ def run_decode_base_case(
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
             window_size=window_size,
+            is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
@@ -1218,11 +1222,11 @@ def run_decode_base_case(
         assert lse.data_ptr() == lse_buffer.data_ptr()
 
     _assert_close(
-        name=f"{kind}-base-decode",
+        name=f"{kind}-base-decode{'_auto_quant' if is_quant else ''}",
         got=out,
         ref=out_ref,
-        rtol=_DEFAULT_RTOL[kind],
-        atol=_DEFAULT_ATOL[kind],
+        rtol=1.5e-1 if is_quant else _DEFAULT_RTOL[kind],
+        atol=1.5e-1 if is_quant else _DEFAULT_ATOL[kind],
     )
 
 
@@ -1236,6 +1240,7 @@ def run_decode_varlen_case(
     is_logsigmoid_gate: bool = True,
     use_output_buffers: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
+    is_quant: bool = False,
 ) -> None:
     device = torch.device("cuda")
     batch_size = len(lens_k)
@@ -1391,6 +1396,7 @@ def run_decode_varlen_case(
             max_seqlen_k=max(lens_k),
             softmax_scale=softmax_scale,
             window_size=window_size,
+            is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
@@ -1405,6 +1411,7 @@ def run_decode_varlen_case(
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
             window_size=window_size,
+            is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
@@ -1423,6 +1430,7 @@ def run_decode_varlen_case(
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
             window_size=window_size,
+            is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
@@ -1446,11 +1454,11 @@ def run_decode_varlen_case(
         assert lse.data_ptr() == lse_buffer.data_ptr()
 
     _assert_close(
-        name=f"{kind}-varlen-decode",
+        name=f"{kind}-varlen-decode{'_auto_quant' if is_quant else ''}",
         got=out,
         ref=out_ref,
-        rtol=_DEFAULT_RTOL[kind],
-        atol=_DEFAULT_ATOL[kind],
+        rtol=1.5e-1 if is_quant else _DEFAULT_RTOL[kind],
+        atol=1.5e-1 if is_quant else _DEFAULT_ATOL[kind],
     )
 
 
