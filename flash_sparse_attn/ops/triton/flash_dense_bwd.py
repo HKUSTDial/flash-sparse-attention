@@ -12,6 +12,7 @@ from flash_sparse_attn.ops.triton import (
     launch_grid,
     seqlen_info,
     block_info,
+    activations,
     mask,
     flash_bwd_preprocess,
     flash_bwd_postprocess,
@@ -77,7 +78,9 @@ def _bwd_inner_dense_base_kernel(
         )
 
     # Compute attention weights
-    p = tl.math.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(q_tile.dtype)
+    p = activations.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
+        q_tile.dtype
+    )
 
     # Load output gradients tile
     do_tile = tl.load(do_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
