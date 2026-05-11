@@ -4,10 +4,15 @@ import torch
 import triton
 import triton.language as tl
 
-from flash_sparse_attn.ops.triton import cache_utils, launch_grid, seqlen_info
+from flash_sparse_attn.ops.triton import (
+    cache_utils,
+    launch_grid,
+    seqlen_info,
+    kernel_repr,
+)
 
 
-@triton.jit
+@triton.jit(repr=kernel_repr.bwd_postprocess_repr)
 def _bwd_postprocess_kernel(
     dQaccum,
     dQ,
