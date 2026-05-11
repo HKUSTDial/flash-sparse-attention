@@ -66,6 +66,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -90,7 +91,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             lse=lse,
         )
 
-        ctx.save_for_backward(query, key, value, out, lse)
+        ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.window_size = window_size
@@ -151,6 +152,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -182,9 +184,9 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(
-            query,
-            key,
-            value,
+            query_orig,
+            key_orig,
+            value_orig,
             out,
             lse,
             cu_seqlens_q,
@@ -265,6 +267,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -290,7 +293,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             lse=lse,
         )
 
-        ctx.save_for_backward(query, key, value, out, lse)
+        ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.softmax_threshold = softmax_threshold
@@ -354,6 +357,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -386,9 +390,9 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(
-            query,
-            key,
-            value,
+            query_orig,
+            key_orig,
+            value_orig,
             out,
             lse,
             cu_seqlens_q,
@@ -476,6 +480,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -508,7 +513,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             )
         )
 
-        ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
+        ctx.save_for_backward(query_orig, key_orig, value_orig, alpha, delta, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.softmax_threshold = softmax_threshold
@@ -585,6 +590,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -624,9 +630,9 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(
-            query,
-            key,
-            value,
+            query_orig,
+            key_orig,
+            value_orig,
             alpha,
             delta,
             out,
