@@ -396,10 +396,11 @@ def _fwd_dense_kernel(
         order=(1, 0),
     )
 
-    # Load scales
+    # Load query scale
     q_scale = tl.load(query_scale)
+
+    # Load key scale
     k_scale = tl.load(key_scale)
-    v_scale = tl.load(value_scale)
 
     # Rescale softmax scale
     softmax_scale_log2 = softmax_scale_log2 * q_scale * k_scale
@@ -572,6 +573,9 @@ def _fwd_dense_kernel(
                 MASK_LOCAL=True,
                 CHECK_INF=True,
             )
+
+    # Load value scale
+    v_scale = tl.load(value_scale)
 
     # Finalize softmax
     row_scale, lse_tile = activations.finalize(
