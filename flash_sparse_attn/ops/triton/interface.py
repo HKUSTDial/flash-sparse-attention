@@ -702,6 +702,9 @@ def flash_dense_attn_func(
     value: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
     is_split_kv: bool = False,
@@ -716,6 +719,9 @@ def flash_dense_attn_func(
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for occupancy.
@@ -730,6 +736,9 @@ def flash_dense_attn_func(
         value,
         is_causal,
         softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
         window_size,
         is_quant,
         is_split_kv,
@@ -808,6 +817,9 @@ def flash_dense_attn_varlen_func(
     max_seqlen_k: int,
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
@@ -828,6 +840,9 @@ def flash_dense_attn_varlen_func(
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
@@ -848,6 +863,9 @@ def flash_dense_attn_varlen_func(
         max_seqlen_k,
         is_causal,
         softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
         window_size,
         is_quant,
         seqused_q,
@@ -933,6 +951,9 @@ def flash_sparse_attn_func(
     value: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
@@ -948,6 +969,9 @@ def flash_sparse_attn_func(
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
@@ -963,6 +987,9 @@ def flash_sparse_attn_func(
         value,
         is_causal,
         softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
         softmax_threshold,
         window_size,
         is_quant,
@@ -1045,6 +1072,9 @@ def flash_sparse_attn_varlen_func(
     max_seqlen_k: int,
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
@@ -1066,6 +1096,9 @@ def flash_sparse_attn_varlen_func(
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
@@ -1087,6 +1120,9 @@ def flash_sparse_attn_varlen_func(
         max_seqlen_k,
         is_causal,
         softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
         softmax_threshold,
         window_size,
         is_quant,
@@ -1178,6 +1214,9 @@ def flash_gated_attn_func(
     delta: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
@@ -1198,6 +1237,9 @@ def flash_gated_attn_func(
     :param delta: Tensor of shape [batch_size, seqlen_k, num_kv_heads] representing the sparsity pattern for keys/values.
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
@@ -1218,6 +1260,9 @@ def flash_gated_attn_func(
         delta,
         is_causal,
         softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
         softmax_threshold,
         gate_threshold,
         is_logsigmoid_gate,
@@ -1317,6 +1362,9 @@ def flash_gated_attn_varlen_func(
     max_seqlen_k: int,
     is_causal: bool = False,
     softmax_scale: Optional[float] = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
@@ -1343,6 +1391,9 @@ def flash_gated_attn_varlen_func(
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
+    :param query_scale: Optional per-tensor scale for FP8 query dequantization.
+    :param key_scale: Optional per-tensor scale for FP8 key dequantization.
+    :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
@@ -1369,6 +1420,9 @@ def flash_gated_attn_varlen_func(
         max_seqlen_k,
         is_causal,
         softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
         softmax_threshold,
         gate_threshold,
         is_logsigmoid_gate,
