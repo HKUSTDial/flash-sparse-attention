@@ -113,6 +113,9 @@ def _fwd_sparse_kernel(
     Lse,
     softmax_scale_log2,
     softmax_threshold,
+    query_scale,
+    key_scale,
+    value_scale,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -411,6 +414,15 @@ def _fwd_sparse_kernel(
         QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
     )
 
+    # Load query scale
+    q_scale = tl.load(query_scale)
+
+    # Load key scale
+    k_scale = tl.load(key_scale)
+
+    # Rescale softmax scale
+    softmax_scale_log2 = softmax_scale_log2 * q_scale * k_scale
+
     # Load query tile
     if PACK_GQA:
         q_tile = tl.load(
@@ -597,12 +609,15 @@ def _fwd_sparse_kernel(
                 )
             )
 
+    # Load value scale
+    v_scale = tl.load(value_scale)
+
     # Finalize softmax
     row_scale, lse_tile = activations.finalize(
         row_max=row_max,
         row_sum=row_sum,
         scale_log2=softmax_scale_log2,
-        final_scale=1.0,
+        final_scale=v_scale,
         IS_LOG2=IS_SPLIT_KV,
         CHECK_NAN=True,
     )
