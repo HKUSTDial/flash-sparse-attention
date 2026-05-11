@@ -10,10 +10,11 @@ from flash_sparse_attn.ops.triton import (
     launch_grid,
     seqlen_info,
     activations,
+    kernel_repr,
 )
 
 
-@triton.jit
+@triton.jit(repr=kernel_repr.bwd_preprocess_repr)
 def _bwd_preprocess_kernel(
     Out,
     dO,

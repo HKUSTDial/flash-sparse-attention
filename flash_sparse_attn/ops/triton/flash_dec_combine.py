@@ -7,10 +7,11 @@ from flash_sparse_attn.ops.triton import (
     launch_template,
     launch_grid,
     seqlen_info,
+    kernel_repr,
 )
 
 
-@triton.jit
+@triton.jit(repr=kernel_repr.dec_combine_repr)
 def _dec_combine_kernel(
     Out_partial,
     Lse_partial,
