@@ -651,6 +651,7 @@ def _flash_dense_attn_forward(
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
@@ -686,16 +687,22 @@ def _flash_dense_attn_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_dense_launch_config(
-            is_split_kv=is_split_kv,
-            pack_gqa=pack_gqa,
-            qheads_per_kvhead=qheads_per_kvhead,
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = TILE_N = 64
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _fwd_dense_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_fwd_dense_launch_config(
+                is_split_kv=is_split_kv,
+                pack_gqa=pack_gqa,
+                qheads_per_kvhead=qheads_per_kvhead,
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     num_splits = (
         utils.num_splits_heuristic(
@@ -747,7 +754,7 @@ def _flash_dense_attn_forward(
         num_splits=num_splits,
     )
 
-    _fwd_dense_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -779,9 +786,11 @@ def _flash_dense_attn_forward(
         None,
         qheads_per_kvhead,
         num_splits,
-        seqlen_q,
-        seqlen_k,
-        head_dim,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=seqlen_q // 1024,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -833,6 +842,7 @@ def _flash_dense_attn_varlen_forward(
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
@@ -871,16 +881,22 @@ def _flash_dense_attn_varlen_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_dense_launch_config(
-            is_split_kv=is_split_kv,
-            pack_gqa=pack_gqa,
-            qheads_per_kvhead=qheads_per_kvhead,
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = TILE_N = 64
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _fwd_dense_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_fwd_dense_launch_config(
+                is_split_kv=is_split_kv,
+                pack_gqa=pack_gqa,
+                qheads_per_kvhead=qheads_per_kvhead,
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     num_splits = (
         utils.num_splits_heuristic(
@@ -928,7 +944,7 @@ def _flash_dense_attn_varlen_forward(
         num_splits=num_splits,
     )
 
-    _fwd_dense_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -960,9 +976,11 @@ def _flash_dense_attn_varlen_forward(
         seqused_k,
         qheads_per_kvhead,
         num_splits,
-        seqlen_q,
-        seqlen_k,
-        head_dim,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=seqlen_q // 1024,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
