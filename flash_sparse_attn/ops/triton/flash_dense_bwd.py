@@ -33,6 +33,7 @@ def _bwd_inner_dense_kernel(
     lse_ptrs,
     dpsum_ptrs,
     softmax_scale_log2,
+    q_scale,
     m_block,
     n_block,
     actual_seqlen_q,
@@ -47,6 +48,9 @@ def _bwd_inner_dense_kernel(
 ):
     # Load query tile
     q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+    # Rescale query
+    q_tile = (q_tile * q_scale).to(q_scale.dtype)
 
     # Advance query pointers
     q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
@@ -130,6 +134,9 @@ def _bwd_dense_kernel(
     dV,
     softmax_scale,
     softmax_scale_log2,
+    query_scale,
+    key_scale,
+    value_scale,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -393,11 +400,26 @@ def _bwd_dense_kernel(
             order=(1, 0),
         )
 
-    # Load K tile
+    # Load query scale
+    q_scale = tl.load(query_scale)
+
+    # Load key scale
+    k_scale = tl.load(key_scale)
+
+    # Load value scale
+    v_scale = tl.load(value_scale)
+
+    # Load key tile
     k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
-    # Load V tile
+    # Rescale key
+    k_tile = (k_tile * k_scale).to(k_scale.dtype)
+
+    # Load value tile
     v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+    # Rescale value
+    v_tile = (v_tile * v_scale).to(v_scale.dtype)
 
     # Initialize accumulators
     acc_dk = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
@@ -459,6 +481,7 @@ def _bwd_dense_kernel(
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
                     softmax_scale_log2=softmax_scale_log2,
+                    q_scale=q_scale,
                     m_block=m_block,
                     n_block=n_block,
                     actual_seqlen_q=actual_seqlen_q,
@@ -529,6 +552,7 @@ def _bwd_dense_kernel(
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
                     softmax_scale_log2=softmax_scale_log2,
+                    q_scale=q_scale,
                     m_block=m_block,
                     n_block=n_block,
                     actual_seqlen_q=actual_seqlen_q,
@@ -599,6 +623,7 @@ def _bwd_dense_kernel(
                     lse_ptrs=lse_ptrs,
                     dpsum_ptrs=dpsum_ptrs,
                     softmax_scale_log2=softmax_scale_log2,
+                    q_scale=q_scale,
                     m_block=m_block,
                     n_block=n_block,
                     actual_seqlen_q=actual_seqlen_q,
@@ -663,7 +688,11 @@ def _flash_dense_attn_backward(
     lse: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[int, int] = (None, None),
+    is_quant: bool = False,
     is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -685,6 +714,9 @@ def _flash_dense_attn_backward(
             out,
             dout,
             lse,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
             cu_seqlens_q=None,
             cu_seqlens_k=None,
             seqused_q=None,
@@ -692,8 +724,8 @@ def _flash_dense_attn_backward(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            is_quant=is_quant,
             device=device,
-            arch=arch,
         )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -715,9 +747,14 @@ def _flash_dense_attn_backward(
     seqlen_q_rounded = int(math.ceil(seqlen_q / TILE_M) * TILE_M)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
-    dq = torch.empty_like(query)
-    dk = torch.empty_like(key)
-    dv = torch.empty_like(value)
+    if not is_quant:
+        query_scale = torch.ones(1, device=device, dtype=query.dtype)
+        key_scale = torch.ones(1, device=device, dtype=query.dtype)
+        value_scale = torch.ones(1, device=device, dtype=query.dtype)
+
+    dq = torch.empty_like(query, dtype=query_scale.dtype)
+    dk = torch.empty_like(key, dtype=key_scale.dtype)
+    dv = torch.empty_like(value, dtype=value_scale.dtype)
     lse_log2 = torch.empty(
         (batch_size, num_heads_q, seqlen_q_rounded),
         dtype=torch.float32,
@@ -780,6 +817,9 @@ def _flash_dense_attn_backward(
         dv_accum,
         softmax_scale,
         softmax_scale_log2,
+        query_scale,
+        key_scale,
+        value_scale,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -859,11 +899,15 @@ def _flash_dense_attn_varlen_backward(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: Optional[int] = None,
     max_seqlen_k: Optional[int] = None,
-    softmax_scale: float = None,
     is_causal: bool = False,
+    softmax_scale: float = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[int, int] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    is_quant: bool = False,
     is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -888,6 +932,9 @@ def _flash_dense_attn_varlen_backward(
             out,
             dout,
             lse,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             seqused_q=seqused_q,
@@ -895,8 +942,8 @@ def _flash_dense_attn_varlen_backward(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            is_quant=is_quant,
             device=device,
-            arch=arch,
         )
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
@@ -920,9 +967,14 @@ def _flash_dense_attn_varlen_backward(
     )
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
-    dq = torch.empty_like(query)
-    dk = torch.empty_like(key)
-    dv = torch.empty_like(value)
+    if not is_quant:
+        query_scale = torch.ones(1, device=device, dtype=query.dtype)
+        key_scale = torch.ones(1, device=device, dtype=query.dtype)
+        value_scale = torch.ones(1, device=device, dtype=query.dtype)
+
+    dq = torch.empty_like(query, dtype=query_scale.dtype)
+    dk = torch.empty_like(key, dtype=key_scale.dtype)
+    dv = torch.empty_like(value, dtype=value_scale.dtype)
     lse_log2 = torch.empty(
         num_heads_q,
         total_q_rounded_padded,
@@ -989,6 +1041,9 @@ def _flash_dense_attn_varlen_backward(
         dv_accum,
         softmax_scale,
         softmax_scale_log2,
+        query_scale,
+        key_scale,
+        value_scale,
         0,
         query.stride(-2),
         query.stride(0),

@@ -68,7 +68,6 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
-        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -95,10 +94,14 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             skip_checks=skip_checks,
         )
 
-        ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
+        ctx.save_for_backward(query, key, value, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.query_scale = query_scale
+        ctx.key_scale = key_scale
+        ctx.value_scale = value_scale
         ctx.window_size = window_size
+        ctx.is_quant = is_quant
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -122,7 +125,11 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             lse=lse,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            query_scale=ctx.query_scale,
+            key_scale=ctx.key_scale,
+            value_scale=ctx.value_scale,
             window_size=ctx.window_size,
+            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -162,7 +169,6 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
-        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -196,9 +202,9 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(
-            query_orig,
-            key_orig,
-            value_orig,
+            query,
+            key,
+            value,
             out,
             lse,
             cu_seqlens_q,
@@ -208,9 +214,13 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         )
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.query_scale = query_scale
+        ctx.key_scale = key_scale
+        ctx.value_scale = value_scale
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_quant = is_quant
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -248,9 +258,13 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             max_seqlen_k=ctx.max_seqlen_k,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            query_scale=ctx.query_scale,
+            key_scale=ctx.key_scale,
+            value_scale=ctx.value_scale,
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -316,8 +330,12 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.query_scale = query_scale
+        ctx.key_scale = key_scale
+        ctx.value_scale = value_scale
         ctx.softmax_threshold = softmax_threshold
         ctx.window_size = window_size
+        ctx.is_quant = is_quant
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -341,8 +359,12 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             lse=lse,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            query_scale=ctx.query_scale,
+            key_scale=ctx.key_scale,
+            value_scale=ctx.value_scale,
             softmax_threshold=ctx.softmax_threshold,
             window_size=ctx.window_size,
+            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -430,10 +452,14 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         )
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.query_scale = query_scale
+        ctx.key_scale = key_scale
+        ctx.value_scale = value_scale
         ctx.softmax_threshold = softmax_threshold
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_quant = is_quant
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -471,10 +497,14 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             max_seqlen_k=ctx.max_seqlen_k,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            query_scale=ctx.query_scale,
+            key_scale=ctx.key_scale,
+            value_scale=ctx.value_scale,
             softmax_threshold=ctx.softmax_threshold,
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -552,11 +582,15 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.save_for_backward(query_orig, key_orig, value_orig, alpha, delta, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.query_scale = query_scale
+        ctx.key_scale = key_scale
+        ctx.value_scale = value_scale
         ctx.softmax_threshold = softmax_threshold
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
         ctx.window_size = window_size
+        ctx.is_quant = is_quant
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -582,11 +616,15 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             lse=lse,
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
+            query_scale=ctx.query_scale,
+            key_scale=ctx.key_scale,
+            value_scale=ctx.value_scale,
             softmax_threshold=ctx.softmax_threshold,
             gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
             window_size=ctx.window_size,
+            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -688,6 +726,9 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         )
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
+        ctx.query_scale = query_scale
+        ctx.key_scale = key_scale
+        ctx.value_scale = value_scale
         ctx.softmax_threshold = softmax_threshold
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
@@ -695,6 +736,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_quant = is_quant
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -731,6 +773,9 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             dout=dout,
             lse=lse,
             softmax_scale=ctx.softmax_scale,
+            query_scale=ctx.query_scale,
+            key_scale=ctx.key_scale,
+            value_scale=ctx.value_scale,
             softmax_threshold=ctx.softmax_threshold,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
@@ -743,6 +788,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )

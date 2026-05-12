@@ -778,9 +778,9 @@ def _flash_sparse_attn_forward(
         )
 
     if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=torch.float32)
-        key_scale = torch.ones(1, device=device, dtype=torch.float32)
-        value_scale = torch.ones(1, device=device, dtype=torch.float32)
+        query_scale = torch.ones(1, device=device, dtype=query.dtype)
+        key_scale = torch.ones(1, device=device, dtype=query.dtype)
+        value_scale = torch.ones(1, device=device, dtype=query.dtype)
 
     grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
@@ -975,9 +975,9 @@ def _flash_sparse_attn_varlen_forward(
         )
 
     if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=torch.float32)
-        key_scale = torch.ones(1, device=device, dtype=torch.float32)
-        value_scale = torch.ones(1, device=device, dtype=torch.float32)
+        query_scale = torch.ones(1, device=device, dtype=query.dtype)
+        key_scale = torch.ones(1, device=device, dtype=query.dtype)
+        value_scale = torch.ones(1, device=device, dtype=query.dtype)
 
     grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
