@@ -43,7 +43,7 @@ def benchmark_triton_dense_backward(
         device=device,
         dtype=dtype,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
     q = q.requires_grad_(True)
     k = k.requires_grad_(True)
@@ -57,6 +57,8 @@ def benchmark_triton_dense_backward(
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
         window_size=(None, None),
+        is_autotune=True,
+        skip_checks=True,
     )
     dout = torch.randn_like(out)
 
@@ -77,7 +79,7 @@ def benchmark_triton_sparse_backward(
         device=device,
         dtype=dtype,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
     q = q.requires_grad_(True)
     k = k.requires_grad_(True)
@@ -93,6 +95,8 @@ def benchmark_triton_sparse_backward(
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
         window_size=(None, None),
+        is_autotune=True,
+        skip_checks=True,
     )
     dout = torch.randn_like(out)
 
@@ -113,7 +117,7 @@ def benchmark_triton_gated_backward(
         device=device,
         dtype=dtype,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
     q = q.requires_grad_(True)
     k = k.requires_grad_(True)
@@ -141,6 +145,8 @@ def benchmark_triton_gated_backward(
         is_logsigmoid_gate=False,
         is_adapt_gate=False,
         window_size=(None, None),
+        is_autotune=True,
+        skip_checks=True,
     )
     dout = torch.randn_like(out)
 
@@ -163,7 +169,7 @@ def benchmark_fa_dense_backward(
         device=device,
         dtype=dtype,
         layout="bhsd",
-        input_source="llm",
+        input_source="random",
     )
     q = q.requires_grad_(True)
     k = k.requires_grad_(True)
@@ -202,7 +208,7 @@ def benchmark_cudnn_dense_backward(
         device=device,
         dtype=dtype,
         layout="bhsd",
-        input_source="llm",
+        input_source="random",
     )
     q = q.requires_grad_(True)
     k = k.requires_grad_(True)
