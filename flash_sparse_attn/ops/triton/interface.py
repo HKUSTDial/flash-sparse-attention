@@ -59,13 +59,16 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         is_quant: bool = False,
         is_split_kv: bool = False,
         pack_gqa: bool = False,
-        return_lse: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
+        is_autotune: bool = False,
+        skip_checks: bool = False,
+        return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -88,12 +91,16 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             pack_gqa=pack_gqa,
             out=out,
             lse=lse,
+            is_autotune=is_autotune,
+            skip_checks=skip_checks,
         )
 
-        ctx.save_for_backward(query, key, value, out, lse)
+        ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.window_size = window_size
+        ctx.is_autotune = is_autotune
+        ctx.skip_checks = skip_checks
 
         if return_lse:
             # LSE gradient is not supported yet
@@ -116,6 +123,8 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             is_causal=ctx.is_causal,
             softmax_scale=ctx.softmax_scale,
             window_size=ctx.window_size,
+            is_autotune=ctx.is_autotune,
+            skip_checks=ctx.skip_checks,
         )
 
         return dq, dk, dv, *((None,) * 20)
@@ -144,13 +153,16 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         is_quant: bool = False,
         is_split_kv: bool = False,
         pack_gqa: bool = False,
-        return_lse: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
+        is_autotune: bool = False,
+        skip_checks: bool = False,
+        return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -179,12 +191,14 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             seqused_k=seqused_k,
             out=out,
             lse=lse,
+            is_autotune=is_autotune,
+            skip_checks=skip_checks,
         )
 
         ctx.save_for_backward(
-            query,
-            key,
-            value,
+            query_orig,
+            key_orig,
+            value_orig,
             out,
             lse,
             cu_seqlens_q,
@@ -197,6 +211,8 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_autotune = is_autotune
+        ctx.skip_checks = skip_checks
 
         if return_lse:
             # LSE gradient is not supported yet
@@ -235,6 +251,8 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_autotune=ctx.is_autotune,
+            skip_checks=ctx.skip_checks,
         )
 
         return dq, dk, dv, *((None,) * 20)
@@ -258,13 +276,16 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         is_quant: bool = False,
         is_split_kv: bool = False,
         pack_gqa: bool = False,
-        return_lse: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
+        is_autotune: bool = False,
+        skip_checks: bool = False,
+        return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -288,13 +309,17 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             pack_gqa=pack_gqa,
             out=out,
             lse=lse,
+            is_autotune=is_autotune,
+            skip_checks=skip_checks,
         )
 
-        ctx.save_for_backward(query, key, value, out, lse)
+        ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.softmax_threshold = softmax_threshold
         ctx.window_size = window_size
+        ctx.is_autotune = is_autotune
+        ctx.skip_checks = skip_checks
 
         if return_lse:
             # LSE gradient is not supported yet
@@ -318,6 +343,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             softmax_scale=ctx.softmax_scale,
             softmax_threshold=ctx.softmax_threshold,
             window_size=ctx.window_size,
+            is_autotune=ctx.is_autotune,
+            skip_checks=ctx.skip_checks,
         )
 
         return dq, dk, dv, *((None,) * 20)
@@ -347,13 +374,16 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         is_quant: bool = False,
         is_split_kv: bool = False,
         pack_gqa: bool = False,
-        return_lse: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
+        is_autotune: bool = False,
+        skip_checks: bool = False,
+        return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -383,12 +413,14 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             seqused_k=seqused_k,
             out=out,
             lse=lse,
+            is_autotune=is_autotune,
+            skip_checks=skip_checks,
         )
 
         ctx.save_for_backward(
-            query,
-            key,
-            value,
+            query_orig,
+            key_orig,
+            value_orig,
             out,
             lse,
             cu_seqlens_q,
@@ -402,6 +434,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_autotune = is_autotune
+        ctx.skip_checks = skip_checks
 
         if return_lse:
             # LSE gradient is not supported yet
@@ -441,6 +475,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_autotune=ctx.is_autotune,
+            skip_checks=ctx.skip_checks,
         )
 
         return dq, dk, dv, *((None,) * 20)
@@ -469,13 +505,16 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         is_quant: bool = False,
         is_split_kv: bool = False,
         pack_gqa: bool = False,
-        return_lse: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
+        is_autotune: bool = False,
+        skip_checks: bool = False,
+        return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -505,10 +544,12 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 pack_gqa=pack_gqa,
                 out=out,
                 lse=lse,
+                is_autotune=is_autotune,
+                skip_checks=skip_checks,
             )
         )
 
-        ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
+        ctx.save_for_backward(query_orig, key_orig, value_orig, alpha, delta, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.softmax_threshold = softmax_threshold
@@ -516,6 +557,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
         ctx.window_size = window_size
+        ctx.is_autotune = is_autotune
+        ctx.skip_checks = skip_checks
 
         if return_lse:
             # LSE gradient is not supported yet
@@ -544,6 +587,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
             window_size=ctx.window_size,
+            is_autotune=ctx.is_autotune,
+            skip_checks=ctx.skip_checks,
         )
 
         return dq, dk, dv, da, dd, *((None,) * 20)
@@ -578,13 +623,16 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         is_quant: bool = False,
         is_split_kv: bool = False,
         pack_gqa: bool = False,
-        return_lse: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
+        is_autotune: bool = False,
+        skip_checks: bool = False,
+        return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
 
+        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -620,13 +668,15 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
                 seqused_k=seqused_k,
                 out=out,
                 lse=lse,
+                is_autotune=is_autotune,
+                skip_checks=skip_checks,
             )
         )
 
         ctx.save_for_backward(
-            query,
-            key,
-            value,
+            query_orig,
+            key_orig,
+            value_orig,
             alpha,
             delta,
             out,
@@ -645,6 +695,8 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.window_size = window_size
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_autotune = is_autotune
+        ctx.skip_checks = skip_checks
 
         if return_lse:
             # LSE gradient is not supported yet
@@ -691,6 +743,8 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             window_size=ctx.window_size,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_autotune=ctx.is_autotune,
+            skip_checks=ctx.skip_checks,
         )
 
         return dq, dk, dv, da, dd, *((None,) * 20)
@@ -709,6 +763,8 @@ def flash_dense_attn_func(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    is_autotune: bool = False,
+    skip_checks: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -726,6 +782,8 @@ def flash_dense_attn_func(
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
@@ -743,6 +801,8 @@ def flash_dense_attn_func(
         is_quant,
         is_split_kv,
         pack_gqa,
+        is_autotune,
+        skip_checks,
         return_lse,
     )
 
@@ -757,10 +817,11 @@ def flash_dense_attn_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
-    return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
+    return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash dense attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -774,10 +835,11 @@ def flash_dense_attn_with_kvcache_func(
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
-    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
     :param skip_checks: Whether to skip input validation checks for faster performance.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads].
     """
@@ -799,6 +861,7 @@ def flash_dense_attn_with_kvcache_func(
         is_quant=is_quant,
         out=out,
         lse=lse,
+        is_autotune=is_autotune,
         skip_checks=skip_checks,
     )
 
@@ -826,6 +889,8 @@ def flash_dense_attn_varlen_func(
     seqused_k: Optional[torch.Tensor] = None,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    is_autotune: bool = False,
+    skip_checks: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -849,6 +914,8 @@ def flash_dense_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param is_split_kv: Whether to enable split-KV for occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
@@ -872,6 +939,8 @@ def flash_dense_attn_varlen_func(
         seqused_k,
         is_split_kv,
         pack_gqa,
+        is_autotune,
+        skip_checks,
         return_lse,
     )
 
@@ -889,10 +958,11 @@ def flash_dense_attn_varlen_with_kvcache_func(
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
-    return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
+    return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash dense attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -909,10 +979,11 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
-    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
     :param skip_checks: Whether to skip input validation checks for faster performance.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
@@ -937,6 +1008,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
         seqused_k=seqused_k,
         out=out,
         lse=lse,
+        is_autotune=is_autotune,
         skip_checks=skip_checks,
     )
 
@@ -959,6 +1031,8 @@ def flash_sparse_attn_func(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    is_autotune: bool = False,
+    skip_checks: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -977,6 +1051,8 @@ def flash_sparse_attn_func(
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
@@ -995,6 +1071,8 @@ def flash_sparse_attn_func(
         is_quant,
         is_split_kv,
         pack_gqa,
+        is_autotune,
+        skip_checks,
         return_lse,
     )
 
@@ -1010,10 +1088,11 @@ def flash_sparse_attn_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
-    return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
+    return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash sparse attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -1028,10 +1107,11 @@ def flash_sparse_attn_with_kvcache_func(
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
-    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
     :param skip_checks: Whether to skip input validation checks for faster performance.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads].
     """
@@ -1054,6 +1134,7 @@ def flash_sparse_attn_with_kvcache_func(
         is_quant=is_quant,
         out=out,
         lse=lse,
+        is_autotune=is_autotune,
         skip_checks=skip_checks,
     )
 
@@ -1082,6 +1163,8 @@ def flash_sparse_attn_varlen_func(
     seqused_k: Optional[torch.Tensor] = None,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    is_autotune: bool = False,
+    skip_checks: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -1106,6 +1189,8 @@ def flash_sparse_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param is_split_kv: Whether to enable split-KV for occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
@@ -1130,6 +1215,8 @@ def flash_sparse_attn_varlen_func(
         seqused_k,
         is_split_kv,
         pack_gqa,
+        is_autotune,
+        skip_checks,
         return_lse,
     )
 
@@ -1148,10 +1235,11 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
-    return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
+    return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash sparse attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -1169,10 +1257,11 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
-    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
     :param skip_checks: Whether to skip input validation checks for faster performance.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
@@ -1198,6 +1287,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         seqused_k=seqused_k,
         out=out,
         lse=lse,
+        is_autotune=is_autotune,
         skip_checks=skip_checks,
     )
 
@@ -1225,6 +1315,8 @@ def flash_gated_attn_func(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    is_autotune: bool = False,
+    skip_checks: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -1248,6 +1340,8 @@ def flash_gated_attn_func(
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
@@ -1271,6 +1365,8 @@ def flash_gated_attn_func(
         is_quant,
         is_split_kv,
         pack_gqa,
+        is_autotune,
+        skip_checks,
         return_lse,
     )
 
@@ -1290,10 +1386,11 @@ def flash_gated_attn_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
-    return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
+    return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash gated attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -1312,10 +1409,11 @@ def flash_gated_attn_with_kvcache_func(
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
-    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
     :param skip_checks: Whether to skip input validation checks for faster performance.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads].
     """
@@ -1342,6 +1440,7 @@ def flash_gated_attn_with_kvcache_func(
         is_quant=is_quant,
         out=out,
         lse=lse,
+        is_autotune=is_autotune,
         skip_checks=skip_checks,
     )
 
@@ -1375,6 +1474,8 @@ def flash_gated_attn_varlen_func(
     seqused_k: Optional[torch.Tensor] = None,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    is_autotune: bool = False,
+    skip_checks: bool = False,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -1404,6 +1505,8 @@ def flash_gated_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param is_split_kv: Whether to enable split-KV for occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [total_seqlen_q, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [total_seqlen_q, num_heads_q].
@@ -1433,6 +1536,8 @@ def flash_gated_attn_varlen_func(
         seqused_k,
         is_split_kv,
         pack_gqa,
+        is_autotune,
+        skip_checks,
         return_lse,
     )
 
@@ -1455,10 +1560,11 @@ def flash_gated_attn_varlen_with_kvcache_func(
     window_size: Tuple[Optional[int], Optional[int]] = (None, None),
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
-    return_lse: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
+    return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Flash gated attention function for variable-length decoding with KV cache that computes the attention output and optionally the logsumexp.
@@ -1480,10 +1586,11 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
-    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
+    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
     :param skip_checks: Whether to skip input validation checks for faster performance.
+    :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
     :returns: If return_lse is False, returns out with shape [batch_size, num_heads_q, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads_q].
     """
@@ -1513,6 +1620,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
         seqused_k=seqused_k,
         out=out,
         lse=lse,
+        is_autotune=is_autotune,
         skip_checks=skip_checks,
     )
 
