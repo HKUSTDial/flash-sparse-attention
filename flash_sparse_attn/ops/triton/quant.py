@@ -47,7 +47,7 @@ def quantize_fp8(x: torch.Tensor, dtype: torch.dtype = torch.float8_e5m2):
     FP8_MAX = 57344.0 if dtype == torch.float8_e5m2 else 448.0
 
     n_elements = x.numel()
-    amax = torch.zeros(1, device=x.device, dtype=torch.float32)
+    amax = torch.zeros(1, device=x.device, dtype=x.dtype)
     x_fp8 = torch.empty_like(x, dtype=dtype)
 
     BLOCK = 512
