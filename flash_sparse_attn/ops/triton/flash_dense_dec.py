@@ -17,6 +17,7 @@ from flash_sparse_attn.ops.triton import (
     mask,
     flash_dec_combine,
     kernel_repr,
+    autotuner,
 )
 
 
@@ -133,6 +134,8 @@ def _dec_dense_kernel(
     seqlen_q,
     seqlen_k,
     head_dim,
+    SEQLEN_Q_CACHE: tl.constexpr,
+    SEQLEN_K_CACHE: tl.constexpr,
     QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
@@ -478,6 +481,18 @@ def _dec_dense_kernel(
 
 
 _dec_dense_kernel = cache_utils.wrap_kernel(_dec_dense_kernel)
+
+
+_dec_dense_autotuned_kernel = None
+
+
+def _get_autotuned_kernel():
+    global _dec_dense_autotuned_kernel
+    if _dec_dense_autotuned_kernel is None:
+        _dec_dense_autotuned_kernel = autotuner.AutotunedKernel(
+            autotuner.make_dec_dense_autotuned_kernel(_dec_dense_kernel.kernel)
+        )
+    return _dec_dense_autotuned_kernel
 
 
 def _flash_dense_attn_decode(

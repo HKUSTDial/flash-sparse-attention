@@ -17,6 +17,7 @@ from flash_sparse_attn.ops.triton import (
     flash_bwd_preprocess,
     flash_bwd_postprocess,
     kernel_repr,
+    autotuner,
 )
 
 
@@ -163,6 +164,8 @@ def _bwd_dense_kernel(
     seqlen_q,
     seqlen_k,
     head_dim,
+    SEQLEN_Q_CACHE: tl.constexpr,
+    SEQLEN_K_CACHE: tl.constexpr,
     QHEADS_PER_KVHEAD: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
@@ -637,6 +640,18 @@ def _bwd_dense_kernel(
 
 
 _bwd_dense_kernel = cache_utils.wrap_kernel(_bwd_dense_kernel)
+
+
+_bwd_dense_kernel_autotuned = None
+
+
+def _get_autotuned_kernel():
+    global _bwd_dense_kernel_autotuned
+    if _bwd_dense_kernel_autotuned is None:
+        jit_kernel = _bwd_dense_kernel._kernel
+        autotuned = autotuner.make_bwd_dense_autotuned_kernel(jit_kernel)
+        _bwd_dense_kernel_autotuned = autotuner.AutotunedKernel(autotuned)
+    return _bwd_dense_kernel_autotuned
 
 
 def _flash_dense_attn_backward(

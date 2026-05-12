@@ -17,6 +17,7 @@ from flash_sparse_attn.ops.triton import (
     mask,
     flash_dec_combine,
     kernel_repr,
+    autotuner,
 )
 
 
@@ -214,6 +215,8 @@ def _fwd_gated_kernel(
     seqlen_q,
     seqlen_k,
     head_dim,
+    SEQLEN_Q_CACHE: tl.constexpr,
+    SEQLEN_K_CACHE: tl.constexpr,
     QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
@@ -975,6 +978,18 @@ def _fwd_gated_kernel(
 
 
 _fwd_gated_kernel = cache_utils.wrap_kernel(_fwd_gated_kernel)
+
+
+_fwd_gated_kernel_autotuned = None
+
+
+def _get_autotuned_kernel():
+    global _fwd_gated_kernel_autotuned
+    if _fwd_gated_kernel_autotuned is None:
+        jit_kernel = _fwd_gated_kernel._kernel
+        autotuned = autotuner.make_fwd_gated_autotuned_kernel(jit_kernel)
+        _fwd_gated_kernel_autotuned = autotuner.AutotunedKernel(autotuned)
+    return _fwd_gated_kernel_autotuned
 
 
 def _flash_gated_attn_forward(
