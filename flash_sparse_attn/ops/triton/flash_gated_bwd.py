@@ -17,6 +17,7 @@ from flash_sparse_attn.ops.triton import (
     flash_bwd_preprocess,
     flash_bwd_postprocess,
     kernel_repr,
+    autotuner,
 )
 
 
@@ -281,6 +282,8 @@ def _bwd_gated_kernel(
     seqlen_q,
     seqlen_k,
     head_dim,
+    SEQLEN_Q_CACHE: tl.constexpr,
+    SEQLEN_K_CACHE: tl.constexpr,
     QHEADS_PER_KVHEAD: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
@@ -1013,6 +1016,18 @@ def _bwd_gated_kernel(
 _bwd_gated_kernel = cache_utils.wrap_kernel(_bwd_gated_kernel)
 
 
+_bwd_gated_kernel_autotuned = None
+
+
+def _get_autotuned_kernel():
+    global _bwd_gated_kernel_autotuned
+    if _bwd_gated_kernel_autotuned is None:
+        jit_kernel = _bwd_gated_kernel._kernel
+        autotuned = autotuner.make_bwd_gated_autotuned_kernel(jit_kernel)
+        _bwd_gated_kernel_autotuned = autotuner.AutotunedKernel(autotuned)
+    return _bwd_gated_kernel_autotuned
+
+
 def _flash_gated_attn_backward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1029,6 +1044,7 @@ def _flash_gated_attn_backward(
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
     window_size: Tuple[int, int] = (None, None),
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -1066,13 +1082,19 @@ def _flash_gated_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_bwd_gated_launch_config(
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = TILE_N = 64
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _bwd_gated_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_bwd_gated_launch_config(
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     seqlen_q_rounded = int(math.ceil(seqlen_q / TILE_M) * TILE_M)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
@@ -1136,7 +1158,7 @@ def _flash_gated_attn_backward(
         batch_size=batch_size,
     )
 
-    _bwd_gated_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -1197,9 +1219,11 @@ def _flash_gated_attn_backward(
         None,
         None,
         None,
-        seqlen_q,
-        seqlen_k,
-        head_dim,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=seqlen_q // 1024,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD=qhead_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -1259,6 +1283,7 @@ def _flash_gated_attn_varlen_backward(
     window_size: Tuple[int, int] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -1299,13 +1324,19 @@ def _flash_gated_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_bwd_gated_launch_config(
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = TILE_N = 64
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _bwd_gated_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_bwd_gated_launch_config(
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     total_q_rounded_padded = int(
         math.ceil((total_q + batch_size * TILE_M) / TILE_M) * TILE_M
@@ -1374,7 +1405,7 @@ def _flash_gated_attn_varlen_backward(
         batch_size=batch_size,
     )
 
-    _bwd_gated_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -1435,9 +1466,11 @@ def _flash_gated_attn_varlen_backward(
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        seqlen_q,
-        seqlen_k,
-        head_dim,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=seqlen_q // 1024,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD=qhead_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,

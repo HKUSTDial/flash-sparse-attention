@@ -53,6 +53,8 @@ def benchmark_triton_dense_decode(
             v,
             softmax_scale=softmax_scale,
             window_size=(None, None),
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -88,6 +90,8 @@ def benchmark_triton_dense_decode_fp8(
             value_scale=v_scale,
             window_size=(None, None),
             is_quant=True,
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -115,42 +119,8 @@ def benchmark_triton_sparse_decode(
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
             window_size=(None, None),
-        )
-
-    return do_bench(fn, warmup=20, rep=100)
-
-
-def benchmark_triton_gated_decode(
-    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
-) -> float:
-    q, k, v = generate_inputs(
-        cfg,
-        device=device,
-        dtype=dtype,
-        layout="bshd",
-        input_source="random",
-    )
-    q = q.squeeze(1)
-    alpha = torch.randn(cfg.batch_size, cfg.num_heads, device=device, dtype=dtype)
-    delta = torch.randn(
-        cfg.batch_size, cfg.seqlen_k, cfg.num_kv_heads, device=device, dtype=dtype
-    )
-    softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 1.0
-    gate_threshold = 1.0
-
-    def fn():
-        flash_gated_attn_with_kvcache_func(
-            q,
-            k,
-            v,
-            alpha,
-            delta,
-            softmax_scale=softmax_scale,
-            softmax_threshold=softmax_threshold,
-            gate_threshold=gate_threshold,
-            is_logsigmoid_gate=False,
-            window_size=(None, None),
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -187,6 +157,46 @@ def benchmark_triton_sparse_decode_fp8(
             value_scale=v_scale,
             window_size=(None, None),
             is_quant=True,
+            is_autotune=True,
+            skip_checks=True,
+        )
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_gated_decode(
+    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=dtype,
+        layout="bshd",
+        input_source="random",
+    )
+    q = q.squeeze(1)
+    alpha = torch.randn(cfg.batch_size, cfg.num_heads, device=device, dtype=dtype)
+    delta = torch.randn(
+        cfg.batch_size, cfg.seqlen_k, cfg.num_kv_heads, device=device, dtype=dtype
+    )
+    softmax_scale = cfg.head_dim**-0.5
+    softmax_threshold = 1.0
+    gate_threshold = 1.0
+
+    def fn():
+        flash_gated_attn_with_kvcache_func(
+            q,
+            k,
+            v,
+            alpha,
+            delta,
+            softmax_scale=softmax_scale,
+            softmax_threshold=softmax_threshold,
+            gate_threshold=gate_threshold,
+            is_logsigmoid_gate=False,
+            window_size=(None, None),
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -238,6 +248,8 @@ def benchmark_triton_gated_decode_fp8(
             value_scale=v_scale,
             window_size=(None, None),
             is_quant=True,
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
