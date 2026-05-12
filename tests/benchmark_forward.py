@@ -44,7 +44,7 @@ def benchmark_triton_dense_forward(
         device=device,
         dtype=dtype,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
     softmax_scale = cfg.head_dim**-0.5
 
@@ -56,6 +56,8 @@ def benchmark_triton_dense_forward(
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
             window_size=(None, None),
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -69,7 +71,7 @@ def benchmark_triton_dense_forward_fp8(
         device=device,
         dtype=torch.bfloat16,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
 
     q_fp8, q_scale = quant.quantize_fp8(q)
@@ -90,6 +92,8 @@ def benchmark_triton_dense_forward_fp8(
             value_scale=v_scale,
             window_size=(None, None),
             is_quant=True,
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -103,7 +107,7 @@ def benchmark_triton_sparse_forward(
         device=device,
         dtype=dtype,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
@@ -117,6 +121,8 @@ def benchmark_triton_sparse_forward(
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
             window_size=(None, None),
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -130,7 +136,7 @@ def benchmark_triton_sparse_forward_fp8(
         device=device,
         dtype=torch.bfloat16,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
 
     q_fp8, q_scale = quant.quantize_fp8(q)
@@ -153,6 +159,8 @@ def benchmark_triton_sparse_forward_fp8(
             value_scale=v_scale,
             window_size=(None, None),
             is_quant=True,
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -166,7 +174,7 @@ def benchmark_triton_gated_forward(
         device=device,
         dtype=dtype,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
     alpha = torch.randn(
         cfg.batch_size, cfg.seqlen_q, cfg.num_heads, device=device, dtype=dtype
@@ -192,6 +200,8 @@ def benchmark_triton_gated_forward(
             is_logsigmoid_gate=False,
             is_adapt_gate=False,
             window_size=(None, None),
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -205,7 +215,7 @@ def benchmark_triton_gated_forward_fp8(
         device=device,
         dtype=torch.bfloat16,
         layout="bshd",
-        input_source="llm",
+        input_source="random",
     )
 
     q_fp8, q_scale = quant.quantize_fp8(q)
@@ -244,6 +254,8 @@ def benchmark_triton_gated_forward_fp8(
             value_scale=v_scale,
             window_size=(None, None),
             is_quant=True,
+            is_autotune=True,
+            skip_checks=True,
         )
 
     return do_bench(fn, warmup=20, rep=100)
@@ -257,7 +269,7 @@ def benchmark_fa_dense_forward(
         device=device,
         dtype=dtype,
         layout="bhsd",
-        input_source="llm",
+        input_source="random",
     )
     softmax_scale = cfg.head_dim**-0.5
 
@@ -286,7 +298,7 @@ def benchmark_cudnn_dense_forward(
         device=device,
         dtype=dtype,
         layout="bhsd",
-        input_source="llm",
+        input_source="random",
     )
     softmax_scale = cfg.head_dim**-0.5
 
