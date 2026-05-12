@@ -803,6 +803,7 @@ def _flash_gated_attn_decode(
     is_quant: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
@@ -841,14 +842,21 @@ def _flash_gated_attn_decode(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_dec_gated_launch_config(
-            qheads_per_kvhead=qheads_per_kvhead,
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        TILE_N = 128
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _dec_gated_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_dec_gated_launch_config(
+                qheads_per_kvhead=qheads_per_kvhead,
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     num_splits = utils.num_splits_heuristic(
         seqlen_q=qheads_per_kvhead,
@@ -898,7 +906,7 @@ def _flash_gated_attn_decode(
         num_splits=num_splits,
     )
 
-    _dec_gated_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -943,6 +951,8 @@ def _flash_gated_attn_decode(
         seqlen_q=qheads_per_kvhead,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
+        SEQLEN_Q_CACHE=0,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -990,6 +1000,7 @@ def _flash_gated_attn_varlen_decode(
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
@@ -1029,14 +1040,21 @@ def _flash_gated_attn_varlen_decode(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_dec_gated_launch_config(
-            qheads_per_kvhead=qheads_per_kvhead,
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        TILE_N = 128
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _dec_gated_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_dec_gated_launch_config(
+                qheads_per_kvhead=qheads_per_kvhead,
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     num_splits = utils.num_splits_heuristic(
         seqlen_q=qheads_per_kvhead,
@@ -1086,7 +1104,7 @@ def _flash_gated_attn_varlen_decode(
         num_splits=num_splits,
     )
 
-    _dec_gated_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -1131,6 +1149,8 @@ def _flash_gated_attn_varlen_decode(
         seqlen_q=qheads_per_kvhead,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
+        SEQLEN_Q_CACHE=0,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,

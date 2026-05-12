@@ -722,6 +722,7 @@ def _flash_sparse_attn_backward(
     softmax_scale: float = None,
     softmax_threshold: float = None,
     window_size: Tuple[int, int] = (None, None),
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -756,13 +757,19 @@ def _flash_sparse_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_bwd_sparse_launch_config(
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = TILE_N = 64
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _bwd_sparse_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_bwd_sparse_launch_config(
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     seqlen_q_rounded = int(math.ceil(seqlen_q / TILE_M) * TILE_M)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
@@ -820,7 +827,7 @@ def _flash_sparse_attn_backward(
         batch_size=batch_size,
     )
 
-    _bwd_sparse_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -864,9 +871,11 @@ def _flash_sparse_attn_backward(
         None,
         None,
         None,
-        seqlen_q,
-        seqlen_k,
-        head_dim,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=seqlen_q // 1024,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD=qhead_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -916,6 +925,7 @@ def _flash_sparse_attn_varlen_backward(
     window_size: Tuple[int, int] = (None, None),
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
+    is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -953,13 +963,19 @@ def _flash_sparse_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-        launch_template.get_bwd_sparse_launch_config(
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
+    if is_autotune:
+        kernel = _get_autotuned_kernel()
+        TILE_M = TILE_N = 64
+        num_warps = num_stages = num_ctas = None
+    else:
+        kernel = _bwd_sparse_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
+            launch_template.get_bwd_sparse_launch_config(
+                tile_k=TILE_K,
+                device=device,
+                arch=arch,
+            )
         )
-    )
 
     total_q_rounded_padded = int(
         math.ceil((total_q + batch_size * TILE_M) / TILE_M) * TILE_M
@@ -1023,7 +1039,7 @@ def _flash_sparse_attn_varlen_backward(
         batch_size=batch_size,
     )
 
-    _bwd_sparse_kernel[grid](
+    kernel[grid](
         query,
         key,
         value,
@@ -1067,9 +1083,11 @@ def _flash_sparse_attn_varlen_backward(
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        seqlen_q,
-        seqlen_k,
-        head_dim,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=seqlen_q // 1024,
+        SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEADS_PER_KVHEAD=qhead_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
