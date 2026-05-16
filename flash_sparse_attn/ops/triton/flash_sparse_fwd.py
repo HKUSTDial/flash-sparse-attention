@@ -512,7 +512,7 @@ def _fwd_sparse_kernel(
         n_block_max_no_mask = n_block_max - 1
 
     # Process n_blocks without masking
-    if IS_LOCAL and n_block_max_no_mask > n_block_min:
+    if not IS_LOCAL and n_block_max_no_mask > n_block_min:
         k_ptrs = tl.make_block_ptr(
             base=k_base,
             shape=(head_dim, actual_seqlen_k),
