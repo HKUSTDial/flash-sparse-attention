@@ -39,10 +39,6 @@ def apply_mask(
 
     :return acc_s: Masked attention scores tensor of shape [BLOCK_M, BLOCK_N].
     """
-    tl.static_assert(
-        not (MASK_CAUSAL and MASK_LOCAL),
-        "MASK_CAUSAL and MASK_LOCAL cannot be both True",
-    )
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
     offs_n = n_block * TILE_N + tl.arange(0, TILE_N)
 
@@ -69,7 +65,14 @@ def apply_mask(
         causal_offset = seqlen_k - seqlen_q
         dist = q_idx + causal_offset - k_idx
 
-        if MASK_CAUSAL:
+        if MASK_CAUSAL and MASK_LOCAL:
+            acc_s = tl.where(
+                (dist >= 0)
+                | ((dist >= window_size_right) & (dist <= window_size_left)),
+                acc_s,
+                float("-inf"),
+            )
+        elif MASK_CAUSAL:
             acc_s = tl.where(
                 dist >= 0,
                 acc_s,
