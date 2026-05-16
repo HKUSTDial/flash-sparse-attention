@@ -19,21 +19,27 @@ def get_n_block_min_max(
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
 ):
     n_block_max = tl.cdiv(seqlen_k, TILE_N)
+    n_block_min = 0
+    n_block_window_max = n_block_max
+    n_block_window_min = n_block_min
     if IS_CAUSAL or IS_LOCAL:
         m_idx_max = (m_block + 1) * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_max = tl.cdiv(m_idx_max, QHEAD_PER_KVHEAD_PACKGQA)
         n_idx = m_idx_max + seqlen_k - seqlen_q
-        n_idx_right = n_idx if IS_CAUSAL else n_idx - window_size_right
-        n_block_max = tl.minimum(n_block_max, tl.cdiv(n_idx_right, TILE_N))
-    n_block_min = 0
+        n_block_max = tl.minimum(n_block_max, tl.cdiv(n_idx, TILE_N))
+        if IS_LOCAL:
+            n_idx_right = n_idx - window_size_right
+            n_block_window_max = tl.minimum(
+                n_block_window_max, tl.cdiv(n_idx_right, TILE_N)
+            )
     if IS_LOCAL:
         m_idx_min = m_block * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
         n_idx = m_idx_min + seqlen_k - seqlen_q
         n_idx_left = n_idx - window_size_left
-        n_block_min = tl.maximum(n_idx_left // TILE_N, 0)
+        n_block_window_min = tl.maximum(n_idx_left // TILE_N, 0)
     if IS_SPLIT_KV:
         num_n_blocks_per_split = (
             0
@@ -42,7 +48,7 @@ def get_n_block_min_max(
         )
         n_block_min = n_block_min + split_idx * num_n_blocks_per_split
         n_block_max = tl.minimum(n_block_min + num_n_blocks_per_split, n_block_max)
-    return n_block_min, n_block_max
+    return n_block_min, n_block_max, n_block_window_min, n_block_window_max
 
 
 @triton.jit
@@ -59,17 +65,21 @@ def get_m_block_min_max(
 ):
     m_block_max = tl.cdiv(seqlen_q, TILE_M)
     m_block_min = 0
+    m_block_window_max = m_block_max
+    m_block_window_min = m_block_min
     if IS_CAUSAL or IS_LOCAL:
         n_idx_min = n_block * TILE_N
         m_idx = n_idx_min + seqlen_q - seqlen_k
-        m_idx_right = m_idx if IS_CAUSAL else m_idx + window_size_right
-        m_block_min = tl.maximum(m_block_min, m_idx_right // TILE_M)
+        m_block_min = tl.maximum(m_block_min, m_idx // TILE_M)
+        if IS_LOCAL:
+            m_idx_right = m_idx + window_size_right
+            m_block_window_min = tl.maximum(m_block_window_min, m_idx_right // TILE_M)
     if IS_LOCAL:
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
         m_idx_left = m_idx + window_size_left
-        m_block_max = tl.minimum(m_block_max, tl.cdiv(m_idx_left, TILE_M))
-    return m_block_min, m_block_max
+        m_block_window_max = tl.minimum(m_block_window_max, tl.cdiv(m_idx_left, TILE_M))
+    return m_block_min, m_block_max, m_block_window_min, m_block_window_max
 
 
 @triton.jit
