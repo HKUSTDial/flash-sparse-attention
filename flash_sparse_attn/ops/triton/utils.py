@@ -71,4 +71,29 @@ def num_splits_heuristic(
     if num_n_blocks <= 4:
         # 1 means no splitting
         return 1
-    return min(num_SMs // max(total_mblocks, 1), max_splits, num_n_blocks)
+    return max(1, min(num_SMs // max(total_mblocks, 1), max_splits, num_n_blocks))
+
+
+@functools.lru_cache(maxsize=4096)
+def window_sizes_heuristic(
+    seqlen_k: int,
+    num_heads_kv: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Compute window sizes that partition the causal triangle
+    into equal-work bands.
+
+    :param seqlen_k: Sequence length of keys.
+    :param num_heads_kv: Number of KV heads.
+    :param device: Target device.
+
+    :return: (num_heads_kv, 2) int32 tensor, columns are [left, right].
+    """
+    head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
+    breakpoints = (seqlen_k * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv))).to(
+        torch.int32
+    )
+    window_size_left = breakpoints[1:]
+    window_size_right = breakpoints[:-1] + 1
+    return torch.stack([window_size_left, window_size_right], dim=1).to(device)
