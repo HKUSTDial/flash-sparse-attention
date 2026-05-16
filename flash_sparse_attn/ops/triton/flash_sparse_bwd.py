@@ -7,6 +7,7 @@ import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
+    utils,
     cache_utils,
     launch_template,
     launch_grid,
@@ -40,10 +41,10 @@ def _bwd_inner_sparse_kernel(
     n_block,
     actual_seqlen_q,
     actual_seqlen_k,
+    window_size_left,
+    window_size_right,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
-    WINDOW_SIZE_LEFT: tl.constexpr,
-    WINDOW_SIZE_RIGHT: tl.constexpr,
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
@@ -68,14 +69,14 @@ def _bwd_inner_sparse_kernel(
             n_block=n_block,
             seqlen_q=actual_seqlen_q,
             seqlen_k=actual_seqlen_k,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
             MASK_SEQLEN=True,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=1,
+            QHEAD_PER_KVHEAD_PACKGQA=1,
             SWAP_AB=True,
         )
 
