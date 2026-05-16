@@ -15,7 +15,7 @@ from flash_sparse_attn.ops.triton import cache_utils
 def get_fwd_dense_launch_config(
     is_split_kv: bool,
     pack_gqa: bool,
-    qheads_per_kvhead: int,
+    qhead_per_kvhead: int,
     tile_k: int,
     device: torch.device,
     arch: int,
@@ -25,7 +25,7 @@ def get_fwd_dense_launch_config(
 
     :param is_split_kv: Whether the attention is split KV
     :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param qhead_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
     :param device: The device to run the kernel on
     :param arch: The architecture of the device
@@ -37,10 +37,10 @@ def get_fwd_dense_launch_config(
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     if device.type == "cuda":
-        # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
+        # If split KV, we set tile_m based on qhead_per_kvhead to ensure good occupancy
         if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 16:
-                tile_m = triton.next_power_of_2(qheads_per_kvhead)
+            if pack_gqa and qhead_per_kvhead > 16:
+                tile_m = triton.next_power_of_2(qhead_per_kvhead)
             else:
                 tile_m = 16
         else:
@@ -131,7 +131,7 @@ get_fwd_dense_launch_config = cache_utils.cache_launch_config(
 def get_fwd_sparse_launch_config(
     is_split_kv: bool,
     pack_gqa: bool,
-    qheads_per_kvhead: int,
+    qhead_per_kvhead: int,
     tile_k: int,
     device: torch.device,
     arch: int,
@@ -141,7 +141,7 @@ def get_fwd_sparse_launch_config(
 
     :param is_split_kv: Whether the attention is split KV
     :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param qhead_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
     :param device: The device to run the kernel on
     :param arch: The architecture of the device
@@ -153,10 +153,10 @@ def get_fwd_sparse_launch_config(
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     if device.type == "cuda":
-        # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
+        # If split KV, we set tile_m based on qhead_per_kvhead to ensure good occupancy
         if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 16:
-                tile_m = triton.next_power_of_2(qheads_per_kvhead)
+            if pack_gqa and qhead_per_kvhead > 16:
+                tile_m = triton.next_power_of_2(qhead_per_kvhead)
             else:
                 tile_m = 16
         else:
@@ -247,7 +247,7 @@ get_fwd_sparse_launch_config = cache_utils.cache_launch_config(
 def get_fwd_gated_launch_config(
     is_split_kv: bool,
     pack_gqa: bool,
-    qheads_per_kvhead: int,
+    qhead_per_kvhead: int,
     tile_k: int,
     device: torch.device,
     arch: int,
@@ -257,7 +257,7 @@ def get_fwd_gated_launch_config(
 
     :param is_split_kv: Whether the attention is split KV
     :param pack_gqa: Whether GQA packing is used
-    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param qhead_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
     :param device: The device to run the kernel on
     :param arch: The architecture of the device
@@ -269,10 +269,10 @@ def get_fwd_gated_launch_config(
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     if device.type == "cuda":
-        # If split KV, we set tile_m based on qheads_per_kvhead to ensure good occupancy
+        # If split KV, we set tile_m based on qhead_per_kvhead to ensure good occupancy
         if is_split_kv:
-            if pack_gqa and qheads_per_kvhead > 16:
-                tile_m = triton.next_power_of_2(qheads_per_kvhead)
+            if pack_gqa and qhead_per_kvhead > 16:
+                tile_m = triton.next_power_of_2(qhead_per_kvhead)
             else:
                 tile_m = 16
         else:
@@ -612,7 +612,7 @@ get_bwd_gated_launch_config = cache_utils.cache_launch_config(
 
 
 def get_dec_dense_launch_config(
-    qheads_per_kvhead: int,
+    qhead_per_kvhead: int,
     tile_k: int,
     device: torch.device,
     arch: int,
@@ -620,7 +620,7 @@ def get_dec_dense_launch_config(
     """
     Get launch configuration for decode dense kernel based on input parameters and device architecture.
 
-    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param qhead_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
     :param device: The device to run the kernel on
     :param arch: The architecture of the device
@@ -632,7 +632,7 @@ def get_dec_dense_launch_config(
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     if device.type == "cuda":
-        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        tile_m = max(triton.next_power_of_2(qhead_per_kvhead), 16)
 
         # For A100
         if arch // 10 == 8:
@@ -683,7 +683,7 @@ get_dec_dense_launch_config = cache_utils.cache_launch_config(
 
 
 def get_dec_sparse_launch_config(
-    qheads_per_kvhead: int,
+    qhead_per_kvhead: int,
     tile_k: int,
     device: torch.device,
     arch: int,
@@ -691,7 +691,7 @@ def get_dec_sparse_launch_config(
     """
     Get launch configuration for decode sparse kernel based on input parameters and device architecture.
 
-    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param qhead_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
     :param device: The device to run the kernel on
     :param arch: The architecture of the device
@@ -703,7 +703,7 @@ def get_dec_sparse_launch_config(
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     if device.type == "cuda":
-        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        tile_m = max(triton.next_power_of_2(qhead_per_kvhead), 16)
 
         # For A100
         if arch // 10 == 8:
@@ -754,7 +754,7 @@ get_dec_sparse_launch_config = cache_utils.cache_launch_config(
 
 
 def get_dec_gated_launch_config(
-    qheads_per_kvhead: int,
+    qhead_per_kvhead: int,
     tile_k: int,
     device: torch.device,
     arch: int,
@@ -762,7 +762,7 @@ def get_dec_gated_launch_config(
     """
     Get launch configuration for decode gated kernel based on input parameters and device architecture.
 
-    :param qheads_per_kvhead: Number of query heads per key/value head
+    :param qhead_per_kvhead: Number of query heads per key/value head
     :param tile_k: Tile size in the K dimension
     :param device: The device to run the kernel on
     :param arch: The architecture of the device
@@ -774,7 +774,7 @@ def get_dec_gated_launch_config(
         raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
     if device.type == "cuda":
-        tile_m = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        tile_m = max(triton.next_power_of_2(qhead_per_kvhead), 16)
 
         # For A100
         if arch // 10 == 8:
