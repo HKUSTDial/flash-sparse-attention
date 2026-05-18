@@ -41,6 +41,8 @@ def get_n_block_min_max(
         n_idx_left = n_idx - window_size_left
         n_block_window_min = tl.maximum(n_idx_left // TILE_N, 0)
     if IS_SPLIT_KV:
+        if IS_LOCAL:
+            n_block_min = tl.maximum(n_block_min, n_block_window_min)
         num_n_blocks_per_split = (
             0
             if n_block_max <= n_block_min
