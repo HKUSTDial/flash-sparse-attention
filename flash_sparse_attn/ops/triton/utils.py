@@ -79,21 +79,25 @@ def window_sizes_heuristic(
     seqlen_k: int,
     num_heads_kv: int,
     device: torch.device,
+    equal_bandwidth: bool = True,
 ) -> torch.Tensor:
     """
-    Compute window sizes that partition the causal triangle
-    into equal-work bands.
+    Compute window sizes that partition the causal triangle into bands.
 
     :param seqlen_k: Sequence length of keys.
     :param num_heads_kv: Number of KV heads.
     :param device: Target device.
+    :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
 
     :return: (num_heads_kv, 2) int32 tensor, columns are [left, right].
     """
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
-    breakpoints = (seqlen_k * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv))).to(
-        torch.int32
-    )
-    window_size_left = breakpoints[1:]
-    window_size_right = breakpoints[:-1] + 1
+    if equal_bandwidth:
+        breakpoints = (seqlen_k * head_kv_idx / num_heads_kv).to(torch.int32)
+    else:
+        breakpoints = (
+            seqlen_k * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv))
+        ).to(torch.int32)
+    window_size_left = torch.clamp(breakpoints[1:] - 1, min=0)
+    window_size_right = breakpoints[:-1]
     return torch.stack([window_size_left, window_size_right], dim=1).to(device)
