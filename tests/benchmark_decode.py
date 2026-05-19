@@ -52,7 +52,6 @@ def benchmark_triton_dense_decode(
             k,
             v,
             softmax_scale=softmax_scale,
-            window_size=(None, None),
             is_autotune=True,
             skip_checks=True,
         )
@@ -88,7 +87,6 @@ def benchmark_triton_dense_decode_fp8(
             query_scale=q_scale,
             key_scale=k_scale,
             value_scale=v_scale,
-            window_size=(None, None),
             is_quant=True,
             is_autotune=True,
             skip_checks=True,
@@ -118,7 +116,6 @@ def benchmark_triton_sparse_decode(
             v,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
-            window_size=(None, None),
             is_autotune=True,
             skip_checks=True,
         )
@@ -155,7 +152,6 @@ def benchmark_triton_sparse_decode_fp8(
             query_scale=q_scale,
             key_scale=k_scale,
             value_scale=v_scale,
-            window_size=(None, None),
             is_quant=True,
             is_autotune=True,
             skip_checks=True,
@@ -194,7 +190,6 @@ def benchmark_triton_gated_decode(
             softmax_threshold=softmax_threshold,
             gate_threshold=gate_threshold,
             is_logsigmoid_gate=False,
-            window_size=(None, None),
             is_autotune=True,
             skip_checks=True,
         )
@@ -246,7 +241,6 @@ def benchmark_triton_gated_decode_fp8(
             query_scale=q_scale,
             key_scale=k_scale,
             value_scale=v_scale,
-            window_size=(None, None),
             is_quant=True,
             is_autotune=True,
             skip_checks=True,
