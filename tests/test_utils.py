@@ -1,9 +1,10 @@
 import itertools
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence
 
 import torch
 
+from flash_sparse_attn.ops.triton import cache_utils, launch_template
 from flash_sparse_attn.ops.triton.flash_dense_bwd import (
     _flash_dense_attn_backward,
     _flash_dense_attn_varlen_backward,
@@ -28,6 +29,7 @@ from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
     _flash_sparse_attn_forward,
     _flash_sparse_attn_varlen_forward,
 )
+from flash_sparse_attn.ops.triton.utils import window_sizes_heuristic
 from flash_sparse_attn.ops.triton.interface import (
     flash_dense_attn_varlen_with_kvcache_func,
     flash_dense_attn_with_kvcache_func,
@@ -416,24 +418,22 @@ def _make_mask(
     seqlen_k: int,
     device: torch.device,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    window_left: int,
+    window_right: int,
 ) -> torch.Tensor:
-    row_idx = torch.arange(seqlen_q, device=device)[:, None]
-    col_idx = torch.arange(seqlen_k, device=device)[None, :]
-    mask = torch.zeros((seqlen_q, seqlen_k), device=device, dtype=torch.bool)
-    aligned_row = row_idx + (seqlen_k - seqlen_q)
+    q_idx = torch.arange(seqlen_q, device=device)[:, None]
+    k_idx = torch.arange(seqlen_k, device=device)[None, :]
+    dist = q_idx + (seqlen_k - seqlen_q) - k_idx
 
-    left, right = window_size
-    if left is not None or right is not None:
-        left = seqlen_k if left is None else left
-        right = seqlen_k if right is None else right
-        allowed = (col_idx >= (aligned_row - left)) & (col_idx <= (aligned_row + right))
-        mask |= ~allowed
+    causal_mask = dist >= 0
+    window_mask = (dist >= window_right) & (dist <= window_left)
 
     if is_causal:
-        mask |= col_idx > aligned_row
+        allowed = causal_mask & window_mask
+    else:
+        allowed = window_mask
 
-    return mask
+    return ~allowed
 
 
 def _reference_scores(
@@ -441,10 +441,13 @@ def _reference_scores(
     k: torch.Tensor,
     softmax_scale: float,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool = False,
+    local_seqlen_k: Optional[int] = None,
+    kind: KernelType = "dense",
 ) -> torch.Tensor:
     qh = q.transpose(1, 2).float()
     kh = k.transpose(1, 2).float()
+    num_kv_heads = kh.shape[1]
     if qh.shape[1] != kh.shape[1]:
         if qh.shape[1] % kh.shape[1] != 0:
             raise ValueError(
@@ -453,9 +456,77 @@ def _reference_scores(
         repeat = qh.shape[1] // kh.shape[1]
         kh = torch.repeat_interleave(kh, repeats=repeat, dim=1)
     scores = torch.matmul(qh, kh.transpose(-2, -1)) * softmax_scale
-    if is_causal or window_size != (None, None):
-        mask = _make_mask(q.shape[1], k.shape[1], q.device, is_causal, window_size)
+
+    seqlen_q, seqlen_k = q.shape[1], k.shape[1]
+    if is_causal and not is_local:
+        mask = _make_mask(seqlen_q, seqlen_k, q.device, True, seqlen_k, 0)
         scores = scores.masked_fill(mask, float("-inf"))
+    elif is_local:
+        ws_seqlen = local_seqlen_k if local_seqlen_k is not None else seqlen_k
+        ws = window_sizes_heuristic(ws_seqlen, num_kv_heads, q.device)
+        num_heads_q = qh.shape[1]
+        qpk = num_heads_q // num_kv_heads
+
+        q_idx = torch.arange(seqlen_q, device=q.device).unsqueeze(1)
+        k_idx = torch.arange(seqlen_k, device=q.device).unsqueeze(0)
+        causal_offset = seqlen_k - seqlen_q
+        dist = q_idx + causal_offset - k_idx
+
+        arch = cache_utils.get_device_arch(q.device)
+        tile_k = max(1 << (max(q.shape[-1], 16) - 1).bit_length(), 16)
+        if seqlen_q > 1:
+            tile_m, tile_n, _, _, _ = launch_template.get_fwd_dense_launch_config(
+                is_split_kv=False,
+                pack_gqa=False,
+                qhead_per_kvhead=1,
+                tile_k=tile_k,
+                device=q.device,
+                arch=arch,
+            )
+            m_block = q_idx // tile_m
+            n_blk = k_idx // tile_n
+            n_block_max_no_mask = (m_block * tile_m + causal_offset) // tile_n
+            n_block_max_diag = (
+                (m_block + 1) * tile_m + causal_offset + tile_n - 1
+            ) // tile_n
+            is_diagonal = (n_blk >= n_block_max_no_mask) & (n_blk < n_block_max_diag)
+            causal_mask = dist >= 0
+        else:
+            if kind == "sparse":
+                _, tile_n, _, _, _ = launch_template.get_dec_sparse_launch_config(
+                    qhead_per_kvhead=qpk,
+                    tile_k=tile_k,
+                    device=q.device,
+                    arch=arch,
+                )
+            elif kind == "gated":
+                _, tile_n, _, _, _ = launch_template.get_dec_gated_launch_config(
+                    qhead_per_kvhead=qpk,
+                    tile_k=tile_k,
+                    device=q.device,
+                    arch=arch,
+                )
+            else:
+                _, tile_n, _, _, _ = launch_template.get_dec_dense_launch_config(
+                    qhead_per_kvhead=qpk,
+                    tile_k=tile_k,
+                    device=q.device,
+                    arch=arch,
+                )
+            last_block_start = (seqlen_k - 1) // tile_n * tile_n
+            is_diagonal = k_idx >= last_block_start
+
+        for h in range(num_kv_heads):
+            wl, wr = int(ws[h, 0].item()), int(ws[h, 1].item())
+            window_mask = (dist >= wr) & (dist <= wl)
+            if seqlen_q > 1:
+                allowed = (is_diagonal & causal_mask) | window_mask
+            else:
+                allowed = is_diagonal | window_mask
+            scores[:, h * qpk : (h + 1) * qpk] = scores[
+                :, h * qpk : (h + 1) * qpk
+            ].masked_fill(~allowed, float("-inf"))
+
     return scores
 
 
@@ -465,9 +536,12 @@ def reference_dense_forward(
     v: torch.Tensor,
     softmax_scale: float,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool = False,
+    local_seqlen_k: Optional[int] = None,
 ) -> torch.Tensor:
-    scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
+    scores = _reference_scores(
+        q, k, softmax_scale, is_causal, is_local, local_seqlen_k, kind="dense"
+    )
     vh = v.transpose(1, 2).float()
     if scores.shape[1] != vh.shape[1]:
         if scores.shape[1] % vh.shape[1] != 0:
@@ -488,9 +562,12 @@ def reference_sparse_forward(
     v: torch.Tensor,
     softmax_scale: float,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool = False,
+    local_seqlen_k: Optional[int] = None,
 ) -> torch.Tensor:
-    scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
+    scores = _reference_scores(
+        q, k, softmax_scale, is_causal, is_local, local_seqlen_k, kind="sparse"
+    )
     vh = v.transpose(1, 2).float()
     if scores.shape[1] != vh.shape[1]:
         if scores.shape[1] % vh.shape[1] != 0:
@@ -513,10 +590,13 @@ def reference_gated_forward(
     delta: torch.Tensor,
     softmax_scale: float,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
-    is_logsigmoid_gate: bool,
+    is_local: bool = False,
+    is_logsigmoid_gate: bool = True,
+    local_seqlen_k: Optional[int] = None,
 ) -> torch.Tensor:
-    scores = _reference_scores(q, k, softmax_scale, is_causal, window_size)
+    scores = _reference_scores(
+        q, k, softmax_scale, is_causal, is_local, local_seqlen_k, kind="gated"
+    )
     alpha_h = alpha.transpose(1, 2).float()
     delta_h = delta.transpose(1, 2).float()
     if alpha_h.shape[1] != delta_h.shape[1]:
@@ -552,13 +632,17 @@ def _reference_varlen_forward(
     cu_seqlens_k: torch.Tensor,
     softmax_scale: float,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool = False,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     is_logsigmoid_gate: bool = True,
 ) -> torch.Tensor:
     outs: List[torch.Tensor] = []
     batch_size = cu_seqlens_q.numel() - 1
+    max_sk = max(
+        int(cu_seqlens_k[i + 1].item()) - int(cu_seqlens_k[i].item())
+        for i in range(batch_size)
+    )
     for idx in range(batch_size):
         qs = int(cu_seqlens_q[idx].item())
         qe = int(cu_seqlens_q[idx + 1].item())
@@ -567,6 +651,7 @@ def _reference_varlen_forward(
         qi = q[qs:qe].unsqueeze(0)
         ki = k[ks:ke].unsqueeze(0)
         vi = v[ks:ke].unsqueeze(0)
+        lsk = max_sk if is_local else None
         if kind == "gated":
             ai = alpha[qs:qe, :].unsqueeze(0)
             di = delta[ks:ke, :].unsqueeze(0)
@@ -578,8 +663,9 @@ def _reference_varlen_forward(
                 di,
                 softmax_scale=softmax_scale,
                 is_causal=is_causal,
-                window_size=window_size,
+                is_local=is_local,
                 is_logsigmoid_gate=is_logsigmoid_gate,
+                local_seqlen_k=lsk,
             )
         elif kind == "sparse":
             out_i = reference_sparse_forward(
@@ -588,7 +674,8 @@ def _reference_varlen_forward(
                 vi,
                 softmax_scale=softmax_scale,
                 is_causal=is_causal,
-                window_size=window_size,
+                is_local=is_local,
+                local_seqlen_k=lsk,
             )
         else:
             out_i = reference_dense_forward(
@@ -597,7 +684,8 @@ def _reference_varlen_forward(
                 vi,
                 softmax_scale=softmax_scale,
                 is_causal=is_causal,
-                window_size=window_size,
+                is_local=is_local,
+                local_seqlen_k=lsk,
             )
         outs.append(out_i.squeeze(0))
     return torch.cat(outs, dim=0)
@@ -610,13 +698,19 @@ def _reference_varlen_decode(
     v: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     softmax_scale: float,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool = False,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     is_logsigmoid_gate: bool = True,
+    max_seqlen_k: Optional[int] = None,
 ) -> torch.Tensor:
     batch_size = q.shape[0]
     outs: List[torch.Tensor] = []
+    if max_seqlen_k is None:
+        max_seqlen_k = max(
+            int(cu_seqlens_k[i + 1].item()) - int(cu_seqlens_k[i].item())
+            for i in range(batch_size)
+        )
 
     for idx in range(batch_size):
         ks = int(cu_seqlens_k[idx].item())
@@ -625,6 +719,7 @@ def _reference_varlen_decode(
         qi = q[idx : idx + 1].unsqueeze(1)
         ki = k[ks:ke].unsqueeze(0)
         vi = v[ks:ke].unsqueeze(0)
+        lsk = max_seqlen_k if is_local else None
 
         if kind == "gated":
             ai = alpha[idx : idx + 1].unsqueeze(1)
@@ -637,8 +732,9 @@ def _reference_varlen_decode(
                 di,
                 softmax_scale=softmax_scale,
                 is_causal=False,
-                window_size=window_size,
+                is_local=is_local,
                 is_logsigmoid_gate=is_logsigmoid_gate,
+                local_seqlen_k=lsk,
             )
         elif kind == "sparse":
             out_i = reference_sparse_forward(
@@ -647,7 +743,8 @@ def _reference_varlen_decode(
                 vi,
                 softmax_scale=softmax_scale,
                 is_causal=False,
-                window_size=window_size,
+                is_local=is_local,
+                local_seqlen_k=lsk,
             )
         else:
             out_i = reference_dense_forward(
@@ -656,7 +753,8 @@ def _reference_varlen_decode(
                 vi,
                 softmax_scale=softmax_scale,
                 is_causal=False,
-                window_size=window_size,
+                is_local=is_local,
+                local_seqlen_k=lsk,
             )
         outs.append(out_i.squeeze(0).squeeze(0))
     return torch.stack(outs, dim=0)
@@ -693,7 +791,7 @@ def _run_forward_base(
     k: torch.Tensor,
     v: torch.Tensor,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool,
     alpha: Optional[torch.Tensor],
     delta: Optional[torch.Tensor],
     is_logsigmoid_gate: bool,
@@ -707,7 +805,7 @@ def _run_forward_base(
             v,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     elif kind == "sparse":
@@ -718,7 +816,7 @@ def _run_forward_base(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     else:
@@ -733,8 +831,8 @@ def _run_forward_base(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
+            is_local=is_local,
             is_adapt_gate=False,
-            window_size=window_size,
             pack_gqa=False,
         )
     return out, softmax_scale
@@ -749,7 +847,7 @@ def run_forward_base_case(
     num_heads_kv: int,
     head_dim: int,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_logsigmoid_gate: bool = True,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
@@ -780,7 +878,7 @@ def run_forward_base_case(
         k,
         v,
         is_causal=is_causal,
-        window_size=window_size,
+        is_local=is_local,
         alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
@@ -794,7 +892,7 @@ def run_forward_base_case(
             delta,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
             is_logsigmoid_gate=is_logsigmoid_gate,
         )
     elif kind == "sparse":
@@ -804,7 +902,7 @@ def run_forward_base_case(
             v,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
         )
     else:
         out_ref = reference_dense_forward(
@@ -813,7 +911,7 @@ def run_forward_base_case(
             v,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
         )
     _assert_close(
         name=f"{kind}-base-forward",
@@ -834,7 +932,7 @@ def _run_forward_varlen(
     max_seqlen_q: int,
     max_seqlen_k: int,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]],
+    is_local: bool,
     alpha: Optional[torch.Tensor],
     delta: Optional[torch.Tensor],
     is_logsigmoid_gate: bool,
@@ -852,7 +950,7 @@ def _run_forward_varlen(
             max_seqlen_k=max_seqlen_k,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     elif kind == "sparse":
@@ -867,7 +965,7 @@ def _run_forward_varlen(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     else:
@@ -887,7 +985,7 @@ def _run_forward_varlen(
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
             is_adapt_gate=False,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     return out, softmax_scale
@@ -901,7 +999,7 @@ def run_forward_varlen_case(
     num_heads_kv: int,
     head_dim: int,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_logsigmoid_gate: bool = True,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
@@ -951,7 +1049,7 @@ def run_forward_varlen_case(
         max_seqlen_q=max(lens_q),
         max_seqlen_k=max(lens_k),
         is_causal=is_causal,
-        window_size=window_size,
+        is_local=is_local,
         alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
@@ -965,7 +1063,7 @@ def run_forward_varlen_case(
         cu_seqlens_k=cu_seqlens_k,
         softmax_scale=softmax_scale,
         is_causal=is_causal,
-        window_size=window_size,
+        is_local=is_local,
         alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
@@ -994,7 +1092,7 @@ def run_decode_base_case(
     num_heads_q: int,
     num_heads_kv: int,
     head_dim: int,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_logsigmoid_gate: bool = True,
     use_output_buffers: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
@@ -1052,7 +1150,7 @@ def run_decode_base_case(
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
-                window_size=window_size,
+                is_local=is_local,
                 return_lse=True,
                 out=out_buffer,
                 lse=lse_buffer,
@@ -1067,7 +1165,7 @@ def run_decode_base_case(
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
-                window_size=window_size,
+                is_local=is_local,
                 return_lse=True,
                 out=out_buffer,
                 lse=lse_buffer,
@@ -1086,7 +1184,7 @@ def run_decode_base_case(
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
-                window_size=window_size,
+                is_local=is_local,
                 return_lse=True,
                 out=out_buffer,
                 lse=lse_buffer,
@@ -1103,7 +1201,7 @@ def run_decode_base_case(
                 v_deq,
                 softmax_scale=softmax_scale,
                 is_causal=False,
-                window_size=window_size,
+                is_local=is_local,
             ).squeeze(1)
         elif kind == "sparse":
             out_ref = reference_sparse_forward(
@@ -1112,7 +1210,7 @@ def run_decode_base_case(
                 v_deq,
                 softmax_scale=softmax_scale,
                 is_causal=False,
-                window_size=window_size,
+                is_local=is_local,
             ).squeeze(1)
         else:
             out_ref = reference_gated_forward(
@@ -1123,7 +1221,7 @@ def run_decode_base_case(
                 delta,
                 softmax_scale=softmax_scale,
                 is_causal=False,
-                window_size=window_size,
+                is_local=is_local,
                 is_logsigmoid_gate=is_logsigmoid_gate,
             ).squeeze(1)
 
@@ -1153,20 +1251,12 @@ def run_decode_base_case(
             k,
             v,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
         )
-        out_ref = reference_dense_forward(
-            q.unsqueeze(1),
-            k,
-            v,
-            softmax_scale=softmax_scale,
-            is_causal=False,
-            window_size=window_size,
-        ).squeeze(1)
     elif kind == "sparse":
         out, lse = flash_sparse_attn_with_kvcache_func(
             q,
@@ -1174,20 +1264,12 @@ def run_decode_base_case(
             v,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
         )
-        out_ref = reference_sparse_forward(
-            q.unsqueeze(1),
-            k,
-            v,
-            softmax_scale=softmax_scale,
-            is_causal=False,
-            window_size=window_size,
-        ).squeeze(1)
     else:
         out, lse = flash_gated_attn_with_kvcache_func(
             q,
@@ -1199,12 +1281,32 @@ def run_decode_base_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
             lse=lse_buffer,
         )
+
+    if kind == "dense":
+        out_ref = reference_dense_forward(
+            q.unsqueeze(1),
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            is_causal=False,
+            is_local=is_local,
+        ).squeeze(1)
+    elif kind == "sparse":
+        out_ref = reference_sparse_forward(
+            q.unsqueeze(1),
+            k,
+            v,
+            softmax_scale=softmax_scale,
+            is_causal=False,
+            is_local=is_local,
+        ).squeeze(1)
+    else:
         out_ref = reference_gated_forward(
             q.unsqueeze(1),
             k,
@@ -1213,7 +1315,7 @@ def run_decode_base_case(
             delta,
             softmax_scale=softmax_scale,
             is_causal=False,
-            window_size=window_size,
+            is_local=is_local,
             is_logsigmoid_gate=is_logsigmoid_gate,
         ).squeeze(1)
 
@@ -1236,7 +1338,7 @@ def run_decode_varlen_case(
     num_heads_q: int,
     num_heads_kv: int,
     head_dim: int,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_logsigmoid_gate: bool = True,
     use_output_buffers: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
@@ -1306,7 +1408,7 @@ def run_decode_varlen_case(
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
-                window_size=window_size,
+                is_local=is_local,
                 return_lse=True,
                 out=out_buffer,
                 lse=lse_buffer,
@@ -1323,7 +1425,7 @@ def run_decode_varlen_case(
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
-                window_size=window_size,
+                is_local=is_local,
                 return_lse=True,
                 out=out_buffer,
                 lse=lse_buffer,
@@ -1344,7 +1446,7 @@ def run_decode_varlen_case(
                 query_scale=q_scale,
                 key_scale=k_scale,
                 value_scale=v_scale,
-                window_size=window_size,
+                is_local=is_local,
                 return_lse=True,
                 out=out_buffer,
                 lse=lse_buffer,
@@ -1361,7 +1463,7 @@ def run_decode_varlen_case(
             v_deq,
             cu_seqlens_k=cu_seqlens_k,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             alpha=alpha,
             delta=delta,
             is_logsigmoid_gate=is_logsigmoid_gate,
@@ -1395,7 +1497,7 @@ def run_decode_varlen_case(
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_k=max(lens_k),
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
@@ -1410,7 +1512,7 @@ def run_decode_varlen_case(
             max_seqlen_k=max(lens_k),
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
@@ -1429,7 +1531,7 @@ def run_decode_varlen_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             return_lse=True,
             out=out_buffer,
@@ -1443,7 +1545,7 @@ def run_decode_varlen_case(
         v,
         cu_seqlens_k=cu_seqlens_k,
         softmax_scale=softmax_scale,
-        window_size=window_size,
+        is_local=is_local,
         alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
@@ -1475,7 +1577,7 @@ def run_backward_base_case(
     num_heads_kv: int,
     head_dim: int,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_logsigmoid_gate: bool = True,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
@@ -1509,7 +1611,7 @@ def run_backward_base_case(
             v,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     elif kind == "sparse":
@@ -1520,7 +1622,7 @@ def run_backward_base_case(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     else:
@@ -1535,8 +1637,8 @@ def run_backward_base_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
+            is_local=is_local,
             is_adapt_gate=False,
-            window_size=window_size,
             pack_gqa=False,
         )
 
@@ -1552,7 +1654,7 @@ def run_backward_base_case(
             lse,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
         )
     elif kind == "sparse":
         kernel_grads = _flash_sparse_attn_backward(
@@ -1565,7 +1667,7 @@ def run_backward_base_case(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
         )
     else:
         kernel_grads = _flash_gated_attn_backward(
@@ -1582,8 +1684,8 @@ def run_backward_base_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
+            is_local=is_local,
             is_adapt_gate=False,
-            window_size=window_size,
         )
 
     rq = q.detach().clone().requires_grad_(True)
@@ -1601,7 +1703,7 @@ def run_backward_base_case(
             rd,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
             is_logsigmoid_gate=is_logsigmoid_gate,
         )
         ref_params["da"] = ra
@@ -1613,7 +1715,7 @@ def run_backward_base_case(
             rv,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
         )
     else:
         ref_out = reference_dense_forward(
@@ -1622,7 +1724,7 @@ def run_backward_base_case(
             rv,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
         )
     ref_out.backward(dout)
     ref_grads = _collect_grads(ref_params)
@@ -1646,7 +1748,7 @@ def run_backward_varlen_case(
     num_heads_kv: int,
     head_dim: int,
     is_causal: bool,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_logsigmoid_gate: bool = True,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
@@ -1700,7 +1802,7 @@ def run_backward_varlen_case(
             max_seqlen_k=max(lens_k),
             is_causal=is_causal,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     elif kind == "sparse":
@@ -1715,7 +1817,7 @@ def run_backward_varlen_case(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
             pack_gqa=False,
         )
     else:
@@ -1734,8 +1836,8 @@ def run_backward_varlen_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
+            is_local=is_local,
             is_adapt_gate=False,
-            window_size=window_size,
             pack_gqa=False,
         )
 
@@ -1754,7 +1856,7 @@ def run_backward_varlen_case(
             max_seqlen_k=max(lens_k),
             is_causal=is_causal,
             softmax_scale=softmax_scale,
-            window_size=window_size,
+            is_local=is_local,
         )
     elif kind == "sparse":
         kernel_grads = _flash_sparse_attn_varlen_backward(
@@ -1771,7 +1873,7 @@ def run_backward_varlen_case(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
-            window_size=window_size,
+            is_local=is_local,
         )
     else:
         kernel_grads = _flash_gated_attn_varlen_backward(
@@ -1792,8 +1894,8 @@ def run_backward_varlen_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
+            is_local=is_local,
             is_adapt_gate=False,
-            window_size=window_size,
         )
 
     rq = q.detach().clone().requires_grad_(True)
@@ -1812,7 +1914,7 @@ def run_backward_varlen_case(
             cu_seqlens_k=cu_seqlens_k,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
             alpha=ra,
             delta=rd,
             is_logsigmoid_gate=is_logsigmoid_gate,
@@ -1829,7 +1931,7 @@ def run_backward_varlen_case(
             cu_seqlens_k=cu_seqlens_k,
             softmax_scale=softmax_scale,
             is_causal=is_causal,
-            window_size=window_size,
+            is_local=is_local,
         )
     ref_out.backward(dout)
     ref_grads = _collect_grads(ref_params)
