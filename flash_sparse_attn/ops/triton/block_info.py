@@ -26,6 +26,7 @@ def get_n_block_min_max(
         m_idx_max = (m_block + 1) * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_max = tl.cdiv(m_idx_max, QHEAD_PER_KVHEAD_PACKGQA)
+        m_idx_max = tl.minimum(m_idx_max, seqlen_q)
         n_idx = m_idx_max + seqlen_k - seqlen_q
         n_block_max = tl.minimum(n_block_max, tl.cdiv(n_idx, TILE_N))
         if IS_LOCAL:
@@ -43,13 +44,25 @@ def get_n_block_min_max(
     if IS_SPLIT_KV:
         if IS_LOCAL:
             n_block_min = tl.maximum(n_block_min, n_block_window_min)
-        num_n_blocks_per_split = (
-            0
-            if n_block_max <= n_block_min
-            else (n_block_max - n_block_min + num_splits - 1) // num_splits
+            n_block_max_with_diag = n_block_max
+            n_block_max = tl.maximum(n_block_window_max, n_block_min)
+        total_n_blocks = tl.maximum(n_block_max - n_block_min, 0)
+        base = total_n_blocks // num_splits
+        extra = total_n_blocks % num_splits
+        n_block_min_new = n_block_min + tl.where(
+            split_idx < extra,
+            split_idx * (base + 1),
+            extra * (base + 1) + (split_idx - extra) * base,
         )
-        n_block_min = n_block_min + split_idx * num_n_blocks_per_split
-        n_block_max = tl.minimum(n_block_min + num_n_blocks_per_split, n_block_max)
+        n_block_count = tl.where(split_idx < extra, base + 1, base)
+        n_block_max = tl.minimum(n_block_min_new + n_block_count, n_block_max)
+        n_block_min = n_block_min_new
+        if IS_LOCAL:
+            n_block_max = tl.where(
+                split_idx >= num_splits - 1,
+                n_block_max_with_diag,
+                n_block_max,
+            )
     return n_block_min, n_block_max, n_block_window_min, n_block_window_max
 
 
@@ -122,6 +135,7 @@ def get_n_block_min_before_local_mask(
         m_idx_max = (m_block + 1) * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_max = tl.cdiv(m_idx_max, QHEAD_PER_KVHEAD_PACKGQA)
+        m_idx_max = tl.minimum(m_idx_max, seqlen_q)
         n_idx = m_idx_max + seqlen_k - seqlen_q
         n_idx_left = n_idx - window_size_left
         return tl.maximum(n_block_min, tl.cdiv(n_idx_left, TILE_N))
