@@ -183,6 +183,7 @@ def _dec_gated_kernel(
     value_scale,
     softmax_threshold_log2,
     gate_threshold_log2,
+    window_sizes,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -206,6 +207,7 @@ def _dec_gated_kernel(
     stride_lh,
     stride_lm,
     stride_ls,
+    stride_wh,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
@@ -216,13 +218,11 @@ def _dec_gated_kernel(
     head_dim,
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
-    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
     IS_LOCAL: tl.constexpr,
-    WINDOW_SIZE_LEFT: tl.constexpr,
-    WINDOW_SIZE_RIGHT: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
@@ -261,7 +261,7 @@ def _dec_gated_kernel(
 
     # Initialize base pointers
     q_base = seqlen_info.offset_batch_Q(
-        Q + head_idx * QHEADS_PER_KVHEAD_PACKGQA * stride_qh,
+        Q + head_idx * QHEAD_PER_KVHEAD_PACKGQA * stride_qh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -291,7 +291,7 @@ def _dec_gated_kernel(
         USE_PADDED=False,
     )
     a_base = seqlen_info.offset_batch_Q(
-        A + head_idx * QHEADS_PER_KVHEAD_PACKGQA * stride_ah,
+        A + head_idx * QHEAD_PER_KVHEAD_PACKGQA * stride_ah,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -311,7 +311,7 @@ def _dec_gated_kernel(
         USE_PADDED=False,
     )
     out_base = seqlen_info.offset_batch_Q(
-        Out + head_idx * QHEADS_PER_KVHEAD_PACKGQA * stride_oh,
+        Out + head_idx * QHEAD_PER_KVHEAD_PACKGQA * stride_oh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -321,7 +321,7 @@ def _dec_gated_kernel(
         USE_PADDED=False,
     )
     lse_base = seqlen_info.offset_batch_Q(
-        Lse + head_idx * QHEADS_PER_KVHEAD_PACKGQA * stride_lh,
+        Lse + head_idx * QHEAD_PER_KVHEAD_PACKGQA * stride_lh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -335,36 +335,46 @@ def _dec_gated_kernel(
     out_base += split_idx * stride_os
     lse_base += split_idx * stride_ls
 
+    # Load window sizes
+    if IS_LOCAL:
+        window_size_left = tl.load(window_sizes + head_kv_idx * stride_wh)
+        window_size_right = tl.load(window_sizes + head_kv_idx * stride_wh + 1)
+    else:
+        window_size_left = 0
+        window_size_right = 0
+
     # Compute n_block range for this m_block
-    n_block_min, n_block_max = block_info.get_n_block_min_max(
-        seqlen_q=actual_seqlen_q,
-        seqlen_k=actual_seqlen_k,
-        m_block=0,
-        split_idx=split_idx,
-        num_splits=num_splits,
-        TILE_N=TILE_N,
-        TILE_M=TILE_M,
-        IS_CAUSAL=False,
-        IS_LOCAL=IS_LOCAL,
-        IS_SPLIT_KV=True,
-        WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEAD_PER_KVHEAD_PACKGQA=1,
+    n_block_min, n_block_max, n_block_window_min, n_block_window_max = (
+        block_info.get_n_block_min_max(
+            seqlen_q=1,
+            seqlen_k=actual_seqlen_k,
+            m_block=0,
+            split_idx=split_idx,
+            num_splits=num_splits,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
+            TILE_N=TILE_N,
+            TILE_M=TILE_M,
+            IS_CAUSAL=False,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_KV=True,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        )
     )
-    n_block_min_no_mask = block_info.get_n_block_min_before_local_mask(
-        seqlen_q=actual_seqlen_q,
+    n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+        seqlen_q=1,
         seqlen_k=actual_seqlen_k,
         m_block=0,
         n_block_min=n_block_min,
+        window_size_right=0,
         TILE_N=TILE_N,
         TILE_M=TILE_M,
-        IS_LOCAL=IS_LOCAL,
-        WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        QHEAD_PER_KVHEAD_PACKGQA=1,
+        IS_LOCAL=False,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
     )
 
     # Clamp to split's range so the no-mask loop stays within bounds
-    n_block_min_no_mask = tl.maximum(n_block_min_no_mask, n_block_min)
+    n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
     # Create pointers
     lse_ptrs = tl.make_block_ptr(
@@ -491,59 +501,55 @@ def _dec_gated_kernel(
     # Compute attention scores for first tile
     acc_s += tl.dot(q_tile, k_tile)
 
-    # Process n_blocks with masking
-    # First iteration with seqlen masking
-    n_block = n_block_max - 1
-    (
-        skip_gate_curr,
-        acc_s,
-        acc_o,
-        k_ptrs,
-        v_ptrs,
-        d_ptrs,
-        gate_max,
-        block_max,
-        row_max,
-        row_sum,
-    ) = _dec_inner_gated_kernel(
-        skip_gate_curr=skip_gate_curr,
-        acc_s=acc_s,
-        acc_o=acc_o,
-        q_tile=q_tile,
-        a_tile=a_tile,
-        k_ptrs=k_ptrs,
-        v_ptrs=v_ptrs,
-        d_ptrs=d_ptrs,
-        a_max=a_max,
-        a_min=a_min,
-        gate_max=gate_max,
-        block_max=block_max,
-        row_max=row_max,
-        row_sum=row_sum,
-        softmax_scale_log2=softmax_scale_log2,
-        gate_threshold_log2=gate_threshold_log2,
-        softmax_threshold_log2=softmax_threshold_log2,
-        m_block=0,
-        n_block=n_block,
-        n_block_min=n_block,
-        actual_seqlen_q=actual_seqlen_q,
-        actual_seqlen_k=actual_seqlen_k,
-        TILE_M=TILE_M,
-        TILE_N=TILE_N,
-        WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEADS_PER_KVHEAD_PACKGQA=1,
-        IS_MASK=True,
-        MASK_LOCAL=False,
-        IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
-        CHECK_INF=True,
-    )
-
-    n_block_max_no_mask = n_block_max - 1
-    n_block_min_no_mask = tl.minimum(n_block_min_no_mask, n_block_max_no_mask)
+    # Process n_blocks with seqlen masking
+    for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
+        (
+            skip_gate_curr,
+            acc_s,
+            acc_o,
+            k_ptrs,
+            v_ptrs,
+            d_ptrs,
+            gate_max,
+            block_max,
+            row_max,
+            row_sum,
+        ) = _dec_inner_gated_kernel(
+            skip_gate_curr=skip_gate_curr,
+            acc_s=acc_s,
+            acc_o=acc_o,
+            q_tile=q_tile,
+            a_tile=a_tile,
+            k_ptrs=k_ptrs,
+            v_ptrs=v_ptrs,
+            d_ptrs=d_ptrs,
+            a_max=a_max,
+            a_min=a_min,
+            gate_max=gate_max,
+            block_max=block_max,
+            row_max=row_max,
+            row_sum=row_sum,
+            softmax_scale_log2=softmax_scale_log2,
+            gate_threshold_log2=gate_threshold_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
+            m_block=0,
+            n_block=n_block,
+            n_block_min=n_block_max_no_mask,
+            actual_seqlen_q=1,
+            actual_seqlen_k=actual_seqlen_k,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+            IS_MASK=True,
+            MASK_LOCAL=False,
+            IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+            CHECK_INF=True,
+        )
 
     # Process n_blocks without masking
-    if n_block_max_no_mask > n_block_min_no_mask:
+    if not IS_LOCAL and n_block_max_no_mask > n_block_min:
         k_ptrs = tl.make_block_ptr(
             base=k_base,
             shape=(head_dim, actual_seqlen_k),
@@ -599,110 +605,7 @@ def _dec_gated_kernel(
         # Compute attention scores
         acc_s += tl.dot(q_tile, k_tile)
 
-        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
-            (
-                skip_gate_curr,
-                acc_s,
-                acc_o,
-                k_ptrs,
-                v_ptrs,
-                d_ptrs,
-                gate_max,
-                block_max,
-                row_max,
-                row_sum,
-            ) = _dec_inner_gated_kernel(
-                skip_gate_curr=skip_gate_curr,
-                acc_s=acc_s,
-                acc_o=acc_o,
-                q_tile=q_tile,
-                a_tile=a_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
-                d_ptrs=d_ptrs,
-                a_max=a_max,
-                a_min=a_min,
-                gate_max=gate_max,
-                block_max=block_max,
-                row_max=row_max,
-                row_sum=row_sum,
-                softmax_scale_log2=softmax_scale_log2,
-                gate_threshold_log2=gate_threshold_log2,
-                softmax_threshold_log2=softmax_threshold_log2,
-                m_block=0,
-                n_block=n_block,
-                n_block_min=n_block_min_no_mask,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=1,
-                IS_MASK=False,
-                MASK_LOCAL=False,
-                IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
-                CHECK_INF=False,
-            )
-
-    # Process n_blocks with masking
-    if IS_LOCAL and n_block_min_no_mask > n_block_min:
-        k_ptrs = tl.make_block_ptr(
-            base=k_base,
-            shape=(head_dim, actual_seqlen_k),
-            strides=(1, stride_kn),
-            offsets=(0, (n_block_min_no_mask - 1) * TILE_N),
-            block_shape=(TILE_K, TILE_N),
-            order=(0, 1),
-        )
-        v_ptrs = tl.make_block_ptr(
-            base=v_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_vn, 1),
-            offsets=((n_block_min_no_mask - 1) * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
-        )
-        d_ptrs = tl.make_block_ptr(
-            base=d_base,
-            shape=(actual_seqlen_k,),
-            strides=(stride_dn,),
-            offsets=((n_block_min_no_mask - 1) * TILE_N,),
-            block_shape=(TILE_N,),
-            order=(0,),
-        )
-
-        # Load key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
-
-        # Load delta tile
-        d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
-            tl.float32
-        )
-        d_max = tl.max(d_tile)
-        d_min = tl.min(d_tile)
-
-        # Check if any gates are active for current tile
-        gate_max, skip_gate_curr = activations.online_gate(
-            a_max,
-            a_min,
-            d_max,
-            d_min,
-            gate_max,
-            scale_log2=softmax_scale_log2,
-            gate_threshold_log2=gate_threshold_log2,
-        )
-
-        # Compute attention gates
-        acc_s = a_tile[:, None] * d_tile[None, :]
-
-        if IS_LOGSIGMOID_GATE:
-            acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
-
-        # Compute attention scores
-        acc_s += tl.dot(q_tile, k_tile)
-
-        for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
+        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
             (
                 skip_gate_curr,
                 acc_s,
@@ -735,18 +638,373 @@ def _dec_gated_kernel(
                 m_block=0,
                 n_block=n_block,
                 n_block_min=n_block_min,
-                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_q=1,
                 actual_seqlen_k=actual_seqlen_k,
+                window_size_left=window_size_left,
+                window_size_right=window_size_right,
                 TILE_M=TILE_M,
                 TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=1,
-                IS_MASK=True,
-                MASK_LOCAL=True,
+                QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                IS_MASK=False,
+                MASK_LOCAL=False,
                 IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
-                CHECK_INF=True,
+                CHECK_INF=False,
             )
+
+    if IS_LOCAL:
+        # Compute n_block range for this m_block
+        n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
+        n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
+        n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+            seqlen_q=1,
+            seqlen_k=actual_seqlen_k,
+            m_block=0,
+            n_block_min=n_block_window_min,
+            window_size_right=window_size_right,
+            TILE_N=TILE_N,
+            TILE_M=TILE_M,
+            IS_LOCAL=True,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
+            seqlen_q=1,
+            seqlen_k=actual_seqlen_k,
+            m_block=0,
+            n_block_min=n_block_window_min,
+            window_size_left=window_size_left,
+            TILE_N=TILE_N,
+            TILE_M=TILE_M,
+            IS_LOCAL=True,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        n_block_window_min_no_mask = tl.minimum(
+            n_block_window_min_no_mask, n_block_window_max_no_mask
+        )
+
+        # Clamp window no-mask boundaries to the window's range
+        n_block_window_max_no_mask = tl.maximum(
+            tl.minimum(n_block_window_max_no_mask, n_block_window_max),
+            n_block_window_min,
+        )
+        n_block_window_min_no_mask = tl.maximum(
+            tl.minimum(n_block_window_min_no_mask, n_block_window_max),
+            n_block_window_min,
+        )
+
+        # Process n_blocks with local right masking
+        if n_block_window_max > n_block_window_max_no_mask:
+            k_ptrs = tl.make_block_ptr(
+                base=k_base,
+                shape=(head_dim, actual_seqlen_k),
+                strides=(1, stride_kn),
+                offsets=(0, (n_block_window_max - 1) * TILE_N),
+                block_shape=(TILE_K, TILE_N),
+                order=(0, 1),
+            )
+            v_ptrs = tl.make_block_ptr(
+                base=v_base,
+                shape=(actual_seqlen_k, head_dim),
+                strides=(stride_vn, 1),
+                offsets=((n_block_window_max - 1) * TILE_N, 0),
+                block_shape=(TILE_N, TILE_K),
+                order=(1, 0),
+            )
+            d_ptrs = tl.make_block_ptr(
+                base=d_base,
+                shape=(actual_seqlen_k,),
+                strides=(stride_dn,),
+                offsets=((n_block_window_max - 1) * TILE_N,),
+                block_shape=(TILE_N,),
+                order=(0,),
+            )
+
+            # Load key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+            # Load delta tile
+            d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+                tl.float32
+            )
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = activations.online_gate(
+                a_max,
+                a_min,
+                d_max,
+                d_min,
+                gate_max,
+                scale_log2=softmax_scale_log2,
+                gate_threshold_log2=gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+
+            if IS_LOGSIGMOID_GATE:
+                acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile)
+
+            for n_block in tl.range(
+                n_block_window_max - 1, n_block_window_max_no_mask - 1, -1
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    k_ptrs,
+                    v_ptrs,
+                    d_ptrs,
+                    gate_max,
+                    block_max,
+                    row_max,
+                    row_sum,
+                ) = _dec_inner_gated_kernel(
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    block_max=block_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    softmax_scale_log2=softmax_scale_log2,
+                    gate_threshold_log2=gate_threshold_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=0,
+                    n_block=n_block,
+                    n_block_min=n_block_window_max_no_mask,
+                    actual_seqlen_q=1,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    IS_MASK=True,
+                    MASK_LOCAL=True,
+                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                    CHECK_INF=True,
+                )
+
+        # Process n_blocks without masking
+        if n_block_window_max_no_mask > n_block_window_min_no_mask:
+            k_ptrs = tl.make_block_ptr(
+                base=k_base,
+                shape=(head_dim, actual_seqlen_k),
+                strides=(1, stride_kn),
+                offsets=(0, (n_block_window_max_no_mask - 1) * TILE_N),
+                block_shape=(TILE_K, TILE_N),
+                order=(0, 1),
+            )
+            v_ptrs = tl.make_block_ptr(
+                base=v_base,
+                shape=(actual_seqlen_k, head_dim),
+                strides=(stride_vn, 1),
+                offsets=((n_block_window_max_no_mask - 1) * TILE_N, 0),
+                block_shape=(TILE_N, TILE_K),
+                order=(1, 0),
+            )
+            d_ptrs = tl.make_block_ptr(
+                base=d_base,
+                shape=(actual_seqlen_k,),
+                strides=(stride_dn,),
+                offsets=((n_block_window_max_no_mask - 1) * TILE_N,),
+                block_shape=(TILE_N,),
+                order=(0,),
+            )
+
+            # Load key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+            # Load delta tile
+            d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+                tl.float32
+            )
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = activations.online_gate(
+                a_max,
+                a_min,
+                d_max,
+                d_min,
+                gate_max,
+                scale_log2=softmax_scale_log2,
+                gate_threshold_log2=gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+
+            if IS_LOGSIGMOID_GATE:
+                acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile)
+
+            for n_block in tl.range(
+                n_block_window_max_no_mask - 1, n_block_window_min_no_mask - 1, -1
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    k_ptrs,
+                    v_ptrs,
+                    d_ptrs,
+                    gate_max,
+                    block_max,
+                    row_max,
+                    row_sum,
+                ) = _dec_inner_gated_kernel(
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    block_max=block_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    softmax_scale_log2=softmax_scale_log2,
+                    gate_threshold_log2=gate_threshold_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=0,
+                    n_block=n_block,
+                    n_block_min=n_block_window_min_no_mask,
+                    actual_seqlen_q=1,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    IS_MASK=False,
+                    MASK_LOCAL=False,
+                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                    CHECK_INF=False,
+                )
+
+        # Process n_blocks with local left masking
+        if n_block_window_min_no_mask > n_block_window_min:
+            k_ptrs = tl.make_block_ptr(
+                base=k_base,
+                shape=(head_dim, actual_seqlen_k),
+                strides=(1, stride_kn),
+                offsets=(0, (n_block_window_min_no_mask - 1) * TILE_N),
+                block_shape=(TILE_K, TILE_N),
+                order=(0, 1),
+            )
+            v_ptrs = tl.make_block_ptr(
+                base=v_base,
+                shape=(actual_seqlen_k, head_dim),
+                strides=(stride_vn, 1),
+                offsets=((n_block_window_min_no_mask - 1) * TILE_N, 0),
+                block_shape=(TILE_N, TILE_K),
+                order=(1, 0),
+            )
+            d_ptrs = tl.make_block_ptr(
+                base=d_base,
+                shape=(actual_seqlen_k,),
+                strides=(stride_dn,),
+                offsets=((n_block_window_min_no_mask - 1) * TILE_N,),
+                block_shape=(TILE_N,),
+                order=(0,),
+            )
+
+            # Load key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+            # Load delta tile
+            d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+                tl.float32
+            )
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = activations.online_gate(
+                a_max,
+                a_min,
+                d_max,
+                d_min,
+                gate_max,
+                scale_log2=softmax_scale_log2,
+                gate_threshold_log2=gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+
+            if IS_LOGSIGMOID_GATE:
+                acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile)
+
+            for n_block in tl.range(
+                n_block_window_min_no_mask - 1, n_block_window_min - 1, -1
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    k_ptrs,
+                    v_ptrs,
+                    d_ptrs,
+                    gate_max,
+                    block_max,
+                    row_max,
+                    row_sum,
+                ) = _dec_inner_gated_kernel(
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    block_max=block_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    softmax_scale_log2=softmax_scale_log2,
+                    gate_threshold_log2=gate_threshold_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=0,
+                    n_block=n_block,
+                    n_block_min=n_block_window_min,
+                    actual_seqlen_q=1,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    IS_MASK=True,
+                    MASK_LOCAL=True,
+                    IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+                    CHECK_INF=True,
+                )
 
     # Load value scale
     v_scale = tl.load(value_scale)
@@ -799,7 +1057,7 @@ def _flash_gated_attn_decode(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[int, int] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -811,15 +1069,17 @@ def _flash_gated_attn_decode(
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    window_size_left, window_size_right = window_size
-    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     softmax_threshold = softmax_threshold or head_dim / seqlen_k
     gate_threshold = gate_threshold or head_dim / seqlen_k
     softmax_threshold_log2 = math.log2(softmax_threshold)
     gate_threshold_log2 = math.log2(gate_threshold)
-    qheads_per_kvhead = num_heads_q // num_heads_kv
+    qhead_per_kvhead = num_heads_q // num_heads_kv
+    if is_local:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    else:
+        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -844,23 +1104,30 @@ def _flash_gated_attn_decode(
 
     if is_autotune:
         kernel = _get_autotuned_kernel()
-        TILE_M = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        TILE_M = max(triton.next_power_of_2(qhead_per_kvhead), 16)
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
     else:
         kernel = _dec_gated_kernel
         TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
             launch_template.get_dec_gated_launch_config(
-                qheads_per_kvhead=qheads_per_kvhead,
+                qhead_per_kvhead=qhead_per_kvhead,
                 tile_k=TILE_K,
                 device=device,
                 arch=arch,
             )
         )
 
+    # Compute effective seqlen_k for local attention
+    if is_local:
+        max_bandwidth = (window_sizes[:, 0] - window_sizes[:, 1] + 1).max().item()
+        effective_seqlen_k = min(max_bandwidth, seqlen_k)
+    else:
+        effective_seqlen_k = seqlen_k
+
     num_splits = utils.num_splits_heuristic(
-        seqlen_q=qheads_per_kvhead,
-        seqlen_k=seqlen_k,
+        seqlen_q=qhead_per_kvhead,
+        seqlen_k=effective_seqlen_k,
         num_SMs=num_SMs,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -870,29 +1137,23 @@ def _flash_gated_attn_decode(
     out = (
         out
         if out is not None
-        else cache_utils.get_static_buffer(
-            query.shape, out_dtype, device, tag="dec_out"
-        )
+        else torch.empty(query.shape, dtype=out_dtype, device=device)
     )
     lse = (
         lse
         if lse is not None
-        else cache_utils.get_static_buffer(
-            (batch_size, num_heads_q), torch.float32, device, tag="dec_lse"
-        )
+        else torch.empty((batch_size, num_heads_q), dtype=torch.float32, device=device)
     )
 
-    out_partial = cache_utils.get_static_buffer(
+    out_partial = torch.empty(
         (num_splits, batch_size, num_heads_q, head_dim),
-        torch.float32,
-        device,
-        tag="dec_out_partial",
+        dtype=torch.float32,
+        device=device,
     )
-    lse_partial = cache_utils.get_static_buffer(
+    lse_partial = torch.empty(
         (num_splits, batch_size, num_heads_q),
-        torch.float32,
-        device,
-        tag="dec_lse_partial",
+        dtype=torch.float32,
+        device=device,
     )
 
     if not is_quant:
@@ -920,6 +1181,7 @@ def _flash_gated_attn_decode(
         value_scale,
         softmax_threshold_log2,
         gate_threshold_log2,
+        window_sizes,
         query.stride(0),
         query.stride(-2),
         1,
@@ -943,23 +1205,22 @@ def _flash_gated_attn_decode(
         lse_partial.stride(-1),
         1,
         lse_partial.stride(0),
+        window_sizes.stride(0),
         None,
         None,
         None,
         None,
         num_splits,
-        seqlen_q=qheads_per_kvhead,
+        seqlen_q=qhead_per_kvhead,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
         SEQLEN_K_CACHE=seqlen_k // 1024,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_LOCAL=is_local,
-        WINDOW_SIZE_LEFT=window_size_left,
-        WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
@@ -995,7 +1256,7 @@ def _flash_gated_attn_varlen_decode(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[int, int] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1009,15 +1270,17 @@ def _flash_gated_attn_varlen_decode(
     batch_size, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     seqlen_k = max_seqlen_k
-    window_size_left, window_size_right = window_size
-    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     softmax_threshold = softmax_threshold or head_dim / seqlen_k
     gate_threshold = gate_threshold or head_dim / seqlen_k
     softmax_threshold_log2 = math.log2(softmax_threshold)
     gate_threshold_log2 = math.log2(gate_threshold)
-    qheads_per_kvhead = num_heads_q // num_heads_kv
+    qhead_per_kvhead = num_heads_q // num_heads_kv
+    if is_local:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    else:
+        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -1042,23 +1305,30 @@ def _flash_gated_attn_varlen_decode(
 
     if is_autotune:
         kernel = _get_autotuned_kernel()
-        TILE_M = max(triton.next_power_of_2(qheads_per_kvhead), 16)
+        TILE_M = max(triton.next_power_of_2(qhead_per_kvhead), 16)
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
     else:
         kernel = _dec_gated_kernel
         TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
             launch_template.get_dec_gated_launch_config(
-                qheads_per_kvhead=qheads_per_kvhead,
+                qhead_per_kvhead=qhead_per_kvhead,
                 tile_k=TILE_K,
                 device=device,
                 arch=arch,
             )
         )
 
+    # Compute effective seqlen_k for local attention
+    if is_local:
+        max_bandwidth = (window_sizes[:, 0] - window_sizes[:, 1] + 1).max().item()
+        effective_seqlen_k = min(max_bandwidth, seqlen_k)
+    else:
+        effective_seqlen_k = seqlen_k
+
     num_splits = utils.num_splits_heuristic(
-        seqlen_q=qheads_per_kvhead,
-        seqlen_k=seqlen_k,
+        seqlen_q=qhead_per_kvhead,
+        seqlen_k=effective_seqlen_k,
         num_SMs=num_SMs,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -1068,29 +1338,23 @@ def _flash_gated_attn_varlen_decode(
     out = (
         out
         if out is not None
-        else cache_utils.get_static_buffer(
-            query.shape, out_dtype, device, tag="dec_out"
-        )
+        else torch.empty(query.shape, dtype=out_dtype, device=device)
     )
     lse = (
         lse
         if lse is not None
-        else cache_utils.get_static_buffer(
-            (batch_size, num_heads_q), torch.float32, device, tag="dec_lse"
-        )
+        else torch.empty((batch_size, num_heads_q), dtype=torch.float32, device=device)
     )
 
-    out_partial = cache_utils.get_static_buffer(
+    out_partial = torch.empty(
         (num_splits, batch_size, num_heads_q, head_dim),
-        torch.float32,
-        device,
-        tag="dec_out_partial",
+        dtype=torch.float32,
+        device=device,
     )
-    lse_partial = cache_utils.get_static_buffer(
+    lse_partial = torch.empty(
         (num_splits, batch_size, num_heads_q),
-        torch.float32,
-        device,
-        tag="dec_lse_partial",
+        dtype=torch.float32,
+        device=device,
     )
 
     if not is_quant:
@@ -1118,6 +1382,7 @@ def _flash_gated_attn_varlen_decode(
         value_scale,
         softmax_threshold_log2,
         gate_threshold_log2,
+        window_sizes,
         query.stride(0),
         query.stride(-2),
         1,
@@ -1141,23 +1406,22 @@ def _flash_gated_attn_varlen_decode(
         lse_partial.stride(-1),
         1,
         lse_partial.stride(0),
+        window_sizes.stride(0),
         None,
         cu_seqlens_k,
         None,
         seqused_k,
         num_splits,
-        seqlen_q=qheads_per_kvhead,
+        seqlen_q=qhead_per_kvhead,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
         SEQLEN_K_CACHE=seqlen_k // 1024,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead,
+        QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_LOCAL=is_local,
-        WINDOW_SIZE_LEFT=window_size_left,
-        WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=False,
