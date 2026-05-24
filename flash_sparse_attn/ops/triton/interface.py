@@ -852,7 +852,7 @@ def flash_dense_attn_func(
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -910,7 +910,7 @@ def flash_dense_attn_with_kvcache_func(
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -993,7 +993,7 @@ def flash_dense_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1063,7 +1063,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1139,7 +1139,7 @@ def flash_sparse_attn_func(
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1200,7 +1200,7 @@ def flash_sparse_attn_with_kvcache_func(
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1286,7 +1286,7 @@ def flash_sparse_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1359,7 +1359,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1446,7 +1446,7 @@ def flash_gated_attn_func(
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1520,7 +1520,7 @@ def flash_gated_attn_with_kvcache_func(
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1620,7 +1620,7 @@ def flash_gated_attn_varlen_func(
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1706,7 +1706,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
