@@ -36,11 +36,11 @@ def _fwd_inner_dense_kernel(
     n_block_min,
     actual_seqlen_q,
     actual_seqlen_k,
+    window_size_left,
+    window_size_right,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
-    WINDOW_SIZE_LEFT: tl.constexpr,
-    WINDOW_SIZE_RIGHT: tl.constexpr,
-    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
@@ -63,14 +63,14 @@ def _fwd_inner_dense_kernel(
             n_block=n_block,
             seqlen_q=actual_seqlen_q,
             seqlen_k=actual_seqlen_k,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
             MASK_SEQLEN=True,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
             SWAP_AB=False,
         )
 
@@ -110,6 +110,7 @@ def _fwd_dense_kernel(
     query_scale,
     key_scale,
     value_scale,
+    window_sizes,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -126,26 +127,25 @@ def _fwd_dense_kernel(
     stride_lb,
     stride_lh,
     stride_ls,
+    stride_wh,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
     seqused_k,
-    qhead_per_kvhead,
     num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
-    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
+    QHEAD_PER_KVHEAD: tl.constexpr,
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
     IS_SPLIT_KV: tl.constexpr,
-    WINDOW_SIZE_LEFT: tl.constexpr,
-    WINDOW_SIZE_RIGHT: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
@@ -164,7 +164,7 @@ def _fwd_dense_kernel(
     if PACK_GQA:
         head_kv_idx = head_idx
     else:
-        head_kv_idx = head_idx // qhead_per_kvhead
+        head_kv_idx = head_idx // QHEAD_PER_KVHEAD
 
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
     offs_kb = tl.arange(0, TILE_K)
@@ -250,48 +250,46 @@ def _fwd_dense_kernel(
         out_base += split_idx * stride_os
         lse_base += split_idx * stride_ls
 
+    # Load window sizes
+    if IS_LOCAL:
+        window_size_left = tl.load(window_sizes + head_kv_idx * stride_wh)
+        window_size_right = tl.load(window_sizes + head_kv_idx * stride_wh + 1)
+    else:
+        window_size_left = 0
+        window_size_right = 0
+
     # Compute n_block range for this m_block
-    n_block_min, n_block_max = block_info.get_n_block_min_max(
-        seqlen_q=actual_seqlen_q,
-        seqlen_k=actual_seqlen_k,
-        m_block=m_block,
-        split_idx=split_idx,
-        num_splits=num_splits,
-        TILE_N=TILE_N,
-        TILE_M=TILE_M,
-        IS_CAUSAL=IS_CAUSAL,
-        IS_LOCAL=IS_LOCAL,
-        IS_SPLIT_KV=IS_SPLIT_KV,
-        WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-    )
-    n_block_min_no_mask = block_info.get_n_block_min_before_local_mask(
-        seqlen_q=actual_seqlen_q,
-        seqlen_k=actual_seqlen_k,
-        m_block=m_block,
-        n_block_min=n_block_min,
-        TILE_N=TILE_N,
-        TILE_M=TILE_M,
-        IS_LOCAL=IS_LOCAL,
-        WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+    n_block_min, n_block_max, n_block_window_min, n_block_window_max = (
+        block_info.get_n_block_min_max(
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            m_block=m_block,
+            split_idx=split_idx,
+            num_splits=num_splits,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
+            TILE_N=TILE_N,
+            TILE_M=TILE_M,
+            IS_CAUSAL=IS_CAUSAL,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_KV=IS_SPLIT_KV,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        )
     )
     n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
         seqlen_q=actual_seqlen_q,
         seqlen_k=actual_seqlen_k,
         m_block=m_block,
         n_block_min=n_block_min,
+        window_size_right=0,
         TILE_N=TILE_N,
         TILE_M=TILE_M,
-        IS_LOCAL=IS_LOCAL,
-        WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+        IS_LOCAL=False,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
     )
 
     # Clamp to split's range so the no-mask loop stays within bounds
     if IS_SPLIT_KV:
-        n_block_min_no_mask = tl.maximum(n_block_min_no_mask, n_block_min)
         n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
     # Create pointers
@@ -321,7 +319,7 @@ def _fwd_dense_kernel(
             1,
             TILE_M=TILE_M,
             TILE_K=1,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         )
         out_ptrs = seqlen_info.make_pack_gqa_ptrs(
             out_base,
@@ -331,7 +329,7 @@ def _fwd_dense_kernel(
             stride_om,
             TILE_M=TILE_M,
             TILE_K=TILE_K,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         )
 
     # Early exit if no n_blocks to process
@@ -342,7 +340,7 @@ def _fwd_dense_kernel(
             tl.store(
                 lse_ptrs,
                 lse_tile,
-                mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+                mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
                 cache_modifier=".wb",
             )
         else:
@@ -354,7 +352,7 @@ def _fwd_dense_kernel(
             tl.store(
                 out_ptrs,
                 o_tile,
-                mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+                mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
                 & (offs_kb < head_dim)[None, :],
                 cache_modifier=".wb",
             )
@@ -380,7 +378,7 @@ def _fwd_dense_kernel(
             stride_qm,
             TILE_M=TILE_M,
             TILE_K=TILE_K,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         )
     k_ptrs = tl.make_block_ptr(
         base=k_base,
@@ -412,7 +410,7 @@ def _fwd_dense_kernel(
     if PACK_GQA:
         q_tile = tl.load(
             q_ptrs,
-            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+            mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
             other=0.0,
             cache_modifier=".ca",
@@ -428,7 +426,7 @@ def _fwd_dense_kernel(
     # Load key tile
     k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
 
-    # Process n_blocks with masking
+    # Process n_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
         for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
@@ -445,14 +443,14 @@ def _fwd_dense_kernel(
                 n_block_min=n_block_max_no_mask,
                 actual_seqlen_q=actual_seqlen_q,
                 actual_seqlen_k=actual_seqlen_k,
+                window_size_left=window_size_left,
+                window_size_right=window_size_right,
                 TILE_M=TILE_M,
                 TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+                QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
                 IS_MASK=True,
-                MASK_CAUSAL=IS_CAUSAL,
-                MASK_LOCAL=IS_LOCAL,
+                MASK_CAUSAL=True,
+                MASK_LOCAL=True if IS_LOCAL else False,
                 CHECK_INF=True,
             )
     else:
@@ -473,11 +471,11 @@ def _fwd_dense_kernel(
             n_block_min=n_block,
             actual_seqlen_q=actual_seqlen_q,
             actual_seqlen_k=actual_seqlen_k,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-            WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-            QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
             IS_MASK=True,
             MASK_CAUSAL=False,
             MASK_LOCAL=False,
@@ -485,10 +483,9 @@ def _fwd_dense_kernel(
         )
 
         n_block_max_no_mask = n_block_max - 1
-        n_block_min_no_mask = tl.minimum(n_block_min_no_mask, n_block_max_no_mask)
 
     # Process n_blocks without masking
-    if n_block_max_no_mask > n_block_min_no_mask:
+    if not IS_LOCAL and n_block_max_no_mask > n_block_min:
         k_ptrs = tl.make_block_ptr(
             base=k_base,
             shape=(head_dim, actual_seqlen_k),
@@ -505,53 +502,11 @@ def _fwd_dense_kernel(
             block_shape=(TILE_N, TILE_K),
             order=(1, 0),
         )
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
-        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min_no_mask - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
-                q_tile=q_tile,
-                k_tile=k_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
-                acc_o=acc_o,
-                row_max=row_max,
-                row_sum=row_sum,
-                softmax_scale_log2=softmax_scale_log2,
-                m_block=m_block,
-                n_block=n_block,
-                n_block_min=n_block_min_no_mask,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                IS_MASK=IS_LOCAL,
-                MASK_CAUSAL=False,
-                MASK_LOCAL=False,
-                CHECK_INF=IS_LOCAL,
-            )
 
-    # Process n_blocks with masking
-    if IS_LOCAL and n_block_min_no_mask > n_block_min:
-        k_ptrs = tl.make_block_ptr(
-            base=k_base,
-            shape=(head_dim, actual_seqlen_k),
-            strides=(1, stride_kn),
-            offsets=(0, (n_block_min_no_mask - 1) * TILE_N),
-            block_shape=(TILE_K, TILE_N),
-            order=(0, 1),
-        )
-        v_ptrs = tl.make_block_ptr(
-            base=v_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_vn, 1),
-            offsets=((n_block_min_no_mask - 1) * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
-        )
+        # Load key tile
         k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
-        for n_block in tl.range(n_block_min_no_mask - 1, n_block_min - 1, -1):
+
+        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
             k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
                 q_tile=q_tile,
                 k_tile=k_tile,
@@ -566,16 +521,213 @@ def _fwd_dense_kernel(
                 n_block_min=n_block_min,
                 actual_seqlen_q=actual_seqlen_q,
                 actual_seqlen_k=actual_seqlen_k,
+                window_size_left=window_size_left,
+                window_size_right=window_size_right,
                 TILE_M=TILE_M,
                 TILE_N=TILE_N,
-                WINDOW_SIZE_LEFT=WINDOW_SIZE_LEFT,
-                WINDOW_SIZE_RIGHT=WINDOW_SIZE_RIGHT,
-                QHEADS_PER_KVHEAD_PACKGQA=QHEADS_PER_KVHEAD_PACKGQA,
-                IS_MASK=True,
+                QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                IS_MASK=False,
                 MASK_CAUSAL=False,
-                MASK_LOCAL=True,
-                CHECK_INF=True,
+                MASK_LOCAL=False,
+                CHECK_INF=False,
             )
+
+    if IS_LOCAL:
+        # Compute n_block range for this m_block
+        n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
+        n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
+        n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            m_block=m_block,
+            n_block_min=n_block_window_min,
+            window_size_right=window_size_right,
+            TILE_N=TILE_N,
+            TILE_M=TILE_M,
+            IS_LOCAL=True,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            m_block=m_block,
+            n_block_min=n_block_window_min,
+            window_size_left=window_size_left,
+            TILE_N=TILE_N,
+            TILE_M=TILE_M,
+            IS_LOCAL=True,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        n_block_window_min_no_mask = tl.minimum(
+            n_block_window_min_no_mask, n_block_window_max_no_mask
+        )
+
+        # Clamp window no-mask boundaries to the window's range
+        if IS_SPLIT_KV:
+            n_block_window_max_no_mask = tl.maximum(
+                tl.minimum(n_block_window_max_no_mask, n_block_window_max),
+                n_block_window_min,
+            )
+            n_block_window_min_no_mask = tl.maximum(
+                tl.minimum(n_block_window_min_no_mask, n_block_window_max),
+                n_block_window_min,
+            )
+
+        # Process n_blocks with local right masking
+        if n_block_window_max > n_block_window_max_no_mask:
+            k_ptrs = tl.make_block_ptr(
+                base=k_base,
+                shape=(head_dim, actual_seqlen_k),
+                strides=(1, stride_kn),
+                offsets=(0, (n_block_window_max - 1) * TILE_N),
+                block_shape=(TILE_K, TILE_N),
+                order=(0, 1),
+            )
+            v_ptrs = tl.make_block_ptr(
+                base=v_base,
+                shape=(actual_seqlen_k, head_dim),
+                strides=(stride_vn, 1),
+                offsets=((n_block_window_max - 1) * TILE_N, 0),
+                block_shape=(TILE_N, TILE_K),
+                order=(1, 0),
+            )
+
+            # Load key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+            for n_block in tl.range(
+                n_block_window_max - 1, n_block_window_max_no_mask - 1, -1
+            ):
+                k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
+                    _fwd_inner_dense_kernel(
+                        q_tile=q_tile,
+                        k_tile=k_tile,
+                        k_ptrs=k_ptrs,
+                        v_ptrs=v_ptrs,
+                        acc_o=acc_o,
+                        row_max=row_max,
+                        row_sum=row_sum,
+                        softmax_scale_log2=softmax_scale_log2,
+                        m_block=m_block,
+                        n_block=n_block,
+                        n_block_min=n_block_window_max_no_mask,
+                        actual_seqlen_q=actual_seqlen_q,
+                        actual_seqlen_k=actual_seqlen_k,
+                        window_size_left=window_size_left,
+                        window_size_right=window_size_right,
+                        TILE_M=TILE_M,
+                        TILE_N=TILE_N,
+                        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                        IS_MASK=True,
+                        MASK_CAUSAL=False,
+                        MASK_LOCAL=True,
+                        CHECK_INF=True,
+                    )
+                )
+
+        # Process n_blocks without masking
+        if n_block_window_max_no_mask > n_block_window_min_no_mask:
+            k_ptrs = tl.make_block_ptr(
+                base=k_base,
+                shape=(head_dim, actual_seqlen_k),
+                strides=(1, stride_kn),
+                offsets=(0, (n_block_window_max_no_mask - 1) * TILE_N),
+                block_shape=(TILE_K, TILE_N),
+                order=(0, 1),
+            )
+            v_ptrs = tl.make_block_ptr(
+                base=v_base,
+                shape=(actual_seqlen_k, head_dim),
+                strides=(stride_vn, 1),
+                offsets=((n_block_window_max_no_mask - 1) * TILE_N, 0),
+                block_shape=(TILE_N, TILE_K),
+                order=(1, 0),
+            )
+
+            # Load key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+            for n_block in tl.range(
+                n_block_window_max_no_mask - 1, n_block_window_min_no_mask - 1, -1
+            ):
+                k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
+                    _fwd_inner_dense_kernel(
+                        q_tile=q_tile,
+                        k_tile=k_tile,
+                        k_ptrs=k_ptrs,
+                        v_ptrs=v_ptrs,
+                        acc_o=acc_o,
+                        row_max=row_max,
+                        row_sum=row_sum,
+                        softmax_scale_log2=softmax_scale_log2,
+                        m_block=m_block,
+                        n_block=n_block,
+                        n_block_min=n_block_window_min_no_mask,
+                        actual_seqlen_q=actual_seqlen_q,
+                        actual_seqlen_k=actual_seqlen_k,
+                        window_size_left=window_size_left,
+                        window_size_right=window_size_right,
+                        TILE_M=TILE_M,
+                        TILE_N=TILE_N,
+                        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                        IS_MASK=False,
+                        MASK_CAUSAL=False,
+                        MASK_LOCAL=False,
+                        CHECK_INF=False,
+                    )
+                )
+
+        # Process n_blocks with local left masking
+        if n_block_window_min_no_mask > n_block_window_min:
+            k_ptrs = tl.make_block_ptr(
+                base=k_base,
+                shape=(head_dim, actual_seqlen_k),
+                strides=(1, stride_kn),
+                offsets=(0, (n_block_window_min_no_mask - 1) * TILE_N),
+                block_shape=(TILE_K, TILE_N),
+                order=(0, 1),
+            )
+            v_ptrs = tl.make_block_ptr(
+                base=v_base,
+                shape=(actual_seqlen_k, head_dim),
+                strides=(stride_vn, 1),
+                offsets=((n_block_window_min_no_mask - 1) * TILE_N, 0),
+                block_shape=(TILE_N, TILE_K),
+                order=(1, 0),
+            )
+
+            # Load key tile
+            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+
+            for n_block in tl.range(
+                n_block_window_min_no_mask - 1, n_block_window_min - 1, -1
+            ):
+                k_tile, k_ptrs, v_ptrs, acc_o, row_max, row_sum = (
+                    _fwd_inner_dense_kernel(
+                        q_tile=q_tile,
+                        k_tile=k_tile,
+                        k_ptrs=k_ptrs,
+                        v_ptrs=v_ptrs,
+                        acc_o=acc_o,
+                        row_max=row_max,
+                        row_sum=row_sum,
+                        softmax_scale_log2=softmax_scale_log2,
+                        m_block=m_block,
+                        n_block=n_block,
+                        n_block_min=n_block_window_min,
+                        actual_seqlen_q=actual_seqlen_q,
+                        actual_seqlen_k=actual_seqlen_k,
+                        window_size_left=window_size_left,
+                        window_size_right=window_size_right,
+                        TILE_M=TILE_M,
+                        TILE_N=TILE_N,
+                        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                        IS_MASK=True,
+                        MASK_CAUSAL=False,
+                        MASK_LOCAL=True,
+                        CHECK_INF=True,
+                    )
+                )
 
     # Load value scale
     v_scale = tl.load(value_scale)
@@ -595,7 +747,7 @@ def _fwd_dense_kernel(
         tl.store(
             lse_ptrs,
             lse_tile,
-            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
+            mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
             cache_modifier=".wb",
         )
     else:
@@ -613,7 +765,7 @@ def _fwd_dense_kernel(
         tl.store(
             out_ptrs,
             acc_o,
-            mask=((offs_m // QHEADS_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
+            mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
             & (offs_kb < head_dim)[None, :],
             cache_modifier=".wb",
         )
@@ -645,7 +797,7 @@ def _flash_dense_attn_forward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[int, int] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
@@ -655,16 +807,17 @@ def _flash_dense_attn_forward(
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    window_size_left, window_size_right = window_size
-    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    qheads_per_kvhead = num_heads_q // num_heads_kv
-    qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    qhead_per_kvhead = num_heads_q // num_heads_kv
+    qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    if is_local:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    else:
+        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -687,22 +840,25 @@ def _flash_dense_attn_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    _kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name=_kernel_name,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+        is_causal=is_causal,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _fwd_dense_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
+        # Placeholder for pre-launch computations
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _fwd_dense_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_fwd_dense_launch_config(
-                is_split_kv=is_split_kv,
-                pack_gqa=pack_gqa,
-                qheads_per_kvhead=qheads_per_kvhead,
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
     num_splits = (
         utils.num_splits_heuristic(
@@ -764,6 +920,7 @@ def _flash_dense_attn_forward(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -780,26 +937,25 @@ def _flash_dense_attn_forward(
         lse.stride(0) if not is_split_kv else lse_partial.stride(1),
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
         0 if not is_split_kv else lse_partial.stride(0),
+        window_sizes.stride(0),
         None,
         None,
         None,
         None,
-        qheads_per_kvhead,
         num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=seqlen_q // 1024,
         SEQLEN_K_CACHE=seqlen_k // 1024,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
+        QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
         IS_SPLIT_KV=is_split_kv,
-        WINDOW_SIZE_LEFT=window_size_left,
-        WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
@@ -809,6 +965,21 @@ def _flash_dense_attn_forward(
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
+
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name=_kernel_name,
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+            )
 
     if is_split_kv:
         flash_fwd_combine._flash_attn_fwd_combine(
@@ -834,7 +1005,7 @@ def _flash_dense_attn_varlen_forward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[int, int] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
@@ -846,19 +1017,20 @@ def _flash_dense_attn_varlen_forward(
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    window_size_left, window_size_right = window_size
-    is_local = window_size_left is not None or window_size_right is not None
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    qheads_per_kvhead = num_heads_q // num_heads_kv
-    qheads_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    qhead_per_kvhead = num_heads_q // num_heads_kv
+    qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    if is_local:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    else:
+        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -881,22 +1053,25 @@ def _flash_dense_attn_varlen_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    _kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name=_kernel_name,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+        is_causal=is_causal,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _fwd_dense_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
+        # Placeholder for pre-launch computations
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _fwd_dense_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_fwd_dense_launch_config(
-                is_split_kv=is_split_kv,
-                pack_gqa=pack_gqa,
-                qheads_per_kvhead=qheads_per_kvhead,
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
     num_splits = (
         utils.num_splits_heuristic(
@@ -954,6 +1129,7 @@ def _flash_dense_attn_varlen_forward(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         0,
         query.stride(-2),
         query.stride(0),
@@ -970,26 +1146,25 @@ def _flash_dense_attn_varlen_forward(
         0,
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
         0 if not is_split_kv else lse_partial.stride(0),
+        window_sizes.stride(0),
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        qheads_per_kvhead,
         num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=seqlen_q // 1024,
         SEQLEN_K_CACHE=seqlen_k // 1024,
-        QHEADS_PER_KVHEAD_PACKGQA=qheads_per_kvhead_packgqa,
+        QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
         IS_SPLIT_KV=is_split_kv,
-        WINDOW_SIZE_LEFT=window_size_left,
-        WINDOW_SIZE_RIGHT=window_size_right,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
@@ -999,6 +1174,21 @@ def _flash_dense_attn_varlen_forward(
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
+
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name=_kernel_name,
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+            )
 
     if is_split_kv:
         flash_fwd_combine._flash_attn_fwd_combine(

@@ -9,13 +9,18 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("use_output_buffers", [False, True])
-def test_dense_varlen_decode_correctness(use_output_buffers: bool) -> None:
+@pytest.mark.parametrize("is_local", [False, True])
+def test_dense_varlen_decode_correctness(
+    use_output_buffers: bool,
+    is_local: bool,
+) -> None:
     set_seed(0)
     run_decode_varlen_case(
         kind="dense",
-        lens_k=[53, 97, 129],
-        num_heads_q=8,
-        num_heads_kv=4,
+        lens_k=[1024, 2048, 4096],
+        num_heads_q=32,
+        num_heads_kv=2,
         head_dim=64,
+        is_local=is_local,
         use_output_buffers=use_output_buffers,
     )
