@@ -8,16 +8,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize("is_causal", [False, True])
-def test_dense_base_forward_correctness(is_causal: bool) -> None:
+@pytest.mark.parametrize(
+    "is_causal,is_local",
+    [(False, False), (True, False), (False, True)],
+)
+def test_dense_base_forward_correctness(is_causal: bool, is_local: bool) -> None:
     set_seed(0)
     run_forward_base_case(
         kind="dense",
         batch_size=2,
-        seqlen_q=96,
-        seqlen_k=128,
-        num_heads_q=8,
-        num_heads_kv=4,
+        seqlen_q=1024,
+        seqlen_k=1024,
+        num_heads_q=32,
+        num_heads_kv=2,
         head_dim=64,
         is_causal=is_causal,
+        is_local=is_local,
     )
