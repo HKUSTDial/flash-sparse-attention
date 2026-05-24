@@ -5,6 +5,20 @@ from collections import OrderedDict
 import torch
 
 
+_COMPILED_KERNEL_CACHE_MAXSIZE = 4096
+_STATIC_BUFFER_POOL: dict[tuple, torch.Tensor] = {}
+
+
+def get_static_buffer(shape, dtype, device, tag=""):
+    key = (shape, dtype, device.type, device.index, tag)
+    buf = _STATIC_BUFFER_POOL.get(key)
+    if buf is not None and buf.shape == shape:
+        return buf
+    buf = torch.empty(shape, dtype=dtype, device=device)
+    _STATIC_BUFFER_POOL[key] = buf
+    return buf
+
+
 @functools.lru_cache(maxsize=8)
 def get_device_num_sms(device: torch.device) -> int:
     """
@@ -96,7 +110,7 @@ class CachedKernel:
         kernel_warmup = kernel.warmup
         kernel_arg_names = kernel.arg_names
         cache = self._cache
-        maxsize = 1024
+        maxsize = _COMPILED_KERNEL_CACHE_MAXSIZE
         tensor_indices = None
         static_grid = None
 

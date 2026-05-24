@@ -56,6 +56,7 @@ def benchmark_triton_dense_backward(
         v,
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
+        window_size=(None, None),
         is_autotune=True,
         skip_checks=True,
     )
@@ -93,6 +94,7 @@ def benchmark_triton_sparse_backward(
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
+        window_size=(None, None),
         is_autotune=True,
         skip_checks=True,
     )
@@ -142,6 +144,7 @@ def benchmark_triton_gated_backward(
         gate_threshold=gate_threshold,
         is_logsigmoid_gate=False,
         is_adapt_gate=False,
+        window_size=(None, None),
         is_autotune=True,
         skip_checks=True,
     )

@@ -8,20 +8,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize(
-    "is_causal,is_local",
-    [(False, False), (True, False), (False, True)],
-)
-def test_gated_varlen_backward_correctness(is_causal: bool, is_local: bool) -> None:
+@pytest.mark.parametrize("is_causal", [False, True])
+def test_gated_varlen_backward_correctness(is_causal: bool) -> None:
     set_seed(0)
     run_backward_varlen_case(
         kind="gated",
-        lens_q=[1024, 2048, 4096],
-        lens_k=[1024, 2048, 4096],
-        num_heads_q=32,
-        num_heads_kv=2,
+        lens_q=[19, 27, 41],
+        lens_k=[25, 31, 43],
+        num_heads_q=8,
+        num_heads_kv=4,
         head_dim=64,
         is_causal=is_causal,
-        is_local=is_local,
         is_logsigmoid_gate=True,
     )

@@ -123,7 +123,7 @@ def get_softmax_threshold(
     seqlen_k,
     IS_CAUSAL: tl.constexpr,
     TILE_M: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
 ):
     """
     Compute the softmax threshold for a given block.
@@ -134,15 +134,15 @@ def get_softmax_threshold(
     :param seqlen_k: Sequence length of the key.
     :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
     :param TILE_M: Tile size along the M dimension.
-    :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
+    :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
 
     :return softmax_threshold_log2: Lower-bound scalar softmax threshold in log2-domain for the given block.
     """
     if IS_CAUSAL:
         offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
         q_idx = offs_m
-        if QHEAD_PER_KVHEAD_PACKGQA > 1:
-            q_idx = q_idx // QHEAD_PER_KVHEAD_PACKGQA
+        if QHEADS_PER_KVHEAD_PACKGQA > 1:
+            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
         s_thr = tl.min(softmax_threshold * (q_idx + causal_offset + 1.0) / seqlen_k)
     else:
@@ -159,7 +159,7 @@ def get_gate_threshold(
     seqlen_k,
     IS_CAUSAL: tl.constexpr,
     TILE_M: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
     IS_ADAPT_GATE: tl.constexpr,
 ):
     """
@@ -171,15 +171,15 @@ def get_gate_threshold(
     :param seqlen_k: Sequence length of the key.
     :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
     :param TILE_M: Tile size along the M dimension.
-    :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
+    :param QHEADS_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
     :param IS_ADAPT_GATE: Boolean flag indicating if self-adaptive gate threshold is enabled.
     :return gate_threshold_log2: Lower-bound scalar gate threshold in log2-domain for the given block.
     """
     if IS_CAUSAL and IS_ADAPT_GATE:
         offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
         q_idx = offs_m
-        if QHEAD_PER_KVHEAD_PACKGQA > 1:
-            q_idx = q_idx // QHEAD_PER_KVHEAD_PACKGQA
+        if QHEADS_PER_KVHEAD_PACKGQA > 1:
+            q_idx = q_idx // QHEADS_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
         g_thr = tl.min(gate_threshold * (q_idx + causal_offset + 1.0) / seqlen_k)
     else:
@@ -254,12 +254,12 @@ def make_pack_gqa_ptrs(
     stride_seq,
     TILE_M: tl.constexpr,
     TILE_K: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    QHEADS_PER_KVHEAD_PACKGQA: tl.constexpr,
 ):
     offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-    m_idx = offs_m // QHEAD_PER_KVHEAD_PACKGQA
-    q_head_offset = offs_m - m_idx * QHEAD_PER_KVHEAD_PACKGQA
-    q_head = head_idx * QHEAD_PER_KVHEAD_PACKGQA + q_head_offset
+    m_idx = offs_m // QHEADS_PER_KVHEAD_PACKGQA
+    q_head_offset = offs_m - m_idx * QHEADS_PER_KVHEAD_PACKGQA
+    q_head = head_idx * QHEADS_PER_KVHEAD_PACKGQA + q_head_offset
     if TILE_K > 1:
         offs_k = tl.arange(0, TILE_K)
         ptrs = (
