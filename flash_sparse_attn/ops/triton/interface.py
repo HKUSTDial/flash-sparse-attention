@@ -55,9 +55,10 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
@@ -84,7 +85,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
@@ -100,8 +101,9 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
-        ctx.window_size = window_size
+        ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -128,8 +130,9 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
-            window_size=ctx.window_size,
+            is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -154,12 +157,13 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
-        seqused_q: Optional[torch.Tensor] = None,
-        seqused_k: Optional[torch.Tensor] = None,
+        is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
+        seqused_q: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -189,7 +193,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
@@ -212,15 +216,16 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             seqused_q,
             seqused_k,
         )
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
-        ctx.window_size = window_size
-        ctx.max_seqlen_q = max_seqlen_q
-        ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -261,10 +266,11 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
-            window_size=ctx.window_size,
+            is_local=ctx.is_local,
+            is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
-            is_quant=ctx.is_quant,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -286,9 +292,10 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
@@ -317,7 +324,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             key_scale=key_scale,
             value_scale=value_scale,
             softmax_threshold=softmax_threshold,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
@@ -334,8 +341,9 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
         ctx.softmax_threshold = softmax_threshold
-        ctx.window_size = window_size
+        ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -363,8 +371,9 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
             softmax_threshold=ctx.softmax_threshold,
-            window_size=ctx.window_size,
+            is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -390,12 +399,13 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
-        seqused_q: Optional[torch.Tensor] = None,
-        seqused_k: Optional[torch.Tensor] = None,
+        is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
+        seqused_q: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -427,7 +437,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             key_scale=key_scale,
             value_scale=value_scale,
             softmax_threshold=softmax_threshold,
-            window_size=window_size,
+            is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
@@ -450,16 +460,17 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             seqused_q,
             seqused_k,
         )
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
         ctx.softmax_threshold = softmax_threshold
-        ctx.window_size = window_size
-        ctx.max_seqlen_q = max_seqlen_q
-        ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -501,10 +512,11 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
             softmax_threshold=ctx.softmax_threshold,
-            window_size=ctx.window_size,
+            is_local=ctx.is_local,
+            is_quant=ctx.is_quant,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
-            is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -531,9 +543,10 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
@@ -568,7 +581,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 gate_threshold=gate_threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
                 is_adapt_gate=is_adapt_gate,
-                window_size=window_size,
+                is_local=is_local,
                 is_quant=is_quant,
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
@@ -589,8 +602,9 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
-        ctx.window_size = window_size
+        ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -623,8 +637,9 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
-            window_size=ctx.window_size,
+            is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -655,12 +670,13 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
         is_adapt_gate: bool = True,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
-        seqused_q: Optional[torch.Tensor] = None,
-        seqused_k: Optional[torch.Tensor] = None,
+        is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
+        seqused_q: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -698,7 +714,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
                 gate_threshold=gate_threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
                 is_adapt_gate=is_adapt_gate,
-                window_size=window_size,
+                is_local=is_local,
                 is_quant=is_quant,
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
@@ -724,6 +740,8 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             seqused_q,
             seqused_k,
         )
+        ctx.max_seqlen_q = max_seqlen_q
+        ctx.max_seqlen_k = max_seqlen_k
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.query_scale = query_scale
@@ -733,10 +751,9 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
         ctx.is_adapt_gate = is_adapt_gate
-        ctx.window_size = window_size
-        ctx.max_seqlen_q = max_seqlen_q
-        ctx.max_seqlen_k = max_seqlen_k
+        ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -785,10 +802,11 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
             is_adapt_gate=ctx.is_adapt_gate,
-            window_size=ctx.window_size,
+            is_local=ctx.is_local,
+            is_quant=ctx.is_quant,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
-            is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -805,9 +823,10 @@ def flash_dense_attn_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -826,13 +845,14 @@ def flash_dense_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -847,9 +867,10 @@ def flash_dense_attn_func(
         query_scale,
         key_scale,
         value_scale,
-        window_size,
+        is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         out,
         lse,
@@ -867,7 +888,7 @@ def flash_dense_attn_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -885,11 +906,11 @@ def flash_dense_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -909,7 +930,7 @@ def flash_dense_attn_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
-        window_size=window_size,
+        is_local=is_local,
         is_quant=is_quant,
         out=out,
         lse=lse,
@@ -935,12 +956,13 @@ def flash_dense_attn_varlen_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
+    is_split_kv: bool = False,
+    is_split_qo: bool = False,
+    pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
-    is_split_kv: bool = False,
-    pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -962,15 +984,16 @@ def flash_dense_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
-    :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -989,12 +1012,13 @@ def flash_dense_attn_varlen_func(
         query_scale,
         key_scale,
         value_scale,
-        window_size,
+        is_local,
         is_quant,
+        is_split_kv,
+        is_split_qo,
+        pack_gqa,
         seqused_q,
         seqused_k,
-        is_split_kv,
-        pack_gqa,
         out,
         lse,
         is_autotune,
@@ -1013,7 +1037,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1034,12 +1058,12 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1061,7 +1085,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
-        window_size=window_size,
+        is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
         out=out,
@@ -1085,9 +1109,10 @@ def flash_sparse_attn_func(
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1107,13 +1132,14 @@ def flash_sparse_attn_func(
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward ccupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1129,9 +1155,10 @@ def flash_sparse_attn_func(
         key_scale,
         value_scale,
         softmax_threshold,
-        window_size,
+        is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         out,
         lse,
@@ -1150,7 +1177,7 @@ def flash_sparse_attn_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1169,11 +1196,11 @@ def flash_sparse_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1194,7 +1221,7 @@ def flash_sparse_attn_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
-        window_size=window_size,
+        is_local=is_local,
         is_quant=is_quant,
         out=out,
         lse=lse,
@@ -1221,12 +1248,13 @@ def flash_sparse_attn_varlen_func(
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
+    is_split_kv: bool = False,
+    is_split_qo: bool = False,
+    pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
-    is_split_kv: bool = False,
-    pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1249,15 +1277,16 @@ def flash_sparse_attn_varlen_func(
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
-    :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1277,12 +1306,13 @@ def flash_sparse_attn_varlen_func(
         key_scale,
         value_scale,
         softmax_threshold,
-        window_size,
+        is_local,
         is_quant,
+        is_split_kv,
+        is_split_qo,
+        pack_gqa,
         seqused_q,
         seqused_k,
-        is_split_kv,
-        pack_gqa,
         out,
         lse,
         is_autotune,
@@ -1302,7 +1332,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1324,12 +1354,12 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1352,7 +1382,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
-        window_size=window_size,
+        is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
         out=out,
@@ -1381,9 +1411,10 @@ def flash_gated_attn_func(
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1408,13 +1439,14 @@ def flash_gated_attn_func(
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1435,9 +1467,10 @@ def flash_gated_attn_func(
         gate_threshold,
         is_logsigmoid_gate,
         is_adapt_gate,
-        window_size,
+        is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         out,
         lse,
@@ -1460,7 +1493,7 @@ def flash_gated_attn_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1483,11 +1516,11 @@ def flash_gated_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1512,7 +1545,7 @@ def flash_gated_attn_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
-        window_size=window_size,
+        is_local=is_local,
         is_quant=is_quant,
         out=out,
         lse=lse,
@@ -1544,12 +1577,13 @@ def flash_gated_attn_varlen_func(
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
     is_adapt_gate: bool = True,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
+    is_split_kv: bool = False,
+    is_split_qo: bool = False,
+    pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
-    is_split_kv: bool = False,
-    pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1577,15 +1611,16 @@ def flash_gated_attn_varlen_func(
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
+    :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
-    :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1610,12 +1645,13 @@ def flash_gated_attn_varlen_func(
         gate_threshold,
         is_logsigmoid_gate,
         is_adapt_gate,
-        window_size,
+        is_local,
         is_quant,
+        is_split_kv,
+        is_split_qo,
+        pack_gqa,
         seqused_q,
         seqused_k,
-        is_split_kv,
-        pack_gqa,
         out,
         lse,
         is_autotune,
@@ -1639,7 +1675,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1665,12 +1701,12 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_size: Optional tuple (window_size_q, window_size_k) for local attention. If None, no local masking is applied.
+    :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
-    :param is_autotune: Whether to use Triton autotuner for kernel launch configuration.
+    :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
@@ -1697,7 +1733,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
-        window_size=window_size,
+        is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
         out=out,

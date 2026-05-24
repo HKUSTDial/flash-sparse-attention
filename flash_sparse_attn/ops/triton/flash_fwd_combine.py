@@ -164,8 +164,7 @@ def _fwd_combine_kernel(
         e_max = new_e_max
 
     # Normalize output
-    # inv_sum = tl.where((e_sum == 0.0) | (e_sum != e_sum), 0.0, 1.0 / e_sum)
-    inv_sum = 1.0 / e_sum
+    inv_sum = tl.where((e_sum == 0.0) | (e_sum != e_sum), 0.0, 1.0 / e_sum)
     acc_o *= inv_sum[:, None]
 
     # Store output
