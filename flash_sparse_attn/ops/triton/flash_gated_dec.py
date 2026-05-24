@@ -1038,7 +1038,7 @@ _dec_gated_kernel_autotuned = None
 def _get_autotuned_kernel():
     global _dec_gated_kernel_autotuned
     if _dec_gated_kernel_autotuned is None:
-        jit_kernel = _dec_gated_kernel.kernel
+        jit_kernel = _dec_gated_kernel._kernel
         autotuned = autotuner.make_dec_gated_autotuned_kernel(jit_kernel)
         _dec_gated_kernel_autotuned = autotuner.AutotunedKernel(autotuned)
     return _dec_gated_kernel_autotuned
@@ -1065,7 +1065,6 @@ def _flash_gated_attn_decode(
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
@@ -1102,21 +1101,23 @@ def _flash_gated_attn_decode(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name="dec_gated",
+        seqlen_q=1,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _dec_gated_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
         TILE_M = max(triton.next_power_of_2(qhead_per_kvhead), 16)
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _dec_gated_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_dec_gated_launch_config(
-                qhead_per_kvhead=qhead_per_kvhead,
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
     # Compute effective seqlen_k for local attention
     if is_local:
@@ -1231,6 +1232,20 @@ def _flash_gated_attn_decode(
         num_ctas=num_ctas,
     )
 
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name="dec_gated",
+                seqlen_q=1,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+            )
+
     flash_dec_combine._flash_attn_dec_combine(
         out_partial,
         lse_partial,
@@ -1265,7 +1280,6 @@ def _flash_gated_attn_varlen_decode(
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
@@ -1303,21 +1317,23 @@ def _flash_gated_attn_varlen_decode(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name="dec_gated",
+        seqlen_q=1,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _dec_gated_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
         TILE_M = max(triton.next_power_of_2(qhead_per_kvhead), 16)
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _dec_gated_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_dec_gated_launch_config(
-                qhead_per_kvhead=qhead_per_kvhead,
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
     # Compute effective seqlen_k for local attention
     if is_local:
@@ -1431,6 +1447,20 @@ def _flash_gated_attn_varlen_decode(
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
+
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name="dec_gated",
+                seqlen_q=1,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+            )
 
     flash_dec_combine._flash_attn_dec_combine(
         out_partial,

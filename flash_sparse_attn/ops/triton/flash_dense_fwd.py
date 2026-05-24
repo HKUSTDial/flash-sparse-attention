@@ -807,7 +807,6 @@ def _flash_dense_attn_forward(
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
@@ -841,22 +840,25 @@ def _flash_dense_attn_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    _kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name=_kernel_name,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+        is_causal=is_causal,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _fwd_dense_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
+        # Placeholder for pre-launch computations
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _fwd_dense_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_fwd_dense_launch_config(
-                is_split_kv=is_split_kv,
-                pack_gqa=pack_gqa,
-                qhead_per_kvhead=qhead_per_kvhead,
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
     num_splits = (
         utils.num_splits_heuristic(
@@ -964,6 +966,21 @@ def _flash_dense_attn_forward(
         num_ctas=num_ctas,
     )
 
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name=_kernel_name,
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+            )
+
     if is_split_kv:
         flash_fwd_combine._flash_attn_fwd_combine(
             out_partial,
@@ -1000,7 +1017,6 @@ def _flash_dense_attn_varlen_forward(
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
     num_SMs = cache_utils.get_device_num_sms(device)
     total_seqlen_q, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
@@ -1037,22 +1053,25 @@ def _flash_dense_attn_varlen_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    _kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name=_kernel_name,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+        is_causal=is_causal,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _fwd_dense_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
+        # Placeholder for pre-launch computations
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _fwd_dense_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_fwd_dense_launch_config(
-                is_split_kv=is_split_kv,
-                pack_gqa=pack_gqa,
-                qhead_per_kvhead=qhead_per_kvhead,
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
     num_splits = (
         utils.num_splits_heuristic(
@@ -1155,6 +1174,21 @@ def _flash_dense_attn_varlen_forward(
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
+
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name=_kernel_name,
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+            )
 
     if is_split_kv:
         flash_fwd_combine._flash_attn_fwd_combine(
