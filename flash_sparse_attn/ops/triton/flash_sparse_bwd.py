@@ -1009,8 +1009,22 @@ def _flash_sparse_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name="bwd_sparse",
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+        is_causal=is_causal,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _bwd_sparse_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
+        # Placeholder for pre-launch computations
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
 
@@ -1159,6 +1173,21 @@ def _flash_sparse_attn_backward(
         num_ctas=num_ctas,
     )
 
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name="bwd_sparse",
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+            )
+
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
         dq=dq,
@@ -1243,8 +1272,22 @@ def _flash_sparse_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    if is_autotune:
+    launch_config = launch_template.load_launch_config(
+        device=device,
+        kernel_name="bwd_sparse",
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        tile_k=TILE_K,
+        is_local=is_local,
+        qhead_per_kvhead=qhead_per_kvhead,
+        is_causal=is_causal,
+    )
+    if launch_config is not None and not is_autotune:
+        kernel = _bwd_sparse_kernel
+        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+    else:
         kernel = _get_autotuned_kernel()
+        # Placeholder for pre-launch computations
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
 
@@ -1398,6 +1441,21 @@ def _flash_sparse_attn_varlen_backward(
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
+
+    if launch_config is None or is_autotune:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name="bwd_sparse",
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+            )
 
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
         dq_accum=dq_accum,
