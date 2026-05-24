@@ -71,12 +71,15 @@ def get_m_block_min_max(
     seqlen_q,
     seqlen_k,
     n_block,
+    split_idx,
+    num_splits,
     window_size_left,
     window_size_right,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_SPLIT_QO: tl.constexpr,
 ):
     m_block_max = tl.cdiv(seqlen_q, TILE_M)
     m_block_min = 0
@@ -94,6 +97,40 @@ def get_m_block_min_max(
         m_idx = n_idx_max + seqlen_q - seqlen_k
         m_idx_left = m_idx + window_size_left
         m_block_window_max = tl.minimum(m_block_window_max, tl.cdiv(m_idx_left, TILE_M))
+    if IS_SPLIT_QO:
+        if IS_LOCAL:
+            n_idx_max = (n_block + 1) * TILE_N
+            m_idx = n_idx_max + seqlen_q - seqlen_k
+            m_block_min_no_mask = tl.maximum(m_block_min, tl.cdiv(m_idx, TILE_M))
+            m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
+            m_block_window_max = tl.minimum(m_block_window_max, m_block_max)
+            win_blocks = tl.maximum(m_block_window_max - m_block_window_min, 0)
+            base = win_blocks // num_splits
+            extra = win_blocks % num_splits
+            win_off = tl.where(
+                split_idx < extra,
+                split_idx * (base + 1),
+                extra * (base + 1) + (split_idx - extra) * base,
+            )
+            win_cnt = tl.where(split_idx < extra, base + 1, base)
+            m_block_window_min = m_block_window_min + win_off
+            m_block_window_max = tl.minimum(
+                m_block_window_min + win_cnt, m_block_window_max
+            )
+            # First split keeps diagonal, others skip it
+            m_block_min = tl.where(split_idx == 0, m_block_min, m_block_window_min)
+        else:
+            total_m_blocks = tl.maximum(m_block_max - m_block_min, 0)
+            base = total_m_blocks // num_splits
+            extra = total_m_blocks % num_splits
+            m_block_min_new = m_block_min + tl.where(
+                split_idx < extra,
+                split_idx * (base + 1),
+                extra * (base + 1) + (split_idx - extra) * base,
+            )
+            m_block_count = tl.where(split_idx < extra, base + 1, base)
+            m_block_max = tl.minimum(m_block_min_new + m_block_count, m_block_max)
+            m_block_min = m_block_min_new
     return m_block_min, m_block_max, m_block_window_min, m_block_window_max
 
 
