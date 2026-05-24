@@ -166,11 +166,14 @@ def _bwd_dense_kernel(
     stride_dvb,
     stride_dvh,
     stride_dvn,
+    stride_dks,
+    stride_dvs,
     stride_wh,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
     seqused_k,
+    num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
@@ -186,10 +189,17 @@ def _bwd_dense_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
+    IS_SPLIT_QO: tl.constexpr,
 ):
     n_block = tl.program_id(0)
     head_idx = tl.program_id(1)
-    batch_idx = tl.program_id(2)
+    batch_split_idx = tl.program_id(2)
+    if IS_SPLIT_QO:
+        batch_idx = batch_split_idx // num_splits
+        split_idx = batch_split_idx - batch_idx * num_splits
+    else:
+        batch_idx = batch_split_idx
+        split_idx = 0
     head_kv_idx = head_idx // QHEAD_PER_KVHEAD
 
     offs_n = n_block * TILE_N + tl.arange(0, TILE_N)
@@ -315,6 +325,11 @@ def _bwd_dense_kernel(
         USE_PADDED=False,
     )
 
+    # For split QO, offset key and value gradients base pointers by split_idx
+    if IS_SPLIT_QO:
+        dk_base += split_idx * stride_dks
+        dv_base += split_idx * stride_dvs
+
     # Load window sizes
     if IS_LOCAL:
         window_size_left = tl.load(window_sizes + head_kv_idx * stride_wh)
@@ -329,12 +344,15 @@ def _bwd_dense_kernel(
             seqlen_q=actual_seqlen_q,
             seqlen_k=actual_seqlen_k,
             n_block=n_block,
+            split_idx=split_idx,
+            num_splits=num_splits,
             window_size_left=window_size_left,
             window_size_right=window_size_right,
             TILE_N=TILE_N,
             TILE_M=TILE_M,
             IS_CAUSAL=IS_CAUSAL,
             IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_QO=IS_SPLIT_QO,
         )
     )
     m_block_min_no_mask = block_info.get_m_block_min_causal_local_mask(
@@ -870,11 +888,12 @@ def _flash_dense_attn_backward(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    is_split_qo: bool = False,
     is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
     softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
@@ -913,17 +932,20 @@ def _flash_dense_attn_backward(
         kernel = _get_autotuned_kernel()
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _bwd_dense_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_bwd_dense_launch_config(
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
-    seqlen_q_rounded = int(math.ceil(seqlen_q / TILE_M) * TILE_M)
+    num_splits = (
+        utils.num_splits_heuristic(
+            seqlen_q=seqlen_k,
+            seqlen_k=seqlen_q,
+            num_SMs=num_SMs,
+            TILE_M=TILE_N,
+            TILE_N=TILE_M,
+        )
+        if is_split_qo
+        else 1
+    )
+
+    seqlen_q_rounded = int(math.ceil(seqlen_q / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
     if not is_quant:
@@ -950,18 +972,16 @@ def _flash_dense_attn_backward(
         device=query.device,
     )
     dk_accum = torch.zeros(
-        batch_size,
-        seqlen_k,
-        num_heads_kv,
-        head_dim,
+        (num_splits, batch_size, seqlen_k, num_heads_kv, head_dim)
+        if is_split_qo and num_splits > 1
+        else (batch_size, seqlen_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
     dv_accum = torch.zeros(
-        batch_size,
-        seqlen_k,
-        num_heads_kv,
-        head_dim,
+        (num_splits, batch_size, seqlen_k, num_heads_kv, head_dim)
+        if is_split_qo and num_splits > 1
+        else (batch_size, seqlen_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
@@ -982,6 +1002,7 @@ def _flash_dense_attn_backward(
         seqlen_k=seqlen_k,
         num_heads_q=num_heads_q,
         batch_size=batch_size,
+        num_splits=num_splits,
     )
 
     kernel[grid](
@@ -1021,17 +1042,20 @@ def _flash_dense_attn_backward(
         dq_accum.stride(0),
         dq_accum.stride(1),
         head_dim_rounded,
-        dk_accum.stride(0),
+        dk_accum.stride(-4) if is_split_qo and num_splits > 1 else dk_accum.stride(0),
         dk_accum.stride(-2),
         dk_accum.stride(-3),
-        dv_accum.stride(0),
+        dv_accum.stride(-4) if is_split_qo and num_splits > 1 else dv_accum.stride(0),
         dv_accum.stride(-2),
         dv_accum.stride(-3),
+        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
+        dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         None,
         None,
         None,
         None,
+        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
@@ -1043,6 +1067,7 @@ def _flash_dense_attn_backward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPLIT_QO=is_split_qo and num_splits > 1,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
@@ -1060,6 +1085,10 @@ def _flash_dense_attn_backward(
         tile_m=TILE_M,
         tile_k=TILE_K,
     )
+
+    if is_split_qo and num_splits > 1:
+        dk_accum = dk_accum.sum(dim=0)
+        dv_accum = dv_accum.sum(dim=0)
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
@@ -1085,13 +1114,14 @@ def _flash_dense_attn_varlen_backward(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    is_split_qo: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
-    arch = cache_utils.get_device_arch(device)
+    num_SMs = cache_utils.get_device_num_sms(device)
     total_q, num_heads_q, head_dim = query.shape
     total_k, num_heads_kv, _ = key.shape
     batch_size = cu_seqlens_q.shape[0] - 1
@@ -1133,19 +1163,20 @@ def _flash_dense_attn_varlen_backward(
         kernel = _get_autotuned_kernel()
         TILE_M = TILE_N = 64
         num_warps = num_stages = num_ctas = None
-    else:
-        kernel = _bwd_dense_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = (
-            launch_template.get_bwd_dense_launch_config(
-                tile_k=TILE_K,
-                device=device,
-                arch=arch,
-            )
-        )
 
-    total_q_rounded_padded = int(
-        math.ceil((total_q + batch_size * TILE_M) / TILE_M) * TILE_M
+    num_splits = (
+        utils.num_splits_heuristic(
+            seqlen_q=seqlen_k,
+            seqlen_k=seqlen_q,
+            num_SMs=num_SMs,
+            TILE_M=TILE_N,
+            TILE_N=TILE_M,
+        )
+        if is_split_qo
+        else 1
     )
+
+    total_q_rounded_padded = int(math.ceil((total_q + batch_size * 128) / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
     if not is_quant:
@@ -1175,16 +1206,16 @@ def _flash_dense_attn_varlen_backward(
         device=query.device,
     )
     dk_accum = torch.zeros(
-        total_k,
-        num_heads_kv,
-        head_dim,
+        (num_splits, total_k, num_heads_kv, head_dim)
+        if is_split_qo and num_splits > 1
+        else (total_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
     dv_accum = torch.zeros(
-        total_k,
-        num_heads_kv,
-        head_dim,
+        (num_splits, total_k, num_heads_kv, head_dim)
+        if is_split_qo and num_splits > 1
+        else (total_k, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
@@ -1208,6 +1239,7 @@ def _flash_dense_attn_varlen_backward(
         seqlen_k=seqlen_k,
         num_heads_q=num_heads_q,
         batch_size=batch_size,
+        num_splits=num_splits,
     )
 
     kernel[grid](
@@ -1249,15 +1281,18 @@ def _flash_dense_attn_varlen_backward(
         head_dim_rounded,
         0,
         dk_accum.stride(-2),
-        dk_accum.stride(0),
+        dk_accum.stride(-3),
         0,
         dv_accum.stride(-2),
-        dv_accum.stride(0),
+        dv_accum.stride(-3),
+        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
+        dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
         seqused_k,
+        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
@@ -1269,6 +1304,7 @@ def _flash_dense_attn_varlen_backward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPLIT_QO=is_split_qo and num_splits > 1,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
@@ -1289,6 +1325,10 @@ def _flash_dense_attn_varlen_backward(
         tile_m=TILE_M,
         tile_k=TILE_K,
     )
+
+    if is_split_qo and num_splits > 1:
+        dk_accum = dk_accum.sum(dim=0)
+        dv_accum = dv_accum.sum(dim=0)
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
