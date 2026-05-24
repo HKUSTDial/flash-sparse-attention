@@ -259,7 +259,7 @@ def make_fwd_dense_autotuned_kernel(jit_kernel):
     configs = get_fwd_dense_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_fwd_configs},
     )(jit_kernel)
 
@@ -268,7 +268,7 @@ def make_fwd_sparse_autotuned_kernel(jit_kernel):
     configs = get_fwd_sparse_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_fwd_configs},
     )(jit_kernel)
 
@@ -277,7 +277,7 @@ def make_fwd_gated_autotuned_kernel(jit_kernel):
     configs = get_fwd_gated_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_fwd_configs},
     )(jit_kernel)
 
@@ -286,7 +286,7 @@ def make_bwd_dense_autotuned_kernel(jit_kernel):
     configs = get_bwd_dense_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_bwd_configs},
     )(jit_kernel)
 
@@ -295,7 +295,7 @@ def make_bwd_sparse_autotuned_kernel(jit_kernel):
     configs = get_bwd_sparse_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_bwd_configs},
     )(jit_kernel)
 
@@ -304,7 +304,7 @@ def make_bwd_gated_autotuned_kernel(jit_kernel):
     configs = get_bwd_gated_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_bwd_configs},
     )(jit_kernel)
 
@@ -313,7 +313,7 @@ def make_dec_dense_autotuned_kernel(jit_kernel):
     configs = get_dec_dense_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_dec_configs},
     )(jit_kernel)
 
@@ -322,7 +322,7 @@ def make_dec_sparse_autotuned_kernel(jit_kernel):
     configs = get_dec_sparse_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_dec_configs},
     )(jit_kernel)
 
@@ -331,7 +331,7 @@ def make_dec_gated_autotuned_kernel(jit_kernel):
     configs = get_dec_gated_autotune_configs()
     return triton.autotune(
         configs=configs,
-        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K"],
+        key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_LOCAL"],
         prune_configs_by={"early_config_prune": _prune_dec_configs},
     )(jit_kernel)
 
