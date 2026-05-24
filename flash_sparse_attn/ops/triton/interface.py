@@ -58,6 +58,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
@@ -102,6 +103,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         ctx.value_scale = value_scale
         ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -130,6 +132,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             value_scale=ctx.value_scale,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -157,6 +160,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
@@ -221,6 +225,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         ctx.value_scale = value_scale
         ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -263,6 +268,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             value_scale=ctx.value_scale,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_autotune=ctx.is_autotune,
@@ -289,6 +295,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
@@ -336,6 +343,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         ctx.softmax_threshold = softmax_threshold
         ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -365,6 +373,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             softmax_threshold=ctx.softmax_threshold,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -393,6 +402,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
@@ -460,6 +470,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         ctx.softmax_threshold = softmax_threshold
         ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -505,6 +516,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             is_quant=ctx.is_quant,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -534,6 +546,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
@@ -591,6 +604,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.is_adapt_gate = is_adapt_gate
         ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -625,6 +639,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             is_adapt_gate=ctx.is_adapt_gate,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -658,6 +673,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
+        is_split_qo: bool = False,
         pack_gqa: bool = False,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
@@ -737,6 +753,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.is_adapt_gate = is_adapt_gate
         ctx.is_local = is_local
         ctx.is_quant = is_quant
+        ctx.is_split_qo = is_split_qo
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -789,6 +806,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             is_quant=ctx.is_quant,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
+            is_split_qo=ctx.is_split_qo,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
@@ -808,6 +826,7 @@ def flash_dense_attn_func(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -828,7 +847,8 @@ def flash_dense_attn_func(
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
@@ -850,6 +870,7 @@ def flash_dense_attn_func(
         is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         out,
         lse,
@@ -938,6 +959,7 @@ def flash_dense_attn_varlen_func(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
@@ -964,7 +986,8 @@ def flash_dense_attn_varlen_func(
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
@@ -992,6 +1015,7 @@ def flash_dense_attn_varlen_func(
         is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         seqused_q,
         seqused_k,
@@ -1088,6 +1112,7 @@ def flash_sparse_attn_func(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1109,7 +1134,8 @@ def flash_sparse_attn_func(
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward ccupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
@@ -1132,6 +1158,7 @@ def flash_sparse_attn_func(
         is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         out,
         lse,
@@ -1224,6 +1251,7 @@ def flash_sparse_attn_varlen_func(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
@@ -1251,7 +1279,8 @@ def flash_sparse_attn_varlen_func(
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
@@ -1280,6 +1309,7 @@ def flash_sparse_attn_varlen_func(
         is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         seqused_q,
         seqused_k,
@@ -1384,6 +1414,7 @@ def flash_gated_attn_func(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1410,7 +1441,8 @@ def flash_gated_attn_func(
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
@@ -1438,6 +1470,7 @@ def flash_gated_attn_func(
         is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         out,
         lse,
@@ -1547,6 +1580,7 @@ def flash_gated_attn_varlen_func(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
+    is_split_qo: bool = False,
     pack_gqa: bool = False,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
@@ -1579,7 +1613,8 @@ def flash_gated_attn_varlen_func(
     :param is_adapt_gate: Whether to adapt the gate threshold based on sequence length.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
-    :param is_split_kv: Whether to enable split-KV for occupancy.
+    :param is_split_kv: Whether to enable split-KV for forward occupancy.
+    :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
@@ -1613,6 +1648,7 @@ def flash_gated_attn_varlen_func(
         is_local,
         is_quant,
         is_split_kv,
+        is_split_qo,
         pack_gqa,
         seqused_q,
         seqused_k,
