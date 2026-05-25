@@ -1323,7 +1323,7 @@ def _flash_gated_attn_forward(
 
     num_splits = (
         utils.num_splits_heuristic(
-            seqlen_q=seqlen_q,
+            seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
             seqlen_k=seqlen_k,
             num_SMs=num_SMs,
             TILE_M=TILE_M,
@@ -1558,7 +1558,7 @@ def _flash_gated_attn_varlen_forward(
 
     num_splits = (
         utils.num_splits_heuristic(
-            seqlen_q=seqlen_q,
+            seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
             seqlen_k=seqlen_k,
             num_SMs=num_SMs,
             TILE_M=TILE_M,
