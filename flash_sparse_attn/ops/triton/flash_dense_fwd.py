@@ -449,7 +449,7 @@ def _fwd_dense_kernel(
                 TILE_N=TILE_N,
                 QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
                 IS_MASK=True,
-                MASK_CAUSAL=True,
+                MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=True if IS_LOCAL else False,
                 CHECK_INF=True,
             )
