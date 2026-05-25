@@ -60,6 +60,8 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
+        num_heads_kv_global: int = 0,
+        tp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -89,6 +91,8 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
+            num_heads_kv_global=num_heads_kv_global,
+            tp_rank=tp_rank,
             out=out,
             lse=lse,
             is_autotune=is_autotune,
@@ -104,6 +108,8 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
+        ctx.num_heads_kv_global = num_heads_kv_global
+        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -133,11 +139,13 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
+            num_heads_kv_global=ctx.num_heads_kv_global,
+            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 22)
 
 
 class FlashDenseAttnVarlenFunc(torch.autograd.Function):
@@ -162,6 +170,8 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
+        num_heads_kv_global: int = 0,
+        tp_rank: int = 0,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
@@ -197,6 +207,8 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
+            num_heads_kv_global=num_heads_kv_global,
+            tp_rank=tp_rank,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             out=out,
@@ -226,6 +238,8 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
+        ctx.num_heads_kv_global = num_heads_kv_global
+        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -269,13 +283,15 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
+            num_heads_kv_global=ctx.num_heads_kv_global,
+            tp_rank=ctx.tp_rank,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 22)
 
 
 class FlashSparseAttnFunc(torch.autograd.Function):
@@ -297,6 +313,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
+        num_heads_kv_global: int = 0,
+        tp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -328,6 +346,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
+            num_heads_kv_global=num_heads_kv_global,
+            tp_rank=tp_rank,
             out=out,
             lse=lse,
             is_autotune=is_autotune,
@@ -344,6 +364,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
+        ctx.num_heads_kv_global = num_heads_kv_global
+        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -374,11 +396,13 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
+            num_heads_kv_global=ctx.num_heads_kv_global,
+            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 22)
 
 
 class FlashSparseAttnVarlenFunc(torch.autograd.Function):
@@ -404,6 +428,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
+        num_heads_kv_global: int = 0,
+        tp_rank: int = 0,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
@@ -441,6 +467,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
+            num_heads_kv_global=num_heads_kv_global,
+            tp_rank=tp_rank,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             out=out,
@@ -471,6 +499,8 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
+        ctx.num_heads_kv_global = num_heads_kv_global
+        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -517,11 +547,13 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_split_qo=ctx.is_split_qo,
+            num_heads_kv_global=ctx.num_heads_kv_global,
+            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 22)
 
 
 class FlashGatedAttnFunc(torch.autograd.Function):
@@ -548,6 +580,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
+        num_heads_kv_global: int = 0,
+        tp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -585,6 +619,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 is_quant=is_quant,
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
+                num_heads_kv_global=num_heads_kv_global,
+                tp_rank=tp_rank,
                 out=out,
                 lse=lse,
                 is_autotune=is_autotune,
@@ -605,6 +641,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
+        ctx.num_heads_kv_global = num_heads_kv_global
+        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -640,11 +678,13 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
+            num_heads_kv_global=ctx.num_heads_kv_global,
+            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, da, dd, *((None,) * 20)
+        return dq, dk, dv, da, dd, *((None,) * 22)
 
 
 class FlashGatedAttnVarlenFunc(torch.autograd.Function):
@@ -675,6 +715,8 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
+        num_heads_kv_global: int = 0,
+        tp_rank: int = 0,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
@@ -718,6 +760,8 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
                 is_quant=is_quant,
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
+                num_heads_kv_global=num_heads_kv_global,
+                tp_rank=tp_rank,
                 seqused_q=seqused_q,
                 seqused_k=seqused_k,
                 out=out,
@@ -754,6 +798,8 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
+        ctx.num_heads_kv_global = num_heads_kv_global
+        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -807,11 +853,13 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_split_qo=ctx.is_split_qo,
+            num_heads_kv_global=ctx.num_heads_kv_global,
+            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, da, dd, *((None,) * 20)
+        return dq, dk, dv, da, dd, *((None,) * 22)
 
 
 def flash_dense_attn_func(
@@ -828,6 +876,8 @@ def flash_dense_attn_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -872,6 +922,8 @@ def flash_dense_attn_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
+        num_heads_kv_global,
+        tp_rank,
         out,
         lse,
         is_autotune,
@@ -890,6 +942,8 @@ def flash_dense_attn_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -932,6 +986,8 @@ def flash_dense_attn_with_kvcache_func(
         value_scale=value_scale,
         is_local=is_local,
         is_quant=is_quant,
+        num_heads_kv_global=num_heads_kv_global,
+        tp_rank=tp_rank,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -961,6 +1017,8 @@ def flash_dense_attn_varlen_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1017,6 +1075,8 @@ def flash_dense_attn_varlen_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
+        num_heads_kv_global,
+        tp_rank,
         seqused_q,
         seqused_k,
         out,
@@ -1039,6 +1099,8 @@ def flash_dense_attn_varlen_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1087,6 +1149,8 @@ def flash_dense_attn_varlen_with_kvcache_func(
         value_scale=value_scale,
         is_local=is_local,
         is_quant=is_quant,
+        num_heads_kv_global=num_heads_kv_global,
+        tp_rank=tp_rank,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
@@ -1114,6 +1178,8 @@ def flash_sparse_attn_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1160,6 +1226,8 @@ def flash_sparse_attn_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
+        num_heads_kv_global,
+        tp_rank,
         out,
         lse,
         is_autotune,
@@ -1179,6 +1247,8 @@ def flash_sparse_attn_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1223,6 +1293,8 @@ def flash_sparse_attn_with_kvcache_func(
         value_scale=value_scale,
         is_local=is_local,
         is_quant=is_quant,
+        num_heads_kv_global=num_heads_kv_global,
+        tp_rank=tp_rank,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1253,6 +1325,8 @@ def flash_sparse_attn_varlen_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1311,6 +1385,8 @@ def flash_sparse_attn_varlen_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
+        num_heads_kv_global,
+        tp_rank,
         seqused_q,
         seqused_k,
         out,
@@ -1334,6 +1410,8 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1384,6 +1462,8 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         value_scale=value_scale,
         is_local=is_local,
         is_quant=is_quant,
+        num_heads_kv_global=num_heads_kv_global,
+        tp_rank=tp_rank,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
@@ -1416,6 +1496,8 @@ def flash_gated_attn_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1472,6 +1554,8 @@ def flash_gated_attn_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
+        num_heads_kv_global,
+        tp_rank,
         out,
         lse,
         is_autotune,
@@ -1495,6 +1579,8 @@ def flash_gated_attn_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1547,6 +1633,8 @@ def flash_gated_attn_with_kvcache_func(
         value_scale=value_scale,
         is_local=is_local,
         is_quant=is_quant,
+        num_heads_kv_global=num_heads_kv_global,
+        tp_rank=tp_rank,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1582,6 +1670,8 @@ def flash_gated_attn_varlen_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1650,6 +1740,8 @@ def flash_gated_attn_varlen_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
+        num_heads_kv_global,
+        tp_rank,
         seqused_q,
         seqused_k,
         out,
@@ -1677,6 +1769,8 @@ def flash_gated_attn_varlen_with_kvcache_func(
     value_scale: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1735,6 +1829,8 @@ def flash_gated_attn_varlen_with_kvcache_func(
         value_scale=value_scale,
         is_local=is_local,
         is_quant=is_quant,
+        num_heads_kv_global=num_heads_kv_global,
+        tp_rank=tp_rank,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
