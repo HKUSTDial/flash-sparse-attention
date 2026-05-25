@@ -211,7 +211,7 @@ def _bwd_preprocess_kernel(
     lse_tile = tl.load(lse_ptrs, boundary_check=(0,), padding_option="nan")
 
     # Compute lse_log2
-    lse_log2 = tl.where(lse_tile == lse_tile, lse_tile * math.log2(math.e), 0.0)
+    lse_log2 = tl.where(lse_tile == lse_tile, lse_tile * math.log2(math.e), 1e6)
     lse_log2 = activations.check_inf(lse_log2)
 
     # Store dq_accum
