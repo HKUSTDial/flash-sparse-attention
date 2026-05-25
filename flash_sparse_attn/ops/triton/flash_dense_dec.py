@@ -667,6 +667,8 @@ def _flash_dense_attn_decode(
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
     skip_checks: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
@@ -676,7 +678,10 @@ def _flash_dense_attn_decode(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local:
-        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+        window_sizes = utils.window_sizes_heuristic(
+            seqlen_k, num_heads_kv, device,
+            num_heads_kv_global=num_heads_kv_global, tp_rank=tp_rank,
+        )
     else:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
@@ -860,6 +865,8 @@ def _flash_dense_attn_varlen_decode(
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
     skip_checks: bool = False,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
@@ -870,7 +877,10 @@ def _flash_dense_attn_varlen_decode(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local:
-        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+        window_sizes = utils.window_sizes_heuristic(
+            seqlen_k, num_heads_kv, device,
+            num_heads_kv_global=num_heads_kv_global, tp_rank=tp_rank,
+        )
     else:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
