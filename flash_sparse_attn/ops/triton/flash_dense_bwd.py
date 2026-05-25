@@ -510,7 +510,7 @@ def _bwd_dense_kernel(
                     TILE_M=TILE_M,
                     TILE_N=TILE_N,
                     IS_MASK=True,
-                    MASK_CAUSAL=True,
+                    MASK_CAUSAL=IS_CAUSAL,
                     MASK_LOCAL=True if IS_LOCAL else False,
                 )
             )
