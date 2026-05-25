@@ -6,7 +6,7 @@ import cutlass.cute as cute
 from cutlass.cute.nvgpu import cpasync
 from cutlass import Int32, const_expr
 
-from flash_sparse_attn.ops.cute import utils
+from flash_attn.cute import utils
 from quack.cute_dsl_utils import ParamsBase
 from cutlass.cute import FastDivmodDivisor
 
