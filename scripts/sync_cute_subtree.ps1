@@ -420,8 +420,6 @@ function Invoke-CoreSync {
         [switch]$KeepTempBranch
     )
 
-    $cutlassRepo = Join-Path $WorkRepoRoot "csrc/cutlass"
-    $cutlassSubmodulePath = "csrc/cutlass"
     $targetPath = Join-Path $WorkRepoRoot $Prefix
     $startHead = Get-GitOutput -Repo $WorkRepoRoot -Arguments @("rev-parse", "HEAD")
     $localSplitBefore = $null
@@ -429,11 +427,7 @@ function Invoke-CoreSync {
     Get-GitOutput -Repo $WorkRepoRoot -Arguments @("rev-parse", "--show-toplevel") | Out-Null
     Get-GitOutput -Repo $UpstreamRepoForSplit -Arguments @("rev-parse", "--show-toplevel") | Out-Null
 
-    Ensure-SubmoduleInitialized -Repo $WorkRepoRoot -SubmodulePath $cutlassSubmodulePath -Label "csrc/cutlass submodule"
     Test-WorktreeClean -Repo $WorkRepoRoot -Label "Superproject"
-    if ((Test-Path $cutlassRepo) -and (Test-IsGitRepo -Repo $cutlassRepo)) {
-        Test-WorktreeClean -Repo $cutlassRepo -Label "csrc/cutlass submodule"
-    }
 
     if (-not $SkipFetch) {
         Write-Host "Fetching latest upstream changes from origin..."

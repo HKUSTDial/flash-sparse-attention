@@ -295,8 +295,6 @@ cherry_pick_commit_back() {
 
 invoke_core_sync() {
     local work_repo_root="$1"
-    local cutlass_repo="$work_repo_root/csrc/cutlass"
-    local cutlass_submodule_path="csrc/cutlass"
     local target_path="$work_repo_root/$PREFIX"
     local start_head local_split_before local_split_after
     start_head="$(git_output -C "$work_repo_root" rev-parse HEAD)"
@@ -304,11 +302,7 @@ invoke_core_sync() {
     invoke_git -C "$work_repo_root" rev-parse --show-toplevel >/dev/null
     invoke_git -C "$UPSTREAM_REPO_FOR_SPLIT" rev-parse --show-toplevel >/dev/null
 
-    ensure_submodule_initialized "$work_repo_root" "$cutlass_submodule_path" "csrc/cutlass submodule"
     test_worktree_clean "$work_repo_root" "Superproject"
-    if [[ -e "$cutlass_repo" ]] && is_git_repo "$cutlass_repo"; then
-        test_worktree_clean "$cutlass_repo" "csrc/cutlass submodule"
-    fi
 
     if [[ "$SKIP_FETCH" -eq 0 ]]; then
         echo "Fetching latest upstream changes from origin..."
