@@ -15,7 +15,7 @@ from flash_sparse_attn.ops.triton import (
     block_info,
     activations,
     mask,
-    flash_dec_combine,
+    flash_fwd_combine,
     kernel_repr,
     autotuner,
 )
@@ -1022,7 +1022,7 @@ def _flash_sparse_attn_forward(
             )
 
     if is_split_kv:
-        flash_dec_combine._flash_attn_dec_combine(
+        flash_fwd_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
@@ -1238,7 +1238,7 @@ def _flash_sparse_attn_varlen_forward(
             )
 
     if is_split_kv:
-        flash_dec_combine._flash_attn_dec_combine(
+        flash_fwd_combine._flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
