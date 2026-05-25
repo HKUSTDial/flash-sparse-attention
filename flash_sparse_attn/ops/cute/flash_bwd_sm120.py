@@ -8,7 +8,7 @@
 import cutlass
 import cutlass.utils as utils_basic
 
-from flash_attn.cute.flash_bwd import FlashAttentionBackwardSm80
+from flash_sparse_attn.ops.cute.flash_bwd import FlashAttentionBackwardSm80
 
 
 class FlashAttentionBackwardSm120(FlashAttentionBackwardSm80):
