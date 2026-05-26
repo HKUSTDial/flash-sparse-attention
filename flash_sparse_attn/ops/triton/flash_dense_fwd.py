@@ -858,6 +858,8 @@ def _flash_dense_attn_forward(
         is_local=is_local,
         qhead_per_kvhead=qhead_per_kvhead,
         is_causal=is_causal,
+        pack_gqa=pack_gqa,
+        is_quant=is_quant,
     )
     if launch_config is not None and not is_autotune:
         kernel = _fwd_dense_kernel
@@ -987,6 +989,8 @@ def _flash_dense_attn_forward(
                 is_local=is_local,
                 qhead_per_kvhead=qhead_per_kvhead,
                 is_causal=is_causal,
+                pack_gqa=pack_gqa,
+                is_quant=is_quant,
             )
 
     if is_split_kv:
@@ -1079,6 +1083,8 @@ def _flash_dense_attn_varlen_forward(
         is_local=is_local,
         qhead_per_kvhead=qhead_per_kvhead,
         is_causal=is_causal,
+        pack_gqa=pack_gqa,
+        is_quant=is_quant,
     )
     if launch_config is not None and not is_autotune:
         kernel = _fwd_dense_kernel
@@ -1204,6 +1210,8 @@ def _flash_dense_attn_varlen_forward(
                 is_local=is_local,
                 qhead_per_kvhead=qhead_per_kvhead,
                 is_causal=is_causal,
+                pack_gqa=pack_gqa,
+                is_quant=is_quant,
             )
 
     if is_split_kv:
