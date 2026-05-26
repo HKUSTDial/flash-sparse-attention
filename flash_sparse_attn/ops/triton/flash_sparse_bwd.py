@@ -1018,6 +1018,7 @@ def _flash_sparse_attn_backward(
         is_local=is_local,
         qhead_per_kvhead=qhead_per_kvhead,
         is_causal=is_causal,
+        is_quant=is_quant,
     )
     if launch_config is not None and not is_autotune:
         kernel = _bwd_sparse_kernel
@@ -1186,6 +1187,7 @@ def _flash_sparse_attn_backward(
                 is_local=is_local,
                 qhead_per_kvhead=qhead_per_kvhead,
                 is_causal=is_causal,
+                is_quant=is_quant,
             )
 
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
@@ -1281,6 +1283,7 @@ def _flash_sparse_attn_varlen_backward(
         is_local=is_local,
         qhead_per_kvhead=qhead_per_kvhead,
         is_causal=is_causal,
+        is_quant=is_quant,
     )
     if launch_config is not None and not is_autotune:
         kernel = _bwd_sparse_kernel
@@ -1455,6 +1458,7 @@ def _flash_sparse_attn_varlen_backward(
                 is_local=is_local,
                 qhead_per_kvhead=qhead_per_kvhead,
                 is_causal=is_causal,
+                is_quant=is_quant,
             )
 
     flash_bwd_postprocess._flash_attn_bwd_postprocess(
