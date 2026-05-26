@@ -99,6 +99,8 @@ class LaunchConfigCache:
                     entry["is_local"],
                     entry["qhead_per_kvhead"],
                     entry.get("is_causal", False),
+                    entry.get("pack_gqa", False),
+                    entry.get("is_quant", False),
                 )
                 result[key] = tuple(entry["config"])
         except (OSError, json.JSONDecodeError, KeyError, TypeError):
@@ -108,7 +110,7 @@ class LaunchConfigCache:
     def _write_unlocked(self, device_name: str, cache: dict[tuple, tuple]) -> None:
         json_path = self._json_path(device_name)
         data = []
-        for (k_name, sq, sk, tk, local, qpk, causal), config in sorted(
+        for (k_name, sq, sk, tk, local, qpk, causal, pgqa, quant), config in sorted(
             cache.items(), key=lambda x: x[0]
         ):
             data.append(
@@ -120,6 +122,8 @@ class LaunchConfigCache:
                     "is_local": local,
                     "qhead_per_kvhead": qpk,
                     "is_causal": causal,
+                    "pack_gqa": pgqa,
+                    "is_quant": quant,
                     "config": list(config),
                 }
             )
@@ -156,6 +160,8 @@ class LaunchConfigCache:
         is_local: bool = False,
         qhead_per_kvhead: int = 1,
         is_causal: bool = False,
+        pack_gqa: bool = False,
+        is_quant: bool = False,
     ) -> tuple[int, int, int, int, int] | None:
         """
         Load a cached launch config for the given kernel specialization.
@@ -168,6 +174,8 @@ class LaunchConfigCache:
         :param is_local: Whether local mask is applied
         :param qhead_per_kvhead: Ratio of query heads to key/value heads
         :param is_causal: Whether causal mask is applied
+        :param pack_gqa: Whether GQA packing is enabled
+        :param is_quant: Whether quantization is used
 
         :return launch_config: Tuple of (TILE_M, TILE_N, num_warps, num_stages, num_ctas) or None on cache miss
         """
@@ -181,6 +189,8 @@ class LaunchConfigCache:
             is_local,
             qhead_per_kvhead,
             is_causal,
+            pack_gqa,
+            is_quant,
         )
         return cache.get(key)
 
@@ -194,6 +204,8 @@ class LaunchConfigCache:
         is_local: bool = False,
         qhead_per_kvhead: int = 1,
         is_causal: bool = False,
+        pack_gqa: bool = False,
+        is_quant: bool = False,
         *,
         config: tuple[int, int, int, int, int],
     ) -> None:
@@ -208,6 +220,8 @@ class LaunchConfigCache:
         :param is_local: Whether local mask is applied
         :param qhead_per_kvhead: Ratio of query heads to key/value heads
         :param is_causal: Whether causal mask is applied
+        :param pack_gqa: Whether GQA packing is enabled
+        :param is_quant: Whether quantization is used
         :param config: Tuple of (TILE_M, TILE_N, num_warps, num_stages, num_ctas)
         """
         device_name = torch.cuda.get_device_name(device)
@@ -219,6 +233,8 @@ class LaunchConfigCache:
             is_local,
             qhead_per_kvhead,
             is_causal,
+            pack_gqa,
+            is_quant,
         )
         # Skip disk write if memory cache already has the same config
         mem = self._memory.get(device_name)
@@ -261,6 +277,8 @@ def load_launch_config(
     is_local: bool = False,
     qhead_per_kvhead: int = 1,
     is_causal: bool = False,
+    pack_gqa: bool = False,
+    is_quant: bool = False,
 ) -> tuple[int, int, int, int, int] | None:
     """
     Load cached launch config for a kernel specialization.
@@ -273,6 +291,8 @@ def load_launch_config(
     :param is_local: Whether local mask is applied
     :param qhead_per_kvhead: Ratio of query heads to key/value heads
     :param is_causal: Whether causal mask is applied
+    :param pack_gqa: Whether GQA packing is enabled
+    :param is_quant: Whether quantization is used
 
     :return launch_config: Tuple of (TILE_M, TILE_N, num_warps, num_stages, num_ctas) or None on cache miss
     """
@@ -285,6 +305,8 @@ def load_launch_config(
         is_local,
         qhead_per_kvhead,
         is_causal,
+        pack_gqa,
+        is_quant,
     )
 
 
@@ -299,6 +321,8 @@ def store_launch_config(
     is_local: bool = False,
     qhead_per_kvhead: int = 1,
     is_causal: bool = False,
+    pack_gqa: bool = False,
+    is_quant: bool = False,
 ) -> None:
     """
     Store a launch config to the per-device JSON cache.
@@ -312,6 +336,8 @@ def store_launch_config(
     :param is_local: Whether local mask is applied
     :param qhead_per_kvhead: Ratio of query heads to key/value heads
     :param is_causal: Whether causal mask is applied
+    :param pack_gqa: Whether GQA packing is enabled
+    :param is_quant: Whether quantization is used
     """
     get_launch_config_cache().put(
         device,
@@ -322,6 +348,8 @@ def store_launch_config(
         is_local,
         qhead_per_kvhead,
         is_causal,
+        pack_gqa,
+        is_quant,
         config=config,
     )
 
