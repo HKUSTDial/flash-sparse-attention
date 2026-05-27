@@ -129,8 +129,11 @@ def online_sparse_softmax(
     :return row_scale: Scaling factors per row of shape [BLOCK_M].
     :return skip_softmax: Boolean indicating whether this block was skipped.
     """
+    # Compute current row max
+    row_max_curr = tl.max(acc_s, axis=1)
+
     # Compute current block max
-    block_max_curr = tl.max(acc_s)
+    block_max_curr = tl.max(row_max_curr)
 
     # Update skip condition based on threshold
     block_max_diff_log2 = (block_max_curr - block_max) * scale_log2
@@ -144,9 +147,6 @@ def online_sparse_softmax(
         row_sum_new = row_sum
         row_scale = row_max * 0.0 + 1.0
     else:
-        # Compute current row max
-        row_max_curr = tl.max(acc_s, axis=1)
-
         # Update block max
         block_max_new = tl.maximum(block_max_curr, block_max)
 
