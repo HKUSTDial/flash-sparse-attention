@@ -10,6 +10,7 @@ def assert_fwd_inputs(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
@@ -31,6 +32,7 @@ def assert_fwd_inputs(
     :param query_scale: Optional query scale tensor for quantized inputs
     :param key_scale: Optional key scale tensor for quantized inputs
     :param value_scale: Optional value scale tensor for quantized inputs
+    :param window_sizes: Optional window sizes tensor for local attention
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
     :param cu_seqlens_q: Cumulative sequence lengths for queries
@@ -100,6 +102,10 @@ def assert_fwd_inputs(
         assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
             "seqused_q and seqused_k must be int32"
         )
+    if window_sizes is not None:
+        assert window_sizes.dtype == torch.int32, (
+            "window_sizes must be int32"
+        )
 
 
 def assert_bwd_inputs(
@@ -112,6 +118,7 @@ def assert_bwd_inputs(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
@@ -136,6 +143,7 @@ def assert_bwd_inputs(
     :param query_scale: Optional query scale tensor for quantized inputs
     :param key_scale: Optional key scale tensor for quantized inputs
     :param value_scale: Optional value scale tensor for quantized inputs
+    :param window_sizes: Optional window sizes tensor for local attention
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
     :param cu_seqlens_q: Cumulative sequence lengths for queries
@@ -217,6 +225,10 @@ def assert_bwd_inputs(
         assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
             "seqused_q and seqused_k must be int32"
         )
+    if window_sizes is not None:
+        assert window_sizes.dtype == torch.int32, (
+            "window_sizes must be int32"
+        )
 
 
 def assert_dec_inputs(
@@ -226,6 +238,7 @@ def assert_dec_inputs(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
@@ -245,6 +258,7 @@ def assert_dec_inputs(
     :param query_scale: Optional query scale tensor for quantized inputs
     :param key_scale: Optional key scale tensor for quantized inputs
     :param value_scale: Optional value scale tensor for quantized inputs
+    :param window_sizes: Optional window sizes tensor for local attention
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
     :param cu_seqlens_k: Cumulative sequence lengths for keys
@@ -304,3 +318,7 @@ def assert_dec_inputs(
     if seqused_k is not None:
         assert device == seqused_k.device, "All inputs must be on the same device"
         assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
+    if window_sizes is not None:
+        assert window_sizes.dtype == torch.int32, (
+            "window_sizes must be int32"
+        )
