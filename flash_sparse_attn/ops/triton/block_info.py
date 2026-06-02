@@ -32,7 +32,7 @@ def get_n_block_min_max(
         if IS_LOCAL:
             n_idx_right = n_idx - window_size_right
             n_block_window_max = tl.minimum(
-                n_block_window_max, tl.cdiv(n_idx_right, TILE_N)
+                n_block_window_max, tl.maximum(tl.cdiv(n_idx_right, TILE_N), 0)
             )
     if IS_LOCAL:
         m_idx_min = m_block * TILE_M

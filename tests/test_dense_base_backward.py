@@ -10,9 +10,14 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.parametrize(
     "is_causal,is_local",
-    [(False, False), (True, False), (False, True)],
+    [(False, False), (True, False), (False, True), (True, True)],
 )
-def test_dense_base_backward_correctness(is_causal: bool, is_local: bool) -> None:
+@pytest.mark.parametrize("is_split_kv", [False, True])
+@pytest.mark.parametrize("is_split_qo", [False, True])
+@pytest.mark.parametrize("head_dim", [64, 128])
+def test_dense_base_backward_correctness(
+    is_causal: bool, is_local: bool, is_split_kv: bool, is_split_qo: bool, head_dim: int
+) -> None:
     set_seed(0)
     run_backward_base_case(
         kind="dense",
@@ -21,7 +26,9 @@ def test_dense_base_backward_correctness(is_causal: bool, is_local: bool) -> Non
         seqlen_k=1024,
         num_heads_q=32,
         num_heads_kv=2,
-        head_dim=64,
+        head_dim=head_dim,
         is_causal=is_causal,
         is_local=is_local,
+        is_split_kv=is_split_kv,
+        is_split_qo=is_split_qo,
     )
