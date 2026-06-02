@@ -1250,6 +1250,7 @@ def _flash_gated_attn_forward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: float = None,
     gate_threshold: float = None,
     is_logsigmoid_gate: bool = False,
@@ -1258,8 +1259,6 @@ def _flash_gated_attn_forward(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1276,13 +1275,7 @@ def _flash_gated_attn_forward(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local:
-        window_sizes = utils.window_sizes_heuristic(
-            seqlen_k,
-            num_heads_kv,
-            device,
-            num_heads_kv_global=num_heads_kv_global,
-            tp_rank=tp_rank,
-        )
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     else:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
@@ -1492,6 +1485,7 @@ def _flash_gated_attn_varlen_forward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: float = None,
     gate_threshold: float = None,
     is_logsigmoid_gate: bool = True,
@@ -1500,8 +1494,6 @@ def _flash_gated_attn_varlen_forward(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1523,13 +1515,7 @@ def _flash_gated_attn_varlen_forward(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local:
-        window_sizes = utils.window_sizes_heuristic(
-            seqlen_k,
-            num_heads_kv,
-            device,
-            num_heads_kv_global=num_heads_kv_global,
-            tp_rank=tp_rank,
-        )
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     else:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 

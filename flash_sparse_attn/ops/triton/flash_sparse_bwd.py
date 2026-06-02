@@ -965,15 +965,13 @@ def _flash_sparse_attn_backward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: float = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_qo: bool = False,
     is_autotune: bool = False,
     skip_checks: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
-    window_sizes: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
@@ -984,14 +982,7 @@ def _flash_sparse_attn_backward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local:
-        if window_sizes is None:
-            window_sizes = utils.window_sizes_heuristic(
-                seqlen_k,
-                num_heads_kv,
-                device,
-                num_heads_kv_global=num_heads_kv_global,
-                tp_rank=tp_rank,
-            )
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     else:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
@@ -1235,6 +1226,7 @@ def _flash_sparse_attn_varlen_backward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: float = None,
     is_local: bool = False,
     is_quant: bool = False,
@@ -1243,9 +1235,6 @@ def _flash_sparse_attn_varlen_backward(
     is_split_qo: bool = False,
     is_autotune: bool = False,
     skip_checks: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
-    window_sizes: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
@@ -1259,14 +1248,7 @@ def _flash_sparse_attn_varlen_backward(
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local:
-        if window_sizes is None:
-            window_sizes = utils.window_sizes_heuristic(
-                seqlen_k,
-                num_heads_kv,
-                device,
-                num_heads_kv_global=num_heads_kv_global,
-                tp_rank=tp_rank,
-            )
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     else:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
