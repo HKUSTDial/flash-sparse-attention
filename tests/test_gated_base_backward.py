@@ -17,7 +17,12 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("is_logsigmoid_gate", [True, False])
 def test_gated_base_backward_correctness(
-    is_causal: bool, is_local: bool, is_split_kv: bool, is_split_qo: bool, head_dim: int, is_logsigmoid_gate: bool
+    is_causal: bool,
+    is_local: bool,
+    is_split_kv: bool,
+    is_split_qo: bool,
+    head_dim: int,
+    is_logsigmoid_gate: bool,
 ) -> None:
     set_seed(0)
     run_backward_base_case(
