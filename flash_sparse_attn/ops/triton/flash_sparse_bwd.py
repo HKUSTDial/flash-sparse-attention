@@ -977,13 +977,17 @@ def _flash_sparse_attn_backward(
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
-    softmax_threshold = softmax_threshold or head_dim / seqlen_k
+    softmax_scale = (
+        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
+    )
+    softmax_threshold = (
+        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+    )
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
-    if is_local:
+    if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    else:
+    elif not is_local:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
@@ -997,6 +1001,7 @@ def _flash_sparse_attn_backward(
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             cu_seqlens_q=None,
             cu_seqlens_k=None,
             seqused_q=None,
@@ -1243,13 +1248,17 @@ def _flash_sparse_attn_varlen_backward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
-    softmax_threshold = softmax_threshold or head_dim / seqlen_k
+    softmax_scale = (
+        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
+    )
+    softmax_threshold = (
+        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+    )
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
     qhead_per_kvhead = num_heads_q // num_heads_kv
-    if is_local:
+    if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    else:
+    elif not is_local:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
@@ -1263,6 +1272,7 @@ def _flash_sparse_attn_varlen_backward(
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             seqused_q=seqused_q,

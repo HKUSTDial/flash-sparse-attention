@@ -103,9 +103,7 @@ def assert_fwd_inputs(
             "seqused_q and seqused_k must be int32"
         )
     if window_sizes is not None:
-        assert window_sizes.dtype == torch.int32, (
-            "window_sizes must be int32"
-        )
+        assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
 
 
 def assert_bwd_inputs(
@@ -226,9 +224,7 @@ def assert_bwd_inputs(
             "seqused_q and seqused_k must be int32"
         )
     if window_sizes is not None:
-        assert window_sizes.dtype == torch.int32, (
-            "window_sizes must be int32"
-        )
+        assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
 
 
 def assert_dec_inputs(
@@ -319,6 +315,4 @@ def assert_dec_inputs(
         assert device == seqused_k.device, "All inputs must be on the same device"
         assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
     if window_sizes is not None:
-        assert window_sizes.dtype == torch.int32, (
-            "window_sizes must be int32"
-        )
+        assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
