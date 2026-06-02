@@ -89,7 +89,7 @@ def window_sizes_heuristic(
     :param device: Target device.
     :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
 
-    :return: (num_heads_kv, 2) int32 tensor, columns are [left, right].
+    :return: int32 tensor with shape [num_heads_kv, 2], columns are [left, right].
     """
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
     if equal_bandwidth:
