@@ -16,21 +16,10 @@ from flash_sparse_attn.ops.triton import quant
 from test_utils import (
     BenchmarkConfig,
     BenchmarkResult,
-    format_tflops,
+    format_ms,
     generate_inputs,
     generate_decode_configs,
 )
-
-
-def _decode_fwd_flops(cfg: BenchmarkConfig) -> float:
-    return (
-        4.0
-        * cfg.batch_size
-        * cfg.num_heads
-        * cfg.seqlen_q
-        * cfg.seqlen_k
-        * cfg.head_dim
-    )
 
 
 def benchmark_triton_dense_decode(
@@ -59,7 +48,7 @@ def benchmark_triton_dense_decode(
     return do_bench(fn, warmup=20, rep=100)
 
 
-def benchmark_triton_dense_decode_fp8(
+def benchmark_triton_dense_decode_quant(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> float:
     q, k, v = generate_inputs(
@@ -72,17 +61,17 @@ def benchmark_triton_dense_decode_fp8(
     q = q.squeeze(1)
 
     # Pre-quantize outside benchmark loop
-    q_fp8, q_scale = quant.quantize_fp8(q)
-    k_fp8, k_scale = quant.quantize_fp8(k)
-    v_fp8, v_scale = quant.quantize_fp8(v)
+    q_quant, q_scale = quant.quantize_fp8(q)
+    k_quant, k_scale = quant.quantize_fp8(k)
+    v_quant, v_scale = quant.quantize_fp8(v)
 
     softmax_scale = cfg.head_dim**-0.5
 
     def fn():
         flash_dense_attn_with_kvcache_func(
-            q_fp8,
-            k_fp8,
-            v_fp8,
+            q_quant,
+            k_quant,
+            v_quant,
             softmax_scale=softmax_scale,
             query_scale=q_scale,
             key_scale=k_scale,
@@ -123,7 +112,7 @@ def benchmark_triton_sparse_decode(
     return do_bench(fn, warmup=20, rep=100)
 
 
-def benchmark_triton_sparse_decode_fp8(
+def benchmark_triton_sparse_decode_quant(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> float:
     q, k, v = generate_inputs(
@@ -135,18 +124,18 @@ def benchmark_triton_sparse_decode_fp8(
     )
     q = q.squeeze(1)
 
-    q_fp8, q_scale = quant.quantize_fp8(q)
-    k_fp8, k_scale = quant.quantize_fp8(k)
-    v_fp8, v_scale = quant.quantize_fp8(v)
+    q_quant, q_scale = quant.quantize_fp8(q)
+    k_quant, k_scale = quant.quantize_fp8(k)
+    v_quant, v_scale = quant.quantize_fp8(v)
 
     softmax_scale = cfg.head_dim**-0.5
     softmax_threshold = 1.0
 
     def fn():
         flash_sparse_attn_with_kvcache_func(
-            q_fp8,
-            k_fp8,
-            v_fp8,
+            q_quant,
+            k_quant,
+            v_quant,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
             query_scale=q_scale,
@@ -197,7 +186,7 @@ def benchmark_triton_gated_decode(
     return do_bench(fn, warmup=20, rep=100)
 
 
-def benchmark_triton_gated_decode_fp8(
+def benchmark_triton_gated_decode_quant(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> float:
     q, k, v = generate_inputs(
@@ -209,9 +198,9 @@ def benchmark_triton_gated_decode_fp8(
     )
     q = q.squeeze(1)
 
-    q_fp8, q_scale = quant.quantize_fp8(q)
-    k_fp8, k_scale = quant.quantize_fp8(k)
-    v_fp8, v_scale = quant.quantize_fp8(v)
+    q_quant, q_scale = quant.quantize_fp8(q)
+    k_quant, k_scale = quant.quantize_fp8(k)
+    v_quant, v_scale = quant.quantize_fp8(v)
 
     alpha = torch.randn(
         cfg.batch_size, cfg.num_heads, device=device, dtype=torch.bfloat16
@@ -229,9 +218,9 @@ def benchmark_triton_gated_decode_fp8(
 
     def fn():
         flash_gated_attn_with_kvcache_func(
-            q_fp8,
-            k_fp8,
-            v_fp8,
+            q_quant,
+            k_quant,
+            v_quant,
             alpha,
             delta,
             softmax_scale=softmax_scale,
@@ -310,23 +299,13 @@ def benchmark_cudnn_decode(
 def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
     try:
         triton_dense_ms = benchmark_triton_dense_decode(cfg)
-        triton_dense_fp8_ms = benchmark_triton_dense_decode_fp8(cfg)
+        triton_dense_quant_ms = benchmark_triton_dense_decode_quant(cfg)
         triton_sparse_ms = benchmark_triton_sparse_decode(cfg)
-        triton_sparse_fp8_ms = benchmark_triton_sparse_decode_fp8(cfg)
+        triton_sparse_quant_ms = benchmark_triton_sparse_decode_quant(cfg)
         triton_gated_ms = benchmark_triton_gated_decode(cfg)
-        triton_gated_fp8_ms = benchmark_triton_gated_decode_fp8(cfg)
+        triton_gated_quant_ms = benchmark_triton_gated_decode_quant(cfg)
         fa_dense_ms = benchmark_fa_decode(cfg)
         cudnn_dense_ms = benchmark_cudnn_decode(cfg)
-
-        flops = _decode_fwd_flops(cfg)
-        triton_dense_tflops = flops / triton_dense_ms * 1e-9
-        triton_dense_fp8_tflops = flops / triton_dense_fp8_ms * 1e-9
-        triton_sparse_tflops = flops / triton_sparse_ms * 1e-9
-        triton_sparse_fp8_tflops = flops / triton_sparse_fp8_ms * 1e-9
-        triton_gated_tflops = flops / triton_gated_ms * 1e-9
-        triton_gated_fp8_tflops = flops / triton_gated_fp8_ms * 1e-9
-        fa_dense_tflops = flops / fa_dense_ms * 1e-9 if fa_dense_ms else None
-        cudnn_dense_tflops = flops / cudnn_dense_ms * 1e-9 if cudnn_dense_ms else None
 
         return BenchmarkResult(
             config=cfg,
@@ -335,17 +314,9 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             triton_gated_ms=triton_gated_ms,
             fa_dense_ms=fa_dense_ms,
             cudnn_dense_ms=cudnn_dense_ms,
-            triton_dense_tflops=triton_dense_tflops,
-            triton_sparse_tflops=triton_sparse_tflops,
-            triton_gated_tflops=triton_gated_tflops,
-            fa_dense_tflops=fa_dense_tflops,
-            cudnn_dense_tflops=cudnn_dense_tflops,
-            triton_dense_fp8_ms=triton_dense_fp8_ms,
-            triton_dense_fp8_tflops=triton_dense_fp8_tflops,
-            triton_sparse_fp8_ms=triton_sparse_fp8_ms,
-            triton_sparse_fp8_tflops=triton_sparse_fp8_tflops,
-            triton_gated_fp8_ms=triton_gated_fp8_ms,
-            triton_gated_fp8_tflops=triton_gated_fp8_tflops,
+            triton_dense_quant_ms=triton_dense_quant_ms,
+            triton_sparse_quant_ms=triton_sparse_quant_ms,
+            triton_gated_quant_ms=triton_gated_quant_ms,
         )
     except Exception as exc:
         full_error = f"{exc}\n{traceback.format_exc()}"
@@ -356,11 +327,6 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             triton_gated_ms=None,
             fa_dense_ms=None,
             cudnn_dense_ms=None,
-            triton_dense_tflops=None,
-            triton_sparse_tflops=None,
-            triton_gated_tflops=None,
-            fa_dense_tflops=None,
-            cudnn_dense_tflops=None,
             error_message=full_error,
         )
 
@@ -384,14 +350,14 @@ def print_results(results: List[BenchmarkResult]) -> None:
                 r.config.seqlen_q,
                 r.config.seqlen_k,
                 "causal" if r.config.is_causal else "non-causal",
-                format_tflops(r.triton_dense_tflops),
-                format_tflops(r.triton_dense_fp8_tflops),
-                format_tflops(r.triton_sparse_tflops),
-                format_tflops(r.triton_sparse_fp8_tflops),
-                format_tflops(r.triton_gated_tflops),
-                format_tflops(r.triton_gated_fp8_tflops),
-                format_tflops(r.fa_dense_tflops),
-                format_tflops(r.cudnn_dense_tflops),
+                format_ms(r.triton_dense_ms),
+                format_ms(r.triton_dense_quant_ms),
+                format_ms(r.triton_sparse_ms),
+                format_ms(r.triton_sparse_quant_ms),
+                format_ms(r.triton_gated_ms),
+                format_ms(r.triton_gated_quant_ms),
+                format_ms(r.fa_dense_ms),
+                format_ms(r.cudnn_dense_ms),
             ]
         )
 
@@ -404,14 +370,14 @@ def print_results(results: List[BenchmarkResult]) -> None:
         "Seqlen_q",
         "Seqlen_k",
         "Mode",
-        "Triton Dense TFLOPS",
-        "Triton Dense FP8 TFLOPS",
-        "Triton Sparse TFLOPS",
-        "Triton Sparse FP8 TFLOPS",
-        "Triton Gated TFLOPS",
-        "Triton Gated FP8 TFLOPS",
-        "FA TFLOPS",
-        "cuDNN TFLOPS",
+        "Triton Dense (ms)",
+        "Triton Dense Quant (ms)",
+        "Triton Sparse (ms)",
+        "Triton Sparse Quant (ms)",
+        "Triton Gated (ms)",
+        "Triton Gated Quant (ms)",
+        "FA Dense (ms)",
+        "cuDNN Dense (ms)",
     ]
     print(tabulate(rows, headers=headers, tablefmt="github"))
 
@@ -425,8 +391,8 @@ def main() -> None:
     device_name = torch.cuda.get_device_name(0)
 
     batch_sizes = [1]
-    num_heads = [16]
-    num_kv_heads = [8]
+    num_heads = [64]
+    num_kv_heads = [4]
     seqlens_k = [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
     head_dims = [128]
     is_causal = False

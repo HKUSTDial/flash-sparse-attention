@@ -4,40 +4,22 @@ from typing import Dict, List, Literal, Optional, Sequence
 
 import torch
 
-from flash_sparse_attn.ops.triton import cache_utils, launch_template
-from flash_sparse_attn.ops.triton.flash_dense_bwd import (
-    _flash_dense_attn_backward,
-    _flash_dense_attn_varlen_backward,
-)
-from flash_sparse_attn.ops.triton.flash_dense_fwd import (
-    _flash_dense_attn_forward,
-    _flash_dense_attn_varlen_forward,
-)
-from flash_sparse_attn.ops.triton.flash_gated_bwd import (
-    _flash_gated_attn_backward,
-    _flash_gated_attn_varlen_backward,
-)
-from flash_sparse_attn.ops.triton.flash_gated_fwd import (
-    _flash_gated_attn_forward,
-    _flash_gated_attn_varlen_forward,
-)
-from flash_sparse_attn.ops.triton.flash_sparse_bwd import (
-    _flash_sparse_attn_backward,
-    _flash_sparse_attn_varlen_backward,
-)
-from flash_sparse_attn.ops.triton.flash_sparse_fwd import (
-    _flash_sparse_attn_forward,
-    _flash_sparse_attn_varlen_forward,
-)
-from flash_sparse_attn.ops.triton.utils import window_sizes_heuristic
+from flash_sparse_attn.ops.triton import launch_template
 from flash_sparse_attn.ops.triton.interface import (
+    flash_dense_attn_func,
+    flash_dense_attn_varlen_func,
     flash_dense_attn_varlen_with_kvcache_func,
     flash_dense_attn_with_kvcache_func,
+    flash_gated_attn_func,
+    flash_gated_attn_varlen_func,
     flash_gated_attn_varlen_with_kvcache_func,
     flash_gated_attn_with_kvcache_func,
+    flash_sparse_attn_func,
+    flash_sparse_attn_varlen_func,
     flash_sparse_attn_varlen_with_kvcache_func,
     flash_sparse_attn_with_kvcache_func,
 )
+from flash_sparse_attn.ops.triton.utils import window_sizes_heuristic
 
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B-Base"
@@ -86,22 +68,14 @@ class BenchmarkConfig:
 @dataclass(frozen=True)
 class BenchmarkResult:
     config: BenchmarkConfig
+    fa_dense_ms: Optional[float]
+    cudnn_dense_ms: Optional[float]
     triton_dense_ms: Optional[float]
     triton_sparse_ms: Optional[float]
     triton_gated_ms: Optional[float]
-    fa_dense_ms: Optional[float]
-    cudnn_dense_ms: Optional[float]
-    triton_dense_tflops: Optional[float]
-    triton_sparse_tflops: Optional[float]
-    triton_gated_tflops: Optional[float]
-    fa_dense_tflops: Optional[float]
-    cudnn_dense_tflops: Optional[float]
-    triton_dense_fp8_ms: Optional[float] = None
-    triton_dense_fp8_tflops: Optional[float] = None
-    triton_sparse_fp8_ms: Optional[float] = None
-    triton_sparse_fp8_tflops: Optional[float] = None
-    triton_gated_fp8_ms: Optional[float] = None
-    triton_gated_fp8_tflops: Optional[float] = None
+    triton_dense_quant_ms: Optional[float] = None
+    triton_sparse_quant_ms: Optional[float] = None
+    triton_gated_quant_ms: Optional[float] = None
     error_message: Optional[str] = None
 
 
@@ -173,8 +147,8 @@ def generate_decode_configs(
     return cfgs
 
 
-def format_tflops(value: Optional[float]) -> str:
-    return f"{value:.2f}" if value is not None else "N/A"
+def format_ms(value: Optional[float]) -> str:
+    return f"{value:.6f}" if value is not None else "N/A"
 
 
 def _get_layers_container(model):
@@ -472,17 +446,22 @@ def _reference_scores(
         causal_offset = seqlen_k - seqlen_q
         dist = q_idx + causal_offset - k_idx
 
-        arch = cache_utils.get_device_arch(q.device)
         tile_k = max(1 << (max(q.shape[-1], 16) - 1).bit_length(), 16)
         if seqlen_q > 1:
-            tile_m, tile_n, _, _, _ = launch_template.get_fwd_dense_launch_config(
-                is_split_kv=False,
-                pack_gqa=False,
-                qhead_per_kvhead=1,
-                tile_k=tile_k,
+            launch_config = launch_template.load_launch_config(
                 device=q.device,
-                arch=arch,
+                kernel_name=f"fwd_{kind}",
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=tile_k,
+                is_local=is_local,
+                qhead_per_kvhead=qpk,
+                is_causal=is_causal,
             )
+            if launch_config is not None:
+                tile_m, tile_n, _, _, _ = launch_config
+            else:
+                tile_m = tile_n = 64
             m_block = q_idx // tile_m
             n_blk = k_idx // tile_n
             n_block_max_no_mask = (m_block * tile_m + causal_offset) // tile_n
@@ -492,27 +471,20 @@ def _reference_scores(
             is_diagonal = (n_blk >= n_block_max_no_mask) & (n_blk < n_block_max_diag)
             causal_mask = dist >= 0
         else:
-            if kind == "sparse":
-                _, tile_n, _, _, _ = launch_template.get_dec_sparse_launch_config(
-                    qhead_per_kvhead=qpk,
-                    tile_k=tile_k,
-                    device=q.device,
-                    arch=arch,
-                )
-            elif kind == "gated":
-                _, tile_n, _, _, _ = launch_template.get_dec_gated_launch_config(
-                    qhead_per_kvhead=qpk,
-                    tile_k=tile_k,
-                    device=q.device,
-                    arch=arch,
-                )
+            kernel_name = f"dec_{kind}"
+            launch_config = launch_template.load_launch_config(
+                device=q.device,
+                kernel_name=kernel_name,
+                seqlen_q=1,
+                seqlen_k=seqlen_k,
+                tile_k=tile_k,
+                is_local=is_local,
+                qhead_per_kvhead=qpk,
+            )
+            if launch_config is not None:
+                _, tile_n, _, _, _ = launch_config
             else:
-                _, tile_n, _, _, _ = launch_template.get_dec_dense_launch_config(
-                    qhead_per_kvhead=qpk,
-                    tile_k=tile_k,
-                    device=q.device,
-                    arch=arch,
-                )
+                tile_n = 128
             last_block_start = (seqlen_k - 1) // tile_n * tile_n
             is_diagonal = k_idx >= last_block_start
 
@@ -795,21 +767,24 @@ def _run_forward_base(
     alpha: Optional[torch.Tensor],
     delta: Optional[torch.Tensor],
     is_logsigmoid_gate: bool,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
 ):
     softmax_scale = q.shape[-1] ** -0.5
     threshold = q.shape[-1] / k.shape[1]
     if kind == "dense":
-        out, _, _ = _flash_dense_attn_forward(
+        out = flash_dense_attn_func(
             q,
             k,
             v,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
         )
     elif kind == "sparse":
-        out, _, _, _ = _flash_sparse_attn_forward(
+        out = flash_sparse_attn_func(
             q,
             k,
             v,
@@ -817,10 +792,11 @@ def _run_forward_base(
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
         )
     else:
-        out, _, _, _, _ = _flash_gated_attn_forward(
+        out = flash_gated_attn_func(
             q,
             k,
             v,
@@ -831,9 +807,10 @@ def _run_forward_base(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            is_local=is_local,
             is_adapt_gate=False,
-            pack_gqa=False,
+            is_local=is_local,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
         )
     return out, softmax_scale
 
@@ -849,6 +826,8 @@ def run_forward_base_case(
     is_causal: bool,
     is_local: bool = False,
     is_logsigmoid_gate: bool = True,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
     device = torch.device("cuda")
@@ -882,6 +861,8 @@ def run_forward_base_case(
         alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
+        is_split_kv=is_split_kv,
+        pack_gqa=pack_gqa,
     )
     if kind == "gated":
         out_ref = reference_gated_forward(
@@ -936,11 +917,13 @@ def _run_forward_varlen(
     alpha: Optional[torch.Tensor],
     delta: Optional[torch.Tensor],
     is_logsigmoid_gate: bool,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
 ):
     softmax_scale = q.shape[-1] ** -0.5
     threshold = q.shape[-1] / max_seqlen_k
     if kind == "dense":
-        out, _, _ = _flash_dense_attn_varlen_forward(
+        out = flash_dense_attn_varlen_func(
             q,
             k,
             v,
@@ -951,10 +934,11 @@ def _run_forward_varlen(
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
         )
     elif kind == "sparse":
-        out, _, _, _ = _flash_sparse_attn_varlen_forward(
+        out = flash_sparse_attn_varlen_func(
             q,
             k,
             v,
@@ -966,10 +950,11 @@ def _run_forward_varlen(
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
         )
     else:
-        out, _, _, _, _ = _flash_gated_attn_varlen_forward(
+        out = flash_gated_attn_varlen_func(
             q,
             k,
             v,
@@ -986,7 +971,8 @@ def _run_forward_varlen(
             is_logsigmoid_gate=is_logsigmoid_gate,
             is_adapt_gate=False,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
         )
     return out, softmax_scale
 
@@ -1001,6 +987,8 @@ def run_forward_varlen_case(
     is_causal: bool,
     is_local: bool = False,
     is_logsigmoid_gate: bool = True,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
     device = torch.device("cuda")
@@ -1053,6 +1041,8 @@ def run_forward_varlen_case(
         alpha=alpha,
         delta=delta,
         is_logsigmoid_gate=is_logsigmoid_gate,
+        is_split_kv=is_split_kv,
+        pack_gqa=pack_gqa,
     )
     out_ref = _reference_varlen_forward(
         kind,
@@ -1077,12 +1067,12 @@ def run_forward_varlen_case(
     )
 
 
-def _quantize_per_tensor_fp8(x: torch.Tensor):
+def _quantize_per_tensor_quant(x: torch.Tensor):
     """Quantize a tensor to float8_e5m2 with per-tensor scale."""
     amax = x.abs().amax().clamp(min=1e-12)
     scale = amax / torch.finfo(torch.float8_e5m2).max
-    x_fp8 = (x / scale).to(torch.float8_e5m2)
-    return x_fp8, scale.to(torch.float32)
+    x_quant = (x / scale).to(torch.float8_e5m2)
+    return x_quant, scale.to(torch.float32)
 
 
 def run_decode_base_case(
@@ -1099,10 +1089,10 @@ def run_decode_base_case(
     is_quant: bool = False,
 ) -> None:
     device = torch.device("cuda")
-    is_fp8 = dtype == torch.float8_e5m2
+    is_quant_dtype = dtype == torch.float8_e5m2
 
-    # For FP8: generate in bf16, then quantize
-    gen_dtype = torch.bfloat16 if is_fp8 else dtype
+    # For quant: generate in bf16, then quantize
+    gen_dtype = torch.bfloat16 if is_quant_dtype else dtype
     q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=gen_dtype)
     k = torch.randn(
         batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=gen_dtype
@@ -1123,10 +1113,10 @@ def run_decode_base_case(
     softmax_scale = head_dim**-0.5
     threshold = head_dim / seqlen_k
 
-    if is_fp8:
-        q_fp8, q_scale = _quantize_per_tensor_fp8(q)
-        k_fp8, k_scale = _quantize_per_tensor_fp8(k)
-        v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+    if is_quant_dtype:
+        q_quant, q_scale = _quantize_per_tensor_quant(q)
+        k_quant, k_scale = _quantize_per_tensor_quant(k)
+        v_quant, v_scale = _quantize_per_tensor_quant(v)
 
         out_buffer = (
             torch.empty(
@@ -1143,9 +1133,9 @@ def run_decode_base_case(
 
         if kind == "dense":
             out, lse = flash_dense_attn_with_kvcache_func(
-                q_fp8,
-                k_fp8,
-                v_fp8,
+                q_quant,
+                k_quant,
+                v_quant,
                 softmax_scale=softmax_scale,
                 query_scale=q_scale,
                 key_scale=k_scale,
@@ -1157,9 +1147,9 @@ def run_decode_base_case(
             )
         elif kind == "sparse":
             out, lse = flash_sparse_attn_with_kvcache_func(
-                q_fp8,
-                k_fp8,
-                v_fp8,
+                q_quant,
+                k_quant,
+                v_quant,
                 softmax_scale=softmax_scale,
                 softmax_threshold=threshold,
                 query_scale=q_scale,
@@ -1172,9 +1162,9 @@ def run_decode_base_case(
             )
         else:
             out, lse = flash_gated_attn_with_kvcache_func(
-                q_fp8,
-                k_fp8,
-                v_fp8,
+                q_quant,
+                k_quant,
+                v_quant,
                 alpha,
                 delta,
                 softmax_scale=softmax_scale,
@@ -1191,9 +1181,9 @@ def run_decode_base_case(
             )
 
         # Reference: dequantize then compute
-        q_deq = q_fp8.to(torch.bfloat16) * q_scale
-        k_deq = k_fp8.to(torch.bfloat16) * k_scale
-        v_deq = v_fp8.to(torch.bfloat16) * v_scale
+        q_deq = q_quant.to(torch.bfloat16) * q_scale
+        k_deq = k_quant.to(torch.bfloat16) * k_scale
+        v_deq = v_quant.to(torch.bfloat16) * v_scale
         if kind == "dense":
             out_ref = reference_dense_forward(
                 q_deq.unsqueeze(1),
@@ -1230,7 +1220,7 @@ def run_decode_base_case(
             assert lse.data_ptr() == lse_buffer.data_ptr()
 
         _assert_close(
-            name=f"{kind}-base-decode-fp8",
+            name=f"{kind}-base-decode-quant",
             got=out,
             ref=out_ref,
             rtol=1.5e-1,
@@ -1346,9 +1336,9 @@ def run_decode_varlen_case(
 ) -> None:
     device = torch.device("cuda")
     batch_size = len(lens_k)
-    is_fp8 = dtype == torch.float8_e5m2
+    is_quant_dtype = dtype == torch.float8_e5m2
 
-    gen_dtype = torch.bfloat16 if is_fp8 else dtype
+    gen_dtype = torch.bfloat16 if is_quant_dtype else dtype
     q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=gen_dtype)
     k = torch.cat(
         [
@@ -1379,10 +1369,10 @@ def run_decode_varlen_case(
     softmax_scale = head_dim**-0.5
     threshold = head_dim / max(lens_k)
 
-    if is_fp8:
-        q_fp8, q_scale = _quantize_per_tensor_fp8(q)
-        k_fp8, k_scale = _quantize_per_tensor_fp8(k)
-        v_fp8, v_scale = _quantize_per_tensor_fp8(v)
+    if is_quant_dtype:
+        q_quant, q_scale = _quantize_per_tensor_quant(q)
+        k_quant, k_scale = _quantize_per_tensor_quant(k)
+        v_quant, v_scale = _quantize_per_tensor_quant(v)
 
         out_buffer = (
             torch.empty(
@@ -1399,9 +1389,9 @@ def run_decode_varlen_case(
 
         if kind == "dense":
             out, lse = flash_dense_attn_varlen_with_kvcache_func(
-                q_fp8,
-                k_fp8,
-                v_fp8,
+                q_quant,
+                k_quant,
+                v_quant,
                 cu_seqlens_k=cu_seqlens_k,
                 max_seqlen_k=max(lens_k),
                 softmax_scale=softmax_scale,
@@ -1415,9 +1405,9 @@ def run_decode_varlen_case(
             )
         elif kind == "sparse":
             out, lse = flash_sparse_attn_varlen_with_kvcache_func(
-                q_fp8,
-                k_fp8,
-                v_fp8,
+                q_quant,
+                k_quant,
+                v_quant,
                 cu_seqlens_k=cu_seqlens_k,
                 max_seqlen_k=max(lens_k),
                 softmax_scale=softmax_scale,
@@ -1432,9 +1422,9 @@ def run_decode_varlen_case(
             )
         else:
             out, lse = flash_gated_attn_varlen_with_kvcache_func(
-                q_fp8,
-                k_fp8,
-                v_fp8,
+                q_quant,
+                k_quant,
+                v_quant,
                 alpha,
                 delta,
                 cu_seqlens_k=cu_seqlens_k,
@@ -1453,9 +1443,9 @@ def run_decode_varlen_case(
             )
 
         # Reference: dequantize then compute
-        q_deq = q_fp8.to(torch.bfloat16) * q_scale
-        k_deq = k_fp8.to(torch.bfloat16) * k_scale
-        v_deq = v_fp8.to(torch.bfloat16) * v_scale
+        q_deq = q_quant.to(torch.bfloat16) * q_scale
+        k_deq = k_quant.to(torch.bfloat16) * k_scale
+        v_deq = v_quant.to(torch.bfloat16) * v_scale
         out_ref = _reference_varlen_decode(
             kind,
             q_deq,
@@ -1474,7 +1464,7 @@ def run_decode_varlen_case(
             assert lse.data_ptr() == lse_buffer.data_ptr()
 
         _assert_close(
-            name=f"{kind}-varlen-decode-fp8",
+            name=f"{kind}-varlen-decode-quant",
             got=out,
             ref=out_ref,
             rtol=1.5e-1,
@@ -1579,43 +1569,51 @@ def run_backward_base_case(
     is_causal: bool,
     is_local: bool = False,
     is_logsigmoid_gate: bool = True,
+    is_split_kv: bool = False,
+    is_split_qo: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
     device = torch.device("cuda")
+    softmax_scale = head_dim**-0.5
+    threshold = head_dim / seqlen_k
+
     q = torch.randn(
         batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
-    )
+    ).requires_grad_(True)
     k = torch.randn(
         batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
-    )
+    ).requires_grad_(True)
     v = torch.randn(
         batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
-    )
+    ).requires_grad_(True)
     alpha = (
-        torch.randn(batch_size, seqlen_q, num_heads_q, device=device, dtype=dtype)
+        torch.randn(
+            batch_size, seqlen_q, num_heads_q, device=device, dtype=dtype
+        ).requires_grad_(True)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=dtype)
+        torch.randn(
+            batch_size, seqlen_k, num_heads_kv, device=device, dtype=dtype
+        ).requires_grad_(True)
         if kind == "gated"
         else None
     )
-    softmax_scale = head_dim**-0.5
-    threshold = head_dim / seqlen_k
 
     if kind == "dense":
-        out, lse, _ = _flash_dense_attn_forward(
+        out = flash_dense_attn_func(
             q,
             k,
             v,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            is_split_qo=is_split_qo,
         )
     elif kind == "sparse":
-        out, lse, _, _ = _flash_sparse_attn_forward(
+        out = flash_sparse_attn_func(
             q,
             k,
             v,
@@ -1623,10 +1621,11 @@ def run_backward_base_case(
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            is_split_qo=is_split_qo,
         )
     else:
-        out, lse, _, _, _ = _flash_gated_attn_forward(
+        out = flash_gated_attn_func(
             q,
             k,
             v,
@@ -1637,56 +1636,19 @@ def run_backward_base_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            is_local=is_local,
             is_adapt_gate=False,
-            pack_gqa=False,
+            is_local=is_local,
+            is_split_kv=is_split_kv,
+            is_split_qo=is_split_qo,
         )
 
     dout = torch.randn_like(out)
+    out.backward(dout)
 
-    if kind == "dense":
-        kernel_grads = _flash_dense_attn_backward(
-            q,
-            k,
-            v,
-            out,
-            dout,
-            lse,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            is_local=is_local,
-        )
-    elif kind == "sparse":
-        kernel_grads = _flash_sparse_attn_backward(
-            q,
-            k,
-            v,
-            out,
-            dout,
-            lse,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            softmax_threshold=threshold,
-            is_local=is_local,
-        )
-    else:
-        kernel_grads = _flash_gated_attn_backward(
-            q,
-            k,
-            v,
-            alpha,
-            delta,
-            out,
-            dout,
-            lse,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            softmax_threshold=threshold,
-            gate_threshold=threshold,
-            is_logsigmoid_gate=is_logsigmoid_gate,
-            is_local=is_local,
-            is_adapt_gate=False,
-        )
+    kernel_grads = {"dq": q.grad, "dk": k.grad, "dv": v.grad}
+    if kind == "gated":
+        kernel_grads["da"] = alpha.grad
+        kernel_grads["dd"] = delta.grad
 
     rq = q.detach().clone().requires_grad_(True)
     rk = k.detach().clone().requires_grad_(True)
@@ -1730,10 +1692,10 @@ def run_backward_base_case(
     ref_grads = _collect_grads(ref_params)
 
     names = ["dq", "dk", "dv"] if kind != "gated" else ["dq", "dk", "dv", "da", "dd"]
-    for idx, name in enumerate(names):
+    for name in names:
         _assert_close(
             name=f"{kind}-base-backward-{name}",
-            got=kernel_grads[idx],
+            got=kernel_grads[name],
             ref=ref_grads[name],
             rtol=_DEFAULT_BWD_RTOL[kind],
             atol=_DEFAULT_BWD_ATOL[kind],
@@ -1750,63 +1712,71 @@ def run_backward_varlen_case(
     is_causal: bool,
     is_local: bool = False,
     is_logsigmoid_gate: bool = True,
+    is_split_kv: bool = False,
+    is_split_qo: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
     device = torch.device("cuda")
+    max_seqlen_k = max(lens_k)
+    softmax_scale = head_dim**-0.5
+    threshold = head_dim / max_seqlen_k
+
     q = torch.cat(
         [
             torch.randn(seq_len, num_heads_q, head_dim, device=device, dtype=dtype)
             for seq_len in lens_q
         ],
         dim=0,
-    )
+    ).requires_grad_(True)
     k = torch.cat(
         [
             torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
             for seq_len in lens_k
         ],
         dim=0,
-    )
+    ).requires_grad_(True)
     v = torch.cat(
         [
             torch.randn(seq_len, num_heads_kv, head_dim, device=device, dtype=dtype)
             for seq_len in lens_k
         ],
         dim=0,
-    )
+    ).requires_grad_(True)
     alpha = (
-        torch.randn(sum(lens_q), num_heads_q, device=device, dtype=dtype)
+        torch.randn(
+            sum(lens_q), num_heads_q, device=device, dtype=dtype
+        ).requires_grad_(True)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(sum(lens_k), num_heads_kv, device=device, dtype=dtype)
+        torch.randn(
+            sum(lens_k), num_heads_kv, device=device, dtype=dtype
+        ).requires_grad_(True)
         if kind == "gated"
         else None
     )
 
     cu_seqlens_q = make_cu_seqlens(lens_q, device)
     cu_seqlens_k = make_cu_seqlens(lens_k, device)
-    max_seqlen_k = max(lens_k)
-    softmax_scale = head_dim**-0.5
-    threshold = head_dim / max_seqlen_k
 
     if kind == "dense":
-        out, lse, _ = _flash_dense_attn_varlen_forward(
+        out = flash_dense_attn_varlen_func(
             q,
             k,
             v,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=max(lens_q),
-            max_seqlen_k=max(lens_k),
+            max_seqlen_k=max_seqlen_k,
             is_causal=is_causal,
             softmax_scale=softmax_scale,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            is_split_qo=is_split_qo,
         )
     elif kind == "sparse":
-        out, lse, _, _ = _flash_sparse_attn_varlen_forward(
+        out = flash_sparse_attn_varlen_func(
             q,
             k,
             v,
@@ -1818,10 +1788,11 @@ def run_backward_varlen_case(
             softmax_scale=softmax_scale,
             softmax_threshold=threshold,
             is_local=is_local,
-            pack_gqa=False,
+            is_split_kv=is_split_kv,
+            is_split_qo=is_split_qo,
         )
     else:
-        out, lse, _, _, _ = _flash_gated_attn_varlen_forward(
+        out = flash_gated_attn_varlen_func(
             q,
             k,
             v,
@@ -1836,67 +1807,19 @@ def run_backward_varlen_case(
             softmax_threshold=threshold,
             gate_threshold=threshold,
             is_logsigmoid_gate=is_logsigmoid_gate,
-            is_local=is_local,
             is_adapt_gate=False,
-            pack_gqa=False,
+            is_local=is_local,
+            is_split_kv=is_split_kv,
+            is_split_qo=is_split_qo,
         )
 
     dout = torch.randn_like(out)
-    if kind == "dense":
-        kernel_grads = _flash_dense_attn_varlen_backward(
-            q,
-            k,
-            v,
-            out,
-            dout,
-            lse,
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=max(lens_q),
-            max_seqlen_k=max(lens_k),
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            is_local=is_local,
-        )
-    elif kind == "sparse":
-        kernel_grads = _flash_sparse_attn_varlen_backward(
-            q,
-            k,
-            v,
-            out,
-            dout,
-            lse,
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=max(lens_q),
-            max_seqlen_k=max_seqlen_k,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            softmax_threshold=threshold,
-            is_local=is_local,
-        )
-    else:
-        kernel_grads = _flash_gated_attn_varlen_backward(
-            q,
-            k,
-            v,
-            alpha,
-            delta,
-            out,
-            dout,
-            lse,
-            cu_seqlens_q=cu_seqlens_q,
-            cu_seqlens_k=cu_seqlens_k,
-            max_seqlen_q=max(lens_q),
-            max_seqlen_k=max_seqlen_k,
-            is_causal=is_causal,
-            softmax_scale=softmax_scale,
-            softmax_threshold=threshold,
-            gate_threshold=threshold,
-            is_logsigmoid_gate=is_logsigmoid_gate,
-            is_local=is_local,
-            is_adapt_gate=False,
-        )
+    out.backward(dout)
+
+    kernel_grads = {"dq": q.grad, "dk": k.grad, "dv": v.grad}
+    if kind == "gated":
+        kernel_grads["da"] = alpha.grad
+        kernel_grads["dd"] = delta.grad
 
     rq = q.detach().clone().requires_grad_(True)
     rk = k.detach().clone().requires_grad_(True)
@@ -1937,10 +1860,10 @@ def run_backward_varlen_case(
     ref_grads = _collect_grads(ref_params)
 
     names = ["dq", "dk", "dv"] if kind != "gated" else ["dq", "dk", "dv", "da", "dd"]
-    for idx, name in enumerate(names):
+    for name in names:
         _assert_close(
             name=f"{kind}-varlen-backward-{name}",
-            got=kernel_grads[idx],
+            got=kernel_grads[name],
             ref=ref_grads[name],
             rtol=_DEFAULT_BWD_RTOL[kind],
             atol=_DEFAULT_BWD_ATOL[kind],
