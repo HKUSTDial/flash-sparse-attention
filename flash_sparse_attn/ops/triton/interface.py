@@ -55,13 +55,12 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
+        window_sizes: Optional[torch.Tensor] = None,
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
-        num_heads_kv_global: int = 0,
-        tp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -70,6 +69,9 @@ class FlashDenseAttnFunc(torch.autograd.Function):
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
+
+        if window_sizes is not None:
+            is_local = True
 
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
@@ -87,12 +89,11 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
-            num_heads_kv_global=num_heads_kv_global,
-            tp_rank=tp_rank,
             out=out,
             lse=lse,
             is_autotune=is_autotune,
@@ -105,11 +106,10 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
+        ctx.window_sizes = window_sizes
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
-        ctx.num_heads_kv_global = num_heads_kv_global
-        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -136,16 +136,15 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
+            window_sizes=ctx.window_sizes,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
-            num_heads_kv_global=ctx.num_heads_kv_global,
-            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 22)
+        return dq, dk, dv, *((None,) * 20)
 
 
 class FlashDenseAttnVarlenFunc(torch.autograd.Function):
@@ -165,13 +164,12 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
+        window_sizes: Optional[torch.Tensor] = None,
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
-        num_heads_kv_global: int = 0,
-        tp_rank: int = 0,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
@@ -182,6 +180,9 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
+
+        if window_sizes is not None:
+            is_local = True
 
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
@@ -203,12 +204,11 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
-            num_heads_kv_global=num_heads_kv_global,
-            tp_rank=tp_rank,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             out=out,
@@ -235,11 +235,10 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
+        ctx.window_sizes = window_sizes
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
-        ctx.num_heads_kv_global = num_heads_kv_global
-        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -280,18 +279,17 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
+            window_sizes=ctx.window_sizes,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
-            num_heads_kv_global=ctx.num_heads_kv_global,
-            tp_rank=ctx.tp_rank,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 22)
+        return dq, dk, dv, *((None,) * 20)
 
 
 class FlashSparseAttnFunc(torch.autograd.Function):
@@ -307,14 +305,13 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
+        window_sizes: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
-        num_heads_kv_global: int = 0,
-        tp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -323,6 +320,9 @@ class FlashSparseAttnFunc(torch.autograd.Function):
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
+
+        if window_sizes is not None:
+            is_local = True
 
         query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
@@ -341,13 +341,12 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             softmax_threshold=softmax_threshold,
             is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
-            num_heads_kv_global=num_heads_kv_global,
-            tp_rank=tp_rank,
             out=out,
             lse=lse,
             is_autotune=is_autotune,
@@ -360,12 +359,11 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
+        ctx.window_sizes = window_sizes
         ctx.softmax_threshold = softmax_threshold
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
-        ctx.num_heads_kv_global = num_heads_kv_global
-        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -392,17 +390,16 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
+            window_sizes=ctx.window_sizes,
             softmax_threshold=ctx.softmax_threshold,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
-            num_heads_kv_global=ctx.num_heads_kv_global,
-            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 22)
+        return dq, dk, dv, *((None,) * 20)
 
 
 class FlashSparseAttnVarlenFunc(torch.autograd.Function):
@@ -422,14 +419,13 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
+        window_sizes: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
         is_local: bool = False,
         is_quant: bool = False,
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
-        num_heads_kv_global: int = 0,
-        tp_rank: int = 0,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
@@ -440,6 +436,9 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
+
+        if window_sizes is not None:
+            is_local = True
 
         query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
@@ -462,13 +461,12 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             softmax_threshold=softmax_threshold,
             is_local=is_local,
             is_quant=is_quant,
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
-            num_heads_kv_global=num_heads_kv_global,
-            tp_rank=tp_rank,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             out=out,
@@ -495,12 +493,11 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
+        ctx.window_sizes = window_sizes
         ctx.softmax_threshold = softmax_threshold
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
-        ctx.num_heads_kv_global = num_heads_kv_global
-        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -541,19 +538,18 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
+            window_sizes=ctx.window_sizes,
             softmax_threshold=ctx.softmax_threshold,
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_split_qo=ctx.is_split_qo,
-            num_heads_kv_global=ctx.num_heads_kv_global,
-            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 22)
+        return dq, dk, dv, *((None,) * 20)
 
 
 class FlashGatedAttnFunc(torch.autograd.Function):
@@ -571,6 +567,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
+        window_sizes: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
         gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
@@ -580,8 +577,6 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
-        num_heads_kv_global: int = 0,
-        tp_rank: int = 0,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = False,
@@ -590,6 +585,9 @@ class FlashGatedAttnFunc(torch.autograd.Function):
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
+
+        if window_sizes is not None:
+            is_local = True
 
         query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
@@ -611,6 +609,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 query_scale=query_scale,
                 key_scale=key_scale,
                 value_scale=value_scale,
+                window_sizes=window_sizes,
                 softmax_threshold=softmax_threshold,
                 gate_threshold=gate_threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
@@ -619,8 +618,6 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 is_quant=is_quant,
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
-                num_heads_kv_global=num_heads_kv_global,
-                tp_rank=tp_rank,
                 out=out,
                 lse=lse,
                 is_autotune=is_autotune,
@@ -634,6 +631,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
+        ctx.window_sizes = window_sizes
         ctx.softmax_threshold = softmax_threshold
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
@@ -641,8 +639,6 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
-        ctx.num_heads_kv_global = num_heads_kv_global
-        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -671,6 +667,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
+            window_sizes=ctx.window_sizes,
             softmax_threshold=ctx.softmax_threshold,
             gate_threshold=ctx.gate_threshold,
             is_logsigmoid_gate=ctx.is_logsigmoid_gate,
@@ -678,13 +675,11 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             is_local=ctx.is_local,
             is_quant=ctx.is_quant,
             is_split_qo=ctx.is_split_qo,
-            num_heads_kv_global=ctx.num_heads_kv_global,
-            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, da, dd, *((None,) * 22)
+        return dq, dk, dv, da, dd, *((None,) * 20)
 
 
 class FlashGatedAttnVarlenFunc(torch.autograd.Function):
@@ -706,6 +701,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         query_scale: Optional[torch.Tensor] = None,
         key_scale: Optional[torch.Tensor] = None,
         value_scale: Optional[torch.Tensor] = None,
+        window_sizes: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
         gate_threshold: Optional[float] = None,
         is_logsigmoid_gate: bool = True,
@@ -715,8 +711,6 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         is_split_kv: bool = False,
         is_split_qo: bool = False,
         pack_gqa: bool = False,
-        num_heads_kv_global: int = 0,
-        tp_rank: int = 0,
         seqused_q: Optional[torch.Tensor] = None,
         seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
@@ -727,6 +721,9 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
+
+        if window_sizes is not None:
+            is_local = True
 
         query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
@@ -752,6 +749,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
                 query_scale=query_scale,
                 key_scale=key_scale,
                 value_scale=value_scale,
+                window_sizes=window_sizes,
                 softmax_threshold=softmax_threshold,
                 gate_threshold=gate_threshold,
                 is_logsigmoid_gate=is_logsigmoid_gate,
@@ -760,8 +758,6 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
                 is_quant=is_quant,
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
-                num_heads_kv_global=num_heads_kv_global,
-                tp_rank=tp_rank,
                 seqused_q=seqused_q,
                 seqused_k=seqused_k,
                 out=out,
@@ -791,6 +787,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.query_scale = query_scale
         ctx.key_scale = key_scale
         ctx.value_scale = value_scale
+        ctx.window_sizes = window_sizes
         ctx.softmax_threshold = softmax_threshold
         ctx.gate_threshold = gate_threshold
         ctx.is_logsigmoid_gate = is_logsigmoid_gate
@@ -798,8 +795,6 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.is_local = is_local
         ctx.is_quant = is_quant
         ctx.is_split_qo = is_split_qo
-        ctx.num_heads_kv_global = num_heads_kv_global
-        ctx.tp_rank = tp_rank
         ctx.is_autotune = is_autotune
         ctx.skip_checks = skip_checks
 
@@ -839,6 +834,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             query_scale=ctx.query_scale,
             key_scale=ctx.key_scale,
             value_scale=ctx.value_scale,
+            window_sizes=ctx.window_sizes,
             softmax_threshold=ctx.softmax_threshold,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
@@ -853,13 +849,11 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             seqused_q=seqused_q,
             seqused_k=seqused_k,
             is_split_qo=ctx.is_split_qo,
-            num_heads_kv_global=ctx.num_heads_kv_global,
-            tp_rank=ctx.tp_rank,
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, da, dd, *((None,) * 22)
+        return dq, dk, dv, da, dd, *((None,) * 20)
 
 
 def flash_dense_attn_func(
@@ -871,13 +865,12 @@ def flash_dense_attn_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -895,6 +888,7 @@ def flash_dense_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for forward occupancy.
@@ -917,13 +911,12 @@ def flash_dense_attn_func(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         is_local,
         is_quant,
         is_split_kv,
         is_split_qo,
         pack_gqa,
-        num_heads_kv_global,
-        tp_rank,
         out,
         lse,
         is_autotune,
@@ -940,10 +933,9 @@ def flash_dense_attn_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -960,6 +952,7 @@ def flash_dense_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -976,6 +969,9 @@ def flash_dense_attn_with_kvcache_func(
         key, key_scale = quant.quantize_fp8(key)
         value, value_scale = quant.quantize_fp8(value)
 
+    if window_sizes is not None:
+        is_local = True
+
     out, lse = _flash_dense_attn_decode(
         query=query,
         key=key,
@@ -984,10 +980,9 @@ def flash_dense_attn_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
+        window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        num_heads_kv_global=num_heads_kv_global,
-        tp_rank=tp_rank,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1012,13 +1007,12 @@ def flash_dense_attn_varlen_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1042,6 +1036,7 @@ def flash_dense_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for forward occupancy.
@@ -1070,13 +1065,12 @@ def flash_dense_attn_varlen_func(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         is_local,
         is_quant,
         is_split_kv,
         is_split_qo,
         pack_gqa,
-        num_heads_kv_global,
-        tp_rank,
         seqused_q,
         seqused_k,
         out,
@@ -1097,10 +1091,9 @@ def flash_dense_attn_varlen_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1120,6 +1113,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -1137,6 +1131,9 @@ def flash_dense_attn_varlen_with_kvcache_func(
         key, key_scale = quant.quantize_fp8(key)
         value, value_scale = quant.quantize_fp8(value)
 
+    if window_sizes is not None:
+        is_local = True
+
     out, lse = _flash_dense_attn_varlen_decode(
         query=query,
         key=key,
@@ -1147,10 +1144,9 @@ def flash_dense_attn_varlen_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
+        window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        num_heads_kv_global=num_heads_kv_global,
-        tp_rank=tp_rank,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
@@ -1172,14 +1168,13 @@ def flash_sparse_attn_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1197,6 +1192,7 @@ def flash_sparse_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
@@ -1220,14 +1216,13 @@ def flash_sparse_attn_func(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         softmax_threshold,
         is_local,
         is_quant,
         is_split_kv,
         is_split_qo,
         pack_gqa,
-        num_heads_kv_global,
-        tp_rank,
         out,
         lse,
         is_autotune,
@@ -1245,10 +1240,9 @@ def flash_sparse_attn_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1266,6 +1260,7 @@ def flash_sparse_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -1282,6 +1277,9 @@ def flash_sparse_attn_with_kvcache_func(
         key, key_scale = quant.quantize_fp8(key)
         value, value_scale = quant.quantize_fp8(value)
 
+    if window_sizes is not None:
+        is_local = True
+
     out, lse = _flash_sparse_attn_decode(
         query=query,
         key=key,
@@ -1291,10 +1289,9 @@ def flash_sparse_attn_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
+        window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        num_heads_kv_global=num_heads_kv_global,
-        tp_rank=tp_rank,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1319,14 +1316,13 @@ def flash_sparse_attn_varlen_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1350,6 +1346,7 @@ def flash_sparse_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
@@ -1379,14 +1376,13 @@ def flash_sparse_attn_varlen_func(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         softmax_threshold,
         is_local,
         is_quant,
         is_split_kv,
         is_split_qo,
         pack_gqa,
-        num_heads_kv_global,
-        tp_rank,
         seqused_q,
         seqused_k,
         out,
@@ -1408,10 +1404,9 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1432,6 +1427,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -1449,6 +1445,9 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         key, key_scale = quant.quantize_fp8(key)
         value, value_scale = quant.quantize_fp8(value)
 
+    if window_sizes is not None:
+        is_local = True
+
     out, lse = _flash_sparse_attn_varlen_decode(
         query=query,
         key=key,
@@ -1460,10 +1459,9 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
+        window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        num_heads_kv_global=num_heads_kv_global,
-        tp_rank=tp_rank,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
@@ -1487,6 +1485,7 @@ def flash_gated_attn_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
@@ -1496,8 +1495,6 @@ def flash_gated_attn_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1517,6 +1514,7 @@ def flash_gated_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
@@ -1545,6 +1543,7 @@ def flash_gated_attn_func(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         softmax_threshold,
         gate_threshold,
         is_logsigmoid_gate,
@@ -1554,8 +1553,6 @@ def flash_gated_attn_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
-        num_heads_kv_global,
-        tp_rank,
         out,
         lse,
         is_autotune,
@@ -1577,10 +1574,9 @@ def flash_gated_attn_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1602,6 +1598,7 @@ def flash_gated_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -1618,6 +1615,9 @@ def flash_gated_attn_with_kvcache_func(
         key, key_scale = quant.quantize_fp8(key)
         value, value_scale = quant.quantize_fp8(value)
 
+    if window_sizes is not None:
+        is_local = True
+
     out, lse = _flash_gated_attn_decode(
         query=query,
         key=key,
@@ -1631,10 +1631,9 @@ def flash_gated_attn_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
+        window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        num_heads_kv_global=num_heads_kv_global,
-        tp_rank=tp_rank,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1661,6 +1660,7 @@ def flash_gated_attn_varlen_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     gate_threshold: Optional[float] = None,
     is_logsigmoid_gate: bool = True,
@@ -1670,8 +1670,6 @@ def flash_gated_attn_varlen_func(
     is_split_kv: bool = False,
     is_split_qo: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1697,6 +1695,7 @@ def flash_gated_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
@@ -1731,6 +1730,7 @@ def flash_gated_attn_varlen_func(
         query_scale,
         key_scale,
         value_scale,
+        window_sizes,
         softmax_threshold,
         gate_threshold,
         is_logsigmoid_gate,
@@ -1740,8 +1740,6 @@ def flash_gated_attn_varlen_func(
         is_split_kv,
         is_split_qo,
         pack_gqa,
-        num_heads_kv_global,
-        tp_rank,
         seqused_q,
         seqused_k,
         out,
@@ -1767,10 +1765,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
@@ -1795,6 +1792,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -1812,6 +1810,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
         key, key_scale = quant.quantize_fp8(key)
         value, value_scale = quant.quantize_fp8(value)
 
+    if window_sizes is not None:
+        is_local = True
+
     out, lse = _flash_gated_attn_varlen_decode(
         query=query,
         key=key,
@@ -1827,10 +1828,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
+        window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        num_heads_kv_global=num_heads_kv_global,
-        tp_rank=tp_rank,
         seqused_k=seqused_k,
         out=out,
         lse=lse,
