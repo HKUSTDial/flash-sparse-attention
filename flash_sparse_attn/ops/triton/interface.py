@@ -888,7 +888,7 @@ def flash_dense_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, seqlen_q, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for forward occupancy.
@@ -952,7 +952,7 @@ def flash_dense_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, 1, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -1036,7 +1036,7 @@ def flash_dense_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [total_seqlen_q, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
     :param is_split_kv: Whether to enable split-KV for forward occupancy.
@@ -1113,7 +1113,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, 1, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -1192,7 +1192,7 @@ def flash_sparse_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, seqlen_q, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
@@ -1260,7 +1260,7 @@ def flash_sparse_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, 1, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -1346,7 +1346,7 @@ def flash_sparse_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [total_seqlen_q, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether to quantize inputs to FP8 for attention computation. If True, query_scale, key_scale, and value_scale must be provided or will be computed from the input tensors.
@@ -1427,7 +1427,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, 1, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -1514,7 +1514,7 @@ def flash_gated_attn_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, seqlen_q, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
@@ -1598,7 +1598,7 @@ def flash_gated_attn_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, 1, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
@@ -1695,7 +1695,7 @@ def flash_gated_attn_varlen_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [total_seqlen_q, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
     :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
@@ -1792,7 +1792,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param query_scale: Optional per-tensor scale for FP8 query dequantization.
     :param key_scale: Optional per-tensor scale for FP8 key dequantization.
     :param value_scale: Optional per-tensor scale for FP8 value dequantization.
-    :param window_sizes: Optional window sizes tensor for flexible local attention. Shape can be [2] for global, [num_kv_heads, 2] for per-head, [seqlen_q, num_kv_heads, 2] for per-query per-head, or [batch_size, seqlen_q, num_kv_heads, 2] for full flex. dtype must be int32. If provided, is_local is automatically set to True.
+    :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [batch_size, 1, num_kv_heads, 2] with dtype int32. Use size=1 in any dimension to broadcast. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized in FP8. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
