@@ -17,7 +17,12 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.parametrize("pack_gqa", [False, True])
 @pytest.mark.parametrize("is_logsigmoid_gate", [True, False])
 def test_gated_varlen_forward_correctness(
-    is_causal: bool, is_local: bool, is_split_kv: bool, head_dim: int, pack_gqa: bool, is_logsigmoid_gate: bool
+    is_causal: bool,
+    is_local: bool,
+    is_split_kv: bool,
+    head_dim: int,
+    pack_gqa: bool,
+    is_logsigmoid_gate: bool,
 ) -> None:
     set_seed(0)
     run_forward_varlen_case(
