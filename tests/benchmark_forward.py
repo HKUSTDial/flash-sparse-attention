@@ -392,8 +392,8 @@ def main() -> None:
     device_name = torch.cuda.get_device_name(0)
 
     batch_sizes = [1]
-    num_heads = [16]
-    num_kv_heads = [8]
+    num_heads = [64]
+    num_kv_heads = [4]
     seqlens = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
     head_dims = [128]
     is_causal = True
