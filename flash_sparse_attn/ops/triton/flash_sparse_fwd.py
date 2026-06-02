@@ -834,14 +834,12 @@ def _flash_sparse_attn_forward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: float = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
-    window_sizes: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -851,21 +849,18 @@ def _flash_sparse_attn_forward(
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    softmax_scale = (
+        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
+    )
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    softmax_threshold = softmax_threshold or head_dim / seqlen_k
+    softmax_threshold = (
+        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+    )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
-    if is_local:
-        if window_sizes is None:
-            window_sizes = utils.window_sizes_heuristic(
-                seqlen_k,
-                num_heads_kv,
-                device,
-                num_heads_kv_global=num_heads_kv_global,
-                tp_rank=tp_rank,
-            )
-    else:
+    if is_local and window_sizes is None:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    elif not is_local:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
@@ -876,6 +871,7 @@ def _flash_sparse_attn_forward(
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             cu_seqlens_q=None,
             cu_seqlens_k=None,
             seqused_q=None,
@@ -1059,14 +1055,12 @@ def _flash_sparse_attn_varlen_forward(
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: float = None,
     is_local: bool = False,
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
-    num_heads_kv_global: int = 0,
-    tp_rank: int = 0,
-    window_sizes: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
@@ -1081,21 +1075,18 @@ def _flash_sparse_attn_varlen_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = softmax_scale or 1.0 / (head_dim**0.5)
+    softmax_scale = (
+        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
+    )
     softmax_scale_log2 = softmax_scale * math.log2(math.e)
-    softmax_threshold = softmax_threshold or head_dim / seqlen_k
+    softmax_threshold = (
+        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+    )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
-    if is_local:
-        if window_sizes is None:
-            window_sizes = utils.window_sizes_heuristic(
-                seqlen_k,
-                num_heads_kv,
-                device,
-                num_heads_kv_global=num_heads_kv_global,
-                tp_rank=tp_rank,
-            )
-    else:
+    if is_local and window_sizes is None:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    elif not is_local:
         window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
 
     if not skip_checks:
@@ -1106,6 +1097,7 @@ def _flash_sparse_attn_varlen_forward(
             query_scale=query_scale,
             key_scale=key_scale,
             value_scale=value_scale,
+            window_sizes=window_sizes,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             seqused_q=seqused_q,
