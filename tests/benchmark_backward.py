@@ -15,24 +15,10 @@ from flash_sparse_attn.ops.triton.interface import (
 from test_utils import (
     BenchmarkConfig,
     BenchmarkResult,
-    format_tflops,
+    format_ms,
     generate_inputs,
     generate_train_configs,
 )
-
-
-def _bwd_flops(cfg: BenchmarkConfig) -> float:
-    flops = (
-        10.0
-        * cfg.batch_size
-        * cfg.num_heads
-        * cfg.seqlen_q
-        * cfg.seqlen_k
-        * cfg.head_dim
-    )
-    if cfg.is_causal:
-        flops *= 0.5
-    return flops
 
 
 def benchmark_triton_dense_backward(
@@ -244,13 +230,6 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
         fa_ms = benchmark_fa_dense_backward(cfg)
         cudnn_ms = benchmark_cudnn_dense_backward(cfg)
 
-        flops = _bwd_flops(cfg)
-        dense_tflops = flops / dense_ms * 1e-9
-        sparse_tflops = flops / sparse_ms * 1e-9
-        gated_tflops = flops / gated_ms * 1e-9
-        fa_tflops = flops / fa_ms * 1e-9 if fa_ms else None
-        cudnn_tflops = flops / cudnn_ms * 1e-9 if cudnn_ms else None
-
         return BenchmarkResult(
             config=cfg,
             triton_dense_ms=dense_ms,
@@ -258,11 +237,6 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             triton_gated_ms=gated_ms,
             fa_dense_ms=fa_ms,
             cudnn_dense_ms=cudnn_ms,
-            triton_dense_tflops=dense_tflops,
-            triton_sparse_tflops=sparse_tflops,
-            triton_gated_tflops=gated_tflops,
-            fa_dense_tflops=fa_tflops,
-            cudnn_dense_tflops=cudnn_tflops,
         )
     except Exception as exc:
         full_error = f"{exc}\n{traceback.format_exc()}"
@@ -273,11 +247,6 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             triton_gated_ms=None,
             fa_dense_ms=None,
             cudnn_dense_ms=None,
-            triton_dense_tflops=None,
-            triton_sparse_tflops=None,
-            triton_gated_tflops=None,
-            fa_dense_tflops=None,
-            cudnn_dense_tflops=None,
             error_message=full_error,
         )
 
@@ -300,11 +269,11 @@ def print_results(results: List[BenchmarkResult]) -> None:
                 r.config.seqlen_q,
                 r.config.seqlen_k,
                 "causal" if r.config.is_causal else "non-causal",
-                format_tflops(r.triton_dense_tflops),
-                format_tflops(r.triton_sparse_tflops),
-                format_tflops(r.triton_gated_tflops),
-                format_tflops(r.fa_dense_tflops),
-                format_tflops(r.cudnn_dense_tflops),
+                format_ms(r.triton_dense_ms),
+                format_ms(r.triton_sparse_ms),
+                format_ms(r.triton_gated_ms),
+                format_ms(r.fa_dense_ms),
+                format_ms(r.cudnn_dense_ms),
             ]
         )
 
@@ -316,11 +285,11 @@ def print_results(results: List[BenchmarkResult]) -> None:
         "Seqlen_q",
         "Seqlen_k",
         "Mode",
-        "Triton Dense TFLOPS",
-        "Triton Sparse TFLOPS",
-        "Triton Gated TFLOPS",
-        "FA Dense TFLOPS",
-        "cuDNN Dense TFLOPS",
+        "Triton Dense (ms)",
+        "Triton Sparse (ms)",
+        "Triton Gated (ms)",
+        "FA Dense (ms)",
+        "cuDNN Dense (ms)",
     ]
     print(tabulate(rows, headers=headers, tablefmt="github"))
 
