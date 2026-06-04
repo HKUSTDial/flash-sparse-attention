@@ -96,38 +96,18 @@ def _dec_combine_kernel(
         USE_PADDED=False,
     )
 
-    # Create pointers
-    out_part_ptrs = tl.make_block_ptr(
+    # Create descriptors
+    out_part_desc = tl.make_tensor_descriptor(
         base=out_part_base,
-        shape=(num_splits, head_dim),
-        strides=(stride_ops, 1),
-        offsets=(0, 0),
-        block_shape=(1, TILE_K),
-        order=(1, 0),
+        shape=[num_splits, head_dim],
+        strides=[stride_ops, 1],
+        block_shape=[1, TILE_K],
     )
-    lse_part_ptrs = tl.make_block_ptr(
-        base=lse_part_base,
-        shape=(num_splits,),
-        strides=(stride_lps,),
-        offsets=(0,),
-        block_shape=(1,),
-        order=(0,),
-    )
-    out_ptrs = tl.make_block_ptr(
+    out_desc = tl.make_tensor_descriptor(
         base=out_base,
-        shape=(head_dim,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(TILE_K,),
-        order=(0,),
-    )
-    lse_ptrs = tl.make_block_ptr(
-        base=lse_base,
-        shape=(1,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(1,),
-        order=(0,),
+        shape=[head_dim],
+        strides=[1],
+        block_shape=[TILE_K],
     )
 
     # Initialize accumulators
@@ -136,12 +116,9 @@ def _dec_combine_kernel(
     acc_o = tl.zeros((TILE_K,), dtype=tl.float32)
 
     # Combine split outputs
-    for _ in tl.range(0, num_splits):
+    for s in tl.range(0, num_splits):
         # Load partial LSE
-        lse_s = tl.sum(tl.load(lse_part_ptrs, boundary_check=(0,)), axis=0)
-
-        # Advance LSE pointers
-        lse_part_ptrs = tl.advance(lse_part_ptrs, (1,))
+        lse_s = tl.load(lse_part_base + s * stride_lps).to(tl.float32)
 
         # Compute normalized exponentials
         new_e_max = tl.maximum(lse_s, e_max)
@@ -149,10 +126,7 @@ def _dec_combine_kernel(
         exp_logic = tl.exp2(lse_s - new_e_max)
 
         # Load partial outputs
-        o_s = tl.sum(tl.load(out_part_ptrs, boundary_check=(0, 1)), axis=0)
-
-        # Advance output pointers
-        out_part_ptrs = tl.advance(out_part_ptrs, (1, 0))
+        o_s = tl.sum(out_part_desc.load([s, 0]), axis=0)
 
         # Compute scaled outputs
         acc_o *= old_scale
@@ -167,11 +141,7 @@ def _dec_combine_kernel(
     acc_o *= inv_sum
 
     # Store output
-    tl.store(
-        out_ptrs,
-        acc_o.to(Out.dtype.element_ty),
-        boundary_check=(0,),
-    )
+    out_desc.store([0], acc_o.to(Out.dtype.element_ty))
 
     # Compute LSE
     # ln2 = math.log(2.0)
@@ -179,7 +149,7 @@ def _dec_combine_kernel(
     lse = tl.where(e_sum > 0.0, (e_max + tl.log2(e_sum)) * ln2, float("-inf"))
 
     # Store LSE
-    tl.store(lse_ptrs, lse)
+    tl.store(lse_base, lse)
 
 
 _dec_combine_kernel = cache_utils.wrap_kernel(_dec_combine_kernel)

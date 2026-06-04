@@ -25,12 +25,12 @@ from flash_sparse_attn.ops.triton import (
 def _dec_inner_sparse_kernel(
     q_tile,
     k_tile,
-    k_ptrs,
-    v_ptrs,
+    k_desc,
+    v_desc,
     acc_o,
-    block_max,
     row_max,
     row_sum,
+    block_max,
     softmax_scale_log2,
     softmax_threshold_log2,
     m_block,
@@ -48,13 +48,12 @@ def _dec_inner_sparse_kernel(
     CHECK_INF: tl.constexpr,
 ):
     # Compute attention scores
-    acc_s = tl.dot(q_tile, k_tile)
+    acc_s = tl.dot(q_tile, k_tile.T)
 
-    # Advance key pointers
-    k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
+    # Prefetch next key tile
     if n_block > n_block_min:
         # Load next key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+        k_tile = k_desc.load([(n_block - 1) * TILE_N, 0])
 
     if IS_MASK:
         # Apply mask to attention scores
@@ -90,7 +89,7 @@ def _dec_inner_sparse_kernel(
 
     if not skip_softmax:
         # Load value tile
-        v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+        v_tile = v_desc.load([n_block * TILE_N, 0])
 
         # Rescale output accumulator
         acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
@@ -98,10 +97,7 @@ def _dec_inner_sparse_kernel(
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
-    # Advance value pointers
-    v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
-
-    return k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum
+    return k_tile, acc_o, row_max, row_sum, block_max
 
 
 @triton.jit(repr=kernel_repr.dec_sparse_repr)
@@ -282,58 +278,48 @@ def _dec_sparse_kernel(
     # Clamp to split's range so the no-mask loop stays within bounds
     n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
-    # Create pointers
-    lse_ptrs = tl.make_block_ptr(
+    # Create pointers or descriptors
+    lse_desc = tl.make_tensor_descriptor(
         base=lse_base,
-        shape=(actual_seqlen_q,),
-        strides=(stride_lh,),
-        offsets=(0,),
-        block_shape=(TILE_M,),
-        order=(0,),
+        shape=[actual_seqlen_q],
+        strides=[stride_lh],
+        block_shape=[TILE_M],
     )
-    out_ptrs = tl.make_block_ptr(
+    out_desc = tl.make_tensor_descriptor(
         base=out_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_oh, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_oh, 1],
+        block_shape=[TILE_M, TILE_K],
     )
 
     # Early exit if no n_blocks to process
     if n_block_min >= n_block_max:
         # Write LSE as -inf for proper handling
         lse_tile = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
+        lse_desc.store([0], lse_tile)
 
         # Write output as zero for proper handling
         o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
-        tl.store(out_ptrs, o_tile, boundary_check=(0, 1), cache_modifier=".wb")
+        out_desc.store([0, 0], o_tile)
         return
 
-    q_ptrs = tl.make_block_ptr(
+    q_desc = tl.make_tensor_descriptor(
         base=q_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_qh, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_qh, 1],
+        block_shape=[TILE_M, TILE_K],
     )
-    k_ptrs = tl.make_block_ptr(
+    k_desc = tl.make_tensor_descriptor(
         base=k_base,
-        shape=(head_dim, actual_seqlen_k),
-        strides=(1, stride_kn),
-        offsets=(0, (n_block_max - 1) * TILE_N),
-        block_shape=(TILE_K, TILE_N),
-        order=(0, 1),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_kn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
-    v_ptrs = tl.make_block_ptr(
+    v_desc = tl.make_tensor_descriptor(
         base=v_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_vn, 1),
-        offsets=((n_block_max - 1) * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_vn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
 
     # Load query scale
@@ -346,35 +332,66 @@ def _dec_sparse_kernel(
     softmax_scale_log2 = softmax_scale_log2 * q_scale * k_scale
 
     # Load query tile
-    q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".ca")
+    q_tile = q_desc.load([0, 0])
 
     # Initialize accumulators
     # TODO: Need to share block_max across threads
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
+    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    k_tile = k_desc.load([(n_block_max - 1) * TILE_N, 0])
 
     # Process n_blocks with seqlen masking
     for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
-        k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-            _dec_inner_sparse_kernel(
+        k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+            q_tile=q_tile,
+            k_tile=k_tile,
+            k_desc=k_desc,
+            v_desc=v_desc,
+            acc_o=acc_o,
+            row_max=row_max,
+            row_sum=row_sum,
+            block_max=block_max,
+            softmax_scale_log2=softmax_scale_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
+            m_block=0,
+            n_block=n_block,
+            n_block_min=n_block_max_no_mask,
+            actual_seqlen_q=1,
+            actual_seqlen_k=actual_seqlen_k,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+            IS_MASK=True,
+            MASK_LOCAL=False,
+            CHECK_INF=True,
+        )
+
+    # Process n_blocks without masking
+    if not IS_LOCAL and n_block_max_no_mask > n_block_min:
+        # Load key tile
+        k_tile = k_desc.load([(n_block_max_no_mask - 1) * TILE_N, 0])
+
+        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
+            k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
                 q_tile=q_tile,
                 k_tile=k_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
+                k_desc=k_desc,
+                v_desc=v_desc,
                 acc_o=acc_o,
-                block_max=block_max,
                 row_max=row_max,
                 row_sum=row_sum,
+                block_max=block_max,
                 softmax_scale_log2=softmax_scale_log2,
                 softmax_threshold_log2=softmax_threshold_log2,
                 m_block=0,
                 n_block=n_block,
-                n_block_min=n_block_max_no_mask,
+                n_block_min=n_block_min,
                 actual_seqlen_q=1,
                 actual_seqlen_k=actual_seqlen_k,
                 window_size_left=window_size_left,
@@ -382,61 +399,9 @@ def _dec_sparse_kernel(
                 TILE_M=TILE_M,
                 TILE_N=TILE_N,
                 QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-                IS_MASK=True,
+                IS_MASK=False,
                 MASK_LOCAL=False,
-                CHECK_INF=True,
-            )
-        )
-
-    # Process n_blocks without masking
-    if not IS_LOCAL and n_block_max_no_mask > n_block_min:
-        k_ptrs = tl.make_block_ptr(
-            base=k_base,
-            shape=(head_dim, actual_seqlen_k),
-            strides=(1, stride_kn),
-            offsets=(0, (n_block_max_no_mask - 1) * TILE_N),
-            block_shape=(TILE_K, TILE_N),
-            order=(0, 1),
-        )
-        v_ptrs = tl.make_block_ptr(
-            base=v_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_vn, 1),
-            offsets=((n_block_max_no_mask - 1) * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
-        )
-
-        # Load key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
-
-        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
-            k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                _dec_inner_sparse_kernel(
-                    q_tile=q_tile,
-                    k_tile=k_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    acc_o=acc_o,
-                    block_max=block_max,
-                    row_max=row_max,
-                    row_sum=row_sum,
-                    softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold_log2=softmax_threshold_log2,
-                    m_block=0,
-                    n_block=n_block,
-                    n_block_min=n_block_min,
-                    actual_seqlen_q=1,
-                    actual_seqlen_k=actual_seqlen_k,
-                    window_size_left=window_size_left,
-                    window_size_right=window_size_right,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-                    IS_MASK=False,
-                    MASK_LOCAL=False,
-                    CHECK_INF=False,
-                )
+                CHECK_INF=False,
             )
 
     if IS_LOCAL:
@@ -481,161 +446,104 @@ def _dec_sparse_kernel(
 
         # Process n_blocks with local right masking
         if n_block_window_max > n_block_window_max_no_mask:
-            k_ptrs = tl.make_block_ptr(
-                base=k_base,
-                shape=(head_dim, actual_seqlen_k),
-                strides=(1, stride_kn),
-                offsets=(0, (n_block_window_max - 1) * TILE_N),
-                block_shape=(TILE_K, TILE_N),
-                order=(0, 1),
-            )
-            v_ptrs = tl.make_block_ptr(
-                base=v_base,
-                shape=(actual_seqlen_k, head_dim),
-                strides=(stride_vn, 1),
-                offsets=((n_block_window_max - 1) * TILE_N, 0),
-                block_shape=(TILE_N, TILE_K),
-                order=(1, 0),
-            )
-
             # Load key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            k_tile = k_desc.load([(n_block_window_max - 1) * TILE_N, 0])
 
             for n_block in tl.range(
                 n_block_window_max - 1, n_block_window_max_no_mask - 1, -1
             ):
-                k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                    _dec_inner_sparse_kernel(
-                        q_tile=q_tile,
-                        k_tile=k_tile,
-                        k_ptrs=k_ptrs,
-                        v_ptrs=v_ptrs,
-                        acc_o=acc_o,
-                        block_max=block_max,
-                        row_max=row_max,
-                        row_sum=row_sum,
-                        softmax_scale_log2=softmax_scale_log2,
-                        softmax_threshold_log2=softmax_threshold_log2,
-                        m_block=0,
-                        n_block=n_block,
-                        n_block_min=n_block_window_max_no_mask,
-                        actual_seqlen_q=1,
-                        actual_seqlen_k=actual_seqlen_k,
-                        window_size_left=window_size_left,
-                        window_size_right=window_size_right,
-                        TILE_M=TILE_M,
-                        TILE_N=TILE_N,
-                        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-                        IS_MASK=True,
-                        MASK_LOCAL=True,
-                        CHECK_INF=True,
-                    )
+                k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_desc=k_desc,
+                    v_desc=v_desc,
+                    acc_o=acc_o,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    block_max=block_max,
+                    softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=0,
+                    n_block=n_block,
+                    n_block_min=n_block_window_max_no_mask,
+                    actual_seqlen_q=1,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    IS_MASK=True,
+                    MASK_LOCAL=True,
+                    CHECK_INF=True,
                 )
 
         # Process n_blocks without masking
         if n_block_window_max_no_mask > n_block_window_min_no_mask:
-            k_ptrs = tl.make_block_ptr(
-                base=k_base,
-                shape=(head_dim, actual_seqlen_k),
-                strides=(1, stride_kn),
-                offsets=(0, (n_block_window_max_no_mask - 1) * TILE_N),
-                block_shape=(TILE_K, TILE_N),
-                order=(0, 1),
-            )
-            v_ptrs = tl.make_block_ptr(
-                base=v_base,
-                shape=(actual_seqlen_k, head_dim),
-                strides=(stride_vn, 1),
-                offsets=((n_block_window_max_no_mask - 1) * TILE_N, 0),
-                block_shape=(TILE_N, TILE_K),
-                order=(1, 0),
-            )
-
             # Load key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            k_tile = k_desc.load([(n_block_window_max_no_mask - 1) * TILE_N, 0])
 
             for n_block in tl.range(
                 n_block_window_max_no_mask - 1, n_block_window_min_no_mask - 1, -1
             ):
-                k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                    _dec_inner_sparse_kernel(
-                        q_tile=q_tile,
-                        k_tile=k_tile,
-                        k_ptrs=k_ptrs,
-                        v_ptrs=v_ptrs,
-                        acc_o=acc_o,
-                        block_max=block_max,
-                        row_max=row_max,
-                        row_sum=row_sum,
-                        softmax_scale_log2=softmax_scale_log2,
-                        softmax_threshold_log2=softmax_threshold_log2,
-                        m_block=0,
-                        n_block=n_block,
-                        n_block_min=n_block_window_min_no_mask,
-                        actual_seqlen_q=1,
-                        actual_seqlen_k=actual_seqlen_k,
-                        window_size_left=window_size_left,
-                        window_size_right=window_size_right,
-                        TILE_M=TILE_M,
-                        TILE_N=TILE_N,
-                        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-                        IS_MASK=False,
-                        MASK_LOCAL=False,
-                        CHECK_INF=False,
-                    )
+                k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_desc=k_desc,
+                    v_desc=v_desc,
+                    acc_o=acc_o,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    block_max=block_max,
+                    softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=0,
+                    n_block=n_block,
+                    n_block_min=n_block_window_min_no_mask,
+                    actual_seqlen_q=1,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    IS_MASK=False,
+                    MASK_LOCAL=False,
+                    CHECK_INF=False,
                 )
 
         # Process n_blocks with local left masking
         if n_block_window_min_no_mask > n_block_window_min:
-            k_ptrs = tl.make_block_ptr(
-                base=k_base,
-                shape=(head_dim, actual_seqlen_k),
-                strides=(1, stride_kn),
-                offsets=(0, (n_block_window_min_no_mask - 1) * TILE_N),
-                block_shape=(TILE_K, TILE_N),
-                order=(0, 1),
-            )
-            v_ptrs = tl.make_block_ptr(
-                base=v_base,
-                shape=(actual_seqlen_k, head_dim),
-                strides=(stride_vn, 1),
-                offsets=((n_block_window_min_no_mask - 1) * TILE_N, 0),
-                block_shape=(TILE_N, TILE_K),
-                order=(1, 0),
-            )
-
             # Load key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            k_tile = k_desc.load([(n_block_window_min_no_mask - 1) * TILE_N, 0])
 
             for n_block in tl.range(
                 n_block_window_min_no_mask - 1, n_block_window_min - 1, -1
             ):
-                k_tile, k_ptrs, v_ptrs, acc_o, block_max, row_max, row_sum = (
-                    _dec_inner_sparse_kernel(
-                        q_tile=q_tile,
-                        k_tile=k_tile,
-                        k_ptrs=k_ptrs,
-                        v_ptrs=v_ptrs,
-                        acc_o=acc_o,
-                        block_max=block_max,
-                        row_max=row_max,
-                        row_sum=row_sum,
-                        softmax_scale_log2=softmax_scale_log2,
-                        softmax_threshold_log2=softmax_threshold_log2,
-                        m_block=0,
-                        n_block=n_block,
-                        n_block_min=n_block_window_min,
-                        actual_seqlen_q=1,
-                        actual_seqlen_k=actual_seqlen_k,
-                        window_size_left=window_size_left,
-                        window_size_right=window_size_right,
-                        TILE_M=TILE_M,
-                        TILE_N=TILE_N,
-                        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-                        IS_MASK=True,
-                        MASK_LOCAL=True,
-                        CHECK_INF=True,
-                    )
+                k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_desc=k_desc,
+                    v_desc=v_desc,
+                    acc_o=acc_o,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    block_max=block_max,
+                    softmax_scale_log2=softmax_scale_log2,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=0,
+                    n_block=n_block,
+                    n_block_min=n_block_window_min,
+                    actual_seqlen_q=1,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    IS_MASK=True,
+                    MASK_LOCAL=True,
+                    CHECK_INF=True,
                 )
 
     # Load value scale
@@ -652,13 +560,13 @@ def _dec_sparse_kernel(
     )
 
     # Store LSE
-    tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
+    lse_desc.store([0], lse_tile)
 
     # Finalize rescale
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
     # Store output
-    tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
+    out_desc.store([0, 0], acc_o)
 
 
 _dec_sparse_kernel = cache_utils.wrap_kernel(_dec_sparse_kernel)
@@ -798,6 +706,8 @@ def _flash_sparse_attn_decode(
         num_heads_kv=num_heads_kv,
         num_splits=num_splits,
     )
+
+    triton.set_allocator(utils.alloc_fn)
 
     kernel[grid](
         query,
@@ -1004,6 +914,8 @@ def _flash_sparse_attn_varlen_decode(
         num_heads_kv=num_heads_kv,
         num_splits=num_splits,
     )
+
+    triton.set_allocator(utils.alloc_fn)
 
     kernel[grid](
         query,
