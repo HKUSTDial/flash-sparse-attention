@@ -324,7 +324,6 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         if window_sizes is not None:
             is_local = True
 
-        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -353,7 +352,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             skip_checks=skip_checks,
         )
 
-        ctx.save_for_backward(query_orig, key_orig, value_orig, out, lse)
+        ctx.save_for_backward(query, key, value, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.query_scale = query_scale
@@ -440,7 +439,6 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         if window_sizes is not None:
             is_local = True
 
-        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
@@ -476,9 +474,9 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(
-            query_orig,
-            key_orig,
-            value_orig,
+            query,
+            key,
+            value,
             out,
             lse,
             cu_seqlens_q,
@@ -589,13 +587,16 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         if window_sizes is not None:
             is_local = True
 
-        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
+
+        # Transpose for make_tensor_descriptor
+        alpha = alpha.transpose(-2, -1).contiguous()
+        delta = delta.transpose(-2, -1).contiguous()
 
         out, lse, softmax_scale, softmax_threshold, gate_threshold = (
             _flash_gated_attn_forward(
@@ -625,7 +626,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             )
         )
 
-        ctx.save_for_backward(query_orig, key_orig, value_orig, alpha, delta, out, lse)
+        ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
         ctx.is_causal = is_causal
         ctx.softmax_scale = softmax_scale
         ctx.query_scale = query_scale
@@ -679,6 +680,10 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             skip_checks=ctx.skip_checks,
         )
 
+        # Transpose back to original layout
+        da = da.transpose(-2, -1).contiguous()
+        dd = dd.transpose(-2, -1).contiguous()
+
         return dq, dk, dv, da, dd, *((None,) * 20)
 
 
@@ -725,13 +730,16 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         if window_sizes is not None:
             is_local = True
 
-        query_orig, key_orig, value_orig = query, key, value
         if is_quant and (
             query_scale is None or key_scale is None or value_scale is None
         ):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
+
+        # Transpose for make_tensor_descriptor
+        alpha = alpha.transpose(-2, -1).contiguous()
+        delta = delta.transpose(-2, -1).contiguous()
 
         out, lse, softmax_scale, softmax_threshold, gate_threshold = (
             _flash_gated_attn_varlen_forward(
@@ -768,9 +776,9 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         )
 
         ctx.save_for_backward(
-            query_orig,
-            key_orig,
-            value_orig,
+            query,
+            key,
+            value,
             alpha,
             delta,
             out,
@@ -852,6 +860,10 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             is_autotune=ctx.is_autotune,
             skip_checks=ctx.skip_checks,
         )
+
+        # Transpose back to original layout
+        da = da.transpose(-2, -1).contiguous()
+        dd = dd.transpose(-2, -1).contiguous()
 
         return dq, dk, dv, da, dd, *((None,) * 20)
 
@@ -1618,6 +1630,9 @@ def flash_gated_attn_with_kvcache_func(
     if window_sizes is not None:
         is_local = True
 
+    # Transpose for make_tensor_descriptor
+    delta = delta.transpose(-2, -1).contiguous()
+
     out, lse = _flash_gated_attn_decode(
         query=query,
         key=key,
@@ -1812,6 +1827,9 @@ def flash_gated_attn_varlen_with_kvcache_func(
 
     if window_sizes is not None:
         is_local = True
+
+    # Transpose for make_tensor_descriptor
+    delta = delta.transpose(-2, -1).contiguous()
 
     out, lse = _flash_gated_attn_varlen_decode(
         query=query,
