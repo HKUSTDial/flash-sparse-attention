@@ -352,6 +352,10 @@ def _bwd_dense_kernel(
         IS_LOCAL=False,
     )
 
+    # Clamp to split's range so the no-mask loop stays within bounds
+    if IS_SPLIT_QO:
+        m_block_min_no_mask = tl.minimum(m_block_min_no_mask, m_block_max)
+
     # Create pointers or descriptors
     q_desc = tl.make_tensor_descriptor(
         base=q_base,
