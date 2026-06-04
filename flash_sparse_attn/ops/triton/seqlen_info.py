@@ -241,7 +241,7 @@ def make_ptrs(
         else:
             ptrs = base_ptrs + offs_mn[:, None] * stride_seq + offs_k[None, :]
     else:
-        ptrs = base_ptrs + offs_mn
+        ptrs = base_ptrs + offs_mn * stride_seq
     return ptrs
 
 

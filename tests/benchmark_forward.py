@@ -20,6 +20,7 @@ from test_utils import (
     generate_inputs,
     generate_train_configs,
 )
+from benchmark_plot import plot_benchmark_results
 
 
 def benchmark_triton_dense_forward(
@@ -41,7 +42,7 @@ def benchmark_triton_dense_forward(
             v,
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -76,7 +77,7 @@ def benchmark_triton_dense_forward_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -104,7 +105,7 @@ def benchmark_triton_sparse_forward(
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -141,7 +142,7 @@ def benchmark_triton_sparse_forward_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -181,7 +182,7 @@ def benchmark_triton_gated_forward(
             gate_threshold=gate_threshold,
             is_logsigmoid_gate=False,
             is_adapt_gate=False,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -234,7 +235,7 @@ def benchmark_triton_gated_forward_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -394,7 +395,7 @@ def main() -> None:
     batch_sizes = [1]
     num_heads = [64]
     num_kv_heads = [4]
-    seqlens = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    seqlens = [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
     head_dims = [128]
     is_causal = True
 
@@ -413,6 +414,7 @@ def main() -> None:
         results.append(run_benchmark(cfg))
 
     print_results(results)
+    plot_benchmark_results(results, phase="forward")
 
 
 if __name__ == "__main__":

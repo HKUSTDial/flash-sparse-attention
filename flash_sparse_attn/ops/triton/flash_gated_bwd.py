@@ -31,13 +31,13 @@ def _bwd_inner_gated_kernel(
     k_tile,
     v_tile,
     d_tile,
-    q_ptrs,
-    a_ptrs,
-    do_ptrs,
-    dq_accum_ptrs,
-    da_accum_ptrs,
-    lse_ptrs,
-    dpsum_ptrs,
+    q_desc,
+    a_desc,
+    do_desc,
+    dq_accum_desc,
+    da_accum_desc,
+    lse_desc,
+    dpsum_desc,
     d_max,
     d_min,
     gate_max,
@@ -62,7 +62,7 @@ def _bwd_inner_gated_kernel(
     skip_softmax = False
 
     # Load alpha tile
-    a_tile = tl.load(a_ptrs, boundary_check=(0,), cache_modifier=".cg").to(tl.float32)
+    a_tile = a_desc.load([m_block * TILE_M]).to(tl.float32)
     a_max = tl.max(a_tile)
     a_min = tl.min(a_tile)
 
@@ -77,9 +77,6 @@ def _bwd_inner_gated_kernel(
         gate_threshold_log2=gate_threshold_log2,
     )
 
-    # Advance alpha pointers
-    a_ptrs = tl.advance(a_ptrs, (TILE_M,))
-
     if not skip_gate:
         # Compute attention gates
         acc_s = d_tile[:, None] * a_tile[None, :]
@@ -91,19 +88,16 @@ def _bwd_inner_gated_kernel(
             ds_scale = 1.0
 
         # Load query tile
-        q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+        q_tile = q_desc.load([m_block * TILE_M, 0])
 
         # Rescale query
         q_tile = (q_tile * q_scale).to(q_scale.dtype)
-
-        # Advance query pointers
-        q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
 
         if IS_LOGSIGMOID_GATE:
             acc_s = activations.log_sigmoid(acc_s, FASTMATH=False)
 
         # Compute attention scores
-        acc_s += tl.dot(k_tile, q_tile)
+        acc_s += tl.dot(k_tile, q_tile.T)
 
         if IS_MASK:
             # Apply mask
@@ -136,10 +130,7 @@ def _bwd_inner_gated_kernel(
             block_max = tl.maximum(block_max_curr, block_max)
 
             # Load LSE
-            lse_log2 = tl.load(lse_ptrs, boundary_check=(0,), cache_modifier=".cg")
-
-            # Advance LSE pointers
-            lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
+            lse_log2 = lse_desc.load([m_block * TILE_M])
 
             # Compute attention weights
             p = activations.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
@@ -147,10 +138,7 @@ def _bwd_inner_gated_kernel(
             )
 
             # Load output gradients tile
-            do_tile = tl.load(do_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
-
-            # Advance output gradients pointers
-            do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
+            do_tile = do_desc.load([m_block * TILE_M, 0])
 
             # Compute value gradients
             acc_dv += tl.dot(p, do_tile)
@@ -159,10 +147,7 @@ def _bwd_inner_gated_kernel(
             acc_dp = tl.dot(v_tile, tl.trans(do_tile))
 
             # Load dpsum
-            dpsum = tl.load(dpsum_ptrs, boundary_check=(0,), cache_modifier=".cg")
-
-            # Advance dpsum pointers
-            dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
+            dpsum = dpsum_desc.load([m_block * TILE_M])
 
             # Compute attention score gradients
             ds = p * (acc_dp - dpsum[None, :]).to(q_tile.dtype)
@@ -171,53 +156,25 @@ def _bwd_inner_gated_kernel(
             dq = tl.dot(tl.trans(ds), k_tile)
 
             # Store query gradients
-            tl.atomic_add(dq_accum_ptrs, dq, sem="relaxed")
+            dq_accum_desc.atomic_add([m_block * TILE_M, 0], dq)
 
             # Compute key gradients
-            acc_dk += tl.dot(ds, tl.trans(q_tile))
+            acc_dk += tl.dot(ds, q_tile)
 
             # Compute alpha gradients
             da = tl.sum(ds * ds_scale * d_tile[:, None], axis=0)
 
             # Store alpha gradients
-            tl.atomic_add(da_accum_ptrs, da, sem="relaxed")
+            da_accum_desc.atomic_add([m_block * TILE_M], da)
 
             # Compute delta gradients
             acc_dd += tl.sum(ds * ds_scale * a_tile[None, :], axis=1)
-
-    if skip_gate:
-        # Advance query pointers
-        q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
-
-        # Advance LSE pointers
-        lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
-
-        # Advance output gradients pointers
-        do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
-
-        # Advance dpsum pointers
-        dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
-
-    elif skip_softmax:
-        # Advance LSE pointers
-        lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
-
-        # Advance output gradients pointers
-        do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
-
-        # Advance dpsum pointers
-        dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
 
     return (
         acc_dk,
         acc_dv,
         acc_dd,
         block_max,
-        q_ptrs,
-        a_ptrs,
-        do_ptrs,
-        lse_ptrs,
-        dpsum_ptrs,
         gate_max,
     )
 
@@ -322,9 +279,6 @@ def _bwd_gated_kernel(
         batch_idx = batch_split_idx
         split_idx = 0
     head_kv_idx = head_idx // QHEAD_PER_KVHEAD
-
-    offs_n = n_block * TILE_N + tl.arange(0, TILE_N)
-    offs_kb = tl.arange(0, TILE_K)
 
     # Get seqlen info for this batch
     (
@@ -529,81 +483,89 @@ def _bwd_gated_kernel(
         IS_LOCAL=False,
     )
 
-    # Create pointers
-    k_ptrs = tl.make_block_ptr(
+    # Clamp to split's range so the no-mask loop stays within bounds
+    if IS_SPLIT_QO:
+        m_block_min_no_mask = tl.minimum(m_block_min_no_mask, m_block_max)
+
+    # Create pointers or descriptors
+    q_desc = tl.make_tensor_descriptor(
+        base=q_base,
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_qm, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
+    k_desc = tl.make_tensor_descriptor(
         base=k_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_kn, 1),
-        offsets=(n_block * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_kn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
-    v_ptrs = tl.make_block_ptr(
+    v_desc = tl.make_tensor_descriptor(
         base=v_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_vn, 1),
-        offsets=(n_block * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_vn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
-    d_ptrs = tl.make_block_ptr(
+    a_desc = tl.make_tensor_descriptor(
+        base=a_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_am],
+        block_shape=[TILE_M],
+    )
+    d_desc = tl.make_tensor_descriptor(
         base=d_base,
-        shape=(actual_seqlen_k,),
-        strides=(stride_dn,),
-        offsets=(n_block * TILE_N,),
-        block_shape=(TILE_N,),
-        order=(0,),
+        shape=[actual_seqlen_k],
+        strides=[stride_dn],
+        block_shape=[TILE_N],
     )
-    if QHEAD_PER_KVHEAD > 1:
-        dk_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dk_base,
-            mn_block=n_block,
-            stride_seq=stride_dkn,
-            TILE_MN=TILE_N,
-            TILE_K=TILE_K,
-            SWAP_AB=False,
-        )
-        dv_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dv_base,
-            mn_block=n_block,
-            stride_seq=stride_dvn,
-            TILE_MN=TILE_N,
-            TILE_K=TILE_K,
-            SWAP_AB=False,
-        )
-        dd_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dd_base,
-            mn_block=n_block,
-            stride_seq=stride_ddn,
-            TILE_MN=TILE_N,
-            TILE_K=1,
-            SWAP_AB=False,
-        )
-    else:
-        dk_ptrs = tl.make_block_ptr(
-            base=dk_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_dkn, 1),
-            offsets=(n_block * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
-        )
-        dv_ptrs = tl.make_block_ptr(
-            base=dv_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_dvn, 1),
-            offsets=(n_block * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
-        )
-        dd_ptrs = tl.make_block_ptr(
-            base=dd_base,
-            shape=(actual_seqlen_k,),
-            strides=(stride_ddn,),
-            offsets=(n_block * TILE_N,),
-            block_shape=(TILE_N,),
-            order=(0,),
-        )
+    do_desc = tl.make_tensor_descriptor(
+        base=do_base,
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_dom, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
+    lse_desc = tl.make_tensor_descriptor(
+        base=lse_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_ll],
+        block_shape=[TILE_M],
+    )
+    dpsum_desc = tl.make_tensor_descriptor(
+        base=dpsum_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_pm],
+        block_shape=[TILE_M],
+    )
+    dq_accum_desc = tl.make_tensor_descriptor(
+        base=dq_accum_base,
+        shape=[actual_seqlen_q, stride_dqam],
+        strides=[stride_dqam, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
+    dk_desc = tl.make_tensor_descriptor(
+        base=dk_base,
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_dkn, 1],
+        block_shape=[TILE_N, TILE_K],
+    )
+    dv_desc = tl.make_tensor_descriptor(
+        base=dv_base,
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_dvn, 1],
+        block_shape=[TILE_N, TILE_K],
+    )
+    da_accum_desc = tl.make_tensor_descriptor(
+        base=da_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_dam],
+        block_shape=[TILE_M],
+    )
+    dd_desc = tl.make_tensor_descriptor(
+        base=dd_base,
+        shape=[actual_seqlen_k],
+        strides=[stride_ddn],
+        block_shape=[TILE_N],
+    )
 
     # Load query scale
     q_scale = tl.load(query_scale)
@@ -615,13 +577,13 @@ def _bwd_gated_kernel(
     v_scale = tl.load(value_scale)
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    k_tile = k_desc.load([n_block * TILE_N, 0])
 
     # Rescale key
     k_tile = (k_tile * k_scale).to(k_scale.dtype)
 
     # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    v_tile = v_desc.load([n_block * TILE_N, 0])
 
     # Rescale value
     v_tile = (v_tile * v_scale).to(v_scale.dtype)
@@ -634,70 +596,13 @@ def _bwd_gated_kernel(
     acc_dd = tl.zeros((TILE_N,), dtype=tl.float32)
 
     # Load delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(tl.float32)
+    d_tile = d_desc.load([n_block * TILE_N]).to(tl.float32)
     d_max = tl.max(d_tile)
     d_min = tl.min(d_tile)
 
     # Process m_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
-        q_ptrs = tl.make_block_ptr(
-            base=q_base,
-            shape=(head_dim, actual_seqlen_q),
-            strides=(1, stride_qm),
-            offsets=(0, m_block_min * TILE_M),
-            block_shape=(TILE_K, TILE_M),
-            order=(0, 1),
-        )
-        a_ptrs = tl.make_block_ptr(
-            base=a_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_am,),
-            offsets=(m_block_min * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
-        do_ptrs = tl.make_block_ptr(
-            base=do_base,
-            shape=(actual_seqlen_q, head_dim),
-            strides=(stride_dom, 1),
-            offsets=(m_block_min * TILE_M, 0),
-            block_shape=(TILE_M, TILE_K),
-            order=(1, 0),
-        )
-        lse_ptrs = tl.make_block_ptr(
-            base=lse_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_ll,),
-            offsets=(m_block_min * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
-        dpsum_ptrs = tl.make_block_ptr(
-            base=dpsum_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_pm,),
-            offsets=(m_block_min * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
         for m_block in tl.range(m_block_min, m_block_min_no_mask):
-            dq_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=dq_accum_base,
-                mn_block=m_block,
-                stride_seq=stride_dqam,
-                TILE_MN=TILE_M,
-                TILE_K=TILE_K,
-                SWAP_AB=False,
-            )
-            da_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=da_base,
-                mn_block=m_block,
-                stride_seq=stride_dam,
-                TILE_MN=TILE_M,
-                TILE_K=1,
-                SWAP_AB=False,
-            )
-
             gate_threshold_log2 = seqlen_info.get_gate_threshold(
                 gate_threshold=gate_threshold,
                 m_block=m_block,
@@ -723,11 +628,6 @@ def _bwd_gated_kernel(
                 acc_dv,
                 acc_dd,
                 block_max,
-                q_ptrs,
-                a_ptrs,
-                do_ptrs,
-                lse_ptrs,
-                dpsum_ptrs,
                 gate_max,
             ) = _bwd_inner_gated_kernel(
                 acc_dk=acc_dk,
@@ -737,13 +637,13 @@ def _bwd_gated_kernel(
                 k_tile=k_tile,
                 v_tile=v_tile,
                 d_tile=d_tile,
-                q_ptrs=q_ptrs,
-                a_ptrs=a_ptrs,
-                do_ptrs=do_ptrs,
-                dq_accum_ptrs=dq_accum_ptrs,
-                da_accum_ptrs=da_accum_ptrs,
-                lse_ptrs=lse_ptrs,
-                dpsum_ptrs=dpsum_ptrs,
+                q_desc=q_desc,
+                a_desc=a_desc,
+                do_desc=do_desc,
+                dq_accum_desc=dq_accum_desc,
+                da_accum_desc=da_accum_desc,
+                lse_desc=lse_desc,
+                dpsum_desc=dpsum_desc,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
@@ -767,64 +667,7 @@ def _bwd_gated_kernel(
 
     # Process m_blocks without masking
     if not IS_LOCAL and m_block_min_no_mask < m_block_max:
-        q_ptrs = tl.make_block_ptr(
-            base=q_base,
-            shape=(head_dim, actual_seqlen_q),
-            strides=(1, stride_qm),
-            offsets=(0, m_block_min_no_mask * TILE_M),
-            block_shape=(TILE_K, TILE_M),
-            order=(0, 1),
-        )
-        a_ptrs = tl.make_block_ptr(
-            base=a_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_am,),
-            offsets=(m_block_min_no_mask * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
-        do_ptrs = tl.make_block_ptr(
-            base=do_base,
-            shape=(actual_seqlen_q, head_dim),
-            strides=(stride_dom, 1),
-            offsets=(m_block_min_no_mask * TILE_M, 0),
-            block_shape=(TILE_M, TILE_K),
-            order=(1, 0),
-        )
-        lse_ptrs = tl.make_block_ptr(
-            base=lse_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_ll,),
-            offsets=(m_block_min_no_mask * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
-        dpsum_ptrs = tl.make_block_ptr(
-            base=dpsum_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_pm,),
-            offsets=(m_block_min_no_mask * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
         for m_block in tl.range(m_block_min_no_mask, m_block_max):
-            dq_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=dq_accum_base,
-                mn_block=m_block,
-                stride_seq=stride_dqam,
-                TILE_MN=TILE_M,
-                TILE_K=TILE_K,
-                SWAP_AB=False,
-            )
-            da_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=da_base,
-                mn_block=m_block,
-                stride_seq=stride_dam,
-                TILE_MN=TILE_M,
-                TILE_K=1,
-                SWAP_AB=False,
-            )
-
             gate_threshold_log2 = seqlen_info.get_gate_threshold(
                 gate_threshold=gate_threshold,
                 m_block=m_block,
@@ -850,11 +693,6 @@ def _bwd_gated_kernel(
                 acc_dv,
                 acc_dd,
                 block_max,
-                q_ptrs,
-                a_ptrs,
-                do_ptrs,
-                lse_ptrs,
-                dpsum_ptrs,
                 gate_max,
             ) = _bwd_inner_gated_kernel(
                 acc_dk=acc_dk,
@@ -864,13 +702,13 @@ def _bwd_gated_kernel(
                 k_tile=k_tile,
                 v_tile=v_tile,
                 d_tile=d_tile,
-                q_ptrs=q_ptrs,
-                a_ptrs=a_ptrs,
-                do_ptrs=do_ptrs,
-                dq_accum_ptrs=dq_accum_ptrs,
-                da_accum_ptrs=da_accum_ptrs,
-                lse_ptrs=lse_ptrs,
-                dpsum_ptrs=dpsum_ptrs,
+                q_desc=q_desc,
+                a_desc=a_desc,
+                do_desc=do_desc,
+                dq_accum_desc=dq_accum_desc,
+                da_accum_desc=da_accum_desc,
+                lse_desc=lse_desc,
+                dpsum_desc=dpsum_desc,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
@@ -926,64 +764,7 @@ def _bwd_gated_kernel(
 
         # Process m_blocks with local right masking
         if m_block_window_min < m_block_window_min_no_mask:
-            q_ptrs = tl.make_block_ptr(
-                base=q_base,
-                shape=(head_dim, actual_seqlen_q),
-                strides=(1, stride_qm),
-                offsets=(0, m_block_window_min * TILE_M),
-                block_shape=(TILE_K, TILE_M),
-                order=(0, 1),
-            )
-            a_ptrs = tl.make_block_ptr(
-                base=a_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_am,),
-                offsets=(m_block_window_min * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            do_ptrs = tl.make_block_ptr(
-                base=do_base,
-                shape=(actual_seqlen_q, head_dim),
-                strides=(stride_dom, 1),
-                offsets=(m_block_window_min * TILE_M, 0),
-                block_shape=(TILE_M, TILE_K),
-                order=(1, 0),
-            )
-            lse_ptrs = tl.make_block_ptr(
-                base=lse_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_ll,),
-                offsets=(m_block_window_min * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            dpsum_ptrs = tl.make_block_ptr(
-                base=dpsum_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_pm,),
-                offsets=(m_block_window_min * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
             for m_block in tl.range(m_block_window_min, m_block_window_min_no_mask):
-                dq_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=dq_accum_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dqam,
-                    TILE_MN=TILE_M,
-                    TILE_K=TILE_K,
-                    SWAP_AB=False,
-                )
-                da_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=da_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dam,
-                    TILE_MN=TILE_M,
-                    TILE_K=1,
-                    SWAP_AB=False,
-                )
-
                 gate_threshold_log2 = seqlen_info.get_gate_threshold(
                     gate_threshold=gate_threshold,
                     m_block=m_block,
@@ -1009,11 +790,6 @@ def _bwd_gated_kernel(
                     acc_dv,
                     acc_dd,
                     block_max,
-                    q_ptrs,
-                    a_ptrs,
-                    do_ptrs,
-                    lse_ptrs,
-                    dpsum_ptrs,
                     gate_max,
                 ) = _bwd_inner_gated_kernel(
                     acc_dk=acc_dk,
@@ -1023,13 +799,13 @@ def _bwd_gated_kernel(
                     k_tile=k_tile,
                     v_tile=v_tile,
                     d_tile=d_tile,
-                    q_ptrs=q_ptrs,
-                    a_ptrs=a_ptrs,
-                    do_ptrs=do_ptrs,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    da_accum_ptrs=da_accum_ptrs,
-                    lse_ptrs=lse_ptrs,
-                    dpsum_ptrs=dpsum_ptrs,
+                    q_desc=q_desc,
+                    a_desc=a_desc,
+                    do_desc=do_desc,
+                    dq_accum_desc=dq_accum_desc,
+                    da_accum_desc=da_accum_desc,
+                    lse_desc=lse_desc,
+                    dpsum_desc=dpsum_desc,
                     d_max=d_max,
                     d_min=d_min,
                     gate_max=gate_max,
@@ -1053,66 +829,9 @@ def _bwd_gated_kernel(
 
         # Process m_blocks without masking
         if m_block_window_min_no_mask < m_block_window_max_no_mask:
-            q_ptrs = tl.make_block_ptr(
-                base=q_base,
-                shape=(head_dim, actual_seqlen_q),
-                strides=(1, stride_qm),
-                offsets=(0, m_block_window_min_no_mask * TILE_M),
-                block_shape=(TILE_K, TILE_M),
-                order=(0, 1),
-            )
-            a_ptrs = tl.make_block_ptr(
-                base=a_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_am,),
-                offsets=(m_block_window_min_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            do_ptrs = tl.make_block_ptr(
-                base=do_base,
-                shape=(actual_seqlen_q, head_dim),
-                strides=(stride_dom, 1),
-                offsets=(m_block_window_min_no_mask * TILE_M, 0),
-                block_shape=(TILE_M, TILE_K),
-                order=(1, 0),
-            )
-            lse_ptrs = tl.make_block_ptr(
-                base=lse_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_ll,),
-                offsets=(m_block_window_min_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            dpsum_ptrs = tl.make_block_ptr(
-                base=dpsum_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_pm,),
-                offsets=(m_block_window_min_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
             for m_block in tl.range(
                 m_block_window_min_no_mask, m_block_window_max_no_mask
             ):
-                dq_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=dq_accum_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dqam,
-                    TILE_MN=TILE_M,
-                    TILE_K=TILE_K,
-                    SWAP_AB=False,
-                )
-                da_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=da_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dam,
-                    TILE_MN=TILE_M,
-                    TILE_K=1,
-                    SWAP_AB=False,
-                )
-
                 gate_threshold_log2 = seqlen_info.get_gate_threshold(
                     gate_threshold=gate_threshold,
                     m_block=m_block,
@@ -1138,11 +857,6 @@ def _bwd_gated_kernel(
                     acc_dv,
                     acc_dd,
                     block_max,
-                    q_ptrs,
-                    a_ptrs,
-                    do_ptrs,
-                    lse_ptrs,
-                    dpsum_ptrs,
                     gate_max,
                 ) = _bwd_inner_gated_kernel(
                     acc_dk=acc_dk,
@@ -1152,13 +866,13 @@ def _bwd_gated_kernel(
                     k_tile=k_tile,
                     v_tile=v_tile,
                     d_tile=d_tile,
-                    q_ptrs=q_ptrs,
-                    a_ptrs=a_ptrs,
-                    do_ptrs=do_ptrs,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    da_accum_ptrs=da_accum_ptrs,
-                    lse_ptrs=lse_ptrs,
-                    dpsum_ptrs=dpsum_ptrs,
+                    q_desc=q_desc,
+                    a_desc=a_desc,
+                    do_desc=do_desc,
+                    dq_accum_desc=dq_accum_desc,
+                    da_accum_desc=da_accum_desc,
+                    lse_desc=lse_desc,
+                    dpsum_desc=dpsum_desc,
                     d_max=d_max,
                     d_min=d_min,
                     gate_max=gate_max,
@@ -1182,64 +896,7 @@ def _bwd_gated_kernel(
 
         # Process m_blocks with local left masking
         if m_block_window_max_no_mask < m_block_window_max:
-            q_ptrs = tl.make_block_ptr(
-                base=q_base,
-                shape=(head_dim, actual_seqlen_q),
-                strides=(1, stride_qm),
-                offsets=(0, m_block_window_max_no_mask * TILE_M),
-                block_shape=(TILE_K, TILE_M),
-                order=(0, 1),
-            )
-            a_ptrs = tl.make_block_ptr(
-                base=a_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_am,),
-                offsets=(m_block_window_max_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            do_ptrs = tl.make_block_ptr(
-                base=do_base,
-                shape=(actual_seqlen_q, head_dim),
-                strides=(stride_dom, 1),
-                offsets=(m_block_window_max_no_mask * TILE_M, 0),
-                block_shape=(TILE_M, TILE_K),
-                order=(1, 0),
-            )
-            lse_ptrs = tl.make_block_ptr(
-                base=lse_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_ll,),
-                offsets=(m_block_window_max_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            dpsum_ptrs = tl.make_block_ptr(
-                base=dpsum_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_pm,),
-                offsets=(m_block_window_max_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
             for m_block in tl.range(m_block_window_max_no_mask, m_block_window_max):
-                dq_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=dq_accum_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dqam,
-                    TILE_MN=TILE_M,
-                    TILE_K=TILE_K,
-                    SWAP_AB=False,
-                )
-                da_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=da_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dam,
-                    TILE_MN=TILE_M,
-                    TILE_K=1,
-                    SWAP_AB=False,
-                )
-
                 gate_threshold_log2 = seqlen_info.get_gate_threshold(
                     gate_threshold=gate_threshold,
                     m_block=m_block,
@@ -1265,11 +922,6 @@ def _bwd_gated_kernel(
                     acc_dv,
                     acc_dd,
                     block_max,
-                    q_ptrs,
-                    a_ptrs,
-                    do_ptrs,
-                    lse_ptrs,
-                    dpsum_ptrs,
                     gate_max,
                 ) = _bwd_inner_gated_kernel(
                     acc_dk=acc_dk,
@@ -1279,13 +931,13 @@ def _bwd_gated_kernel(
                     k_tile=k_tile,
                     v_tile=v_tile,
                     d_tile=d_tile,
-                    q_ptrs=q_ptrs,
-                    a_ptrs=a_ptrs,
-                    do_ptrs=do_ptrs,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    da_accum_ptrs=da_accum_ptrs,
-                    lse_ptrs=lse_ptrs,
-                    dpsum_ptrs=dpsum_ptrs,
+                    q_desc=q_desc,
+                    a_desc=a_desc,
+                    do_desc=do_desc,
+                    dq_accum_desc=dq_accum_desc,
+                    da_accum_desc=da_accum_desc,
+                    lse_desc=lse_desc,
+                    dpsum_desc=dpsum_desc,
                     d_max=d_max,
                     d_min=d_min,
                     gate_max=gate_max,
@@ -1309,42 +961,27 @@ def _bwd_gated_kernel(
 
     # Store value gradients
     if QHEAD_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dv_ptrs,
-            acc_dv,
-            mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
-            sem="relaxed",
-        )
+        dv_desc.atomic_add([n_block * TILE_N, 0], acc_dv)
     else:
-        tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1), cache_modifier=".wb")
+        dv_desc.store([n_block * TILE_N, 0], acc_dv)
 
     # Scale delta gradients
     acc_dd = acc_dd * softmax_scale
 
     # Store delta gradients
     if QHEAD_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dd_ptrs,
-            acc_dd,
-            mask=(offs_n < actual_seqlen_k),
-            sem="relaxed",
-        )
+        dd_desc.atomic_add([n_block * TILE_N], acc_dd)
     else:
-        tl.store(dd_ptrs, acc_dd, boundary_check=(0,), cache_modifier=".wb")
+        dd_desc.store([n_block * TILE_N], acc_dd)
 
     # Scale key gradients
     acc_dk = acc_dk * softmax_scale
 
     # Store key gradients
     if QHEAD_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dk_ptrs,
-            acc_dk,
-            mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
-            sem="relaxed",
-        )
+        dk_desc.atomic_add([n_block * TILE_N, 0], acc_dk)
     else:
-        tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1), cache_modifier=".wb")
+        dk_desc.store([n_block * TILE_N, 0], acc_dk)
 
 
 _bwd_gated_kernel = cache_utils.wrap_kernel(_bwd_gated_kernel)
@@ -1540,6 +1177,8 @@ def _flash_gated_attn_backward(
         num_splits=num_splits,
     )
 
+    triton.set_allocator(utils.alloc_fn)
+
     kernel[grid](
         query,
         key,
@@ -1572,11 +1211,11 @@ def _flash_gated_attn_backward(
         value.stride(-2),
         value.stride(-3),
         alpha.stride(0),
-        alpha.stride(-1),
         alpha.stride(-2),
+        alpha.stride(-1),
         delta.stride(0),
-        delta.stride(-1),
         delta.stride(-2),
+        delta.stride(-1),
         dout.stride(0),
         dout.stride(-2),
         dout.stride(-3),
@@ -1667,7 +1306,7 @@ def _flash_gated_attn_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
-    dd.copy_(dd_accum.transpose(-1, -2))
+    dd.copy_(dd_accum)
 
     return dq, dk, dv, da, dd
 
@@ -1862,6 +1501,8 @@ def _flash_gated_attn_varlen_backward(
         num_splits=num_splits,
     )
 
+    triton.set_allocator(utils.alloc_fn)
+
     kernel[grid](
         query,
         key,
@@ -1894,11 +1535,11 @@ def _flash_gated_attn_varlen_backward(
         value.stride(-2),
         value.stride(0),
         0,
-        alpha.stride(-1),
         alpha.stride(-2),
+        alpha.stride(-1),
         0,
-        delta.stride(-1),
         delta.stride(-2),
+        delta.stride(-1),
         0,
         dout.stride(-2),
         dout.stride(0),
@@ -1992,6 +1633,6 @@ def _flash_gated_attn_varlen_backward(
 
     dk.copy_(dk_accum)
     dv.copy_(dv_accum)
-    dd.copy_(dd_accum.transpose(-1, -2))
+    dd.copy_(dd_accum)
 
     return dq, dk, dv, da, dd
