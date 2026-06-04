@@ -63,4 +63,4 @@ def quantize_fp8(x: torch.Tensor, dtype: torch.dtype = torch.float8_e5m2):
         x, x_fp8, scale, n_elements, BLOCK=BLOCK, FP8_DTYPE=tl_dtype
     )
 
-    return x_fp8, amax / FP8_MAX
+    return x_fp8, (amax / FP8_MAX).to(x.dtype)
