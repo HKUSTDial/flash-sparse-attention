@@ -34,9 +34,9 @@ def _dec_inner_gated_kernel(
     a_max,
     a_min,
     gate_max,
-    block_max,
     row_max,
     row_sum,
+    block_max,
     softmax_scale_log2,
     gate_threshold_log2,
     softmax_threshold_log2,
@@ -147,9 +147,9 @@ def _dec_inner_gated_kernel(
         acc_s,
         acc_o,
         gate_max,
-        block_max,
         row_max,
         row_sum,
+        block_max,
     )
 
 
@@ -434,9 +434,9 @@ def _dec_gated_kernel(
 
     # Initialize accumulators
     gate_max = tl.full((), float("-inf"), dtype=tl.float32)
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
+    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load alpha tile
@@ -479,9 +479,9 @@ def _dec_gated_kernel(
             acc_s,
             acc_o,
             gate_max,
-            block_max,
             row_max,
             row_sum,
+            block_max,
         ) = _dec_inner_gated_kernel(
             skip_gate_curr=skip_gate_curr,
             acc_s=acc_s,
@@ -494,9 +494,9 @@ def _dec_gated_kernel(
             a_max=a_max,
             a_min=a_min,
             gate_max=gate_max,
-            block_max=block_max,
             row_max=row_max,
             row_sum=row_sum,
+            block_max=block_max,
             softmax_scale_log2=softmax_scale_log2,
             gate_threshold_log2=gate_threshold_log2,
             softmax_threshold_log2=softmax_threshold_log2,
@@ -552,9 +552,9 @@ def _dec_gated_kernel(
                 acc_s,
                 acc_o,
                 gate_max,
-                block_max,
                 row_max,
                 row_sum,
+                block_max,
             ) = _dec_inner_gated_kernel(
                 skip_gate_curr=skip_gate_curr,
                 acc_s=acc_s,
@@ -567,9 +567,9 @@ def _dec_gated_kernel(
                 a_max=a_max,
                 a_min=a_min,
                 gate_max=gate_max,
-                block_max=block_max,
                 row_max=row_max,
                 row_sum=row_sum,
+                block_max=block_max,
                 softmax_scale_log2=softmax_scale_log2,
                 gate_threshold_log2=gate_threshold_log2,
                 softmax_threshold_log2=softmax_threshold_log2,
@@ -667,9 +667,9 @@ def _dec_gated_kernel(
                     acc_s,
                     acc_o,
                     gate_max,
-                    block_max,
                     row_max,
                     row_sum,
+                    block_max,
                 ) = _dec_inner_gated_kernel(
                     skip_gate_curr=skip_gate_curr,
                     acc_s=acc_s,
@@ -682,9 +682,9 @@ def _dec_gated_kernel(
                     a_max=a_max,
                     a_min=a_min,
                     gate_max=gate_max,
-                    block_max=block_max,
                     row_max=row_max,
                     row_sum=row_sum,
+                    block_max=block_max,
                     softmax_scale_log2=softmax_scale_log2,
                     gate_threshold_log2=gate_threshold_log2,
                     softmax_threshold_log2=softmax_threshold_log2,
@@ -744,9 +744,9 @@ def _dec_gated_kernel(
                     acc_s,
                     acc_o,
                     gate_max,
-                    block_max,
                     row_max,
                     row_sum,
+                    block_max,
                 ) = _dec_inner_gated_kernel(
                     skip_gate_curr=skip_gate_curr,
                     acc_s=acc_s,
@@ -759,9 +759,9 @@ def _dec_gated_kernel(
                     a_max=a_max,
                     a_min=a_min,
                     gate_max=gate_max,
-                    block_max=block_max,
                     row_max=row_max,
                     row_sum=row_sum,
+                    block_max=block_max,
                     softmax_scale_log2=softmax_scale_log2,
                     gate_threshold_log2=gate_threshold_log2,
                     softmax_threshold_log2=softmax_threshold_log2,
@@ -821,9 +821,9 @@ def _dec_gated_kernel(
                     acc_s,
                     acc_o,
                     gate_max,
-                    block_max,
                     row_max,
                     row_sum,
+                    block_max,
                 ) = _dec_inner_gated_kernel(
                     skip_gate_curr=skip_gate_curr,
                     acc_s=acc_s,
@@ -836,9 +836,9 @@ def _dec_gated_kernel(
                     a_max=a_max,
                     a_min=a_min,
                     gate_max=gate_max,
-                    block_max=block_max,
                     row_max=row_max,
                     row_sum=row_sum,
+                    block_max=block_max,
                     softmax_scale_log2=softmax_scale_log2,
                     gate_threshold_log2=gate_threshold_log2,
                     softmax_threshold_log2=softmax_threshold_log2,
