@@ -160,19 +160,21 @@ print(output_gated.shape)
 
 ## 性能
 
-下面是在SM120上运行的三组性能结果, 分别对应前向、反向和解码场景。包含 Dense / Sparse / Gated 三种实现, 并与 FA 进行对比。
+以下基准测试涵盖前向、后向和解码工作负载。其中包括密集型、稀疏型和门控实现，并以FlashAttention作为基线。
 
-### 前向传播性能
+### RTX PRO 6000
 
-![Attention forward speed, head dim 128](assets/sm120_forward_benchmark.png)
+**前向传播性能**
 
-### 反向传播性能
+![Attention forward speed, head dim 128](assets/latency_forward_sm120.png)
 
-![Attention backward speed, head dim 128](assets/sm120_backward_benchmark.png)
+**反向传播性能**
 
-### 解码性能
+![Attention backward speed, head dim 128](assets/latency_backward_sm120.png)
 
-![Attention decode speed, head dim 128](assets/sm120_decode_benchmark.png)
+**解码性能**
+
+![Attention decode speed, head dim 128](assets/latency_decode_sm120.png)
 
 
 ## 基准测试
