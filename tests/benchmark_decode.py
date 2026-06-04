@@ -20,6 +20,7 @@ from test_utils import (
     generate_inputs,
     generate_decode_configs,
 )
+from benchmark_plot import plot_benchmark_results
 
 
 def benchmark_triton_dense_decode(
@@ -41,7 +42,7 @@ def benchmark_triton_dense_decode(
             k,
             v,
             softmax_scale=softmax_scale,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -77,7 +78,7 @@ def benchmark_triton_dense_decode_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -105,7 +106,7 @@ def benchmark_triton_sparse_decode(
             v,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -142,7 +143,7 @@ def benchmark_triton_sparse_decode_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -179,7 +180,7 @@ def benchmark_triton_gated_decode(
             softmax_threshold=softmax_threshold,
             gate_threshold=gate_threshold,
             is_logsigmoid_gate=False,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -231,7 +232,7 @@ def benchmark_triton_gated_decode_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=True,
+            is_autotune=False,
             skip_checks=True,
         )
 
@@ -412,6 +413,7 @@ def main() -> None:
         results.append(run_benchmark(cfg))
 
     print_results(results)
+    plot_benchmark_results(results, phase="decode")
 
 
 if __name__ == "__main__":
