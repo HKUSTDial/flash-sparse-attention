@@ -29,11 +29,11 @@ def _bwd_inner_sparse_kernel(
     block_max,
     k_tile,
     v_tile,
-    q_ptrs,
-    do_ptrs,
+    q_desc,
+    do_desc,
     dq_accum_ptrs,
-    lse_ptrs,
-    dpsum_ptrs,
+    lse_desc,
+    dpsum_desc,
     softmax_scale_log2,
     q_scale,
     softmax_threshold_log2,
@@ -50,16 +50,13 @@ def _bwd_inner_sparse_kernel(
     MASK_LOCAL: tl.constexpr,
 ):
     # Load query tile
-    q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    q_tile = q_desc.load([m_block * TILE_M, 0])
 
     # Rescale query
     q_tile = (q_tile * q_scale).to(q_scale.dtype)
 
-    # Advance query pointers
-    q_ptrs = tl.advance(q_ptrs, (0, TILE_M))
-
     # Compute attention scores
-    acc_s = tl.dot(k_tile, q_tile)
+    acc_s = tl.dot(k_tile, q_tile.T)
 
     if IS_MASK:
         # Apply mask
@@ -92,10 +89,7 @@ def _bwd_inner_sparse_kernel(
         block_max = tl.maximum(block_max_curr, block_max)
 
         # Load LSE
-        lse_log2 = tl.load(lse_ptrs, boundary_check=(0,), cache_modifier=".cg")
-
-        # Advance LSE pointers
-        lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
+        lse_log2 = lse_desc.load([m_block * TILE_M])
 
         # Compute attention weights
         p = activations.exp2(acc_s * softmax_scale_log2 - lse_log2[None, :]).to(
@@ -103,10 +97,7 @@ def _bwd_inner_sparse_kernel(
         )
 
         # Load output gradients tile
-        do_tile = tl.load(do_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
-
-        # Advance output gradients pointers
-        do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
+        do_tile = do_desc.load([m_block * TILE_M, 0])
 
         # Compute value gradients
         acc_dv += tl.dot(p, do_tile)
@@ -115,10 +106,7 @@ def _bwd_inner_sparse_kernel(
         acc_dp = tl.dot(v_tile, tl.trans(do_tile))
 
         # Load dpsum
-        dpsum = tl.load(dpsum_ptrs, boundary_check=(0,), cache_modifier=".cg")
-
-        # Advance dpsum pointers
-        dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
+        dpsum = dpsum_desc.load([m_block * TILE_M])
 
         # Compute attention score gradients
         ds = p * (acc_dp - dpsum[None, :]).to(q_tile.dtype)
@@ -130,18 +118,9 @@ def _bwd_inner_sparse_kernel(
         tl.atomic_add(dq_accum_ptrs, dq, sem="relaxed")
 
         # Compute key gradients
-        acc_dk += tl.dot(ds, tl.trans(q_tile))
-    else:
-        # Advance LSE pointers
-        lse_ptrs = tl.advance(lse_ptrs, (TILE_M,))
+        acc_dk += tl.dot(ds, q_tile)
 
-        # Advance output gradients pointers
-        do_ptrs = tl.advance(do_ptrs, (TILE_M, 0))
-
-        # Advance dpsum pointers
-        dpsum_ptrs = tl.advance(dpsum_ptrs, (TILE_M,))
-
-    return acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs
+    return acc_dk, acc_dv, block_max
 
 
 @triton.jit(repr=kernel_repr.bwd_sparse_repr)
@@ -390,22 +369,42 @@ def _bwd_sparse_kernel(
         IS_LOCAL=False,
     )
 
-    # Create pointers
-    k_ptrs = tl.make_block_ptr(
+    # Create pointers or descriptors
+    k_desc = tl.make_tensor_descriptor(
         base=k_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_kn, 1),
-        offsets=(n_block * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_kn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
-    v_ptrs = tl.make_block_ptr(
+    v_desc = tl.make_tensor_descriptor(
         base=v_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_vn, 1),
-        offsets=(n_block * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_vn, 1],
+        block_shape=[TILE_N, TILE_K],
+    )
+    q_desc = tl.make_tensor_descriptor(
+        base=q_base,
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_qm, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
+    do_desc = tl.make_tensor_descriptor(
+        base=do_base,
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_dom, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
+    lse_desc = tl.make_tensor_descriptor(
+        base=lse_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_ll],
+        block_shape=[TILE_M],
+    )
+    dpsum_desc = tl.make_tensor_descriptor(
+        base=dpsum_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_pm],
+        block_shape=[TILE_M],
     )
     if QHEAD_PER_KVHEAD > 1:
         dk_ptrs = seqlen_info.make_ptrs(
@@ -425,21 +424,17 @@ def _bwd_sparse_kernel(
             SWAP_AB=False,
         )
     else:
-        dk_ptrs = tl.make_block_ptr(
+        dk_desc = tl.make_tensor_descriptor(
             base=dk_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_dkn, 1),
-            offsets=(n_block * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
+            shape=[actual_seqlen_k, head_dim],
+            strides=[stride_dkn, 1],
+            block_shape=[TILE_N, TILE_K],
         )
-        dv_ptrs = tl.make_block_ptr(
+        dv_desc = tl.make_tensor_descriptor(
             base=dv_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_dvn, 1),
-            offsets=(n_block * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
+            shape=[actual_seqlen_k, head_dim],
+            strides=[stride_dvn, 1],
+            block_shape=[TILE_N, TILE_K],
         )
 
     # Load query scale
@@ -452,13 +447,13 @@ def _bwd_sparse_kernel(
     v_scale = tl.load(value_scale)
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    k_tile = k_desc.load([n_block * TILE_N, 0])
 
     # Rescale key
     k_tile = (k_tile * k_scale).to(k_scale.dtype)
 
     # Load value tile
-    v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    v_tile = v_desc.load([n_block * TILE_N, 0])
 
     # Rescale value
     v_tile = (v_tile * v_scale).to(v_scale.dtype)
@@ -470,38 +465,6 @@ def _bwd_sparse_kernel(
 
     # Process m_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
-        q_ptrs = tl.make_block_ptr(
-            base=q_base,
-            shape=(head_dim, actual_seqlen_q),
-            strides=(1, stride_qm),
-            offsets=(0, m_block_min * TILE_M),
-            block_shape=(TILE_K, TILE_M),
-            order=(0, 1),
-        )
-        do_ptrs = tl.make_block_ptr(
-            base=do_base,
-            shape=(actual_seqlen_q, head_dim),
-            strides=(stride_dom, 1),
-            offsets=(m_block_min * TILE_M, 0),
-            block_shape=(TILE_M, TILE_K),
-            order=(1, 0),
-        )
-        lse_ptrs = tl.make_block_ptr(
-            base=lse_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_ll,),
-            offsets=(m_block_min * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
-        dpsum_ptrs = tl.make_block_ptr(
-            base=dpsum_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_pm,),
-            offsets=(m_block_min * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
         for m_block in tl.range(m_block_min, m_block_min_no_mask):
             softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
                 softmax_threshold=softmax_threshold,
@@ -521,69 +484,35 @@ def _bwd_sparse_kernel(
                 SWAP_AB=False,
             )
 
-            acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                _bwd_inner_sparse_kernel(
-                    acc_dk=acc_dk,
-                    acc_dv=acc_dv,
-                    block_max=block_max,
-                    k_tile=k_tile,
-                    v_tile=v_tile,
-                    q_ptrs=q_ptrs,
-                    do_ptrs=do_ptrs,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    lse_ptrs=lse_ptrs,
-                    dpsum_ptrs=dpsum_ptrs,
-                    softmax_scale_log2=softmax_scale_log2,
-                    q_scale=q_scale,
-                    softmax_threshold_log2=softmax_threshold_log2,
-                    m_block=m_block,
-                    n_block=n_block,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    window_size_left=window_size_left,
-                    window_size_right=window_size_right,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    IS_MASK=True,
-                    MASK_CAUSAL=IS_CAUSAL,
-                    MASK_LOCAL=True if IS_LOCAL else False,
-                )
+            acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                acc_dk=acc_dk,
+                acc_dv=acc_dv,
+                block_max=block_max,
+                k_tile=k_tile,
+                v_tile=v_tile,
+                q_desc=q_desc,
+                do_desc=do_desc,
+                dq_accum_ptrs=dq_accum_ptrs,
+                lse_desc=lse_desc,
+                dpsum_desc=dpsum_desc,
+                softmax_scale_log2=softmax_scale_log2,
+                q_scale=q_scale,
+                softmax_threshold_log2=softmax_threshold_log2,
+                m_block=m_block,
+                n_block=n_block,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                window_size_left=window_size_left,
+                window_size_right=window_size_right,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                IS_MASK=True,
+                MASK_CAUSAL=IS_CAUSAL,
+                MASK_LOCAL=True if IS_LOCAL else False,
             )
 
     # Process m_blocks without masking
     if not IS_LOCAL and m_block_min_no_mask < m_block_max:
-        q_ptrs = tl.make_block_ptr(
-            base=q_base,
-            shape=(head_dim, actual_seqlen_q),
-            strides=(1, stride_qm),
-            offsets=(0, m_block_min_no_mask * TILE_M),
-            block_shape=(TILE_K, TILE_M),
-            order=(0, 1),
-        )
-        do_ptrs = tl.make_block_ptr(
-            base=do_base,
-            shape=(actual_seqlen_q, head_dim),
-            strides=(stride_dom, 1),
-            offsets=(m_block_min_no_mask * TILE_M, 0),
-            block_shape=(TILE_M, TILE_K),
-            order=(1, 0),
-        )
-        lse_ptrs = tl.make_block_ptr(
-            base=lse_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_ll,),
-            offsets=(m_block_min_no_mask * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
-        dpsum_ptrs = tl.make_block_ptr(
-            base=dpsum_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_pm,),
-            offsets=(m_block_min_no_mask * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
-        )
         for m_block in tl.range(m_block_min_no_mask, m_block_max):
             softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
                 softmax_threshold=softmax_threshold,
@@ -603,33 +532,31 @@ def _bwd_sparse_kernel(
                 SWAP_AB=False,
             )
 
-            acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                _bwd_inner_sparse_kernel(
-                    acc_dk=acc_dk,
-                    acc_dv=acc_dv,
-                    block_max=block_max,
-                    k_tile=k_tile,
-                    v_tile=v_tile,
-                    q_ptrs=q_ptrs,
-                    do_ptrs=do_ptrs,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    lse_ptrs=lse_ptrs,
-                    dpsum_ptrs=dpsum_ptrs,
-                    softmax_scale_log2=softmax_scale_log2,
-                    q_scale=q_scale,
-                    softmax_threshold_log2=softmax_threshold_log2,
-                    m_block=m_block,
-                    n_block=n_block,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    window_size_left=window_size_left,
-                    window_size_right=window_size_right,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    IS_MASK=False,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=False,
-                )
+            acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                acc_dk=acc_dk,
+                acc_dv=acc_dv,
+                block_max=block_max,
+                k_tile=k_tile,
+                v_tile=v_tile,
+                q_desc=q_desc,
+                do_desc=do_desc,
+                dq_accum_ptrs=dq_accum_ptrs,
+                lse_desc=lse_desc,
+                dpsum_desc=dpsum_desc,
+                softmax_scale_log2=softmax_scale_log2,
+                q_scale=q_scale,
+                softmax_threshold_log2=softmax_threshold_log2,
+                m_block=m_block,
+                n_block=n_block,
+                actual_seqlen_q=actual_seqlen_q,
+                actual_seqlen_k=actual_seqlen_k,
+                window_size_left=window_size_left,
+                window_size_right=window_size_right,
+                TILE_M=TILE_M,
+                TILE_N=TILE_N,
+                IS_MASK=False,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
             )
 
     if IS_LOCAL:
@@ -666,38 +593,6 @@ def _bwd_sparse_kernel(
 
         # Process m_blocks with local right masking
         if m_block_window_min < m_block_window_min_no_mask:
-            q_ptrs = tl.make_block_ptr(
-                base=q_base,
-                shape=(head_dim, actual_seqlen_q),
-                strides=(1, stride_qm),
-                offsets=(0, m_block_window_min * TILE_M),
-                block_shape=(TILE_K, TILE_M),
-                order=(0, 1),
-            )
-            do_ptrs = tl.make_block_ptr(
-                base=do_base,
-                shape=(actual_seqlen_q, head_dim),
-                strides=(stride_dom, 1),
-                offsets=(m_block_window_min * TILE_M, 0),
-                block_shape=(TILE_M, TILE_K),
-                order=(1, 0),
-            )
-            lse_ptrs = tl.make_block_ptr(
-                base=lse_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_ll,),
-                offsets=(m_block_window_min * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            dpsum_ptrs = tl.make_block_ptr(
-                base=dpsum_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_pm,),
-                offsets=(m_block_window_min * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
             for m_block in tl.range(m_block_window_min, m_block_window_min_no_mask):
                 softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
                     softmax_threshold=softmax_threshold,
@@ -717,69 +612,35 @@ def _bwd_sparse_kernel(
                     SWAP_AB=False,
                 )
 
-                acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                    _bwd_inner_sparse_kernel(
-                        acc_dk=acc_dk,
-                        acc_dv=acc_dv,
-                        block_max=block_max,
-                        k_tile=k_tile,
-                        v_tile=v_tile,
-                        q_ptrs=q_ptrs,
-                        do_ptrs=do_ptrs,
-                        dq_accum_ptrs=dq_accum_ptrs,
-                        lse_ptrs=lse_ptrs,
-                        dpsum_ptrs=dpsum_ptrs,
-                        softmax_scale_log2=softmax_scale_log2,
-                        q_scale=q_scale,
-                        softmax_threshold_log2=softmax_threshold_log2,
-                        m_block=m_block,
-                        n_block=n_block,
-                        actual_seqlen_q=actual_seqlen_q,
-                        actual_seqlen_k=actual_seqlen_k,
-                        window_size_left=window_size_left,
-                        window_size_right=window_size_right,
-                        TILE_M=TILE_M,
-                        TILE_N=TILE_N,
-                        IS_MASK=True,
-                        MASK_CAUSAL=False,
-                        MASK_LOCAL=True,
-                    )
+                acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                    acc_dk=acc_dk,
+                    acc_dv=acc_dv,
+                    block_max=block_max,
+                    k_tile=k_tile,
+                    v_tile=v_tile,
+                    q_desc=q_desc,
+                    do_desc=do_desc,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    lse_desc=lse_desc,
+                    dpsum_desc=dpsum_desc,
+                    softmax_scale_log2=softmax_scale_log2,
+                    q_scale=q_scale,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=m_block,
+                    n_block=n_block,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
                 )
 
         # Process m_blocks without masking
         if m_block_window_min_no_mask < m_block_window_max_no_mask:
-            q_ptrs = tl.make_block_ptr(
-                base=q_base,
-                shape=(head_dim, actual_seqlen_q),
-                strides=(1, stride_qm),
-                offsets=(0, m_block_window_min_no_mask * TILE_M),
-                block_shape=(TILE_K, TILE_M),
-                order=(0, 1),
-            )
-            do_ptrs = tl.make_block_ptr(
-                base=do_base,
-                shape=(actual_seqlen_q, head_dim),
-                strides=(stride_dom, 1),
-                offsets=(m_block_window_min_no_mask * TILE_M, 0),
-                block_shape=(TILE_M, TILE_K),
-                order=(1, 0),
-            )
-            lse_ptrs = tl.make_block_ptr(
-                base=lse_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_ll,),
-                offsets=(m_block_window_min_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            dpsum_ptrs = tl.make_block_ptr(
-                base=dpsum_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_pm,),
-                offsets=(m_block_window_min_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
             for m_block in tl.range(
                 m_block_window_min_no_mask, m_block_window_max_no_mask
             ):
@@ -801,69 +662,35 @@ def _bwd_sparse_kernel(
                     SWAP_AB=False,
                 )
 
-                acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                    _bwd_inner_sparse_kernel(
-                        acc_dk=acc_dk,
-                        acc_dv=acc_dv,
-                        block_max=block_max,
-                        k_tile=k_tile,
-                        v_tile=v_tile,
-                        q_ptrs=q_ptrs,
-                        do_ptrs=do_ptrs,
-                        dq_accum_ptrs=dq_accum_ptrs,
-                        lse_ptrs=lse_ptrs,
-                        dpsum_ptrs=dpsum_ptrs,
-                        softmax_scale_log2=softmax_scale_log2,
-                        q_scale=q_scale,
-                        softmax_threshold_log2=softmax_threshold_log2,
-                        m_block=m_block,
-                        n_block=n_block,
-                        actual_seqlen_q=actual_seqlen_q,
-                        actual_seqlen_k=actual_seqlen_k,
-                        window_size_left=window_size_left,
-                        window_size_right=window_size_right,
-                        TILE_M=TILE_M,
-                        TILE_N=TILE_N,
-                        IS_MASK=False,
-                        MASK_CAUSAL=False,
-                        MASK_LOCAL=False,
-                    )
+                acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                    acc_dk=acc_dk,
+                    acc_dv=acc_dv,
+                    block_max=block_max,
+                    k_tile=k_tile,
+                    v_tile=v_tile,
+                    q_desc=q_desc,
+                    do_desc=do_desc,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    lse_desc=lse_desc,
+                    dpsum_desc=dpsum_desc,
+                    softmax_scale_log2=softmax_scale_log2,
+                    q_scale=q_scale,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=m_block,
+                    n_block=n_block,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    IS_MASK=False,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=False,
                 )
 
         # Process m_blocks with local left masking
         if m_block_window_max_no_mask < m_block_window_max:
-            q_ptrs = tl.make_block_ptr(
-                base=q_base,
-                shape=(head_dim, actual_seqlen_q),
-                strides=(1, stride_qm),
-                offsets=(0, m_block_window_max_no_mask * TILE_M),
-                block_shape=(TILE_K, TILE_M),
-                order=(0, 1),
-            )
-            do_ptrs = tl.make_block_ptr(
-                base=do_base,
-                shape=(actual_seqlen_q, head_dim),
-                strides=(stride_dom, 1),
-                offsets=(m_block_window_max_no_mask * TILE_M, 0),
-                block_shape=(TILE_M, TILE_K),
-                order=(1, 0),
-            )
-            lse_ptrs = tl.make_block_ptr(
-                base=lse_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_ll,),
-                offsets=(m_block_window_max_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
-            dpsum_ptrs = tl.make_block_ptr(
-                base=dpsum_base,
-                shape=(actual_seqlen_q,),
-                strides=(stride_pm,),
-                offsets=(m_block_window_max_no_mask * TILE_M,),
-                block_shape=(TILE_M,),
-                order=(0,),
-            )
             for m_block in tl.range(m_block_window_max_no_mask, m_block_window_max):
                 softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
                     softmax_threshold=softmax_threshold,
@@ -883,33 +710,31 @@ def _bwd_sparse_kernel(
                     SWAP_AB=False,
                 )
 
-                acc_dk, acc_dv, block_max, q_ptrs, do_ptrs, lse_ptrs, dpsum_ptrs = (
-                    _bwd_inner_sparse_kernel(
-                        acc_dk=acc_dk,
-                        acc_dv=acc_dv,
-                        block_max=block_max,
-                        k_tile=k_tile,
-                        v_tile=v_tile,
-                        q_ptrs=q_ptrs,
-                        do_ptrs=do_ptrs,
-                        dq_accum_ptrs=dq_accum_ptrs,
-                        lse_ptrs=lse_ptrs,
-                        dpsum_ptrs=dpsum_ptrs,
-                        softmax_scale_log2=softmax_scale_log2,
-                        q_scale=q_scale,
-                        softmax_threshold_log2=softmax_threshold_log2,
-                        m_block=m_block,
-                        n_block=n_block,
-                        actual_seqlen_q=actual_seqlen_q,
-                        actual_seqlen_k=actual_seqlen_k,
-                        window_size_left=window_size_left,
-                        window_size_right=window_size_right,
-                        TILE_M=TILE_M,
-                        TILE_N=TILE_N,
-                        IS_MASK=True,
-                        MASK_CAUSAL=False,
-                        MASK_LOCAL=True,
-                    )
+                acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                    acc_dk=acc_dk,
+                    acc_dv=acc_dv,
+                    block_max=block_max,
+                    k_tile=k_tile,
+                    v_tile=v_tile,
+                    q_desc=q_desc,
+                    do_desc=do_desc,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    lse_desc=lse_desc,
+                    dpsum_desc=dpsum_desc,
+                    softmax_scale_log2=softmax_scale_log2,
+                    q_scale=q_scale,
+                    softmax_threshold_log2=softmax_threshold_log2,
+                    m_block=m_block,
+                    n_block=n_block,
+                    actual_seqlen_q=actual_seqlen_q,
+                    actual_seqlen_k=actual_seqlen_k,
+                    window_size_left=window_size_left,
+                    window_size_right=window_size_right,
+                    TILE_M=TILE_M,
+                    TILE_N=TILE_N,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
                 )
 
     # Store value gradients
@@ -921,7 +746,7 @@ def _bwd_sparse_kernel(
             sem="relaxed",
         )
     else:
-        tl.store(dv_ptrs, acc_dv, boundary_check=(0, 1), cache_modifier=".wb")
+        dv_desc.store([n_block * TILE_N, 0], acc_dv)
 
     # Scale key gradients
     acc_dk = acc_dk * softmax_scale
@@ -935,7 +760,7 @@ def _bwd_sparse_kernel(
             sem="relaxed",
         )
     else:
-        tl.store(dk_ptrs, acc_dk, boundary_check=(0, 1), cache_modifier=".wb")
+        dk_desc.store([n_block * TILE_N, 0], acc_dk)
 
 
 _bwd_sparse_kernel = cache_utils.wrap_kernel(_bwd_sparse_kernel)
@@ -1106,6 +931,8 @@ def _flash_sparse_attn_backward(
         batch_size=batch_size,
         num_splits=num_splits,
     )
+
+    triton.set_allocator(utils.alloc_fn)
 
     kernel[grid](
         query,
@@ -1383,6 +1210,8 @@ def _flash_sparse_attn_varlen_backward(
         batch_size=batch_size,
         num_splits=num_splits,
     )
+
+    triton.set_allocator(utils.alloc_fn)
 
     kernel[grid](
         query,
