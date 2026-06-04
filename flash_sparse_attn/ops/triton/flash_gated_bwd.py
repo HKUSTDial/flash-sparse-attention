@@ -34,8 +34,8 @@ def _bwd_inner_gated_kernel(
     q_desc,
     a_desc,
     do_desc,
-    dq_accum_ptrs,
-    da_accum_ptrs,
+    dq_accum_desc,
+    da_accum_desc,
     lse_desc,
     dpsum_desc,
     d_max,
@@ -156,7 +156,7 @@ def _bwd_inner_gated_kernel(
             dq = tl.dot(tl.trans(ds), k_tile)
 
             # Store query gradients
-            tl.atomic_add(dq_accum_ptrs, dq, sem="relaxed")
+            dq_accum_desc.atomic_add([m_block * TILE_M, 0], dq)
 
             # Compute key gradients
             acc_dk += tl.dot(ds, q_tile)
@@ -165,7 +165,7 @@ def _bwd_inner_gated_kernel(
             da = tl.sum(ds * ds_scale * d_tile[:, None], axis=0)
 
             # Store alpha gradients
-            tl.atomic_add(da_accum_ptrs, da, sem="relaxed")
+            da_accum_desc.atomic_add([m_block * TILE_M], da)
 
             # Compute delta gradients
             acc_dd += tl.sum(ds * ds_scale * a_tile[None, :], axis=1)
@@ -279,9 +279,6 @@ def _bwd_gated_kernel(
         batch_idx = batch_split_idx
         split_idx = 0
     head_kv_idx = head_idx // QHEAD_PER_KVHEAD
-
-    offs_n = n_block * TILE_N + tl.arange(0, TILE_N)
-    offs_kb = tl.arange(0, TILE_K)
 
     # Get seqlen info for this batch
     (
@@ -487,6 +484,12 @@ def _bwd_gated_kernel(
     )
 
     # Create pointers or descriptors
+    q_desc = tl.make_tensor_descriptor(
+        base=q_base,
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_qm, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
     k_desc = tl.make_tensor_descriptor(
         base=k_base,
         shape=[actual_seqlen_k, head_dim],
@@ -499,23 +502,17 @@ def _bwd_gated_kernel(
         strides=[stride_vn, 1],
         block_shape=[TILE_N, TILE_K],
     )
-    d_desc = tl.make_tensor_descriptor(
-        base=d_base,
-        shape=[actual_seqlen_k],
-        strides=[stride_dn],
-        block_shape=[TILE_N],
-    )
-    q_desc = tl.make_tensor_descriptor(
-        base=q_base,
-        shape=[actual_seqlen_q, head_dim],
-        strides=[stride_qm, 1],
-        block_shape=[TILE_M, TILE_K],
-    )
     a_desc = tl.make_tensor_descriptor(
         base=a_base,
         shape=[actual_seqlen_q],
         strides=[stride_am],
         block_shape=[TILE_M],
+    )
+    d_desc = tl.make_tensor_descriptor(
+        base=d_base,
+        shape=[actual_seqlen_k],
+        strides=[stride_dn],
+        block_shape=[TILE_N],
     )
     do_desc = tl.make_tensor_descriptor(
         base=do_base,
@@ -535,50 +532,36 @@ def _bwd_gated_kernel(
         strides=[stride_pm],
         block_shape=[TILE_M],
     )
-    if QHEAD_PER_KVHEAD > 1:
-        dk_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dk_base,
-            mn_block=n_block,
-            stride_seq=stride_dkn,
-            TILE_MN=TILE_N,
-            TILE_K=TILE_K,
-            SWAP_AB=False,
-        )
-        dv_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dv_base,
-            mn_block=n_block,
-            stride_seq=stride_dvn,
-            TILE_MN=TILE_N,
-            TILE_K=TILE_K,
-            SWAP_AB=False,
-        )
-        dd_ptrs = seqlen_info.make_ptrs(
-            base_ptrs=dd_base,
-            mn_block=n_block,
-            stride_seq=stride_ddn,
-            TILE_MN=TILE_N,
-            TILE_K=1,
-            SWAP_AB=False,
-        )
-    else:
-        dk_desc = tl.make_tensor_descriptor(
-            base=dk_base,
-            shape=[actual_seqlen_k, head_dim],
-            strides=[stride_dkn, 1],
-            block_shape=[TILE_N, TILE_K],
-        )
-        dv_desc = tl.make_tensor_descriptor(
-            base=dv_base,
-            shape=[actual_seqlen_k, head_dim],
-            strides=[stride_dvn, 1],
-            block_shape=[TILE_N, TILE_K],
-        )
-        dd_desc = tl.make_tensor_descriptor(
-            base=dd_base,
-            shape=[actual_seqlen_k],
-            strides=[stride_ddn],
-            block_shape=[TILE_N],
-        )
+    dq_accum_desc = tl.make_tensor_descriptor(
+        base=dq_accum_base,
+        shape=[actual_seqlen_q, stride_dqam],
+        strides=[stride_dqam, 1],
+        block_shape=[TILE_M, TILE_K],
+    )
+    dk_desc = tl.make_tensor_descriptor(
+        base=dk_base,
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_dkn, 1],
+        block_shape=[TILE_N, TILE_K],
+    )
+    dv_desc = tl.make_tensor_descriptor(
+        base=dv_base,
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_dvn, 1],
+        block_shape=[TILE_N, TILE_K],
+    )
+    da_accum_desc = tl.make_tensor_descriptor(
+        base=da_base,
+        shape=[actual_seqlen_q],
+        strides=[stride_dam],
+        block_shape=[TILE_M],
+    )
+    dd_desc = tl.make_tensor_descriptor(
+        base=dd_base,
+        shape=[actual_seqlen_k],
+        strides=[stride_ddn],
+        block_shape=[TILE_N],
+    )
 
     # Load query scale
     q_scale = tl.load(query_scale)
@@ -616,23 +599,6 @@ def _bwd_gated_kernel(
     # Process m_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
         for m_block in tl.range(m_block_min, m_block_min_no_mask):
-            dq_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=dq_accum_base,
-                mn_block=m_block,
-                stride_seq=stride_dqam,
-                TILE_MN=TILE_M,
-                TILE_K=TILE_K,
-                SWAP_AB=False,
-            )
-            da_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=da_base,
-                mn_block=m_block,
-                stride_seq=stride_dam,
-                TILE_MN=TILE_M,
-                TILE_K=1,
-                SWAP_AB=False,
-            )
-
             gate_threshold_log2 = seqlen_info.get_gate_threshold(
                 gate_threshold=gate_threshold,
                 m_block=m_block,
@@ -670,8 +636,8 @@ def _bwd_gated_kernel(
                 q_desc=q_desc,
                 a_desc=a_desc,
                 do_desc=do_desc,
-                dq_accum_ptrs=dq_accum_ptrs,
-                da_accum_ptrs=da_accum_ptrs,
+                dq_accum_desc=dq_accum_desc,
+                da_accum_desc=da_accum_desc,
                 lse_desc=lse_desc,
                 dpsum_desc=dpsum_desc,
                 d_max=d_max,
@@ -698,23 +664,6 @@ def _bwd_gated_kernel(
     # Process m_blocks without masking
     if not IS_LOCAL and m_block_min_no_mask < m_block_max:
         for m_block in tl.range(m_block_min_no_mask, m_block_max):
-            dq_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=dq_accum_base,
-                mn_block=m_block,
-                stride_seq=stride_dqam,
-                TILE_MN=TILE_M,
-                TILE_K=TILE_K,
-                SWAP_AB=False,
-            )
-            da_accum_ptrs = seqlen_info.make_ptrs(
-                base_ptrs=da_base,
-                mn_block=m_block,
-                stride_seq=stride_dam,
-                TILE_MN=TILE_M,
-                TILE_K=1,
-                SWAP_AB=False,
-            )
-
             gate_threshold_log2 = seqlen_info.get_gate_threshold(
                 gate_threshold=gate_threshold,
                 m_block=m_block,
@@ -752,8 +701,8 @@ def _bwd_gated_kernel(
                 q_desc=q_desc,
                 a_desc=a_desc,
                 do_desc=do_desc,
-                dq_accum_ptrs=dq_accum_ptrs,
-                da_accum_ptrs=da_accum_ptrs,
+                dq_accum_desc=dq_accum_desc,
+                da_accum_desc=da_accum_desc,
                 lse_desc=lse_desc,
                 dpsum_desc=dpsum_desc,
                 d_max=d_max,
@@ -812,23 +761,6 @@ def _bwd_gated_kernel(
         # Process m_blocks with local right masking
         if m_block_window_min < m_block_window_min_no_mask:
             for m_block in tl.range(m_block_window_min, m_block_window_min_no_mask):
-                dq_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=dq_accum_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dqam,
-                    TILE_MN=TILE_M,
-                    TILE_K=TILE_K,
-                    SWAP_AB=False,
-                )
-                da_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=da_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dam,
-                    TILE_MN=TILE_M,
-                    TILE_K=1,
-                    SWAP_AB=False,
-                )
-
                 gate_threshold_log2 = seqlen_info.get_gate_threshold(
                     gate_threshold=gate_threshold,
                     m_block=m_block,
@@ -866,8 +798,8 @@ def _bwd_gated_kernel(
                     q_desc=q_desc,
                     a_desc=a_desc,
                     do_desc=do_desc,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    da_accum_ptrs=da_accum_ptrs,
+                    dq_accum_desc=dq_accum_desc,
+                    da_accum_desc=da_accum_desc,
                     lse_desc=lse_desc,
                     dpsum_desc=dpsum_desc,
                     d_max=d_max,
@@ -896,23 +828,6 @@ def _bwd_gated_kernel(
             for m_block in tl.range(
                 m_block_window_min_no_mask, m_block_window_max_no_mask
             ):
-                dq_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=dq_accum_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dqam,
-                    TILE_MN=TILE_M,
-                    TILE_K=TILE_K,
-                    SWAP_AB=False,
-                )
-                da_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=da_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dam,
-                    TILE_MN=TILE_M,
-                    TILE_K=1,
-                    SWAP_AB=False,
-                )
-
                 gate_threshold_log2 = seqlen_info.get_gate_threshold(
                     gate_threshold=gate_threshold,
                     m_block=m_block,
@@ -950,8 +865,8 @@ def _bwd_gated_kernel(
                     q_desc=q_desc,
                     a_desc=a_desc,
                     do_desc=do_desc,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    da_accum_ptrs=da_accum_ptrs,
+                    dq_accum_desc=dq_accum_desc,
+                    da_accum_desc=da_accum_desc,
                     lse_desc=lse_desc,
                     dpsum_desc=dpsum_desc,
                     d_max=d_max,
@@ -978,23 +893,6 @@ def _bwd_gated_kernel(
         # Process m_blocks with local left masking
         if m_block_window_max_no_mask < m_block_window_max:
             for m_block in tl.range(m_block_window_max_no_mask, m_block_window_max):
-                dq_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=dq_accum_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dqam,
-                    TILE_MN=TILE_M,
-                    TILE_K=TILE_K,
-                    SWAP_AB=False,
-                )
-                da_accum_ptrs = seqlen_info.make_ptrs(
-                    base_ptrs=da_base,
-                    mn_block=m_block,
-                    stride_seq=stride_dam,
-                    TILE_MN=TILE_M,
-                    TILE_K=1,
-                    SWAP_AB=False,
-                )
-
                 gate_threshold_log2 = seqlen_info.get_gate_threshold(
                     gate_threshold=gate_threshold,
                     m_block=m_block,
@@ -1032,8 +930,8 @@ def _bwd_gated_kernel(
                     q_desc=q_desc,
                     a_desc=a_desc,
                     do_desc=do_desc,
-                    dq_accum_ptrs=dq_accum_ptrs,
-                    da_accum_ptrs=da_accum_ptrs,
+                    dq_accum_desc=dq_accum_desc,
+                    da_accum_desc=da_accum_desc,
                     lse_desc=lse_desc,
                     dpsum_desc=dpsum_desc,
                     d_max=d_max,
@@ -1059,12 +957,7 @@ def _bwd_gated_kernel(
 
     # Store value gradients
     if QHEAD_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dv_ptrs,
-            acc_dv,
-            mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
-            sem="relaxed",
-        )
+        dv_desc.atomic_add([n_block * TILE_N, 0], acc_dv)
     else:
         dv_desc.store([n_block * TILE_N, 0], acc_dv)
 
@@ -1073,12 +966,7 @@ def _bwd_gated_kernel(
 
     # Store delta gradients
     if QHEAD_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dd_ptrs,
-            acc_dd,
-            mask=(offs_n < actual_seqlen_k),
-            sem="relaxed",
-        )
+        dd_desc.atomic_add([n_block * TILE_N], acc_dd)
     else:
         dd_desc.store([n_block * TILE_N], acc_dd)
 
@@ -1087,12 +975,7 @@ def _bwd_gated_kernel(
 
     # Store key gradients
     if QHEAD_PER_KVHEAD > 1:
-        tl.atomic_add(
-            dk_ptrs,
-            acc_dk,
-            mask=(offs_n[:, None] < actual_seqlen_k) & (offs_kb[None, :] < head_dim),
-            sem="relaxed",
-        )
+        dk_desc.atomic_add([n_block * TILE_N, 0], acc_dk)
     else:
         dk_desc.store([n_block * TILE_N, 0], acc_dk)
 
