@@ -97,38 +97,30 @@ def _fwd_combine_kernel(
         USE_PADDED=False,
     )
 
-    # Create pointers
-    out_part_ptrs = tl.make_block_ptr(
+    # Create descriptors
+    out_part_desc = tl.make_tensor_descriptor(
         base=out_part_base,
-        shape=(num_splits, actual_seqlen_q, head_dim),
-        strides=(stride_ops, stride_opm, 1),
-        offsets=(0, m_block * TILE_M, 0),
-        block_shape=(1, TILE_M, TILE_K),
-        order=(2, 1, 0),
+        shape=[num_splits, actual_seqlen_q, head_dim],
+        strides=[stride_ops, stride_opm, 1],
+        block_shape=[1, TILE_M, TILE_K],
     )
-    lse_part_ptrs = tl.make_block_ptr(
+    lse_part_desc = tl.make_tensor_descriptor(
         base=lse_part_base,
-        shape=(num_splits, actual_seqlen_q),
-        strides=(stride_lps, 1),
-        offsets=(0, m_block * TILE_M),
-        block_shape=(1, TILE_M),
-        order=(1, 0),
+        shape=[num_splits, actual_seqlen_q],
+        strides=[stride_lps, 1],
+        block_shape=[1, TILE_M],
     )
-    out_ptrs = tl.make_block_ptr(
+    out_desc = tl.make_tensor_descriptor(
         base=out_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_om, 1),
-        offsets=(m_block * TILE_M, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_om, 1],
+        block_shape=[TILE_M, TILE_K],
     )
-    lse_ptrs = tl.make_block_ptr(
+    lse_desc = tl.make_tensor_descriptor(
         base=lse_base,
-        shape=(actual_seqlen_q,),
-        strides=(1,),
-        offsets=(m_block * TILE_M,),
-        block_shape=(TILE_M,),
-        order=(0,),
+        shape=[actual_seqlen_q],
+        strides=[1],
+        block_shape=[TILE_M],
     )
 
     # Initialize accumulators
@@ -137,12 +129,9 @@ def _fwd_combine_kernel(
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Combine split outputs
-    for _ in tl.range(0, num_splits):
+    for s in tl.range(0, num_splits):
         # Load partial LSE
-        lse_s = tl.sum(tl.load(lse_part_ptrs, boundary_check=(0, 1)), axis=0)
-
-        # Advance LSE pointers
-        lse_part_ptrs = tl.advance(lse_part_ptrs, (1, 0))
+        lse_s = tl.sum(lse_part_desc.load([s, m_block * TILE_M]), axis=0)
 
         # Compute normalized exponentials
         new_e_max = tl.maximum(lse_s, e_max)
@@ -150,10 +139,7 @@ def _fwd_combine_kernel(
         exp_logic = tl.exp2(lse_s - new_e_max)
 
         # Load partial outputs
-        o_s = tl.sum(tl.load(out_part_ptrs, boundary_check=(0, 1, 2)), axis=0)
-
-        # Advance output pointers
-        out_part_ptrs = tl.advance(out_part_ptrs, (1, 0, 0))
+        o_s = tl.sum(out_part_desc.load([s, m_block * TILE_M, 0]), axis=0)
 
         # Compute scaled outputs
         acc_o *= old_scale[:, None]
@@ -168,11 +154,7 @@ def _fwd_combine_kernel(
     acc_o *= inv_sum[:, None]
 
     # Store output
-    tl.store(
-        out_ptrs,
-        acc_o.to(Out.dtype.element_ty),
-        boundary_check=(0, 1),
-    )
+    out_desc.store([m_block * TILE_M, 0], acc_o.to(Out.dtype.element_ty))
 
     # Compute LSE
     # ln2 = math.log(2.0)
@@ -180,7 +162,7 @@ def _fwd_combine_kernel(
     lse = tl.where(e_sum > 0.0, (e_max + tl.log2(e_sum)) * ln2, float("-inf"))
 
     # Store LSE
-    tl.store(lse_ptrs, lse, boundary_check=(0,))
+    lse_desc.store([m_block * TILE_M], lse)
 
 
 _fwd_combine_kernel = cache_utils.wrap_kernel(_fwd_combine_kernel)
