@@ -101,3 +101,16 @@ def window_sizes_heuristic(
     window_size_left = torch.clamp(breakpoints[1:] - 1, min=0)
     window_size_right = breakpoints[:-1]
     return torch.stack([window_size_left, window_size_right], dim=1).to(device)
+
+
+def alloc_fn(size: int, alignment: int, stream):
+    """
+    TMA descriptors require a global memory allocation
+
+    :param size: Size of the allocation in bytes.
+    :param alignment: Alignment requirement in bytes.
+    :param stream: CUDA stream for the allocation.
+
+    :return: A torch.Tensor representing the allocated memory.
+    """
+    return torch.empty(size, device="cuda", dtype=torch.int8)
