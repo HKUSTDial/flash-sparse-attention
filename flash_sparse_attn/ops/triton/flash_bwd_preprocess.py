@@ -127,101 +127,71 @@ def _bwd_preprocess_kernel(
         USE_PADDED=True,
     )
 
-    # Create pointers
-    o_ptrs = tl.make_block_ptr(
+    # Create descriptors
+    o_desc = tl.make_tensor_descriptor(
         base=o_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_om, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_om, 1],
+        block_shape=[TILE_M, TILE_K],
     )
-    do_ptrs = tl.make_block_ptr(
+    do_desc = tl.make_tensor_descriptor(
         base=do_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_dom, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_dom, 1],
+        block_shape=[TILE_M, TILE_K],
     )
-    dpsum_ptrs = tl.make_block_ptr(
+    dpsum_desc = tl.make_tensor_descriptor(
         base=dpsum_base,
-        shape=(actual_seqlen_q,),
-        strides=(stride_pm,),
-        offsets=(0,),
-        block_shape=(TILE_M,),
-        order=(0,),
+        shape=[actual_seqlen_q],
+        strides=[stride_pm],
+        block_shape=[TILE_M],
     )
-    lse_ptrs = tl.make_block_ptr(
+    lse_desc = tl.make_tensor_descriptor(
         base=lse_base,
-        shape=(actual_seqlen_q,),
-        strides=(stride_lm,),
-        offsets=(0,),
-        block_shape=(TILE_M,),
-        order=(0,),
+        shape=[actual_seqlen_q],
+        strides=[stride_lm],
+        block_shape=[TILE_M],
     )
-    lse_log2_ptrs = tl.make_block_ptr(
+    lse_log2_desc = tl.make_tensor_descriptor(
         base=lse_log2_base,
-        shape=(actual_seqlen_q,),
-        strides=(stride_l2m,),
-        offsets=(0,),
-        block_shape=(TILE_M,),
-        order=(0,),
+        shape=[actual_seqlen_q],
+        strides=[stride_l2m],
+        block_shape=[TILE_M],
     )
-    dq_accum_ptrs = tl.make_block_ptr(
+    dq_accum_desc = tl.make_tensor_descriptor(
         base=dq_accum_base,
-        shape=(actual_seqlen_q, head_dim_rounded),
-        strides=(stride_dqam, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim_rounded],
+        strides=[stride_dqam, 1],
+        block_shape=[TILE_M, TILE_K],
     )
 
     # Initialize accumulators
     acc_dq = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
-    # Advance output pointers
-    o_ptrs = tl.advance(o_ptrs, (m_block * TILE_M, 0))
-
     # Load o tile
-    o_tile = tl.load(o_ptrs, boundary_check=(0, 1)).to(tl.float32)
-
-    # Advance do pointers
-    do_ptrs = tl.advance(do_ptrs, (m_block * TILE_M, 0))
+    o_tile = o_desc.load([m_block * TILE_M, 0]).to(tl.float32)
 
     # Load do tile
-    do_tile = tl.load(do_ptrs, boundary_check=(0, 1)).to(tl.float32)
-
-    # Advance dpsum pointers
-    dpsum_ptrs = tl.advance(dpsum_ptrs, (m_block * TILE_M,))
+    do_tile = do_desc.load([m_block * TILE_M, 0]).to(tl.float32)
 
     # Compute dpsum
     dpsum = tl.sum(o_tile * do_tile, axis=1)
 
-    # Advance acc_dq pointers
-    dq_accum_ptrs = tl.advance(dq_accum_ptrs, (m_block * TILE_M, 0))
-
     # Store dpsum
-    tl.store(dpsum_ptrs, dpsum, boundary_check=(0,))
-
-    # Advance lse pointers
-    lse_ptrs = tl.advance(lse_ptrs, (m_block * TILE_M,))
+    dpsum_desc.store([m_block * TILE_M], dpsum)
 
     # Load lse tile
-    lse_tile = tl.load(lse_ptrs, boundary_check=(0,), padding_option="nan")
+    lse_tile = lse_desc.load([m_block * TILE_M])
 
     # Compute lse_log2
     lse_log2 = tl.where(lse_tile == lse_tile, lse_tile * math.log2(math.e), 1e6)
     lse_log2 = activations.check_inf(lse_log2)
 
     # Store dq_accum
-    tl.store(dq_accum_ptrs, acc_dq, boundary_check=(0, 1))
-
-    # Advance lse_log2 pointers
-    lse_log2_ptrs = tl.advance(lse_log2_ptrs, (m_block * TILE_M,))
+    dq_accum_desc.store([m_block * TILE_M, 0], acc_dq)
 
     # Store lse_log2
-    tl.store(lse_log2_ptrs, lse_log2, boundary_check=(0,))
+    lse_log2_desc.store([m_block * TILE_M], lse_log2)
 
 
 _bwd_preprocess_kernel = cache_utils.wrap_kernel(_bwd_preprocess_kernel)
