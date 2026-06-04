@@ -160,19 +160,21 @@ print(output_gated.shape)
 
 ## Performance
 
-The following benchmarks were collected on SM120 and cover forward, backward, and decoding workloads. They include Dense, Sparse, and Gated implementations, with FlashAttention as a baseline.
+The following benchmarks cover forward, backward, and decode workloads. They include dense, sparse, and gated implementations, with FlashAttention used as the baseline.
 
-### Forward Performance
+### RTX PRO 6000
 
-![Attention forward speed, head dim 128](assets/sm120_forward_benchmark.png)
+**Forward Performance**
 
-### Backward Performance
+![Attention forward speed, head dim 128](assets/latency_forward_sm120.png)
 
-![Attention backward speed, head dim 128](assets/sm120_backward_benchmark.png)
+**Backward Performance**
 
-### Decode Performance
+![Attention backward speed, head dim 128](assets/latency_backward_sm120.png)
 
-![Attention decode speed, head dim 128](assets/sm120_decode_benchmark.png)
+**Decode Performance**
+
+![Attention decode speed, head dim 128](assets/latency_decode_sm120.png)
 
 
 ## Benchmarking
