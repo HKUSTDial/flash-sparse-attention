@@ -79,38 +79,28 @@ def _bwd_postprocess_kernel(
         USE_PADDED=False,
     )
 
-    # Create pointers
-    dq_accum_ptrs = tl.make_block_ptr(
+    # Create descriptors
+    dq_accum_desc = tl.make_tensor_descriptor(
         base=dq_accum_base,
-        shape=(actual_seqlen_q, head_dim_rounded),
-        strides=(stride_dqam, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim_rounded],
+        strides=[stride_dqam, 1],
+        block_shape=[TILE_M, TILE_K],
     )
-    dq_ptrs = tl.make_block_ptr(
+    dq_desc = tl.make_tensor_descriptor(
         base=dq_base,
-        shape=(actual_seqlen_q, head_dim),
-        strides=(stride_dqm, 1),
-        offsets=(0, 0),
-        block_shape=(TILE_M, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_q, head_dim],
+        strides=[stride_dqm, 1],
+        block_shape=[TILE_M, TILE_K],
     )
-
-    # Advance dq_accum pointers
-    dq_accum_ptrs = tl.advance(dq_accum_ptrs, (m_block * TILE_M, 0))
 
     # Load accumulators
-    acc_dq = tl.load(dq_accum_ptrs, boundary_check=(0, 1))
+    acc_dq = dq_accum_desc.load([m_block * TILE_M, 0])
 
     # Scale dq
     dq = (acc_dq * scale).to(dQ.dtype.element_ty)
 
-    # Advance dq pointers
-    dq_ptrs = tl.advance(dq_ptrs, (m_block * TILE_M, 0))
-
     # Store dq
-    tl.store(dq_ptrs, dq, boundary_check=(0, 1))
+    dq_desc.store([m_block * TILE_M, 0], dq)
 
     if HAS_DA:
         da_accum_base = seqlen_info.offset_batch_Q(
@@ -134,37 +124,27 @@ def _bwd_postprocess_kernel(
             USE_PADDED=False,
         )
 
-        da_accum_ptrs = tl.make_block_ptr(
+        da_accum_desc = tl.make_tensor_descriptor(
             base=da_accum_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_daam,),
-            offsets=(0,),
-            block_shape=(TILE_M,),
-            order=(0,),
+            shape=[actual_seqlen_q],
+            strides=[stride_daam],
+            block_shape=[TILE_M],
         )
-        da_ptrs = tl.make_block_ptr(
+        da_desc = tl.make_tensor_descriptor(
             base=da_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_dam,),
-            offsets=(0,),
-            block_shape=(TILE_M,),
-            order=(0,),
+            shape=[actual_seqlen_q],
+            strides=[stride_dam],
+            block_shape=[TILE_M],
         )
-
-        # Advance da_accum pointers
-        da_accum_ptrs = tl.advance(da_accum_ptrs, (m_block * TILE_M,))
 
         # Load da accumulators
-        acc_da = tl.load(da_accum_ptrs, boundary_check=(0,))
+        acc_da = da_accum_desc.load([m_block * TILE_M])
 
         # Scale da
         da = (acc_da * scale).to(dA.dtype.element_ty)
 
-        # Advance da pointers
-        da_ptrs = tl.advance(da_ptrs, (m_block * TILE_M,))
-
         # Store da
-        tl.store(da_ptrs, da, boundary_check=(0,))
+        da_desc.store([m_block * TILE_M], da)
 
 
 _bwd_postprocess_kernel = cache_utils.wrap_kernel(_bwd_postprocess_kernel)
