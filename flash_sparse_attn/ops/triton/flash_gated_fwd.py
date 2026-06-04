@@ -28,9 +28,9 @@ def _fwd_inner_gated_kernel(
     acc_o,
     q_tile,
     a_tile,
-    k_ptrs,
-    v_ptrs,
-    d_ptrs,
+    k_desc,
+    v_desc,
+    d_desc,
     a_max,
     a_min,
     gate_max,
@@ -56,19 +56,13 @@ def _fwd_inner_gated_kernel(
     IS_LOGSIGMOID_GATE: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
-    # Advance delta pointers
-    d_ptrs = tl.advance(d_ptrs, (-TILE_N,))
-
     # Load next delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(tl.float32)
+    d_tile = d_desc.load([(n_block - 1) * TILE_N]).to(tl.float32)
     d_max = tl.max(d_tile)
     d_min = tl.min(d_tile)
 
     skip_gate_next = True
     if not skip_gate_curr:
-        # Advance key pointers
-        k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
-
         if n_block > n_block_min:
             # Check if any gates are active for next tile
             gate_max, skip_gate_next = activations.online_gate(
@@ -115,21 +109,14 @@ def _fwd_inner_gated_kernel(
 
         if not skip_softmax:
             # Load value tile
-            v_tile = tl.load(v_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            v_tile = v_desc.load([n_block * TILE_N, 0])
 
             # Rescale output accumulator
             acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
             # Update output accumulator
             acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-
-        # Advance value pointers
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
     else:
-        # Advance key and value pointers
-        k_ptrs = tl.advance(k_ptrs, (0, -TILE_N))
-        v_ptrs = tl.advance(v_ptrs, (-TILE_N, 0))
-
         if n_block > n_block_min:
             # Check if any gates are active for next tile
             gate_max, skip_gate_next = activations.online_gate(
@@ -150,18 +137,15 @@ def _fwd_inner_gated_kernel(
             acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
         # Load next key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+        k_tile = k_desc.load([(n_block - 1) * TILE_N, 0])
 
         # Compute attention scores for next tile
-        acc_s += tl.dot(q_tile, k_tile)
+        acc_s += tl.dot(q_tile, k_tile.T)
 
     return (
         skip_gate_next,
         acc_s,
         acc_o,
-        k_ptrs,
-        v_ptrs,
-        d_ptrs,
         gate_max,
         block_max,
         row_max,
@@ -312,7 +296,7 @@ def _fwd_gated_kernel(
         offset_q,
         padded_offset_q,
         stride_ab,
-        1,
+        stride_am,
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
@@ -322,7 +306,7 @@ def _fwd_gated_kernel(
         offset_k,
         padded_offset_k,
         stride_db,
-        1,
+        stride_dn,
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
@@ -394,23 +378,19 @@ def _fwd_gated_kernel(
     if IS_SPLIT_KV:
         n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
-    # Create pointers
+    # Create pointers or descriptors
     if not PACK_GQA:
-        lse_ptrs = tl.make_block_ptr(
+        lse_desc = tl.make_tensor_descriptor(
             base=lse_base,
-            shape=(actual_seqlen_q,),
-            strides=(1,),
-            offsets=(m_block * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
+            shape=[actual_seqlen_q],
+            strides=[1],
+            block_shape=[TILE_M],
         )
-        out_ptrs = tl.make_block_ptr(
+        out_desc = tl.make_tensor_descriptor(
             base=out_base,
-            shape=(actual_seqlen_q, head_dim),
-            strides=(stride_om, 1),
-            offsets=(m_block * TILE_M, 0),
-            block_shape=(TILE_M, TILE_K),
-            order=(1, 0),
+            shape=[actual_seqlen_q, head_dim],
+            strides=[stride_om, 1],
+            block_shape=[TILE_M, TILE_K],
         )
     else:
         lse_ptrs = seqlen_info.make_pack_gqa_ptrs(
@@ -446,7 +426,7 @@ def _fwd_gated_kernel(
                 cache_modifier=".wb",
             )
         else:
-            tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
+            lse_desc.store([m_block * TILE_M], lse_tile)
 
         # Write output as zero for proper handling
         o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
@@ -459,25 +439,21 @@ def _fwd_gated_kernel(
                 cache_modifier=".wb",
             )
         else:
-            tl.store(out_ptrs, o_tile, boundary_check=(0, 1), cache_modifier=".wb")
+            out_desc.store([m_block * TILE_M, 0], o_tile)
         return
 
     if not PACK_GQA:
-        q_ptrs = tl.make_block_ptr(
+        q_desc = tl.make_tensor_descriptor(
             base=q_base,
-            shape=(actual_seqlen_q, head_dim),
-            strides=(stride_qm, 1),
-            offsets=(m_block * TILE_M, 0),
-            block_shape=(TILE_M, TILE_K),
-            order=(1, 0),
+            shape=[actual_seqlen_q, head_dim],
+            strides=[stride_qm, 1],
+            block_shape=[TILE_M, TILE_K],
         )
-        a_ptrs = tl.make_block_ptr(
+        a_desc = tl.make_tensor_descriptor(
             base=a_base,
-            shape=(actual_seqlen_q,),
-            strides=(stride_am,),
-            offsets=(m_block * TILE_M,),
-            block_shape=(TILE_M,),
-            order=(0,),
+            shape=[actual_seqlen_q],
+            strides=[stride_am],
+            block_shape=[TILE_M],
         )
     else:
         q_ptrs = seqlen_info.make_pack_gqa_ptrs(
@@ -500,29 +476,23 @@ def _fwd_gated_kernel(
             TILE_K=1,
             QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         )
-    k_ptrs = tl.make_block_ptr(
+    k_desc = tl.make_tensor_descriptor(
         base=k_base,
-        shape=(head_dim, actual_seqlen_k),
-        strides=(1, stride_kn),
-        offsets=(0, (n_block_max - 1) * TILE_N),
-        block_shape=(TILE_K, TILE_N),
-        order=(0, 1),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_kn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
-    v_ptrs = tl.make_block_ptr(
+    v_desc = tl.make_tensor_descriptor(
         base=v_base,
-        shape=(actual_seqlen_k, head_dim),
-        strides=(stride_vn, 1),
-        offsets=((n_block_max - 1) * TILE_N, 0),
-        block_shape=(TILE_N, TILE_K),
-        order=(1, 0),
+        shape=[actual_seqlen_k, head_dim],
+        strides=[stride_vn, 1],
+        block_shape=[TILE_N, TILE_K],
     )
-    d_ptrs = tl.make_block_ptr(
+    d_desc = tl.make_tensor_descriptor(
         base=d_base,
-        shape=(actual_seqlen_k,),
-        strides=(stride_dn,),
-        offsets=((n_block_max - 1) * TILE_N,),
-        block_shape=(TILE_N,),
-        order=(0,),
+        shape=[actual_seqlen_k],
+        strides=[stride_dn],
+        block_shape=[TILE_N],
     )
 
     # Get gate threshold
@@ -567,10 +537,10 @@ def _fwd_gated_kernel(
             cache_modifier=".ca",
         )
     else:
-        q_tile = tl.load(q_ptrs, boundary_check=(0, 1), cache_modifier=".ca")
+        q_tile = q_desc.load([m_block * TILE_M, 0])
 
     # Load key tile
-    k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+    k_tile = k_desc.load([(n_block_max - 1) * TILE_N, 0])
 
     # Initialize accumulators
     gate_max = tl.full((), float("-inf"), dtype=tl.float32)
@@ -588,14 +558,12 @@ def _fwd_gated_kernel(
             cache_modifier=".ca",
         ).to(tl.float32)
     else:
-        a_tile = tl.load(a_ptrs, boundary_check=(0,), cache_modifier=".ca").to(
-            tl.float32
-        )
+        a_tile = a_desc.load([m_block * TILE_M]).to(tl.float32)
     a_max = tl.max(a_tile)
     a_min = tl.min(a_tile)
 
     # Load delta tile
-    d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(tl.float32)
+    d_tile = d_desc.load([(n_block_max - 1) * TILE_N]).to(tl.float32)
     d_max = tl.max(d_tile)
     d_min = tl.min(d_tile)
 
@@ -619,7 +587,7 @@ def _fwd_gated_kernel(
         acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
     # Compute attention scores for first tile
-    acc_s += tl.dot(q_tile, k_tile)
+    acc_s += tl.dot(q_tile, k_tile.T)
 
     # Process n_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
@@ -628,9 +596,6 @@ def _fwd_gated_kernel(
                 skip_gate_curr,
                 acc_s,
                 acc_o,
-                k_ptrs,
-                v_ptrs,
-                d_ptrs,
                 gate_max,
                 block_max,
                 row_max,
@@ -641,9 +606,9 @@ def _fwd_gated_kernel(
                 acc_o=acc_o,
                 q_tile=q_tile,
                 a_tile=a_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
-                d_ptrs=d_ptrs,
+                k_desc=k_desc,
+                v_desc=v_desc,
+                d_desc=d_desc,
                 a_max=a_max,
                 a_min=a_min,
                 gate_max=gate_max,
@@ -677,9 +642,6 @@ def _fwd_gated_kernel(
             skip_gate_curr,
             acc_s,
             acc_o,
-            k_ptrs,
-            v_ptrs,
-            d_ptrs,
             gate_max,
             block_max,
             row_max,
@@ -690,9 +652,9 @@ def _fwd_gated_kernel(
             acc_o=acc_o,
             q_tile=q_tile,
             a_tile=a_tile,
-            k_ptrs=k_ptrs,
-            v_ptrs=v_ptrs,
-            d_ptrs=d_ptrs,
+            k_desc=k_desc,
+            v_desc=v_desc,
+            d_desc=d_desc,
             a_max=a_max,
             a_min=a_min,
             gate_max=gate_max,
@@ -723,38 +685,11 @@ def _fwd_gated_kernel(
 
     # Process n_blocks without masking
     if not IS_LOCAL and n_block_max_no_mask > n_block_min:
-        k_ptrs = tl.make_block_ptr(
-            base=k_base,
-            shape=(head_dim, actual_seqlen_k),
-            strides=(1, stride_kn),
-            offsets=(0, (n_block_max_no_mask - 1) * TILE_N),
-            block_shape=(TILE_K, TILE_N),
-            order=(0, 1),
-        )
-        v_ptrs = tl.make_block_ptr(
-            base=v_base,
-            shape=(actual_seqlen_k, head_dim),
-            strides=(stride_vn, 1),
-            offsets=((n_block_max_no_mask - 1) * TILE_N, 0),
-            block_shape=(TILE_N, TILE_K),
-            order=(1, 0),
-        )
-        d_ptrs = tl.make_block_ptr(
-            base=d_base,
-            shape=(actual_seqlen_k,),
-            strides=(stride_dn,),
-            offsets=((n_block_max_no_mask - 1) * TILE_N,),
-            block_shape=(TILE_N,),
-            order=(0,),
-        )
-
         # Load key tile
-        k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+        k_tile = k_desc.load([(n_block_max_no_mask - 1) * TILE_N, 0])
 
         # Load delta tile
-        d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
-            tl.float32
-        )
+        d_tile = d_desc.load([(n_block_max_no_mask - 1) * TILE_N]).to(tl.float32)
         d_max = tl.max(d_tile)
         d_min = tl.min(d_tile)
 
@@ -775,16 +710,13 @@ def _fwd_gated_kernel(
             acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
         # Compute attention scores
-        acc_s += tl.dot(q_tile, k_tile)
+        acc_s += tl.dot(q_tile, k_tile.T)
 
         for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
             (
                 skip_gate_curr,
                 acc_s,
                 acc_o,
-                k_ptrs,
-                v_ptrs,
-                d_ptrs,
                 gate_max,
                 block_max,
                 row_max,
@@ -795,9 +727,9 @@ def _fwd_gated_kernel(
                 acc_o=acc_o,
                 q_tile=q_tile,
                 a_tile=a_tile,
-                k_ptrs=k_ptrs,
-                v_ptrs=v_ptrs,
-                d_ptrs=d_ptrs,
+                k_desc=k_desc,
+                v_desc=v_desc,
+                d_desc=d_desc,
                 a_max=a_max,
                 a_min=a_min,
                 gate_max=gate_max,
@@ -867,38 +799,11 @@ def _fwd_gated_kernel(
 
         # Process n_blocks with local right masking
         if n_block_window_max > n_block_window_max_no_mask:
-            k_ptrs = tl.make_block_ptr(
-                base=k_base,
-                shape=(head_dim, actual_seqlen_k),
-                strides=(1, stride_kn),
-                offsets=(0, (n_block_window_max - 1) * TILE_N),
-                block_shape=(TILE_K, TILE_N),
-                order=(0, 1),
-            )
-            v_ptrs = tl.make_block_ptr(
-                base=v_base,
-                shape=(actual_seqlen_k, head_dim),
-                strides=(stride_vn, 1),
-                offsets=((n_block_window_max - 1) * TILE_N, 0),
-                block_shape=(TILE_N, TILE_K),
-                order=(1, 0),
-            )
-            d_ptrs = tl.make_block_ptr(
-                base=d_base,
-                shape=(actual_seqlen_k,),
-                strides=(stride_dn,),
-                offsets=((n_block_window_max - 1) * TILE_N,),
-                block_shape=(TILE_N,),
-                order=(0,),
-            )
-
             # Load key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            k_tile = k_desc.load([(n_block_window_max - 1) * TILE_N, 0])
 
             # Load delta tile
-            d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
-                tl.float32
-            )
+            d_tile = d_desc.load([(n_block_window_max - 1) * TILE_N]).to(tl.float32)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -919,7 +824,7 @@ def _fwd_gated_kernel(
                 acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
             # Compute attention scores
-            acc_s += tl.dot(q_tile, k_tile)
+            acc_s += tl.dot(q_tile, k_tile.T)
 
             for n_block in tl.range(
                 n_block_window_max - 1, n_block_window_max_no_mask - 1, -1
@@ -928,9 +833,6 @@ def _fwd_gated_kernel(
                     skip_gate_curr,
                     acc_s,
                     acc_o,
-                    k_ptrs,
-                    v_ptrs,
-                    d_ptrs,
                     gate_max,
                     block_max,
                     row_max,
@@ -941,9 +843,9 @@ def _fwd_gated_kernel(
                     acc_o=acc_o,
                     q_tile=q_tile,
                     a_tile=a_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    d_ptrs=d_ptrs,
+                    k_desc=k_desc,
+                    v_desc=v_desc,
+                    d_desc=d_desc,
                     a_max=a_max,
                     a_min=a_min,
                     gate_max=gate_max,
@@ -972,36 +874,11 @@ def _fwd_gated_kernel(
 
         # Process n_blocks without masking
         if n_block_window_max_no_mask > n_block_window_min_no_mask:
-            k_ptrs = tl.make_block_ptr(
-                base=k_base,
-                shape=(head_dim, actual_seqlen_k),
-                strides=(1, stride_kn),
-                offsets=(0, (n_block_window_max_no_mask - 1) * TILE_N),
-                block_shape=(TILE_K, TILE_N),
-                order=(0, 1),
-            )
-            v_ptrs = tl.make_block_ptr(
-                base=v_base,
-                shape=(actual_seqlen_k, head_dim),
-                strides=(stride_vn, 1),
-                offsets=((n_block_window_max_no_mask - 1) * TILE_N, 0),
-                block_shape=(TILE_N, TILE_K),
-                order=(1, 0),
-            )
-            d_ptrs = tl.make_block_ptr(
-                base=d_base,
-                shape=(actual_seqlen_k,),
-                strides=(stride_dn,),
-                offsets=((n_block_window_max_no_mask - 1) * TILE_N,),
-                block_shape=(TILE_N,),
-                order=(0,),
-            )
-
             # Load key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            k_tile = k_desc.load([(n_block_window_max_no_mask - 1) * TILE_N, 0])
 
             # Load delta tile
-            d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+            d_tile = d_desc.load([(n_block_window_max_no_mask - 1) * TILE_N]).to(
                 tl.float32
             )
             d_max = tl.max(d_tile)
@@ -1024,7 +901,7 @@ def _fwd_gated_kernel(
                 acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
             # Compute attention scores
-            acc_s += tl.dot(q_tile, k_tile)
+            acc_s += tl.dot(q_tile, k_tile.T)
 
             for n_block in tl.range(
                 n_block_window_max_no_mask - 1, n_block_window_min_no_mask - 1, -1
@@ -1033,9 +910,6 @@ def _fwd_gated_kernel(
                     skip_gate_curr,
                     acc_s,
                     acc_o,
-                    k_ptrs,
-                    v_ptrs,
-                    d_ptrs,
                     gate_max,
                     block_max,
                     row_max,
@@ -1046,9 +920,9 @@ def _fwd_gated_kernel(
                     acc_o=acc_o,
                     q_tile=q_tile,
                     a_tile=a_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    d_ptrs=d_ptrs,
+                    k_desc=k_desc,
+                    v_desc=v_desc,
+                    d_desc=d_desc,
                     a_max=a_max,
                     a_min=a_min,
                     gate_max=gate_max,
@@ -1077,36 +951,11 @@ def _fwd_gated_kernel(
 
         # Process n_blocks with local left masking
         if n_block_window_min_no_mask > n_block_window_min:
-            k_ptrs = tl.make_block_ptr(
-                base=k_base,
-                shape=(head_dim, actual_seqlen_k),
-                strides=(1, stride_kn),
-                offsets=(0, (n_block_window_min_no_mask - 1) * TILE_N),
-                block_shape=(TILE_K, TILE_N),
-                order=(0, 1),
-            )
-            v_ptrs = tl.make_block_ptr(
-                base=v_base,
-                shape=(actual_seqlen_k, head_dim),
-                strides=(stride_vn, 1),
-                offsets=((n_block_window_min_no_mask - 1) * TILE_N, 0),
-                block_shape=(TILE_N, TILE_K),
-                order=(1, 0),
-            )
-            d_ptrs = tl.make_block_ptr(
-                base=d_base,
-                shape=(actual_seqlen_k,),
-                strides=(stride_dn,),
-                offsets=((n_block_window_min_no_mask - 1) * TILE_N,),
-                block_shape=(TILE_N,),
-                order=(0,),
-            )
-
             # Load key tile
-            k_tile = tl.load(k_ptrs, boundary_check=(0, 1), cache_modifier=".cg")
+            k_tile = k_desc.load([(n_block_window_min_no_mask - 1) * TILE_N, 0])
 
             # Load delta tile
-            d_tile = tl.load(d_ptrs, boundary_check=(0,), cache_modifier=".cg").to(
+            d_tile = d_desc.load([(n_block_window_min_no_mask - 1) * TILE_N]).to(
                 tl.float32
             )
             d_max = tl.max(d_tile)
@@ -1129,7 +978,7 @@ def _fwd_gated_kernel(
                 acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
             # Compute attention scores
-            acc_s += tl.dot(q_tile, k_tile)
+            acc_s += tl.dot(q_tile, k_tile.T)
 
             for n_block in tl.range(
                 n_block_window_min_no_mask - 1, n_block_window_min - 1, -1
@@ -1138,9 +987,6 @@ def _fwd_gated_kernel(
                     skip_gate_curr,
                     acc_s,
                     acc_o,
-                    k_ptrs,
-                    v_ptrs,
-                    d_ptrs,
                     gate_max,
                     block_max,
                     row_max,
@@ -1151,9 +997,9 @@ def _fwd_gated_kernel(
                     acc_o=acc_o,
                     q_tile=q_tile,
                     a_tile=a_tile,
-                    k_ptrs=k_ptrs,
-                    v_ptrs=v_ptrs,
-                    d_ptrs=d_ptrs,
+                    k_desc=k_desc,
+                    v_desc=v_desc,
+                    d_desc=d_desc,
                     a_max=a_max,
                     a_min=a_min,
                     gate_max=gate_max,
@@ -1202,7 +1048,7 @@ def _fwd_gated_kernel(
             cache_modifier=".wb",
         )
     else:
-        tl.store(lse_ptrs, lse_tile, boundary_check=(0,), cache_modifier=".wb")
+        lse_desc.store([m_block * TILE_M], lse_tile)
 
     # Finalize rescale
     acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
@@ -1221,7 +1067,7 @@ def _fwd_gated_kernel(
             cache_modifier=".wb",
         )
     else:
-        tl.store(out_ptrs, acc_o, boundary_check=(0, 1), cache_modifier=".wb")
+        out_desc.store([m_block * TILE_M, 0], acc_o)
 
 
 _fwd_gated_kernel = cache_utils.wrap_kernel(_fwd_gated_kernel)
@@ -1381,6 +1227,8 @@ def _flash_gated_attn_forward(
         num_splits=num_splits,
     )
 
+    triton.set_allocator(utils.alloc_fn)
+
     kernel[grid](
         query,
         key,
@@ -1406,11 +1254,11 @@ def _flash_gated_attn_forward(
         value.stride(-2),
         value.stride(-3),
         alpha.stride(0),
-        alpha.stride(-1),
         alpha.stride(-2),
+        alpha.stride(-1),
         delta.stride(0),
-        delta.stride(-1),
         delta.stride(-2),
+        delta.stride(-1),
         out.stride(0) if not is_split_kv else out_partial.stride(1),
         out.stride(-2) if not is_split_kv else out_partial.stride(-2),
         out.stride(-3) if not is_split_kv else out_partial.stride(-3),
@@ -1628,6 +1476,8 @@ def _flash_gated_attn_varlen_forward(
         num_splits=num_splits,
     )
 
+    triton.set_allocator(utils.alloc_fn)
+
     kernel[grid](
         query,
         key,
@@ -1653,11 +1503,11 @@ def _flash_gated_attn_varlen_forward(
         value.stride(-2),
         value.stride(0),
         0,
-        alpha.stride(-1),
         alpha.stride(0),
+        alpha.stride(-1),
         0,
-        delta.stride(-1),
         delta.stride(0),
+        delta.stride(-1),
         0,
         out.stride(-2) if not is_split_kv else out_partial.stride(-2),
         out.stride(0) if not is_split_kv else out_partial.stride(-3),
