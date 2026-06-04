@@ -19,6 +19,7 @@ from test_utils import (
     generate_inputs,
     generate_train_configs,
 )
+from benchmark_plot import plot_benchmark_results
 
 
 def benchmark_triton_dense_backward(
@@ -42,7 +43,43 @@ def benchmark_triton_dense_backward(
         v,
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
-        is_autotune=True,
+        is_autotune=False,
+        skip_checks=True,
+    )
+    dout = torch.randn_like(out)
+
+    def fn():
+        q.grad = None
+        k.grad = None
+        v.grad = None
+        out.backward(dout, retain_graph=True)
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_dense_backward_quant(
+    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=dtype,
+        layout="bshd",
+        input_source="random",
+    )
+    q = q.requires_grad_(True)
+    k = k.requires_grad_(True)
+    v = v.requires_grad_(True)
+    softmax_scale = cfg.head_dim**-0.5
+
+    out = flash_dense_attn_func(
+        q,
+        k,
+        v,
+        is_causal=cfg.is_causal,
+        softmax_scale=softmax_scale,
+        is_quant=True,
+        is_autotune=False,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -79,7 +116,45 @@ def benchmark_triton_sparse_backward(
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
-        is_autotune=True,
+        is_autotune=False,
+        skip_checks=True,
+    )
+    dout = torch.randn_like(out)
+
+    def fn():
+        q.grad = None
+        k.grad = None
+        v.grad = None
+        out.backward(dout, retain_graph=True)
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_sparse_backward_quant(
+    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=dtype,
+        layout="bshd",
+        input_source="random",
+    )
+    q = q.requires_grad_(True)
+    k = k.requires_grad_(True)
+    v = v.requires_grad_(True)
+    softmax_scale = cfg.head_dim**-0.5
+    softmax_threshold = 1.0
+
+    out = flash_sparse_attn_func(
+        q,
+        k,
+        v,
+        is_causal=cfg.is_causal,
+        softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
+        is_quant=True,
+        is_autotune=False,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -128,7 +203,59 @@ def benchmark_triton_gated_backward(
         gate_threshold=gate_threshold,
         is_logsigmoid_gate=False,
         is_adapt_gate=False,
-        is_autotune=True,
+        is_autotune=False,
+        skip_checks=True,
+    )
+    dout = torch.randn_like(out)
+
+    def fn():
+        q.grad = None
+        k.grad = None
+        v.grad = None
+        alpha.grad = None
+        delta.grad = None
+        out.backward(dout, retain_graph=True)
+
+    return do_bench(fn, warmup=20, rep=100)
+
+
+def benchmark_triton_gated_backward_quant(
+    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+) -> float:
+    q, k, v = generate_inputs(
+        cfg,
+        device=device,
+        dtype=dtype,
+        layout="bshd",
+        input_source="random",
+    )
+    q = q.requires_grad_(True)
+    k = k.requires_grad_(True)
+    v = v.requires_grad_(True)
+    alpha = torch.randn(
+        cfg.batch_size, cfg.seqlen_q, cfg.num_heads, device=device, dtype=dtype
+    ).requires_grad_(True)
+    delta = torch.randn(
+        cfg.batch_size, cfg.seqlen_k, cfg.num_kv_heads, device=device, dtype=dtype
+    ).requires_grad_(True)
+    softmax_scale = cfg.head_dim**-0.5
+    softmax_threshold = 1.0
+    gate_threshold = 1.0
+
+    out = flash_gated_attn_func(
+        q,
+        k,
+        v,
+        alpha,
+        delta,
+        is_causal=cfg.is_causal,
+        softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
+        gate_threshold=gate_threshold,
+        is_logsigmoid_gate=False,
+        is_adapt_gate=False,
+        is_quant=True,
+        is_autotune=False,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -225,8 +352,11 @@ def benchmark_cudnn_dense_backward(
 def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
     try:
         dense_ms = benchmark_triton_dense_backward(cfg)
+        dense_quant_ms = benchmark_triton_dense_backward_quant(cfg)
         sparse_ms = benchmark_triton_sparse_backward(cfg)
+        sparse_quant_ms = benchmark_triton_sparse_backward_quant(cfg)
         gated_ms = benchmark_triton_gated_backward(cfg)
+        gated_quant_ms = benchmark_triton_gated_backward_quant(cfg)
         fa_ms = benchmark_fa_dense_backward(cfg)
         cudnn_ms = benchmark_cudnn_dense_backward(cfg)
 
@@ -237,6 +367,9 @@ def run_benchmark(cfg: BenchmarkConfig) -> BenchmarkResult:
             triton_gated_ms=gated_ms,
             fa_dense_ms=fa_ms,
             cudnn_dense_ms=cudnn_ms,
+            triton_dense_quant_ms=dense_quant_ms,
+            triton_sparse_quant_ms=sparse_quant_ms,
+            triton_gated_quant_ms=gated_quant_ms,
         )
     except Exception as exc:
         full_error = f"{exc}\n{traceback.format_exc()}"
@@ -270,8 +403,11 @@ def print_results(results: List[BenchmarkResult]) -> None:
                 r.config.seqlen_k,
                 "causal" if r.config.is_causal else "non-causal",
                 format_ms(r.triton_dense_ms),
+                format_ms(r.triton_dense_quant_ms),
                 format_ms(r.triton_sparse_ms),
+                format_ms(r.triton_sparse_quant_ms),
                 format_ms(r.triton_gated_ms),
+                format_ms(r.triton_gated_quant_ms),
                 format_ms(r.fa_dense_ms),
                 format_ms(r.cudnn_dense_ms),
             ]
@@ -286,8 +422,11 @@ def print_results(results: List[BenchmarkResult]) -> None:
         "Seqlen_k",
         "Mode",
         "Triton Dense (ms)",
+        "Triton Dense Quant (ms)",
         "Triton Sparse (ms)",
+        "Triton Sparse Quant (ms)",
         "Triton Gated (ms)",
+        "Triton Gated Quant (ms)",
         "FA Dense (ms)",
         "cuDNN Dense (ms)",
     ]
@@ -305,7 +444,7 @@ def main() -> None:
     batch_sizes = [1]
     num_heads = [64]
     num_kv_heads = [4]
-    seqlens = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    seqlens = [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
     head_dims = [128]
     is_causal = True
 
@@ -326,6 +465,7 @@ def main() -> None:
         results.append(run_benchmark(cfg))
 
     print_results(results)
+    plot_benchmark_results(results, phase="backward")
 
 
 if __name__ == "__main__":
