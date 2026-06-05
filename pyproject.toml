@@ -23,7 +23,7 @@ maintainers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-  "triton>=2.0.0"
+  "triton>=3.6.0"
 ]
 
 classifiers = [
