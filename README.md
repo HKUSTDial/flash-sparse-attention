@@ -27,13 +27,17 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - Grouped Query Attention and Multi Query Attention
 - Sparse softmax threshold control
 - Gated attention with gate inputs and configurable gating sparsity
-- Split-KV path optimization for decoding workloads
+- Flex Local Window Attention with per-head arbitrary window sizes and local ranges
+- Split-KV for workload balancing in forward and decode workloads
+- Split-QO for workload balancing in backward workloads
+- Fused Quant for low-precision computation on hardware without native FP8 support
 
 ### Features We Aim to Support
 
 - Paged Attention
-- TMA, WGMMA, and FP8 low precision
-- Sequence parallelism
+- KV-Cache Manager
+- [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE) backend support
+- [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) backend support
 
 
 ## Installation
