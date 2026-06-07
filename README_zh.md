@@ -27,13 +27,17 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - 分组查询注意力和多查询注意力
 - 稀疏 softmax 阈值控制
 - gated attention 支持门控输入, 以及控制门控稀疏程度
-- 解码场景下的 split-KV 路径优化
+- Flex Local Window Attention 支持逐head的任意窗口大小和局部范围
+- Split-KV 适用于前向和解码的工作负载均衡
+- Split-QO 适用于反向的工作负载均衡
+- Fused Quant 支持非FP8原生支持的硬件使用低精度计算
 
 ### 我们想要支持的功能
 
 - 分页注意力
-- TMA, WGMMA 和 FP8 低精度
-- 序列并行
+- KV-Cache 管理器
+- [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE) 后端支持
+- [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) 后端支持
 
 
 ## 安装
