@@ -1,10 +1,3 @@
-"""
-Requires: triton-kernels == 3.6
-    git clone https://github.com/triton-lang/kernels.git && cd kernels
-    git checkout v3.6.0
-    pip install -e .
-"""
-
 import torch
 from triton_kernels.matmul_ogs import matmul_ogs, PrecisionConfig
 
