@@ -38,11 +38,22 @@ def _discover_active_series(ok: list[BenchmarkResult]):
     ms_fields = [
         f.name for f in dataclasses.fields(BenchmarkResult) if f.name.endswith("_ms")
     ]
-    # non-triton (fa, cudnn) first, then triton; preserve declaration order within
-    ms_fields.sort(key=lambda n: (n.startswith("triton"),))
 
-    bf16_fields = [f for f in ms_fields if "quant" not in f]
-    quant_fields = [f for f in ms_fields if "quant" in f]
+    # Split into non-triton and triton
+    non_triton = [f for f in ms_fields if not f.startswith("triton")]
+    triton = [f for f in ms_fields if f.startswith("triton")]
+
+    triton_bf16 = [f for f in triton if "quant" not in f]
+    triton_quant = {f.replace("_quant", ""): f for f in triton if "quant" in f}
+
+    triton_paired = []
+    for f in triton_bf16:
+        triton_paired.append(f)
+        base = f
+        if base in triton_quant:
+            triton_paired.append(triton_quant[base])
+
+    ordered = non_triton + triton_paired
 
     def _collect(fields):
         out = []
@@ -52,7 +63,7 @@ def _discover_active_series(ok: list[BenchmarkResult]):
                 out.append((_field_to_label(field), vals))
         return out
 
-    return _collect(bf16_fields) + _collect(quant_fields)
+    return _collect(ordered)
 
 
 def _save_fig(fig, stem: str, output_dir: Path) -> list[Path]:
