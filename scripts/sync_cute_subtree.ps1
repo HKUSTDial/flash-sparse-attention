@@ -599,6 +599,9 @@ if (Test-GitRemoteSpec -Value $UpstreamRepo) {
 }
 else {
     $upstreamRepoForSplit = (Resolve-Path $UpstreamRepo).Path
+    # When using a local cache repo, also resolve to its remote default branch
+    # instead of using its current HEAD, which may be stale after fetch
+    $upstreamSplitRef = Resolve-RemoteDefaultRef -Repo $upstreamRepoForSplit
 }
 
 $dirtyStatus = Get-DirtyStatus -Repo $repoRoot
