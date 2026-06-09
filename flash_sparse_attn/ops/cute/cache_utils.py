@@ -17,7 +17,7 @@ import cutlass
 import cutlass.cute as cute
 import tvm_ffi
 from cutlass.cutlass_dsl import JitCompiledFunction
-from flash_attn.cute.fa_logging import fa_log
+from flash_sparse_attn.ops.cute.fa_logging import fa_log
 
 # Pre-load cute DSL runtime libraries with RTLD_GLOBAL so that their symbols
 # (e.g. _cudaLibraryLoadData) are visible to .so modules loaded later via dlopen.
