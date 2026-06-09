@@ -16,7 +16,7 @@ TEMP_WORKTREE_BRANCH=""
 PREPARE_MERGE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_attn.cute before subtree merge"
 MERGE_COMMIT_MESSAGE="Merge upstream CuTe subtree updates"
 REWRITE_COMMIT_MESSAGE="Rewrite vendored CuTe namespace to flash_sparse_attn.ops.cute"
-MERGE_CONFLICT_OPTION="ours"
+MERGE_CONFLICT_OPTION="theirs"
 UPSTREAM_SPLIT_REF="HEAD"
 
 usage() {
@@ -478,6 +478,10 @@ else
 fi
 
 if is_git_remote_spec "$UPSTREAM_REPO"; then
+    UPSTREAM_SPLIT_REF="$(resolve_remote_default_ref "$UPSTREAM_REPO_FOR_SPLIT")"
+else
+    # When using a local cache repo, also resolve to its remote default branch
+    # instead of using its current HEAD, which may be stale after fetch
     UPSTREAM_SPLIT_REF="$(resolve_remote_default_ref "$UPSTREAM_REPO_FOR_SPLIT")"
 fi
 
