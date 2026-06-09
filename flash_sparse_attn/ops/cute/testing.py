@@ -416,7 +416,7 @@ def attention_ref(
             torch.logical_or(local_mask, chunk_mask) if local_mask is not None else chunk_mask
         )
     if gather_kv_indices is not None:
-        batch = q.shape[0]
+        batch = q_shape[0]
         topk_len = gather_kv_indices.shape[2]
         if topk_len < seqlen_k:
             topk_index_mask = torch.full(

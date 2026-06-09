@@ -913,9 +913,15 @@ class FlashAttentionBackwardSm80:
         if cutlass.const_expr(self.score_mod is not None):
             for r in cutlass.range(cute.size(acc_S_mn, mode=[0]), unroll_full=True):
                 acc_S_mn[r, None].store(
-                    self.score_mod(
+                    call_score_mod(
+                        self.score_mod,
                         acc_S_mn[r, None].load() * softmax_scale,
-                        0, 0, 0, 0, None, [],
+                        0,
+                        0,
+                        0,
+                        0,
+                        None,
+                        aux_data,
                     )
                 )
         if cutlass.const_expr(mask_fn is not None):
@@ -951,10 +957,16 @@ class FlashAttentionBackwardSm80:
         for r in cutlass.range(cute.size(acc_dP_mn, mode=[0]), unroll_full=True):
             grad_val = acc_S_mn[r, None].load() * (acc_dP_mn[r, None].load() - tLSErdPsum[r])
             if cutlass.const_expr(self.score_mod_bwd is not None):
-                grad_val = self.score_mod_bwd(
+                grad_val = call_score_mod_bwd(
+                    self.score_mod_bwd,
                     grad_val,
                     acc_S_pre_mn[r, None].load() * softmax_scale,
-                    0, 0, 0, 0, None, [],
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    aux_data,
                 )
             acc_dP_mn[r, None].store(grad_val)
         # if cute.arch.thread_idx()[0] == 0 and cute.arch.block_idx()[0] == bidx: cute.print_tensor(acc_dP_mn)

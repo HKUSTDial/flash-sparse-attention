@@ -6,7 +6,8 @@ import enum
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Int32, Uint32, const_expr, Boolean
+from cutlass import Float32, Int32, Uint32, const_expr
+from cutlass.cutlass_dsl import min as dsl_min
 
 from quack import layout_utils
 import flash_attn.cute.utils as utils
@@ -433,7 +434,7 @@ class AttentionMask:
         mask_mod: cutlass.Constexpr[Callable],
         batch_idx: Int32,
         head_idx: Int32,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
         head_divmod=None,
         check_q_boundary: bool = False,
@@ -466,23 +467,24 @@ class AttentionMask:
                 mask_row = global_row
 
             mask_row_for_mod = mask_row
-            if const_expr(has_fastdiv and aux_tensors is not None):
+            if const_expr(has_fastdiv and aux_data.tensors is not None):
                 if check_q_boundary:
                     _, mask_row_for_mod = divmod(mask_row, fastdiv_mods[0])
             global_col_for_mod = global_col
-            if const_expr(has_fastdiv and mask_seqlen and aux_tensors is not None):
+            if const_expr(has_fastdiv and mask_seqlen and aux_data.tensors is not None):
                 _, global_col_for_mod = divmod(global_col, fastdiv_mods[1])
 
             head_idx_ssa = utils.scalar_to_ssa(head_idx_for_mod, cutlass.Int32)
             mask_row_ssa = utils.scalar_to_ssa(mask_row_for_mod, cutlass.Int32)
             kv_idx_ssa = utils.scalar_to_ssa(global_col_for_mod, cutlass.Int32)
-            mask_value = mask_mod(
+            mask_value = call_mask_mod(
+                mask_mod,
                 batch_idx_ssa,
                 head_idx_ssa,
                 mask_row_ssa,
                 kv_idx_ssa,
                 self.seqlen_info,
-                aux_tensors,
+                aux_data,
             )
             cond = cutlass.Boolean(utils.ssa_to_scalar(mask_value))
             acc_S[i] = acc_S[i] if cond else -Float32.inf
@@ -503,7 +505,7 @@ class AttentionMask:
         batch_idx: Int32,
         head_idx: Int32,
         vec_size: cutlass.Constexpr[int],
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
         head_divmod=None,
         check_q_boundary: bool = False,
@@ -544,7 +546,7 @@ class AttentionMask:
                 head_idx_for_mod = head_idx
                 mask_row = global_row
             mask_row_for_mod = mask_row
-            if const_expr(has_fastdiv and aux_tensors is not None):
+            if const_expr(has_fastdiv and aux_data.tensors is not None):
                 if check_q_boundary:
                     _, mask_row_for_mod = divmod(mask_row, fastdiv_mods[0])
 
@@ -562,19 +564,20 @@ class AttentionMask:
                 col_j_coord = tScS_t2r[i + j][1] if not self.swap_AB else tScS_t2r[i + j][0]
                 col_j_global = col_j_coord + n_block * self.tile_n
                 col_j_for_mod = col_j_global
-                if const_expr(has_fastdiv and mask_seqlen and aux_tensors is not None):
+                if const_expr(has_fastdiv and mask_seqlen and aux_data.tensors is not None):
                     _, col_j_for_mod = divmod(col_j_global, fastdiv_mods[1])
                 kv_idx_vec[j] = col_j_for_mod
             kv_idx_ssa = kv_idx_vec.load()
 
             # mask_value is already bit-packed by the vectorized mask_mod.
-            mask_value = mask_mod(
+            mask_value = call_mask_mod(
+                mask_mod,
                 batch_idx_ssa_call,
                 head_idx_ssa,
                 mask_row_ssa,
                 kv_idx_ssa,
                 self.seqlen_info,
-                aux_tensors,
+                aux_data,
             )
 
             # For vec_size < 32, multiple mask_mod calls fill one R2P chunk.
@@ -651,7 +654,7 @@ class AttentionMask:
                 for j in cutlass.range_constexpr(32):
                     curr_col = col_start + j
                     mask = (curr_mask_val >> j) & 1
-                    acc_S[curr_col] = acc_S[curr_col] if Boolean(mask) else -Float32.inf
+                    acc_S[curr_col] = acc_S[curr_col] if cutlass.Boolean(mask) else -Float32.inf
 
         elif const_expr(not mask_causal and not mask_local and mask_mod is None):
             if const_expr(mask_seqlen):
@@ -685,7 +688,7 @@ class AttentionMask:
                     mask_mod,
                     batch_idx,
                     head_idx,
-                    aux_tensors,
+                    aux_data,
                     fastdiv_mods,
                     head_divmod,
                     check_q_boundary,
@@ -701,7 +704,7 @@ class AttentionMask:
                     batch_idx,
                     head_idx,
                     vec_size,
-                    aux_tensors,
+                    aux_data,
                     fastdiv_mods,
                     head_divmod,
                     check_q_boundary,

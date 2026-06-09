@@ -67,25 +67,30 @@ from flash_attn.cute.tile_scheduler import (
 )
 from flash_attn.cute.fa_logging import fa_log, fa_printf
 from flash_attn.cute.utils import smid
+from flash_attn.cute.utils import AuxData
 
 # === TUNING KNOBS (agent-editable) ===
 # Keys: (use_2cta_instrs: bool, is_causal: bool, head_dim_padded: int, is_sm103: bool)
 # Values:
 #   ex2_emu_freq: int — how often to use emulated exp2 (0=all hardware exp2, higher=more emulation).
 #                        SM103 has fast native exp2, so set freq=0 there.
+#   ex2_emu_res: int — (hd256 only) number of fragment-pairs per freq period to emulate.
 #   ex2_emu_start_frg: int — fragment index to start emulation from
 #   num_regs_softmax: int — register count for softmax warps (multiple of 8)
 #   num_regs_correction: int — register count for correction warps (multiple of 8)
 #   num_regs_other is derived: 512 - num_regs_softmax * 2 - num_regs_correction
+#                  (hd256 exception: num_regs_other is fixed at 32, not derived)
 _TUNING_CONFIG = {
-    (True, False, 128, False): {'ex2_emu_freq': 10, 'ex2_emu_start_frg': 1, 'num_regs_softmax': 176, 'num_regs_correction': 88},
-    (False, True, 128, False): {'ex2_emu_freq': 16, 'ex2_emu_start_frg': 1, 'num_regs_softmax': 192, 'num_regs_correction': 72},
+    (True, False, 128, False): {"ex2_emu_freq": 10, "ex2_emu_start_frg": 1, "num_regs_softmax": 176, "num_regs_correction": 88},
+    (False, True, 128, False): {"ex2_emu_freq": 16, "ex2_emu_start_frg": 1, "num_regs_softmax": 192, "num_regs_correction": 72},
     (True, False, 192, False): {"ex2_emu_freq": 16, "ex2_emu_start_frg": 0, "num_regs_softmax": 184, "num_regs_correction": 80},
     (False, True, 192, False): {"ex2_emu_freq": 32, "ex2_emu_start_frg": 1, "num_regs_softmax": 192, "num_regs_correction": 72},
     (True, False, 128, True): {"ex2_emu_freq": 0, "ex2_emu_start_frg": 0, "num_regs_softmax": 176, "num_regs_correction": 80},
     (False, True, 128, True): {"ex2_emu_freq": 0, "ex2_emu_start_frg": 0, "num_regs_softmax": 176, "num_regs_correction": 64},
     (True, False, 192, True): {"ex2_emu_freq": 0, "ex2_emu_start_frg": 0, "num_regs_softmax": 176, "num_regs_correction": 64},
     (False, True, 192, True): {"ex2_emu_freq": 0, "ex2_emu_start_frg": 0, "num_regs_softmax": 176, "num_regs_correction": 72},
+    (True, False, 256, False): {"ex2_emu_freq": 14, "ex2_emu_res": 6, "ex2_emu_start_frg": 0, "num_regs_softmax": 256, "num_regs_correction": 160},
+    (True, True, 256, False): {"ex2_emu_freq": 14, "ex2_emu_res": 6, "ex2_emu_start_frg": 0, "num_regs_softmax": 256, "num_regs_correction": 160},
 }
 _FP8_TUNING_CONFIG = {
     (True, False, 128, False): {'ex2_emu_freq': 10, 'ex2_emu_start_frg': 1, 'num_regs_softmax': 160, 'num_regs_correction': 72},
@@ -193,7 +198,11 @@ class FlashAttentionForwardSm100:
         self.mask_vec_size: cutlass.Constexpr = getattr(mask_mod, "__vec_size__", 1)
         # Does S1 need to wait for S0 to finish
         # self.s0_s1_barrier = self.head_dim_padded in [64, 96] and (not self.is_causal and not self.is_local)
-        is_sm103 = self.arch >= Arch.sm_103 and self.arch <= Arch.sm_103f
+        # NOTE: is_family_of also matches any future sm_10x with x > 3 — intentional.
+        # The flag gates ex2 emulation; sm_103 (B300) has fast hardware ex2 and later
+        # Blackwell variants are assumed to inherit this, so forward-inclusion is correct
+        # despite the literal `is_sm103` name.
+        is_sm103 = self.arch.is_family_of(Arch.sm_103f)
         self.is_sm103 = is_sm103
         # enable_ex2_emu is derived: True if tuning config has freq > 0, else fallback to default logic
         _default_enable_ex2_emu = (self.head_dim_padded <= 128 or (self.head_dim_padded == 192 and self.use_2cta_instrs and not self.is_causal and not self.is_local)) and not is_sm103
@@ -274,8 +283,6 @@ class FlashAttentionForwardSm100:
         if self.use_correction_warps_for_epi:
             self.empty_warp_ids = self.empty_warp_ids + self.epilogue_warp_ids
             self.epilogue_warp_ids = self.correction_warp_ids
-
-        self.clc_scheduler_warp_id = self.empty_warp_ids[0] if self.use_clc_scheduler else None
 
         self.clc_scheduler_warp_id = self.empty_warp_ids[0] if self.use_clc_scheduler else None
 
@@ -452,13 +459,6 @@ class FlashAttentionForwardSm100:
                     self.num_regs_correction = fp8_tune["num_regs_correction"]
                     self.num_regs_other = 512 - self.num_regs_softmax * 2 - self.num_regs_correction
         self._setup_attributes()
-        self.use_tma_O = (
-            self.arch >= Arch.sm_90
-            and mCuSeqlensQ is None
-            and mSeqUsedQ is None
-            and not (self.pack_gqa and self.m_block_size % self.qhead_per_kvhead != 0)
-            and not (self.pack_gqa and self.is_split_kv)
-        )
         self.ex2_emu_freq = 0
         self.ex2_emu_start_frg = self._tune.get("ex2_emu_start_frg", 1)
         if const_expr(self.enable_ex2_emu):
@@ -1224,6 +1224,7 @@ class FlashAttentionForwardSm100:
                     num_splits,
                     SeqlenInfoCls,
                     mma_tile_coord_v,
+                    blocksparse_tensors=blocksparse_tensors,
                     tile_scheduler=tile_scheduler,
                 )
 
@@ -1257,7 +1258,7 @@ class FlashAttentionForwardSm100:
                 num_splits=num_splits,
                 SeqlenInfoCls=SeqlenInfoCls,
                 AttentionMaskCls=AttentionMaskCls,
-                aux_tensors=aux_tensors,
+                aux_data=aux_data,
                 fastdiv_mods=fastdiv_mods,
                 head_divmod=head_divmod,
                 blocksparse_tensors=blocksparse_tensors,
@@ -1595,8 +1596,8 @@ class FlashAttentionForwardSm100:
                 # idesc=qk_mma_idesc,
                 smem_desc_base_b=k_smem_base,
                 tCrB_layout=tSrK[None, None, None, 0].layout,
-                smem_var_name_prefix=f"fa_fwd_q_smem_desc",
-                idesc_var_name=f"fa_fwd_qk_mma_idesc",
+                smem_var_name_prefix="fa_fwd_q_smem_desc",
+                idesc_var_name="fa_fwd_qk_mma_idesc",
                 kind=qk_mma_kind,
                 smem_offset=-sQ_stage_stride if stage == 0 else sQ_stage_stride,
                 zero_init=True,
@@ -1862,7 +1863,7 @@ class FlashAttentionForwardSm100:
         softmax_scale_log2: Float32,
         softmax_scale: Float32 | None,
         descale_tensors: Optional[DescaleTensors],
-        thr_mma_qk: cute.core.ThrMma,
+        thr_mma_qk: cute.ThrMma,
         tStS: cute.Tensor,  # ((TILE_M, TILE_N), 1, 1, q_stage)
         sScale: cute.Tensor,
         mLSE: Optional[cute.Tensor],
@@ -1876,7 +1877,7 @@ class FlashAttentionForwardSm100:
         num_splits: Int32,
         SeqlenInfoCls: Callable,
         AttentionMaskCls: Callable,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
         head_divmod=None,
         blocksparse_tensors: Optional[BlockSparseTensors] = None,
@@ -1960,7 +1961,7 @@ class FlashAttentionForwardSm100:
                 mask_local=self.is_local,
                 batch_idx=batch_idx,
                 head_idx=head_idx,
-                aux_tensors=aux_tensors,
+                aux_data=aux_data,
                 vec_size=self.mask_vec_size,
             )
 
@@ -2866,6 +2867,7 @@ class FlashAttentionForwardSm100:
         num_splits: int,
         SeqlenInfoCls: Callable,
         mma_tile_coord_v: Int32 = 0,
+        blocksparse_tensors: Optional[BlockSparseTensors] = None,
         tile_scheduler=None,
     ):
         epi_consumer_phase = Int32(0)

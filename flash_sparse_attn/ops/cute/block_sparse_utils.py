@@ -18,6 +18,7 @@ from quack import copy_utils
 from flash_attn.cute.block_sparsity import BlockSparseTensors
 from flash_attn.cute.named_barrier import NamedBarrierBwd
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute.utils import AuxData
 
 
 @cute.jit
