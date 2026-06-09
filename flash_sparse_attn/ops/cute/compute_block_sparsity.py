@@ -6,26 +6,26 @@ import cutlass.cute as cute
 import torch
 from cutlass import Boolean, Int8, Int32, const_expr
 
-from flash_attn.cute.block_sparsity import (
+from flash_sparse_attn.ops.cute.block_sparsity import (
     BlockSparseTensors,
     BlockSparseTensorsTorch,
     to_cute_block_sparse_tensors,
 )
-from flash_attn.cute.block_sparse_utils import get_curr_blocksparse_tensors
-from flash_attn.cute.testing import is_fake_mode
-from flash_attn.cute.cute_dsl_utils import (
+from flash_sparse_attn.ops.cute.block_sparse_utils import get_curr_blocksparse_tensors
+from flash_sparse_attn.ops.cute.testing import is_fake_mode
+from flash_sparse_attn.ops.cute.cute_dsl_utils import (
     to_cute_tensor,
     get_aux_tensor_metadata,
     to_cute_aux_tensor,
 )
-from flash_attn.cute.utils import (
+from flash_sparse_attn.ops.cute.utils import (
     hash_callable,
     scalar_to_ssa,
     ssa_to_scalar,
     get_batch_from_cu_tensor,
 )
-from flash_attn.cute.seqlen_info import SeqlenInfoQK
-from flash_attn.cute.utils import AuxData
+from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
+from flash_sparse_attn.ops.cute.utils import AuxData
 
 
 class BlockSparsityKernel:
