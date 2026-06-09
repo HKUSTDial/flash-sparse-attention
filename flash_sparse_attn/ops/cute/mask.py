@@ -12,9 +12,41 @@ from quack import layout_utils
 import flash_attn.cute.utils as utils
 from flash_attn.cute.block_info import BlockInfo
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute.utils import AuxData
 
 MaskGenFn: TypeAlias = Callable[[int], Uint32]
 MASK_R2P_CHUNK_SIZE: int = 32
+
+
+@cute.jit
+def call_mask_mod(
+    mask_mod: cutlass.Constexpr,
+    batch_idx,
+    head_idx,
+    q_idx,
+    kv_idx,
+    seqlen_info,
+    aux_data: AuxData,
+):
+    # Compatibility shim for pre-aux_scalars mask_mod callables.
+    if const_expr(aux_data.scalars is not None):
+        return mask_mod(
+            batch_idx,
+            head_idx,
+            q_idx,
+            kv_idx,
+            seqlen_info,
+            aux_data.tensors,
+            aux_data.scalars,
+        )
+    return mask_mod(
+        batch_idx,
+        head_idx,
+        q_idx,
+        kv_idx,
+        seqlen_info,
+        aux_data.tensors,
+    )
 
 
 @cute.jit
@@ -153,7 +185,7 @@ class AttentionMask:
         mask_causal: cutlass.Constexpr[bool],
         mask_local: cutlass.Constexpr[bool] = False,
         mask_mod: cutlass.Constexpr[Optional[Callable]] = None,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
     ) -> None:
         assert not (mask_causal and mask_local), "mask_causal and mask_local cannot be both True"
@@ -199,7 +231,7 @@ class AttentionMask:
                 and fastdiv_mods[1] is not None
             )
             wrap_aux_indices = const_expr(
-                has_fastdiv and mask_seqlen and const_expr(aux_tensors is not None)
+                has_fastdiv and mask_seqlen and const_expr(aux_data.tensors is not None)
             )
 
             for r in cutlass.range_constexpr(nrow):
@@ -228,13 +260,14 @@ class AttentionMask:
                     head_idx_ssa = utils.scalar_to_ssa(head_idx_for_mod, cutlass.Int32)
                     q_idx_ssa = utils.scalar_to_ssa(row_for_mod, cutlass.Int32)
                     kv_idx_ssa = utils.scalar_to_ssa(col_for_mod, cutlass.Int32)
-                    mask_value = mask_mod(
+                    mask_value = call_mask_mod(
+                        mask_mod,
                         batch_idx_ssa,
                         head_idx_ssa,
                         q_idx_ssa,
                         kv_idx_ssa,
                         self.seqlen_info,
-                        aux_tensors,
+                        aux_data,
                     )
                     cond = cutlass.Boolean(utils.ssa_to_scalar(mask_value))
                     if const_expr(mask_seqlen):
@@ -589,7 +622,7 @@ class AttentionMask:
         mask_mod: cutlass.Constexpr[Optional[Callable]] = None,
         batch_idx: Int32 = None,
         head_idx: Int32 = None,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
         head_divmod=None,
         vec_size: cutlass.Constexpr[int] = 1,
@@ -751,7 +784,7 @@ class AttentionMask:
         mask_mod: cutlass.Constexpr[Optional[Callable]] = None,
         batch_idx: Int32 = None,
         head_idx: Int32 = None,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
         is_full_block: bool = False,
         check_m_boundary: bool = True,
@@ -809,7 +842,7 @@ class AttentionMask:
                     and fastdiv_mods[1] is not None
                 )
                 wrap_aux_indices = const_expr(
-                    has_fastdiv and mask_seqlen and const_expr(aux_tensors is not None)
+                    has_fastdiv and mask_seqlen and const_expr(aux_data.tensors is not None)
                 )
                 batch_idx_ssa = utils.scalar_to_ssa(batch_idx, cutlass.Int32)
                 head_idx_ssa = utils.scalar_to_ssa(head_idx, cutlass.Int32)
@@ -830,13 +863,14 @@ class AttentionMask:
                     q_idx_ssa = utils.scalar_to_ssa(q_idx_for_mod, cutlass.Int32)
                     kv_idx_ssa = utils.scalar_to_ssa(kv_idx_for_mod, cutlass.Int32)
 
-                    mask_value = mask_mod(
+                    mask_value = call_mask_mod(
+                        mask_mod,
                         batch_idx_ssa,
                         head_idx_ssa,
                         q_idx_ssa,
                         kv_idx_ssa,
                         self.seqlen_info,
-                        aux_tensors,
+                        aux_data,
                     )
                     cond = cutlass.Boolean(utils.ssa_to_scalar(mask_value))
                     acc_S[i] = acc_S[i] if cond else -cutlass.Float32.inf
