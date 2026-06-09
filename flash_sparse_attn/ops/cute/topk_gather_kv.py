@@ -8,8 +8,8 @@ import cutlass.pipeline as pipeline
 from cutlass.cute.nvgpu import cpasync
 from cutlass import Int32, Uint32, const_expr, Boolean
 
-from flash_attn.cute import utils
-from flash_attn.cute.utils import warp_reduce
+from flash_sparse_attn.ops.cute import utils
+from flash_sparse_attn.ops.cute.utils import warp_reduce
 from quack.cute_dsl_utils import ParamsBase
 
 import math
