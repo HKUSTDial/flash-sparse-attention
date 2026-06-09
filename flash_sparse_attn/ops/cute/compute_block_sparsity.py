@@ -25,6 +25,7 @@ from flash_attn.cute.utils import (
     get_batch_from_cu_tensor,
 )
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute.utils import AuxData
 
 
 class BlockSparsityKernel:
@@ -224,13 +225,14 @@ class BlockSparsityKernel:
                 if tidx < 5:
                     thread_is_valid = Boolean(True)
                     thread_result = ssa_to_scalar(
-                        self.mask_mod(
+                        call_mask_mod(
+                            self.mask_mod,
                             ssa(batch_idx),
                             ssa(head_idx),
                             ssa(q_idx_sample),
                             ssa(kv_idx),
                             seqlen,
-                            aux_tensors,
+                            aux_data,
                         )
                     )
 
@@ -249,13 +251,14 @@ class BlockSparsityKernel:
                     if thread_in_bounds:
                         for c in cutlass.range(self.tile_mn[1], unroll_full=True):
                             mask_val = ssa_to_scalar(
-                                self.mask_mod(
+                                call_mask_mod(
+                                    self.mask_mod,
                                     ssa(batch_idx),
                                     ssa(head_idx),
                                     ssa(q_idx_thread),
                                     ssa(n_base + c),
                                     seqlen,
-                                    aux_tensors,
+                                    aux_data,
                                 )
                             )
                             thread_has_unmasked |= Boolean(mask_val)

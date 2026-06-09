@@ -11,7 +11,7 @@ import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 from cutlass.cute.nvgpu import cpasync, warp
-from cutlass import Float32, Int32
+from cutlass import Int32
 import cutlass.utils as utils_basic
 
 from quack import layout_utils
@@ -19,10 +19,12 @@ from flash_attn.cute import ampere_helpers as sm80_utils
 from flash_attn.cute.cute_dsl_utils import assume_tensor_aligned
 from flash_attn.cute import utils
 from flash_attn.cute.mask import AttentionMask
+from flash_attn.cute.softmax import call_score_mod, call_score_mod_bwd
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
 from quack.cute_dsl_utils import ParamsBase
 from flash_attn.cute.tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, TileSchedulerArguments
 from flash_attn.cute.block_sparsity import BlockSparseTensors
+from flash_attn.cute.utils import AuxData
 
 
 class FlashAttentionBackwardSm80:
@@ -167,13 +169,13 @@ class FlashAttentionBackwardSm80:
         else:
             if cutlass.const_expr(not (mdK_type == mdV_type == cutlass.Float32)):
                 raise TypeError("mdKaccum and mdVaccum tensors must have the data type Float32")
-        if cutlass.const_expr(not mQ_type in [cutlass.Float16, cutlass.BFloat16]):
+        if cutlass.const_expr(mQ_type not in [cutlass.Float16, cutlass.BFloat16]):
             raise TypeError("Only Float16 or BFloat16 is supported")
-        if cutlass.const_expr(not mLSE_type in [cutlass.Float32]):
+        if cutlass.const_expr(mLSE_type not in [cutlass.Float32]):
             raise TypeError("LSE tensor must be Float32")
-        if cutlass.const_expr(not mdPsum_type in [cutlass.Float32]):
+        if cutlass.const_expr(mdPsum_type not in [cutlass.Float32]):
             raise TypeError("dPsum tensor must be Float32")
-        if cutlass.const_expr(not mdQaccum_type in [cutlass.Float32]):
+        if cutlass.const_expr(mdQaccum_type not in [cutlass.Float32]):
             raise TypeError("dQaccum tensor must be Float32")
         if cutlass.const_expr(mCuSeqlensQ_type not in [None, cutlass.Int32]):
             raise TypeError("cuSeqlensQ tensor must be Int32")
@@ -387,7 +389,7 @@ class FlashAttentionBackwardSm80:
         mdQ_semaphore: Optional[cute.Tensor] = None,
         mdK_semaphore: Optional[cute.Tensor] = None,
         mdV_semaphore: Optional[cute.Tensor] = None,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         blocksparse_tensors: Optional[BlockSparseTensors] = None,
         # Always keep stream as the last parameter (EnvStream: obtained implicitly via TVM FFI).
         stream: cuda.CUstream = None,
@@ -470,6 +472,7 @@ class FlashAttentionBackwardSm80:
             SharedStorage,
             tile_sched_params,
             TileScheduler,
+            aux_data,
         ).launch(
             grid=grid_dim,
             block=[self.num_threads, 1, 1],
@@ -514,6 +517,7 @@ class FlashAttentionBackwardSm80:
         SharedStorage: cutlass.Constexpr,
         tile_sched_params: ParamsBase,
         TileScheduler: cutlass.Constexpr[Callable],
+        aux_data: AuxData = AuxData(),
     ):
         # Thread index, block index
         tidx, _, _ = cute.arch.thread_idx()
@@ -637,8 +641,8 @@ class FlashAttentionBackwardSm80:
             thr_mma_dq = tiled_mma_dq.get_slice(tidx)
             acc_shape_dK = thr_mma_dkv.partition_shape_C((self.n_block_size, self.head_dim_padded))
             acc_shape_dV = thr_mma_dkv.partition_shape_C((self.n_block_size, self.head_dim_v_padded))
-            acc_dK = cute.make_fragment(acc_shape_dK, cutlass.Float32)
-            acc_dV = cute.make_fragment(acc_shape_dV, cutlass.Float32)
+            acc_dK = cute.make_rmem_tensor(acc_shape_dK, cutlass.Float32)
+            acc_dV = cute.make_rmem_tensor(acc_shape_dV, cutlass.Float32)
             acc_dK.fill(0.0)
             acc_dV.fill(0.0)
 
@@ -779,6 +783,7 @@ class FlashAttentionBackwardSm80:
                 m_block_max=m_block_max,
                 softmax_scale=softmax_scale,
                 softmax_scale_log2=softmax_scale_log2,
+                aux_data=aux_data,
             )
 
             # ///////////////////////////////////////////////////////////////////////////////
@@ -868,6 +873,7 @@ class FlashAttentionBackwardSm80:
         m_block_max: cutlass.Int32,
         softmax_scale: cutlass.Float32,
         softmax_scale_log2: cutlass.Float32,
+        aux_data: AuxData = AuxData(),
         mask_fn: Optional[Callable] = None,
     ):
         def load_Q_next():
@@ -885,7 +891,7 @@ class FlashAttentionBackwardSm80:
         acc_shape_SdP = mma_params.thr_mma_sdp.partition_shape_C(
             (self.m_block_size, self.n_block_size) if cutlass.const_expr(not self.SdP_swapAB) else (self.n_block_size, self.m_block_size)
         )
-        acc_S = cute.make_fragment(acc_shape_SdP, cutlass.Float32)
+        acc_S = cute.make_rmem_tensor(acc_shape_SdP, cutlass.Float32)
         acc_S.fill(0.0)
         cute.arch.cp_async_wait_group(1 if cutlass.const_expr(self.num_stages_Q > 1) else 0)
         cute.arch.barrier()
@@ -923,7 +929,7 @@ class FlashAttentionBackwardSm80:
         # if cute.arch.thread_idx()[0] == 0 and cute.arch.block_idx()[0] == bidx: cute.print_tensor(acc_S_mn)
 
         # MMA dP
-        acc_dP = cute.make_fragment(acc_shape_SdP, cutlass.Float32)
+        acc_dP = cute.make_rmem_tensor(acc_shape_SdP, cutlass.Float32)
         acc_dP.fill(0.0)
         cute.arch.cp_async_wait_group(1 if cutlass.const_expr(self.num_stages_dO > 1) else 0)
         cute.arch.barrier()
@@ -987,7 +993,7 @@ class FlashAttentionBackwardSm80:
             acc_shape_dQ = mma_params.thr_mma_dq.partition_shape_C(
                 (self.m_block_size, self.head_dim_padded) if cutlass.const_expr(not self.dQ_swapAB) else (self.head_dim_padded, self.m_block_size)
             )
-            acc_dQ = cute.make_fragment(acc_shape_dQ, cutlass.Float32)
+            acc_dQ = cute.make_rmem_tensor(acc_shape_dQ, cutlass.Float32)
             acc_dQ.fill(0.0)
             sm80_utils.gemm(
                 mma_params.thr_mma_dq, acc_dQ, mma_params.tdQrdS, mma_params.tdQrK,
