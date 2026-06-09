@@ -23,7 +23,7 @@ from cutlass.cute.typing import Int32
 from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
 
 from cutlass.utils import ClcDynamicPersistentTileScheduler
-from flash_sparse_attn.ops.cute.tile_scheduler import (
+from flash_attn.cute.tile_scheduler import (
     ClcState,
     SM100_TMEM_CAPACITY_COLUMNS,
     make_sm100_thread_cooperative_group as make_thread_cooperative_group,
@@ -32,7 +32,7 @@ from flash_sparse_attn.ops.cute.tile_scheduler import (
     Sm100FmhaStaticTileSchedulerParams as FmhaStaticTileSchedulerParams,
 )
 
-import flash_sparse_attn.ops.cute.copy_utils as fa_copy_utils
+import flash_attn.cute.copy_utils as fa_copy_utils
 
 LAYOUT_RANK_CONSTANT = 3
 
