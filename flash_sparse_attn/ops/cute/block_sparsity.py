@@ -195,23 +195,6 @@ def get_sparse_q_block_size(
     return min_block_size
 
 
-def get_sparse_q_block_size(
-    tensors: BlockSparseTensorsTorch | None,
-    seqlen_q: int,
-) -> int | None:
-    """Return the Q sparse block size, or None when sparsity is unset or ambiguous."""
-    if tensors is None:
-        return None
-    if tensors.block_size is not None:
-        return tensors.block_size[0]
-    num_m_blocks = tensors.mask_block_idx.shape[2]
-    min_block_size = ceildiv(seqlen_q, num_m_blocks)
-    max_block_size = seqlen_q if num_m_blocks == 1 else (seqlen_q - 1) // (num_m_blocks - 1)
-    if min_block_size != max_block_size:
-        return None
-    return min_block_size
-
-
 def _expand_sparsity_tensor(
     tensor: torch.Tensor,
     expected_shape: Tuple[int, ...],
@@ -652,19 +635,7 @@ def to_cute_block_sparse_tensors(
     """Convert torch block sparsity tensors to CuTe tensors, optionally for tvm ffi"""
     if not is_block_sparsity_enabled(tensors):
         return None
-
-    (
-        mask_block_cnt,
-        mask_block_idx,
-        full_block_cnt,
-        full_block_idx,
-        *_,
-    ) = tensors
-
-    (
-        mask_block_cnt_tensor,
-        mask_block_idx_tensor,
-    ) = [
+    mask_block_cnt_tensor, mask_block_idx_tensor = [
         to_cute_tensor(t, assumed_align=4, leading_dim=-1, enable_tvm_ffi=enable_tvm_ffi)
         for t in (tensors.mask_block_cnt, tensors.mask_block_idx)
     ]

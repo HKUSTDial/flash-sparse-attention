@@ -4,7 +4,8 @@ import math
 import hashlib
 import inspect
 import os
-from typing import Type, Callable, Optional, Tuple, overload
+from functools import partial
+from typing import Type, Callable, Optional, Tuple, overload, NamedTuple
 
 import cutlass
 import cutlass.cute as cute
@@ -91,8 +92,11 @@ def _get_use_clc_scheduler_default() -> bool:
     return _fa_clc_enabled
 
 
-def _get_disable_2cta_default() -> bool:
-    return _fa_disable_2cta_enabled or _fa_disable_2cta_cuda12
+def _get_disable_2cta_default(is_fwd: bool = False) -> bool:
+    if is_fwd:
+        return _fa_disable_2cta_enabled or _fa_disable_2cta_cuda12
+    else:
+        return _fa_disable_2cta_enabled
 
 
 def _compute_base_hash(func: Callable) -> str:

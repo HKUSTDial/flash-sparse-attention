@@ -1154,7 +1154,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
                 n_block,
                 softmax_scale=softmax.softmax_scale,
                 seqlen=seqlen,
-                aux_tensors=aux_tensors,
+                aux_data=aux_data,
                 fastdiv_mods=fastdiv_mods,
             )
 
@@ -1203,7 +1203,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         n_block,
         softmax_scale,
         seqlen,
-        aux_tensors: Optional[list] = None,
+        aux_data: AuxData = AuxData(),
         fastdiv_mods=None,
     ):
         # Prepare index tensor
@@ -1218,9 +1218,9 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             batch_idx,
             head_idx,
             softmax_scale,
-            self.vec_size,
+            self.score_vec_size,
             self.qk_acc_dtype,
-            aux_tensors,
+            aux_data,
             fastdiv_mods,
             seqlen_info=seqlen,
             constant_q_idx=None,
