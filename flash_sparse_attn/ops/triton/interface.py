@@ -146,7 +146,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 30)
 
 
 class FlashDenseAttnVarlenFunc(torch.autograd.Function):
@@ -291,7 +291,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 30)
 
 
 class FlashSparseAttnFunc(torch.autograd.Function):
@@ -400,7 +400,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 30)
 
 
 class FlashSparseAttnVarlenFunc(torch.autograd.Function):
@@ -549,7 +549,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             skip_checks=ctx.skip_checks,
         )
 
-        return dq, dk, dv, *((None,) * 20)
+        return dq, dk, dv, *((None,) * 30)
 
 
 class FlashGatedAttnFunc(torch.autograd.Function):
@@ -686,7 +686,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         da = da.transpose(-2, -1).contiguous()
         dd = dd.transpose(-2, -1).contiguous()
 
-        return dq, dk, dv, da, dd, *((None,) * 20)
+        return dq, dk, dv, da, dd, *((None,) * 30)
 
 
 class FlashGatedAttnVarlenFunc(torch.autograd.Function):
@@ -867,7 +867,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         da = da.transpose(-2, -1).contiguous()
         dd = dd.transpose(-2, -1).contiguous()
 
-        return dq, dk, dv, da, dd, *((None,) * 20)
+        return dq, dk, dv, da, dd, *((None,) * 30)
 
 
 class FlashProjFunc(torch.autograd.Function):
