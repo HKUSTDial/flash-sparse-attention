@@ -73,7 +73,10 @@ def _fwd_inner_dense_kernel(
     v_tile = ptrs_sched.load_v(config, v_ptrs, n_block)
 
     # Rescale output accumulator
-    acc_o = softmax_sched.rescale_o(acc_o, row_scale)
+    acc_o = softmax_sched.rescale_o(
+        acc_o=acc_o,
+        row_scale=row_scale,
+    )
 
     # Update output accumulator
     acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -239,13 +242,13 @@ def _fwd_dense_kernel(
     k_ptrs = ptrs_sched.make_k_ptrs(config)
     v_ptrs = ptrs_sched.make_v_ptrs(config)
 
-    # Load query tile
-    q_tile = ptrs_sched.load_q(config, q_ptrs)
-
     # Initialize accumulators
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
+
+    # Load query tile
+    q_tile = ptrs_sched.load_q(config, q_ptrs)
 
     # Load key tile
     k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_max - 1)
@@ -333,6 +336,7 @@ def _fwd_dense_kernel(
     if IS_LOCAL:
         # Process n_blocks with local right masking
         if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
+            # Load key tile
             k_tile = ptrs_sched.load_k(
                 config, k_ptrs, block_sched.n_block_window_max - 1
             )
@@ -367,6 +371,7 @@ def _fwd_dense_kernel(
             block_sched.n_block_window_max_no_mask
             > block_sched.n_block_window_min_no_mask
         ):
+            # Load key tile
             k_tile = ptrs_sched.load_k(
                 config, k_ptrs, block_sched.n_block_window_max_no_mask - 1
             )
@@ -398,6 +403,7 @@ def _fwd_dense_kernel(
 
         # Process n_blocks with local left masking
         if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
+            # Load key tile
             k_tile = ptrs_sched.load_k(
                 config, k_ptrs, block_sched.n_block_window_min_no_mask - 1
             )
@@ -429,14 +435,19 @@ def _fwd_dense_kernel(
 
     # Finalize softmax
     row_scale, lse_tile = softmax_sched.finalize(
-        row_max=row_max, row_sum=row_sum, IS_LOG2=IS_SPLIT_KV
+        row_max=row_max,
+        row_sum=row_sum,
+        IS_LOG2=IS_SPLIT_KV,
     )
 
     # Store LSE
     ptrs_sched.store_lse(config, lse_ptrs, lse_tile)
 
     # Finalize rescale
-    acc_o = softmax_sched.rescale_o(acc_o, row_scale)
+    acc_o = softmax_sched.rescale_o(
+        acc_o=acc_o,
+        row_scale=row_scale,
+    )
 
     # Store output
     ptrs_sched.store_out(config, out_ptrs, acc_o, IS_SPLIT_KV=IS_SPLIT_KV)
