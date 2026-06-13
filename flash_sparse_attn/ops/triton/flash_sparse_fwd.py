@@ -1,6 +1,5 @@
 from typing import Tuple, Optional
 
-import math
 import torch
 import triton
 import triton.language as tl
@@ -11,38 +10,36 @@ from flash_sparse_attn.ops.triton import (
     cache_utils,
     launch_template,
     launch_grid,
-    seqlen_info,
-    block_info,
-    activations,
-    mask,
     flash_fwd_combine,
     kernel_repr,
     autotuner,
+)
+from flash_sparse_attn.ops.triton.scheduler import (
+    AttnFwdGridIndex,
+    AttnFwdConfig,
+    AttnFwdBlockScheduler,
+    AttnFwdPointerScheduler,
+    AttnMaskScheduler,
+    SoftmaxScheduler,
 )
 
 
 @triton.jit
 def _fwd_inner_sparse_kernel(
+    config: AttnFwdConfig,
+    ptrs_sched: AttnFwdPointerScheduler,
+    mask_sched: AttnMaskScheduler,
+    softmax_sched: SoftmaxScheduler,
     q_tile,
     k_tile,
-    k_desc,
-    v_desc,
+    k_ptrs,
+    v_ptrs,
     acc_o,
     row_max,
     row_sum,
     block_max,
-    softmax_scale_log2,
-    softmax_threshold_log2,
-    m_block,
     n_block,
     n_block_min,
-    actual_seqlen_q,
-    actual_seqlen_k,
-    window_size_left,
-    window_size_right,
-    TILE_M: tl.constexpr,
-    TILE_N: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
@@ -54,46 +51,34 @@ def _fwd_inner_sparse_kernel(
     # Prefetch next key tile
     if n_block > n_block_min:
         # Load next key tile
-        k_tile = k_desc.load([(n_block - 1) * TILE_N, 0])
+        k_tile = ptrs_sched.load_k(config, k_ptrs, n_block - 1)
 
     if IS_MASK:
         # Apply mask to attention scores
-        acc_s = mask.apply_mask(
+        acc_s = mask_sched.apply_mask(
             acc_s=acc_s,
-            m_block=m_block,
-            n_block=n_block,
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
-            MASK_SEQLEN=True,
+            iter_block=n_block,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-            SWAP_AB=False,
         )
 
-    # Apply online softmax
+    # Apply online sparse softmax
     p, block_max, row_max, row_sum, row_scale, skip_softmax = (
-        activations.online_sparse_softmax(
+        softmax_sched.online_sparse_softmax(
             acc_s=acc_s,
             block_max=block_max,
             row_max=row_max,
             row_sum=row_sum,
-            scale_log2=softmax_scale_log2,
-            softmax_threshold_log2=softmax_threshold_log2,
             CHECK_INF=CHECK_INF,
         )
     )
 
     if not skip_softmax:
         # Load value tile
-        v_tile = v_desc.load([n_block * TILE_N, 0])
+        v_tile = ptrs_sched.load_v(config, v_ptrs, n_block)
 
         # Rescale output accumulator
-        acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+        acc_o = softmax_sched.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
 
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
@@ -108,7 +93,7 @@ def _fwd_sparse_kernel(
     V,
     Out,
     Lse,
-    softmax_scale_log2,
+    softmax_scale,
     softmax_threshold,
     query_scale,
     key_scale,
@@ -142,6 +127,7 @@ def _fwd_sparse_kernel(
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
     QHEAD_PER_KVHEAD: tl.constexpr,
+    PACK_GQA: tl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
@@ -153,274 +139,115 @@ def _fwd_sparse_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
-    PACK_GQA: tl.constexpr,
 ):
-    m_block = tl.program_id(0)
-    head_idx = tl.program_id(1)
-    batch_split_idx = tl.program_id(2)
-    if IS_SPLIT_KV:
-        batch_idx = batch_split_idx // num_splits
-        split_idx = batch_split_idx - batch_idx * num_splits
-    else:
-        batch_idx = batch_split_idx
-        split_idx = 0
-    if PACK_GQA:
-        head_kv_idx = head_idx
-    else:
-        head_kv_idx = head_idx // QHEAD_PER_KVHEAD
+    # Create grid index
+    grid_idx = AttnFwdGridIndex.create(
+        num_splits=num_splits,
+        QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
+        IS_SPLIT_KV=IS_SPLIT_KV,
+        PACK_GQA=PACK_GQA,
+    )
 
-    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-    offs_kb = tl.arange(0, TILE_K)
+    # Load window sizes
+    window_size_left, window_size_right = grid_idx.load_window_sizes(
+        window_sizes=window_sizes,
+        stride_wh=stride_wh,
+        IS_LOCAL=IS_LOCAL,
+    )
 
-    # Get seqlen info for this batch
-    (
-        offset_q,
-        offset_k,
-        padded_offset_q,
-        padded_offset_k,
-        actual_seqlen_q,
-        actual_seqlen_k,
-    ) = seqlen_info.get_seqlen_info_qk(
-        batch_idx=batch_idx,
-        seqlen_q_static=seqlen_q,
-        seqlen_k_static=seqlen_k,
+    # Create config
+    config = AttnFwdConfig.create(
+        softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
+        m_block=grid_idx.m_block,
+        batch_idx=grid_idx.batch_idx,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+        head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         seqused_q=seqused_q,
         seqused_k=seqused_k,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        PACK_GQA=PACK_GQA,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
+        TILE_K=TILE_K,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
         HAS_SEQUSED_Q=HAS_SEQUSED_Q,
         HAS_SEQUSED_K=HAS_SEQUSED_K,
     )
 
-    # Initialize base pointers
-    q_base = seqlen_info.offset_batch_Q(
-        Q + head_idx * stride_qh if not PACK_GQA else Q,
-        batch_idx,
-        offset_q,
-        padded_offset_q,
-        stride_qb,
-        stride_qm,
-        HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
-    )
-    k_base = seqlen_info.offset_batch_K(
-        K + head_kv_idx * stride_kh,
-        batch_idx,
-        offset_k,
-        padded_offset_k,
-        stride_kb,
-        stride_kn,
-        HAS_CU_SEQLENS_K,
-        USE_PADDED=False,
-    )
-    v_base = seqlen_info.offset_batch_K(
-        V + head_kv_idx * stride_vh,
-        batch_idx,
-        offset_k,
-        padded_offset_k,
-        stride_vb,
-        stride_vn,
-        HAS_CU_SEQLENS_K,
-        USE_PADDED=False,
-    )
-    out_base = seqlen_info.offset_batch_Q(
-        Out + head_idx * stride_oh if not PACK_GQA else Out,
-        batch_idx,
-        offset_q,
-        padded_offset_q,
-        stride_ob,
-        stride_om,
-        HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
-    )
-    lse_base = seqlen_info.offset_batch_Q(
-        Lse + head_idx * stride_lh if not PACK_GQA else Lse,
-        batch_idx,
-        offset_q,
-        padded_offset_q,
-        stride_lb,
-        1,
-        HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
+    # Create pointer scheduler
+    ptrs_sched = AttnFwdPointerScheduler.create(
+        config=config,
+        Q=Q,
+        K=K,
+        V=V,
+        Out=Out,
+        Lse=Lse,
+        batch_idx=grid_idx.batch_idx,
+        head_idx=grid_idx.head_idx,
+        head_kv_idx=grid_idx.head_kv_idx,
+        split_idx=grid_idx.split_idx,
+        stride_qb=stride_qb,
+        stride_qh=stride_qh,
+        stride_qm=stride_qm,
+        stride_kb=stride_kb,
+        stride_kh=stride_kh,
+        stride_kn=stride_kn,
+        stride_vb=stride_vb,
+        stride_vh=stride_vh,
+        stride_vn=stride_vn,
+        stride_ob=stride_ob,
+        stride_oh=stride_oh,
+        stride_om=stride_om,
+        stride_os=stride_os,
+        stride_lb=stride_lb,
+        stride_lh=stride_lh,
+        stride_ls=stride_ls,
+        IS_SPLIT_KV=IS_SPLIT_KV,
+        HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
 
-    # For split KV, offset output and LSE base pointers by split_idx
-    if IS_SPLIT_KV:
-        out_base += split_idx * stride_os
-        lse_base += split_idx * stride_ls
-
-    # Load window sizes
-    if IS_LOCAL:
-        window_size_left = tl.load(window_sizes + head_kv_idx * stride_wh)
-        window_size_right = tl.load(window_sizes + head_kv_idx * stride_wh + 1)
-    else:
-        window_size_left = 0
-        window_size_right = 0
-
-    # Compute n_block range for this m_block
-    n_block_min, n_block_max, n_block_window_min, n_block_window_max = (
-        block_info.get_n_block_min_max(
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            m_block=m_block,
-            split_idx=split_idx,
-            num_splits=num_splits,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
-            TILE_N=TILE_N,
-            TILE_M=TILE_M,
-            IS_CAUSAL=IS_CAUSAL,
-            IS_LOCAL=IS_LOCAL,
-            IS_SPLIT_KV=IS_SPLIT_KV,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-        )
-    )
-    n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
-        seqlen_q=actual_seqlen_q,
-        seqlen_k=actual_seqlen_k,
-        m_block=m_block,
-        n_block_min=n_block_min,
-        window_size_right=0,
-        TILE_N=TILE_N,
-        TILE_M=TILE_M,
-        IS_LOCAL=False,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+    # Create block scheduler
+    block_sched = AttnFwdBlockScheduler.create(
+        config=config,
+        split_idx=grid_idx.split_idx,
+        num_splits=num_splits,
+        IS_CAUSAL=IS_CAUSAL,
+        IS_LOCAL=IS_LOCAL,
+        IS_SPLIT_KV=IS_SPLIT_KV,
     )
 
-    # Clamp to split's range so the no-mask loop stays within bounds
-    if IS_SPLIT_KV:
-        n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
+    # Create mask scheduler
+    mask_sched = AttnMaskScheduler.create(config)
 
-    # Create pointers or descriptors
-    if not PACK_GQA:
-        lse_desc = tl.make_tensor_descriptor(
-            base=lse_base,
-            shape=[actual_seqlen_q],
-            strides=[1],
-            block_shape=[TILE_M],
-        )
-        out_desc = tl.make_tensor_descriptor(
-            base=out_base,
-            shape=[actual_seqlen_q, head_dim],
-            strides=[stride_om, 1],
-            block_shape=[TILE_M, TILE_K],
-        )
-    else:
-        lse_ptrs = seqlen_info.make_pack_gqa_ptrs(
-            lse_base,
-            m_block,
-            head_idx,
-            stride_lh,
-            1,
-            TILE_M=TILE_M,
-            TILE_K=1,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-        )
-        out_ptrs = seqlen_info.make_pack_gqa_ptrs(
-            out_base,
-            m_block,
-            head_idx,
-            stride_oh,
-            stride_om,
-            TILE_M=TILE_M,
-            TILE_K=TILE_K,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-        )
+    # Create softmax scheduler
+    softmax_sched = SoftmaxScheduler.create(config)
+
+    # Create pointers
+    out_ptrs = ptrs_sched.make_out_ptrs(config)
+    lse_ptrs = ptrs_sched.make_lse_ptrs(config)
 
     # Early exit if no n_blocks to process
-    if n_block_min >= n_block_max:
-        # Write LSE as -inf for proper handling
-        lse_tile = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
-        if PACK_GQA:
-            tl.store(
-                lse_ptrs,
-                lse_tile,
-                mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
-                cache_modifier=".wb",
-            )
-        else:
-            lse_desc.store([m_block * TILE_M], lse_tile)
-
-        # Write output as zero for proper handling
-        o_tile = tl.zeros((TILE_M, TILE_K), dtype=Out.dtype.element_ty)
-        if PACK_GQA:
-            tl.store(
-                out_ptrs,
-                o_tile,
-                mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
-                & (offs_kb < head_dim)[None, :],
-                cache_modifier=".wb",
-            )
-        else:
-            out_desc.store([m_block * TILE_M, 0], o_tile)
+    if block_sched.is_empty():
+        ptrs_sched.store_empty(config, out_ptrs, lse_ptrs)
         return
 
-    if not PACK_GQA:
-        q_desc = tl.make_tensor_descriptor(
-            base=q_base,
-            shape=[actual_seqlen_q, head_dim],
-            strides=[stride_qm, 1],
-            block_shape=[TILE_M, TILE_K],
-        )
-    else:
-        q_ptrs = seqlen_info.make_pack_gqa_ptrs(
-            q_base,
-            m_block,
-            head_idx,
-            stride_qh,
-            stride_qm,
-            TILE_M=TILE_M,
-            TILE_K=TILE_K,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-        )
-    k_desc = tl.make_tensor_descriptor(
-        base=k_base,
-        shape=[actual_seqlen_k, head_dim],
-        strides=[stride_kn, 1],
-        block_shape=[TILE_N, TILE_K],
-    )
-    v_desc = tl.make_tensor_descriptor(
-        base=v_base,
-        shape=[actual_seqlen_k, head_dim],
-        strides=[stride_vn, 1],
-        block_shape=[TILE_N, TILE_K],
-    )
-
-    # Get softmax threshold
-    softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
-        softmax_threshold=softmax_threshold,
-        m_block=m_block,
-        seqlen_q=actual_seqlen_q,
-        seqlen_k=actual_seqlen_k,
-        IS_CAUSAL=IS_CAUSAL,
-        TILE_M=TILE_M,
-        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-    )
-
-    # Load query scale
-    q_scale = tl.load(query_scale)
-
-    # Load key scale
-    k_scale = tl.load(key_scale)
-
-    # Rescale softmax scale
-    softmax_scale_log2 = softmax_scale_log2 * q_scale * k_scale
+    q_ptrs = ptrs_sched.make_q_ptrs(config)
+    k_ptrs = ptrs_sched.make_k_ptrs(config)
+    v_ptrs = ptrs_sched.make_v_ptrs(config)
 
     # Load query tile
-    if PACK_GQA:
-        q_tile = tl.load(
-            q_ptrs,
-            mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
-            & (offs_kb < head_dim)[None, :],
-            other=0.0,
-            cache_modifier=".ca",
-        )
-    else:
-        q_tile = q_desc.load([m_block * TILE_M, 0])
+    q_tile = ptrs_sched.load_q(config, q_ptrs)
 
     # Initialize accumulators
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
@@ -429,32 +256,29 @@ def _fwd_sparse_kernel(
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load key tile
-    k_tile = k_desc.load([(n_block_max - 1) * TILE_N, 0])
+    k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_max - 1)
 
     # Process n_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
-        for n_block in tl.range(n_block_max - 1, n_block_max_no_mask - 1, -1):
+        n_block_max_no_mask = block_sched.n_block_max_no_mask
+        for n_block in tl.range(
+            block_sched.n_block_max - 1, block_sched.n_block_max_no_mask - 1, -1
+        ):
             k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                config=config,
+                ptrs_sched=ptrs_sched,
+                mask_sched=mask_sched,
+                softmax_sched=softmax_sched,
                 q_tile=q_tile,
                 k_tile=k_tile,
-                k_desc=k_desc,
-                v_desc=v_desc,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
                 acc_o=acc_o,
                 row_max=row_max,
                 row_sum=row_sum,
                 block_max=block_max,
-                softmax_scale_log2=softmax_scale_log2,
-                softmax_threshold_log2=softmax_threshold_log2,
-                m_block=m_block,
                 n_block=n_block,
-                n_block_min=n_block_max_no_mask,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                window_size_left=window_size_left,
-                window_size_right=window_size_right,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                n_block_min=block_sched.n_block_max_no_mask,
                 IS_MASK=True,
                 MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=True if IS_LOCAL else False,
@@ -462,64 +286,55 @@ def _fwd_sparse_kernel(
             )
     else:
         # First iteration with seqlen masking
-        n_block = n_block_max - 1
+        n_block = block_sched.n_block_max - 1
+        # Triton aggregate does not support attribute reassignment yet
+        # block_sched.n_block_max_no_mask = n_block
+        n_block_max_no_mask = n_block
 
         k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+            config=config,
+            ptrs_sched=ptrs_sched,
+            mask_sched=mask_sched,
+            softmax_sched=softmax_sched,
             q_tile=q_tile,
             k_tile=k_tile,
-            k_desc=k_desc,
-            v_desc=v_desc,
+            k_ptrs=k_ptrs,
+            v_ptrs=v_ptrs,
             acc_o=acc_o,
             row_max=row_max,
             row_sum=row_sum,
             block_max=block_max,
-            softmax_scale_log2=softmax_scale_log2,
-            softmax_threshold_log2=softmax_threshold_log2,
-            m_block=m_block,
             n_block=n_block,
             n_block_min=n_block,
-            actual_seqlen_q=actual_seqlen_q,
-            actual_seqlen_k=actual_seqlen_k,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
             IS_MASK=True,
             MASK_CAUSAL=False,
             MASK_LOCAL=False,
             CHECK_INF=True,
         )
 
-        n_block_max_no_mask = n_block_max - 1
-
     # Process n_blocks without masking
-    if not IS_LOCAL and n_block_max_no_mask > n_block_min:
+    if not IS_LOCAL and n_block_max_no_mask > block_sched.n_block_min:
         # Load key tile
-        k_tile = k_desc.load([(n_block_max_no_mask - 1) * TILE_N, 0])
+        k_tile = ptrs_sched.load_k(config, k_ptrs, n_block_max_no_mask - 1)
 
-        for n_block in tl.range(n_block_max_no_mask - 1, n_block_min - 1, -1):
+        for n_block in tl.range(
+            n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1
+        ):
             k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                config=config,
+                ptrs_sched=ptrs_sched,
+                mask_sched=mask_sched,
+                softmax_sched=softmax_sched,
                 q_tile=q_tile,
                 k_tile=k_tile,
-                k_desc=k_desc,
-                v_desc=v_desc,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
                 acc_o=acc_o,
                 row_max=row_max,
                 row_sum=row_sum,
                 block_max=block_max,
-                softmax_scale_log2=softmax_scale_log2,
-                softmax_threshold_log2=softmax_threshold_log2,
-                m_block=m_block,
                 n_block=n_block,
-                n_block_min=n_block_min,
-                actual_seqlen_q=actual_seqlen_q,
-                actual_seqlen_k=actual_seqlen_k,
-                window_size_left=window_size_left,
-                window_size_right=window_size_right,
-                TILE_M=TILE_M,
-                TILE_N=TILE_N,
-                QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                n_block_min=block_sched.n_block_min,
                 IS_MASK=False,
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
@@ -527,75 +342,33 @@ def _fwd_sparse_kernel(
             )
 
     if IS_LOCAL:
-        # Compute n_block range for this m_block
-        n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
-        n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
-        n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            m_block=m_block,
-            n_block_min=n_block_window_min,
-            window_size_right=window_size_right,
-            TILE_N=TILE_N,
-            TILE_M=TILE_M,
-            IS_LOCAL=True,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-        )
-        n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
-            seqlen_q=actual_seqlen_q,
-            seqlen_k=actual_seqlen_k,
-            m_block=m_block,
-            n_block_min=n_block_window_min,
-            window_size_left=window_size_left,
-            TILE_N=TILE_N,
-            TILE_M=TILE_M,
-            IS_LOCAL=True,
-            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
-        )
-        n_block_window_min_no_mask = tl.minimum(
-            n_block_window_min_no_mask, n_block_window_max_no_mask
-        )
-
-        # Clamp window no-mask boundaries to the split's assigned range
-        if IS_SPLIT_KV:
-            n_block_window_max_no_mask = tl.maximum(
-                tl.minimum(n_block_window_max_no_mask, n_block_window_max),
-                n_block_window_min,
-            )
-            n_block_window_min_no_mask = tl.maximum(
-                tl.minimum(n_block_window_min_no_mask, n_block_window_max),
-                n_block_window_min,
-            )
-
         # Process n_blocks with local right masking
-        if n_block_window_max > n_block_window_max_no_mask:
+        if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
             # Load key tile
-            k_tile = k_desc.load([(n_block_window_max - 1) * TILE_N, 0])
+            k_tile = ptrs_sched.load_k(
+                config, k_ptrs, block_sched.n_block_window_max - 1
+            )
 
             for n_block in tl.range(
-                n_block_window_max - 1, n_block_window_max_no_mask - 1, -1
+                block_sched.n_block_window_max - 1,
+                block_sched.n_block_window_max_no_mask - 1,
+                -1,
             ):
                 k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
                     q_tile=q_tile,
                     k_tile=k_tile,
-                    k_desc=k_desc,
-                    v_desc=v_desc,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
                     block_max=block_max,
-                    softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold_log2=softmax_threshold_log2,
-                    m_block=m_block,
                     n_block=n_block,
-                    n_block_min=n_block_window_max_no_mask,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    window_size_left=window_size_left,
-                    window_size_right=window_size_right,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    n_block_min=block_sched.n_block_window_max_no_mask,
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
@@ -603,34 +376,35 @@ def _fwd_sparse_kernel(
                 )
 
         # Process n_blocks without masking
-        if n_block_window_max_no_mask > n_block_window_min_no_mask:
+        if (
+            block_sched.n_block_window_max_no_mask
+            > block_sched.n_block_window_min_no_mask
+        ):
             # Load key tile
-            k_tile = k_desc.load([(n_block_window_max_no_mask - 1) * TILE_N, 0])
+            k_tile = ptrs_sched.load_k(
+                config, k_ptrs, block_sched.n_block_window_max_no_mask - 1
+            )
 
             for n_block in tl.range(
-                n_block_window_max_no_mask - 1, n_block_window_min_no_mask - 1, -1
+                block_sched.n_block_window_max_no_mask - 1,
+                block_sched.n_block_window_min_no_mask - 1,
+                -1,
             ):
                 k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
                     q_tile=q_tile,
                     k_tile=k_tile,
-                    k_desc=k_desc,
-                    v_desc=v_desc,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
                     block_max=block_max,
-                    softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold_log2=softmax_threshold_log2,
-                    m_block=m_block,
                     n_block=n_block,
-                    n_block_min=n_block_window_min_no_mask,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    window_size_left=window_size_left,
-                    window_size_right=window_size_right,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    n_block_min=block_sched.n_block_window_min_no_mask,
                     IS_MASK=False,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=False,
@@ -638,82 +412,51 @@ def _fwd_sparse_kernel(
                 )
 
         # Process n_blocks with local left masking
-        if n_block_window_min_no_mask > n_block_window_min:
+        if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
             # Load key tile
-            k_tile = k_desc.load([(n_block_window_min_no_mask - 1) * TILE_N, 0])
+            k_tile = ptrs_sched.load_k(
+                config, k_ptrs, block_sched.n_block_window_min_no_mask - 1
+            )
 
             for n_block in tl.range(
-                n_block_window_min_no_mask - 1, n_block_window_min - 1, -1
+                block_sched.n_block_window_min_no_mask - 1,
+                block_sched.n_block_window_min - 1,
+                -1,
             ):
                 k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
                     q_tile=q_tile,
                     k_tile=k_tile,
-                    k_desc=k_desc,
-                    v_desc=v_desc,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
                     block_max=block_max,
-                    softmax_scale_log2=softmax_scale_log2,
-                    softmax_threshold_log2=softmax_threshold_log2,
-                    m_block=m_block,
                     n_block=n_block,
-                    n_block_min=n_block_window_min,
-                    actual_seqlen_q=actual_seqlen_q,
-                    actual_seqlen_k=actual_seqlen_k,
-                    window_size_left=window_size_left,
-                    window_size_right=window_size_right,
-                    TILE_M=TILE_M,
-                    TILE_N=TILE_N,
-                    QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+                    n_block_min=block_sched.n_block_window_min,
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
                     CHECK_INF=True,
                 )
 
-    # Load value scale
-    v_scale = tl.load(value_scale)
-
     # Finalize softmax
-    row_scale, lse_tile = activations.finalize(
-        row_max=row_max,
-        row_sum=row_sum,
-        scale_log2=softmax_scale_log2,
-        final_scale=v_scale,
-        IS_LOG2=IS_SPLIT_KV,
-        CHECK_NAN=True,
+    row_scale, lse_tile = softmax_sched.finalize(
+        row_max=row_max, row_sum=row_sum, IS_LOG2=IS_SPLIT_KV
     )
 
     # Store LSE
-    if PACK_GQA:
-        tl.store(
-            lse_ptrs,
-            lse_tile,
-            mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q),
-            cache_modifier=".wb",
-        )
-    else:
-        lse_desc.store([m_block * TILE_M], lse_tile)
+    ptrs_sched.store_lse(config, lse_ptrs, lse_tile)
 
     # Finalize rescale
-    acc_o = activations.rescale_o(acc_o, row_scale, LAZY_RESCALE=False)
+    acc_o = softmax_sched.rescale_o(acc_o, row_scale)
 
     # Store output
-    # When IS_SPLIT_KV, store float32 partial results.
-    # Otherwise, convert back to input dtype.
-    if not IS_SPLIT_KV:
-        acc_o = acc_o.to(Out.dtype.element_ty)
-    if PACK_GQA:
-        tl.store(
-            out_ptrs,
-            acc_o,
-            mask=((offs_m // QHEAD_PER_KVHEAD_PACKGQA) < actual_seqlen_q)[:, None]
-            & (offs_kb < head_dim)[None, :],
-            cache_modifier=".wb",
-        )
-    else:
-        out_desc.store([m_block * TILE_M, 0], acc_o)
+    ptrs_sched.store_out(config, out_ptrs, acc_o, IS_SPLIT_KV=IS_SPLIT_KV)
 
 
 _fwd_sparse_kernel = cache_utils.wrap_kernel(_fwd_sparse_kernel)
@@ -758,7 +501,6 @@ def _flash_sparse_attn_forward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
-    softmax_scale_log2 = softmax_scale * math.log2(math.e)
     softmax_threshold = (
         softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
     )
@@ -871,7 +613,7 @@ def _flash_sparse_attn_forward(
         value,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale_log2,
+        softmax_scale,
         softmax_threshold,
         query_scale,
         key_scale,
@@ -905,6 +647,7 @@ def _flash_sparse_attn_forward(
         SEQLEN_Q_CACHE=seqlen_q // 1024,
         SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -916,7 +659,6 @@ def _flash_sparse_attn_forward(
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
-        PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -986,7 +728,6 @@ def _flash_sparse_attn_varlen_forward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
-    softmax_scale_log2 = softmax_scale * math.log2(math.e)
     softmax_threshold = (
         softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
     )
@@ -1099,7 +840,7 @@ def _flash_sparse_attn_varlen_forward(
         value,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
-        softmax_scale_log2,
+        softmax_scale,
         softmax_threshold,
         query_scale,
         key_scale,
@@ -1133,6 +874,7 @@ def _flash_sparse_attn_varlen_forward(
         SEQLEN_Q_CACHE=seqlen_q // 1024,
         SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -1144,7 +886,6 @@ def _flash_sparse_attn_varlen_forward(
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
-        PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
