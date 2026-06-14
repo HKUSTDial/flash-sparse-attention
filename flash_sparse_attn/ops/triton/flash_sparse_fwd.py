@@ -69,6 +69,7 @@ def _fwd_inner_sparse_kernel(
             block_max=block_max,
             row_max=row_max,
             row_sum=row_sum,
+            softmax_threshold_log2=config.softmax_threshold_log2,
             CHECK_INF=CHECK_INF,
         )
     )
