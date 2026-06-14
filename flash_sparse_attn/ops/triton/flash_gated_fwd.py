@@ -61,12 +61,12 @@ def _fwd_inner_gated_kernel(
         if n_block > n_block_min:
             # Check if any gates are active for next tile
             gate_max, skip_gate_next = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
         if IS_MASK:
@@ -85,6 +85,7 @@ def _fwd_inner_gated_kernel(
                 block_max=block_max,
                 row_max=row_max,
                 row_sum=row_sum,
+                softmax_threshold_log2=config.softmax_threshold_log2,
                 CHECK_INF=CHECK_INF,
             )
         )
@@ -105,12 +106,12 @@ def _fwd_inner_gated_kernel(
         if n_block > n_block_min:
             # Check if any gates are active for next tile
             gate_max, skip_gate_next = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
     if not skip_gate_next:
@@ -349,12 +350,12 @@ def _fwd_gated_kernel(
 
     # Check if any gates are active for current tile
     gate_max, skip_gate_curr = softmax_sched.online_gate(
-        config=config,
         a_max=a_max,
         a_min=a_min,
         d_max=d_max,
         d_min=d_min,
         gate_max=gate_max,
+        gate_threshold_log2=config.gate_threshold_log2,
     )
 
     # Initialize skip_gate_curr to False for the first iteration
@@ -464,12 +465,12 @@ def _fwd_gated_kernel(
 
         # Check if any gates are active for current tile
         gate_max, skip_gate_curr = softmax_sched.online_gate(
-            config=config,
             a_max=a_max,
             a_min=a_min,
             d_max=d_max,
             d_min=d_min,
             gate_max=gate_max,
+            gate_threshold_log2=config.gate_threshold_log2,
         )
 
         # Compute attention gates
@@ -537,12 +538,12 @@ def _fwd_gated_kernel(
 
             # Check if any gates are active for current tile
             gate_max, skip_gate_curr = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
             # Compute attention gates
@@ -614,12 +615,12 @@ def _fwd_gated_kernel(
 
             # Check if any gates are active for current tile
             gate_max, skip_gate_curr = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
             # Compute attention gates
@@ -688,12 +689,12 @@ def _fwd_gated_kernel(
 
             # Check if any gates are active for current tile
             gate_max, skip_gate_curr = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
             # Compute attention gates
