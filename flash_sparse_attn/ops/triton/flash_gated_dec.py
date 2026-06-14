@@ -60,12 +60,12 @@ def _dec_inner_gated_kernel(
         if n_block > n_block_min:
             # Check if any gates are active for next tile
             gate_max, skip_gate_next = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
         if IS_MASK:
@@ -105,12 +105,12 @@ def _dec_inner_gated_kernel(
         if n_block > n_block_min:
             # Check if any gates are active for next tile
             gate_max, skip_gate_next = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
     if not skip_gate_next:
@@ -165,10 +165,8 @@ def _dec_gated_kernel(
     stride_vn,
     stride_ab,
     stride_ah,
-    stride_am,
     stride_db,
     stride_dh,
-    stride_dn,
     stride_ob,
     stride_oh,
     stride_om,
@@ -246,10 +244,10 @@ def _dec_gated_kernel(
         Q=Q,
         K=K,
         V=V,
-        Out=Out,
-        Lse=Lse,
         A=A,
         D=D,
+        Out=Out,
+        Lse=Lse,
         batch_idx=grid_idx.batch_idx,
         head_idx=grid_idx.head_idx,
         head_kv_idx=grid_idx.head_kv_idx,
@@ -263,6 +261,10 @@ def _dec_gated_kernel(
         stride_vb=stride_vb,
         stride_vh=stride_vh,
         stride_vn=stride_vn,
+        stride_ab=stride_ab,
+        stride_ah=stride_ah,
+        stride_db=stride_db,
+        stride_dh=stride_dh,
         stride_ob=stride_ob,
         stride_oh=stride_oh,
         stride_om=stride_om,
@@ -271,12 +273,6 @@ def _dec_gated_kernel(
         stride_lh=stride_lh,
         stride_lm=stride_lm,
         stride_ls=stride_ls,
-        stride_ab=stride_ab,
-        stride_ah=stride_ah,
-        stride_am=stride_am,
-        stride_db=stride_db,
-        stride_dh=stride_dh,
-        stride_dn=stride_dn,
         IS_GATED=True,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
@@ -333,12 +329,12 @@ def _dec_gated_kernel(
 
     # Check if any gates are active for current tile
     gate_max, skip_gate_curr = softmax_sched.online_gate(
-        config=config,
         a_max=a_max,
         a_min=a_min,
         d_max=d_max,
         d_min=d_min,
         gate_max=gate_max,
+        gate_threshold_log2=config.gate_threshold_log2,
     )
 
     # Initialize skip_gate_curr to False for the first iteration
@@ -407,12 +403,12 @@ def _dec_gated_kernel(
 
         # Check if any gates are active for current tile
         gate_max, skip_gate_curr = softmax_sched.online_gate(
-            config=config,
             a_max=a_max,
             a_min=a_min,
             d_max=d_max,
             d_min=d_min,
             gate_max=gate_max,
+            gate_threshold_log2=config.gate_threshold_log2,
         )
 
         # Compute attention gates
@@ -479,12 +475,12 @@ def _dec_gated_kernel(
 
             # Check if any gates are active for current tile
             gate_max, skip_gate_curr = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
             # Compute attention gates
@@ -555,12 +551,12 @@ def _dec_gated_kernel(
 
             # Check if any gates are active for current tile
             gate_max, skip_gate_curr = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
             # Compute attention gates
@@ -628,12 +624,12 @@ def _dec_gated_kernel(
 
             # Check if any gates are active for current tile
             gate_max, skip_gate_curr = softmax_sched.online_gate(
-                config=config,
                 a_max=a_max,
                 a_min=a_min,
                 d_max=d_max,
                 d_min=d_min,
                 gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
             )
 
             # Compute attention gates
@@ -878,10 +874,8 @@ def _flash_gated_attn_decode(
         value.stride(-3),
         alpha.stride(0),
         1,
-        1,
         delta.stride(0),
         delta.stride(-2),
-        delta.stride(-1),
         out_partial.stride(1),
         out_partial.stride(-2),
         1,
@@ -1103,10 +1097,8 @@ def _flash_gated_attn_varlen_decode(
         value.stride(0),
         alpha.stride(0),
         1,
-        1,
         0,
         delta.stride(-2),
-        1,
         out_partial.stride(1),
         out_partial.stride(-2),
         1,
