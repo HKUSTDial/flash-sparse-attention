@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
+    utils,
     cache_utils,
     launch_template,
     launch_grid,
@@ -202,6 +203,8 @@ def _flash_attn_fwd_combine(
         seqlen_q=seqlen_q,
         num_heads_q=num_heads_q,
     )
+
+    triton.set_allocator(utils.alloc_fn)
 
     _fwd_combine_kernel[grid](
         out_partial,

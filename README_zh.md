@@ -170,22 +170,20 @@ print(output_gated.shape)
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128](assets/latency_forward_sm120.png)
+![Attention forward speed, head dim 128](assets/latency_forward_rtxpro6000.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128](assets/latency_backward_sm120.png)
+![Attention backward speed, head dim 128](assets/latency_backward_rtxpro6000png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128](assets/latency_decode_sm120.png)
+![Attention decode speed, head dim 128](assets/latency_decode_rtxpro6000.png)
 
 
 ## 基准测试
 
 基准测试脚本位于 [tests](tests/) 下, 用于评估前向、反向和解码三类场景下的性能。
-
-这些脚本默认使用 `Qwen模型` 的注意力投影层生成更接近真实 LLM 分布的 Q / K / V states, 并从大海捞针数据集中读取文本构造输入序列。
 
 ### 前向传播性能
 

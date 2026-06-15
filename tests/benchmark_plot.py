@@ -5,6 +5,8 @@ import math
 from pathlib import Path
 from typing import List, Optional
 
+import torch
+
 from test_utils import BenchmarkResult
 
 try:
@@ -81,11 +83,31 @@ def _save_fig(fig, stem: str, output_dir: Path) -> list[Path]:
     return saved
 
 
+def _normalize_device_name(device_name: str) -> str:
+    return device_name.removeprefix("NVIDIA ").strip()
+
+
+def _get_device_name() -> str | None:
+    if torch.cuda.is_available():
+        return _normalize_device_name(
+            torch.cuda.get_device_name(torch.cuda.current_device())
+        )
+    return None
+
+
+def _title_for(ok: list[BenchmarkResult], phase: str, device_name: str | None) -> str:
+    title = f"Attention {phase} latency with head dim {ok[0].config.head_dim}"
+    if device_name:
+        title += f" on {device_name}"
+    return title
+
+
 def _plot_line(
     ok: list[BenchmarkResult],
     active: list[tuple[str, list[float]]],
     phase: str,
     output_dir: Path,
+    device_name: str | None,
 ) -> list[Path]:
     seqlens = [r.config.seqlen_k for r in ok]
 
@@ -130,7 +152,7 @@ def _plot_line(
     )
     ax.tick_params(axis="y", labelsize=12)
     ax.set_title(
-        f"Attention {phase} latency with head dim {ok[0].config.head_dim}",
+        _title_for(ok, phase, device_name),
         fontsize=18,
         fontweight="bold",
         pad=12,
@@ -160,6 +182,7 @@ def _plot_bar(
     active: list[tuple[str, list[float]]],
     phase: str,
     output_dir: Path,
+    device_name: str | None,
 ) -> list[Path]:
     seqlens = [r.config.seqlen_k for r in ok]
     n_groups = len(seqlens)
@@ -213,7 +236,7 @@ def _plot_bar(
     ax.tick_params(axis="y", labelsize=11)
     ax.set_yscale("log")
     ax.set_title(
-        f"Attention {phase} latency with head dim {ok[0].config.head_dim}",
+        _title_for(ok, phase, device_name),
         fontsize=16,
         pad=8,
     )
@@ -240,6 +263,7 @@ def plot_benchmark_results(
     results: List[BenchmarkResult],
     phase: str,
     output_dir: Optional[Path] = None,
+    device_name: Optional[str] = None,
 ) -> List[Path]:
     """Plot latency charts from benchmark results."""
     if not _HAS_MPL:
@@ -258,9 +282,11 @@ def plot_benchmark_results(
         return []
 
     active = _discover_active_series(ok)
+    if device_name is None:
+        device_name = _get_device_name()
 
-    saved = _plot_line(ok, active, phase, output_dir)
-    saved += _plot_bar(ok, active, phase, output_dir)
+    saved = _plot_line(ok, active, phase, output_dir, device_name)
+    saved += _plot_bar(ok, active, phase, output_dir, device_name)
 
     stems = ", ".join(sorted({p.stem for p in saved}))
     print(f"[benchmark_plot] Saved to {output_dir} ({stems})")
