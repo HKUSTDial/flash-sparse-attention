@@ -75,7 +75,7 @@ def _dec_inner_gated_kernel(
             )
 
         if IS_MASK:
-            # Apply mask
+            # Apply mask to attention scores
             acc_s = mask.apply_mask(
                 acc_s=acc_s,
                 m_block=m_block,
@@ -465,7 +465,6 @@ def _dec_gated_kernel(
 
     # Compute attention gates for first tile
     acc_s = a_tile[:, None] * d_tile[None, :]
-
     if IS_LOGSIGMOID_GATE:
         acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
@@ -539,7 +538,6 @@ def _dec_gated_kernel(
 
         # Compute attention gates
         acc_s = a_tile[:, None] * d_tile[None, :]
-
         if IS_LOGSIGMOID_GATE:
             acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
@@ -652,7 +650,6 @@ def _dec_gated_kernel(
 
             # Compute attention gates
             acc_s = a_tile[:, None] * d_tile[None, :]
-
             if IS_LOGSIGMOID_GATE:
                 acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
@@ -729,7 +726,6 @@ def _dec_gated_kernel(
 
             # Compute attention gates
             acc_s = a_tile[:, None] * d_tile[None, :]
-
             if IS_LOGSIGMOID_GATE:
                 acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
@@ -806,7 +802,6 @@ def _dec_gated_kernel(
 
             # Compute attention gates
             acc_s = a_tile[:, None] * d_tile[None, :]
-
             if IS_LOGSIGMOID_GATE:
                 acc_s = activations.log_sigmoid(acc_s, FASTMATH=True)
 
@@ -980,16 +975,9 @@ def _flash_gated_attn_decode(
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
 
-    # Compute effective seqlen_k for local attention
-    if is_local:
-        max_bandwidth = (window_sizes[:, 0] - window_sizes[:, 1] + 1).max().item()
-        effective_seqlen_k = min(max_bandwidth, seqlen_k)
-    else:
-        effective_seqlen_k = seqlen_k
-
     num_splits = utils.num_splits_heuristic(
         seqlen_q=qhead_per_kvhead,
-        seqlen_k=effective_seqlen_k,
+        seqlen_k=seqlen_k,
         num_SMs=num_SMs,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -1208,16 +1196,9 @@ def _flash_gated_attn_varlen_decode(
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
 
-    # Compute effective seqlen_k for local attention
-    if is_local:
-        max_bandwidth = (window_sizes[:, 0] - window_sizes[:, 1] + 1).max().item()
-        effective_seqlen_k = min(max_bandwidth, seqlen_k)
-    else:
-        effective_seqlen_k = seqlen_k
-
     num_splits = utils.num_splits_heuristic(
         seqlen_q=qhead_per_kvhead,
-        seqlen_k=effective_seqlen_k,
+        seqlen_k=seqlen_k,
         num_SMs=num_SMs,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -1283,8 +1264,8 @@ def _flash_gated_attn_varlen_decode(
         0,
         value.stride(-2),
         value.stride(0),
-        0,
         alpha.stride(0),
+        alpha.stride(-1),
         1,
         0,
         delta.stride(-2),
