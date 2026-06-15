@@ -14,25 +14,10 @@ def get_device_num_sms(device: torch.device) -> int:
 
     :return num_sms: Number of streaming multiprocessors.
     """
-    return torch.cuda.get_device_properties(device).multi_processor_count
-
-
-@functools.lru_cache(maxsize=8)
-def get_device_arch(device: torch.device) -> int:
-    """
-    Get the architecture for a given device.
-
-    :param device: Torch device.
-
-    :return arch: Architecture model as a number.
-    """
     if device.type == "cuda":
-        major, minor = torch.cuda.get_device_capability(device)
-        sm = major * 10 + minor
-        return sm if sm >= 80 else -1
-    if device.type in {"xpu", "mps", "cpu"}:
-        return -1
-    raise ValueError(f"Unsupported device: {device}")
+        return torch.cuda.get_device_properties(device).multi_processor_count
+    if device.type == "musa":
+        return torch.muda.get_device_properties(device).multi_processor_count
 
 
 def cache_launch_config(fn):

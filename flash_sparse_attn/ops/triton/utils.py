@@ -9,7 +9,6 @@ def get_device():
 
     :return device: torch.device object
     """
-    # TODO: add NPU
     # Works for both NVIDIA and AMD
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -18,6 +17,8 @@ def get_device():
         return torch.device("xpu")
     elif torch.mps.is_available():
         return torch.device("mps")
+    elif torch.musa.is_available():
+        return torch.device("musa")
     else:
         return torch.device("cpu")
 
