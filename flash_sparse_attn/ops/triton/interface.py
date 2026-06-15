@@ -38,8 +38,6 @@ from flash_sparse_attn.ops.triton.flash_gated_dec import (
     _flash_gated_attn_decode,
     _flash_gated_attn_varlen_decode,
 )
-from flash_sparse_attn.ops.triton.flash_proj_fwd import _flash_proj_forward
-from flash_sparse_attn.ops.triton.flash_proj_bwd import _flash_proj_backward
 from flash_sparse_attn.ops.triton.utils import ensure_contiguous
 from flash_sparse_attn.ops.triton import quant
 
@@ -868,36 +866,6 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         dd = dd.transpose(-2, -1).contiguous()
 
         return dq, dk, dv, da, dd, *((None,) * 30)
-
-
-class FlashProjFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        out_dtype: torch.dtype = torch.float8_e4m3fn,
-        prev_scale: Optional[torch.Tensor] = None,
-    ):
-        out, descale = _flash_proj_forward(
-            input=input,
-            weight=weight,
-            out_dtype=out_dtype,
-            prev_scale=prev_scale,
-        )
-
-        ctx.save_for_backward(input, weight)
-
-        return out, descale
-
-    @staticmethod
-    def backward(ctx, dout: torch.Tensor, _dscale: torch.Tensor):
-        input, weight = ctx.saved_tensors
-        dout = dout.to(input.dtype)
-
-        dinput, dweight = _flash_proj_backward(dout=dout, input=input, weight=weight)
-
-        return dinput, dweight, None, None
 
 
 def flash_dense_attn_func(
@@ -1891,22 +1859,3 @@ def flash_gated_attn_varlen_with_kvcache_func(
     if return_lse:
         return out, lse
     return out
-
-
-def flash_proj_func(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    out_dtype: torch.dtype = torch.float8_e5m2,
-    prev_scale: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Fused linear projection with quantized output and per-tensor scale.
-
-    :param input: Input tensor of shape [batch_size, seqlen, in_features].
-    :param weight: Weights tensor of shape [out_features, in_features].
-    :param out_dtype: Target output dtype.
-    :param prev_scale: Per-tensor scale from the previous forward.
-
-    :returns: Tuple of (out, actual_scale), where out has shape [batch_size, seqlen, out_features].
-    """
-    return FlashProjFunc.apply(input, weight, out_dtype, prev_scale)
