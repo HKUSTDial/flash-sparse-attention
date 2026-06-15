@@ -1,12 +1,11 @@
 import torch
 import triton
 
+from flash_sparse_attn.ops.triton import device_utils
 
-def _get_max_shared_mem():
-    props = torch.cuda.get_device_properties(torch.cuda.current_device())
-    return getattr(
-        props, "shared_memory_per_block_optin", props.shared_memory_per_block
-    )
+
+def _get_max_shared_mem(device: torch.device):
+    return device_utils.get_max_shared_memory(device)
 
 
 def _smem_bytes_fwd(tile_m, tile_n, tile_k, num_stages, dtype_bytes):
@@ -30,7 +29,7 @@ def _smem_bytes_dec(tile_m, tile_n, tile_k, num_stages, dtype_bytes):
 def _prune_fwd_configs(configs, named_args, **kwargs):
     tile_k = kwargs.get("TILE_K", named_args.get("TILE_K", 128))
     dtype_bytes = named_args["Q"].element_size()
-    max_smem = _get_max_shared_mem() - 4 * 1024
+    max_smem = _get_max_shared_mem(named_args["Q"].device) - 4 * 1024
     pruned = []
     for cfg in configs:
         tm, tn, ns = cfg.kwargs["TILE_M"], cfg.kwargs["TILE_N"], cfg.num_stages
@@ -55,7 +54,7 @@ def _prune_fwd_configs(configs, named_args, **kwargs):
 def _prune_bwd_configs(configs, named_args, **kwargs):
     tile_k = kwargs.get("TILE_K", named_args.get("TILE_K", 128))
     dtype_bytes = named_args["Q"].element_size()
-    max_smem = _get_max_shared_mem() - 4 * 1024
+    max_smem = _get_max_shared_mem(named_args["Q"].device) - 4 * 1024
     pruned = []
     for cfg in configs:
         tm, tn, ns = cfg.kwargs["TILE_M"], cfg.kwargs["TILE_N"], cfg.num_stages
@@ -81,7 +80,7 @@ def _prune_dec_configs(configs, named_args, **kwargs):
     tile_k = kwargs.get("TILE_K", named_args.get("TILE_K", 128))
     seqlen_q = kwargs.get("seqlen_q", named_args.get("seqlen_q", None))
     dtype_bytes = named_args["Q"].element_size()
-    max_smem = _get_max_shared_mem() - 4 * 1024
+    max_smem = _get_max_shared_mem(named_args["Q"].device) - 4 * 1024
     pruned = []
     for cfg in configs:
         tm, tn, ns = cfg.kwargs["TILE_M"], cfg.kwargs["TILE_N"], cfg.num_stages

@@ -2,6 +2,8 @@ import functools
 import torch
 import triton
 
+from flash_sparse_attn.ops.triton import device_utils
+
 
 def get_device():
     """
@@ -9,18 +11,8 @@ def get_device():
 
     :return device: torch.device object
     """
-    # Works for both NVIDIA and AMD
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    # Intel XPU if available
-    elif torch.xpu.is_available():
-        return torch.device("xpu")
-    elif torch.mps.is_available():
-        return torch.device("mps")
-    elif torch.musa.is_available():
-        return torch.device("musa")
-    else:
-        return torch.device("cpu")
+    device = device_utils.get_available_device()
+    return device if device is not None else torch.device("cpu")
 
 
 def ensure_contiguous(fn):
@@ -102,16 +94,3 @@ def window_sizes_heuristic(
     window_size_left = torch.clamp(breakpoints[1:] - 1, min=0)
     window_size_right = breakpoints[:-1]
     return torch.stack([window_size_left, window_size_right], dim=1).to(device)
-
-
-def alloc_fn(size: int, alignment: int, stream):
-    """
-    TMA descriptors require a global memory allocation
-
-    :param size: Size of the allocation in bytes.
-    :param alignment: Alignment requirement in bytes.
-    :param stream: CUDA stream for the allocation.
-
-    :return: A torch.Tensor representing the allocated memory.
-    """
-    return torch.empty(size, device="cuda", dtype=torch.int8)

@@ -16,6 +16,7 @@ import torch
 import triton
 
 from flash_sparse_attn.ops.triton import cache_utils
+from flash_sparse_attn.ops.triton import device_utils
 
 
 TRITON_CACHE_DIR: str = os.getenv(
@@ -179,7 +180,7 @@ class LaunchConfigCache:
 
         :return launch_config: Tuple of (TILE_M, TILE_N, num_warps, num_stages, num_ctas) or None on cache miss
         """
-        device_name = torch.cuda.get_device_name(device)
+        device_name = device_utils.get_device_cache_name(device)
         cache = self._load_device(device_name)
         key = (
             kernel_name,
@@ -224,7 +225,7 @@ class LaunchConfigCache:
         :param is_quant: Whether quantization is used
         :param config: Tuple of (TILE_M, TILE_N, num_warps, num_stages, num_ctas)
         """
-        device_name = torch.cuda.get_device_name(device)
+        device_name = device_utils.get_device_cache_name(device)
         key = (
             kernel_name,
             _seqlen_bucket(seqlen_q),

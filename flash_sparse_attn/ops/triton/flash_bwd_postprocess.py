@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
-    utils,
+    device_utils,
     cache_utils,
     launch_grid,
     seqlen_info,
@@ -175,7 +175,7 @@ def _flash_attn_bwd_postprocess(
 
     grid = launch_grid.get_bwd_postprocess_grid(batch_size, seqlen_q, num_heads_q)
 
-    triton.set_allocator(utils.alloc_fn)
+    device_utils.set_triton_allocator(dq.device)
 
     _bwd_postprocess_kernel[grid](
         dq_accum,

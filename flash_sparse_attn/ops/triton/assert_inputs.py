@@ -2,6 +2,8 @@ from typing import Optional
 
 import torch
 
+from flash_sparse_attn.ops.triton import device_utils
+
 
 def assert_fwd_inputs(
     query: torch.Tensor,
@@ -49,6 +51,9 @@ def assert_fwd_inputs(
     """
     assert device == query.device == key.device == value.device, (
         "All inputs must be on the same device"
+    )
+    assert device_utils.is_supported_device(device), (
+        f"Unsupported Triton device type: {device.type}"
     )
     if is_quant:
         assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
@@ -165,6 +170,9 @@ def assert_bwd_inputs(
         == dout.device
         == lse.device
     ), "All inputs must be on the same device"
+    assert device_utils.is_supported_device(device), (
+        f"Unsupported Triton device type: {device.type}"
+    )
     if is_quant:
         assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
             "Input dtype must be float8_e5m2 or float8_e4m3fn"
@@ -269,6 +277,9 @@ def assert_dec_inputs(
     """
     assert device == query.device == key.device == value.device, (
         "All inputs must be on the same device"
+    )
+    assert device_utils.is_supported_device(device), (
+        f"Unsupported Triton device type: {device.type}"
     )
     if is_quant:
         assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (

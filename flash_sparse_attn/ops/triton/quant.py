@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
+from flash_sparse_attn.ops.triton import device_utils
+
 
 @triton.jit
 def _amax_kernel(
@@ -40,7 +42,11 @@ def _quantize_fp8_kernel(
 
 
 def quantize_fp8(x: torch.Tensor, dtype: torch.dtype = torch.float8_e5m2):
-    assert x.is_cuda and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    assert device_utils.is_supported_device(x.device) and x.dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+    )
     assert dtype in (torch.float8_e5m2, torch.float8_e4m3fn)
 
     tl_dtype = tl.float8e5 if dtype == torch.float8_e5m2 else tl.float8e4nv

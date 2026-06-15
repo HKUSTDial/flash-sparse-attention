@@ -4,6 +4,8 @@ from collections import OrderedDict
 
 import torch
 
+from flash_sparse_attn.ops.triton import device_utils
+
 
 @functools.lru_cache(maxsize=8)
 def get_device_num_sms(device: torch.device) -> int:
@@ -14,10 +16,7 @@ def get_device_num_sms(device: torch.device) -> int:
 
     :return num_sms: Number of streaming multiprocessors.
     """
-    if device.type == "cuda":
-        return torch.cuda.get_device_properties(device).multi_processor_count
-    if device.type == "musa":
-        return torch.muda.get_device_properties(device).multi_processor_count
+    return device_utils.get_device_num_sms(device)
 
 
 def cache_launch_config(fn):
@@ -47,7 +46,10 @@ def cache_launch_config(fn):
             if (arch_idx is not None and arch_idx < len(args))
             else kwargs.get("arch")
         )
-        return cached((device.type, arch), *args, **kwargs)
+        device_key = (
+            device_utils.get_device_cache_key(device) if device is not None else None
+        )
+        return cached((device_key, arch), *args, **kwargs)
 
     return wrapper
 
@@ -112,7 +114,13 @@ class CachedKernel:
                 )
 
             key = (
-                tuple((args[i].dtype, args[i].device.type) for i in tensor_indices),
+                tuple(
+                    (
+                        args[i].dtype,
+                        device_utils.get_device_cache_key(args[i].device),
+                    )
+                    for i in tensor_indices
+                ),
                 tuple(constexprs.values()) if constexprs else (),
                 num_warps,
                 num_stages,

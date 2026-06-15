@@ -8,6 +8,7 @@ import triton.language as tl
 from flash_sparse_attn.ops.triton import (
     assert_inputs,
     utils,
+    device_utils,
     cache_utils,
     launch_template,
     launch_grid,
@@ -863,7 +864,7 @@ def _flash_sparse_attn_forward(
         num_splits=num_splits,
     )
 
-    triton.set_allocator(utils.alloc_fn)
+    device_utils.set_triton_allocator(device)
 
     kernel[grid](
         query,
@@ -1091,7 +1092,7 @@ def _flash_sparse_attn_varlen_forward(
         num_splits=num_splits,
     )
 
-    triton.set_allocator(utils.alloc_fn)
+    device_utils.set_triton_allocator(device)
 
     kernel[grid](
         query,
