@@ -60,7 +60,7 @@ def _bwd_inner_dense_kernel(
     lse_log2 = lse_desc.load([m_block * TILE_M])
 
     if IS_MASK:
-        # Apply mask
+        # Apply mask to attention scores
         acc_s = mask.apply_mask(
             acc_s=acc_s,
             m_block=m_block,
@@ -151,10 +151,10 @@ def _bwd_dense_kernel(
     stride_dkb,
     stride_dkh,
     stride_dkn,
+    stride_dks,
     stride_dvb,
     stride_dvh,
     stride_dvn,
-    stride_dks,
     stride_dvs,
     stride_wh,
     cu_seqlens_q,
@@ -173,11 +173,11 @@ def _bwd_dense_kernel(
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_SPLIT_QO: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
-    IS_SPLIT_QO: tl.constexpr,
 ):
     n_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -834,10 +834,10 @@ def _flash_dense_attn_backward(
         dk_accum.stride(-4) if is_split_qo and num_splits > 1 else dk_accum.stride(0),
         dk_accum.stride(-2),
         dk_accum.stride(-3),
+        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         dv_accum.stride(-4) if is_split_qo and num_splits > 1 else dv_accum.stride(0),
         dv_accum.stride(-2),
         dv_accum.stride(-3),
-        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         None,
@@ -1108,10 +1108,10 @@ def _flash_dense_attn_varlen_backward(
         0,
         dk_accum.stride(-2),
         dk_accum.stride(-3),
+        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         0,
         dv_accum.stride(-2),
         dv_accum.stride(-3),
-        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         cu_seqlens_q,

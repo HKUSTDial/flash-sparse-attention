@@ -6,6 +6,7 @@ import triton
 import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
+    utils,
     cache_utils,
     launch_grid,
     seqlen_info,
@@ -220,6 +221,8 @@ def _flash_attn_bwd_preprocess(
         seqlen_q = max_seqlen_q
 
     grid = launch_grid.get_bwd_preprocess_grid(batch_size, seqlen_q, num_heads_q)
+
+    triton.set_allocator(utils.alloc_fn)
 
     _bwd_preprocess_kernel[grid](
         out,
