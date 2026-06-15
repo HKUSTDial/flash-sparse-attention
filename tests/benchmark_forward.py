@@ -95,7 +95,7 @@ def benchmark_triton_sparse_forward(
         input_source="random",
     )
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 1.0
+    softmax_threshold = 16.0
 
     def fn():
         flash_sparse_attn_func(
@@ -128,7 +128,7 @@ def benchmark_triton_sparse_forward_quant(
     v_quant, v_scale = quant.quantize_fp8(v)
 
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 1.0
+    softmax_threshold = 16.0
 
     def fn():
         flash_sparse_attn_func(
@@ -166,8 +166,8 @@ def benchmark_triton_gated_forward(
         cfg.batch_size, cfg.seqlen_k, cfg.num_kv_heads, device=device, dtype=dtype
     )
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 1.0
-    gate_threshold = 1.0
+    softmax_threshold = 16.0
+    gate_threshold = 16.0
 
     def fn():
         flash_gated_attn_func(
@@ -215,8 +215,8 @@ def benchmark_triton_gated_forward_quant(
         dtype=torch.bfloat16,
     )
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 1.0
-    gate_threshold = 1.0
+    softmax_threshold = 16.0
+    gate_threshold = 16.0
 
     def fn():
         flash_gated_attn_func(
