@@ -166,26 +166,39 @@ print(output_gated.shape)
 
 The following benchmarks cover forward, backward, and decode workloads. They include dense, sparse, and gated implementations, with FlashAttention used as the baseline.
 
+### H20
+
+**Forward Performance**
+
+![Attention forward speed, head dim 128, h20-3e](assets/latency_forward_h203e.png)
+
+**Backward Performance**
+
+![Attention backward speed, head dim 128, h20-3e](assets/latency_backward_h203e.png)
+
+**Decode Performance**
+
+![Attention decode speed, head dim 128, h20-3e](assets/latency_decode_h203e.png)
+
+
 ### RTX PRO 6000
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128](assets/latency_forward_sm120.png)
+![Attention forward speed, head dim 128, rtx pro 6000](assets/latency_forward_rtxpro6000.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128](assets/latency_backward_sm120.png)
+![Attention backward speed, head dim 128, rtx pro 6000](assets/latency_backward_rtxpro6000.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128](assets/latency_decode_sm120.png)
+![Attention decode speed, head dim 128, rtx pro 6000](assets/latency_decode_rtxpro6000.png)
 
 
 ## Benchmarking
 
 Benchmark scripts are located under [tests](tests/), covering forward, backward, and decoding performance.
-
-By default, these scripts use the attention projection layers from the Qwen model family to generate Q, K, and V states with distributions closer to real LLM workloads, and they build input sequences from the Needle-in-a-Haystack dataset.
 
 ### Forward Performance
 
