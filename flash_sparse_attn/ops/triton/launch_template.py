@@ -377,38 +377,17 @@ def extract_best_config(autotuned_kernel) -> tuple[int, int, int, int, int] | No
 
 def get_fwd_combine_launch_config(
     tile_k: int,
-    device: torch.device,
-    arch: int,
 ) -> tuple[int, int, int, int]:
     """
-    Get launch configuration for forward combine kernel based on input parameters and device architecture.
+    Get launch configuration for forward combine kernel.
 
     :param tile_k: Tile size along the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
 
     :return launch_config: Tuple of (tile_m, num_warps, num_stages, num_ctas) for launching the kernel
     """
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
 
-    if device.type == "cuda":
-        if arch // 10 == 8:
-            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
-            return (tile_m, 4, 1, 1)
-        elif arch // 10 == 9:
-            tile_m = 8 if tile_k % 128 == 0 else (16 if tile_k % 64 == 0 else 32)
-            return (tile_m, 4, 1, 1)
-        elif arch // 10 == 10:
-            tile_m = 16 if tile_k % 128 == 0 else (32 if tile_k % 64 == 0 else 64)
-            return (tile_m, 4, 1, 1)
-        elif arch // 10 == 12:
-            tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
-            return (tile_m, 4, 1, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
+    tile_m = 4 if tile_k % 128 == 0 else (8 if tile_k % 64 == 0 else 16)
+    return (tile_m, 4, 1, 1)
 
 
 get_fwd_combine_launch_config = cache_utils.cache_launch_config(
@@ -418,38 +397,16 @@ get_fwd_combine_launch_config = cache_utils.cache_launch_config(
 
 def get_dec_combine_launch_config(
     tile_k: int,
-    device: torch.device,
-    arch: int,
 ) -> tuple[int, int, int]:
     """
-    Get launch configuration for decode combine kernel based on input parameters and device architecture.
+    Get launch configuration for decode combine kernel.
 
     :param tile_k: Tile size along the K dimension
-    :param device: The device to run the kernel on
-    :param arch: The architecture of the device
 
     :return launch_config: Tuple of (num_warps, num_stages, num_ctas) for launching the kernel
     """
-    if arch == -1:
-        raise NotImplementedError(f"Unsupported device: {device} with arch {arch}")
-
-    if device.type == "cuda":
-        if arch // 10 == 8:
-            num_stages = max(min(8, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-        elif arch // 10 == 9:
-            num_stages = max(min(8, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-        elif arch // 10 == 10:
-            num_stages = max(min(16, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-        elif arch // 10 == 12:
-            num_stages = max(min(4, 512 // tile_k), 1)
-            return (4, num_stages, 1)
-        else:
-            raise NotImplementedError(f"Unsupported CUDA architecture: {arch}")
-    else:
-        raise NotImplementedError(f"Unsupported device type: {device.type}")
+    num_stages = max(min(4, 512 // tile_k), 1)
+    return (4, num_stages, 1)
 
 
 get_dec_combine_launch_config = cache_utils.cache_launch_config(

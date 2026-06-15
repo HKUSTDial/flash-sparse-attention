@@ -177,8 +177,6 @@ def _flash_attn_fwd_combine(
     cu_seqlens_q: torch.Tensor = None,
     seqused_q: torch.Tensor = None,
 ):
-    device = out.device
-    arch = cache_utils.get_device_arch(device)
     is_varlen = cu_seqlens_q is not None
     num_splits = out_partial.shape[0]
     if not is_varlen:
@@ -193,8 +191,6 @@ def _flash_attn_fwd_combine(
     TILE_M, num_warps, num_stages, num_ctas = (
         launch_template.get_fwd_combine_launch_config(
             tile_k=TILE_K,
-            device=device,
-            arch=arch,
         )
     )
 
