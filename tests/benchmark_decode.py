@@ -12,7 +12,7 @@ from flash_sparse_attn.ops.triton.interface import (
     flash_sparse_attn_with_kvcache_func,
     flash_gated_attn_with_kvcache_func,
 )
-from flash_sparse_attn.ops.triton import quant
+from flash_sparse_attn.ops.triton import device_utils, quant
 from test_utils import (
     BenchmarkConfig,
     BenchmarkResult,
@@ -22,9 +22,11 @@ from test_utils import (
 )
 from benchmark_plot import plot_benchmark_results
 
+DEFAULT_DEVICE = device_utils.get_available_device()
+
 
 def benchmark_triton_dense_decode(
-    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE, dtype=torch.bfloat16
 ) -> float:
     q, k, v = generate_inputs(
         cfg,
@@ -50,7 +52,7 @@ def benchmark_triton_dense_decode(
 
 
 def benchmark_triton_dense_decode_quant(
-    cfg: BenchmarkConfig, device: str = "cuda"
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE
 ) -> float:
     q, k, v = generate_inputs(
         cfg,
@@ -86,7 +88,7 @@ def benchmark_triton_dense_decode_quant(
 
 
 def benchmark_triton_sparse_decode(
-    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE, dtype=torch.bfloat16
 ) -> float:
     q, k, v = generate_inputs(
         cfg,
@@ -114,7 +116,7 @@ def benchmark_triton_sparse_decode(
 
 
 def benchmark_triton_sparse_decode_quant(
-    cfg: BenchmarkConfig, device: str = "cuda"
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE
 ) -> float:
     q, k, v = generate_inputs(
         cfg,
@@ -151,7 +153,7 @@ def benchmark_triton_sparse_decode_quant(
 
 
 def benchmark_triton_gated_decode(
-    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE, dtype=torch.bfloat16
 ) -> float:
     q, k, v = generate_inputs(
         cfg,
@@ -188,7 +190,7 @@ def benchmark_triton_gated_decode(
 
 
 def benchmark_triton_gated_decode_quant(
-    cfg: BenchmarkConfig, device: str = "cuda"
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE
 ) -> float:
     q, k, v = generate_inputs(
         cfg,
@@ -240,8 +242,10 @@ def benchmark_triton_gated_decode_quant(
 
 
 def benchmark_fa_decode(
-    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE, dtype=torch.bfloat16
 ) -> Optional[float]:
+    if torch.device(device).type != "cuda":
+        return None
     q, k, v = generate_inputs(
         cfg,
         device=device,
@@ -269,8 +273,10 @@ def benchmark_fa_decode(
 
 
 def benchmark_cudnn_decode(
-    cfg: BenchmarkConfig, device: str = "cuda", dtype=torch.bfloat16
+    cfg: BenchmarkConfig, device: torch.device = DEFAULT_DEVICE, dtype=torch.bfloat16
 ) -> Optional[float]:
+    if torch.device(device).type != "cuda":
+        return None
     q, k, v = generate_inputs(
         cfg,
         device=device,
@@ -384,12 +390,13 @@ def print_results(results: List[BenchmarkResult]) -> None:
 
 
 def main() -> None:
-    if not torch.cuda.is_available():
-        print("CUDA not available, skipping benchmark.")
+    if DEFAULT_DEVICE is None:
+        print("No supported device available, skipping benchmark.")
         return
 
     torch.manual_seed(0)
-    device_name = torch.cuda.get_device_name(0)
+    device_utils.manual_seed_all(0)
+    device_name = device_utils.get_device_name(DEFAULT_DEVICE)
 
     batch_sizes = [1]
     num_heads = [64]

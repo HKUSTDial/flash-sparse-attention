@@ -1,10 +1,9 @@
 import pytest
-import torch
 
-from test_utils import run_forward_varlen_case, set_seed
+from test_utils import supported_device_is_available, run_forward_varlen_case, set_seed
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA is required"
+    not supported_device_is_available(), reason="A supported device is required"
 )
 
 

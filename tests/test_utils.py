@@ -4,6 +4,7 @@ from typing import Dict, List, Literal, Optional, Sequence
 
 import torch
 
+from flash_sparse_attn.ops.triton import device_utils
 from flash_sparse_attn.ops.triton import launch_template
 from flash_sparse_attn.ops.triton.interface import (
     flash_dense_attn_func,
@@ -31,6 +32,18 @@ _TEXT_CACHE = {}
 
 CORRECTNESS_DTYPE = torch.bfloat16
 KernelType = Literal["dense", "sparse", "gated"]
+TEST_DEVICE = device_utils.get_available_device()
+
+
+def supported_device_is_available() -> bool:
+    return TEST_DEVICE is not None
+
+
+def get_test_device() -> torch.device:
+    if TEST_DEVICE is None:
+        raise RuntimeError("A supported device is required")
+    return TEST_DEVICE
+
 
 _DEFAULT_RTOL = {
     "dense": 8e-2,
@@ -375,8 +388,7 @@ def generate_inputs(
 
 def set_seed(seed: int = 0) -> None:
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    device_utils.manual_seed_all(seed)
 
 
 def make_cu_seqlens(lengths: Sequence[int], device: torch.device) -> torch.Tensor:
@@ -830,7 +842,7 @@ def run_forward_base_case(
     pack_gqa: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
-    device = torch.device("cuda")
+    device = get_test_device()
     q = torch.randn(
         batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
     )
@@ -991,7 +1003,7 @@ def run_forward_varlen_case(
     pack_gqa: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
-    device = torch.device("cuda")
+    device = get_test_device()
     q = torch.cat(
         [
             torch.randn(seq_len, num_heads_q, head_dim, device=device, dtype=dtype)
@@ -1088,7 +1100,7 @@ def run_decode_base_case(
     dtype: torch.dtype = CORRECTNESS_DTYPE,
     is_quant: bool = False,
 ) -> None:
-    device = torch.device("cuda")
+    device = get_test_device()
     is_quant_dtype = dtype == torch.float8_e5m2
 
     # For quant: generate in bf16, then quantize
@@ -1334,7 +1346,7 @@ def run_decode_varlen_case(
     dtype: torch.dtype = CORRECTNESS_DTYPE,
     is_quant: bool = False,
 ) -> None:
-    device = torch.device("cuda")
+    device = get_test_device()
     batch_size = len(lens_k)
     is_quant_dtype = dtype == torch.float8_e5m2
 
@@ -1573,7 +1585,7 @@ def run_backward_base_case(
     is_split_qo: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
-    device = torch.device("cuda")
+    device = get_test_device()
     softmax_scale = head_dim**-0.5
     threshold = head_dim / seqlen_k
 
@@ -1716,7 +1728,7 @@ def run_backward_varlen_case(
     is_split_qo: bool = False,
     dtype: torch.dtype = CORRECTNESS_DTYPE,
 ) -> None:
-    device = torch.device("cuda")
+    device = get_test_device()
     max_seqlen_k = max(lens_k)
     softmax_scale = head_dim**-0.5
     threshold = head_dim / max_seqlen_k

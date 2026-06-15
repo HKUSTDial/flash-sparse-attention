@@ -5,8 +5,7 @@ import math
 from pathlib import Path
 from typing import List, Optional
 
-import torch
-
+from flash_sparse_attn.ops.triton import device_utils
 from test_utils import BenchmarkResult
 
 try:
@@ -83,16 +82,9 @@ def _save_fig(fig, stem: str, output_dir: Path) -> list[Path]:
     return saved
 
 
-def _normalize_device_name(device_name: str) -> str:
-    return device_name.removeprefix("NVIDIA ").strip()
-
-
 def _get_device_name() -> str | None:
-    if torch.cuda.is_available():
-        return _normalize_device_name(
-            torch.cuda.get_device_name(torch.cuda.current_device())
-        )
-    return None
+    device = device_utils.get_available_device()
+    return device_utils.get_device_name(device) if device is not None else None
 
 
 def _title_for(ok: list[BenchmarkResult], phase: str, device_name: str | None) -> str:
