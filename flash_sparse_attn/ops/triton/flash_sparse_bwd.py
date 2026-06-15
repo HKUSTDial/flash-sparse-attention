@@ -59,7 +59,7 @@ def _bwd_inner_sparse_kernel(
     acc_s = tl.dot(k_tile, q_tile.T)
 
     if IS_MASK:
-        # Apply mask
+        # Apply mask to attention scores
         acc_s = mask.apply_mask(
             acc_s=acc_s,
             m_block=m_block,
@@ -165,10 +165,10 @@ def _bwd_sparse_kernel(
     stride_dkb,
     stride_dkh,
     stride_dkn,
+    stride_dks,
     stride_dvb,
     stride_dvh,
     stride_dvn,
-    stride_dks,
     stride_dvs,
     stride_wh,
     cu_seqlens_q,
@@ -187,11 +187,11 @@ def _bwd_sparse_kernel(
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_SPLIT_QO: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
-    IS_SPLIT_QO: tl.constexpr,
 ):
     n_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -914,10 +914,10 @@ def _flash_sparse_attn_backward(
         dk_accum.stride(-4) if is_split_qo and num_splits > 1 else dk_accum.stride(0),
         dk_accum.stride(-2),
         dk_accum.stride(-3),
+        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         dv_accum.stride(-4) if is_split_qo and num_splits > 1 else dv_accum.stride(0),
         dv_accum.stride(-2),
         dv_accum.stride(-3),
-        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         None,
@@ -936,11 +936,11 @@ def _flash_sparse_attn_backward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPLIT_QO=is_split_qo and num_splits > 1,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
-        IS_SPLIT_QO=is_split_qo and num_splits > 1,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1193,10 +1193,10 @@ def _flash_sparse_attn_varlen_backward(
         0,
         dk_accum.stride(-2),
         dk_accum.stride(-3),
+        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         0,
         dv_accum.stride(-2),
         dv_accum.stride(-3),
-        dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         cu_seqlens_q,
@@ -1215,11 +1215,11 @@ def _flash_sparse_attn_varlen_backward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPLIT_QO=is_split_qo and num_splits > 1,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
-        IS_SPLIT_QO=is_split_qo and num_splits > 1,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
