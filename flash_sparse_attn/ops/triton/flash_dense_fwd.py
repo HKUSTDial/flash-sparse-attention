@@ -135,6 +135,7 @@ def _fwd_dense_kernel(
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
     QHEAD_PER_KVHEAD: tl.constexpr,
+    PACK_GQA: tl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
@@ -146,7 +147,6 @@ def _fwd_dense_kernel(
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
     HAS_SEQUSED_K: tl.constexpr,
-    PACK_GQA: tl.constexpr,
 ):
     m_block = tl.program_id(0)
     head_idx = tl.program_id(1)
@@ -869,6 +869,7 @@ def _flash_dense_attn_forward(
         SEQLEN_Q_CACHE=seqlen_q // 1024,
         SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -880,7 +881,6 @@ def _flash_dense_attn_forward(
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=False,
-        PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
@@ -1088,6 +1088,7 @@ def _flash_dense_attn_varlen_forward(
         SEQLEN_Q_CACHE=seqlen_q // 1024,
         SEQLEN_K_CACHE=seqlen_k // 1024,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
@@ -1099,7 +1100,6 @@ def _flash_dense_attn_varlen_forward(
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
-        PACK_GQA=pack_gqa,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
