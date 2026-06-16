@@ -45,11 +45,10 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 ## 依赖
 
 - **Linux**: Ubuntu 22.04 或更高版本
-- **NVIDIA GPU**: 计算能力 8.0 或更高
-- **运行环境**: 需要与 PyTorch 和 Triton 兼容的 NVIDIA 驱动与运行时环境
+- **Device**: GPU, XPU, NPU, 或 PPU
 - **Python**: 3.9 或更高版本
 - **PyTorch**: 2.5.1 或更高版本
-- **Triton**: 作为默认依赖自动安装
+- **Triton**: 3.6.0 或更高版本
 
 ## 安装
 
