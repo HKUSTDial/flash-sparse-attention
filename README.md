@@ -45,11 +45,10 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 ## Requirements
 
 - **Linux**: Ubuntu 22.04 or later
-- **NVIDIA GPU**: Compute Capability 8.0 or higher
-- **Runtime**: NVIDIA driver and runtime compatible with your PyTorch and Triton installation
+- **Device**: GPU, XPU, NPU, or PPU
 - **Python**: 3.9 or later
 - **PyTorch**: 2.5.1 or later
-- **Triton**: Installed automatically as a default dependency
+- **Triton**: 3.6.0 or later
 
 ## Install
 
