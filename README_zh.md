@@ -13,12 +13,12 @@
 Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 Flash Attention 的内存效率与稀疏计算能力相结合, 用于在 Transformer 模型中处理超长序列. 
 
 
-## 主要特性
+# 主要特性
 
 > [!NOTE]
 > 支持任意形状 mask 和 bias 的版本为[这个分支](https://github.com/HKUSTDial/flash-sparse-attention/tree/final_mask_version), 当前主分支不再覆盖这部分功能.
 
-### 支持的功能
+## 支持的功能
 
 - Dense Attention, Sparse attention 和 Gated attention 的前向与反向
 - 常规批次输入与 varlen 输入
@@ -32,7 +32,7 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - Split-QO 适用于反向的工作负载均衡
 - Fused Quant 支持非FP8原生支持的硬件使用低精度计算
 
-### 我们想要支持的功能
+## 我们想要支持的功能
 
 - 分页注意力
 - KV-Cache 管理器
@@ -40,9 +40,9 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) 后端支持
 
 
-## 安装
+# 安装
 
-### 依赖
+## 依赖
 
 - **Linux**: Ubuntu 22.04 或更高版本
 - **NVIDIA GPU**: 计算能力 8.0 或更高
@@ -51,7 +51,7 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - **PyTorch**: 2.5.1 或更高版本
 - **Triton**: 作为默认依赖自动安装
 
-### 安装
+## 安装
 
 直接安装：
 
@@ -68,7 +68,7 @@ pip install .
 ```
 
 
-### 通过 HuggingFace Kernel 使用
+## 通过 HuggingFace Kernel 使用
 
 也可以直接从 [HuggingFace Kernel](https://github.com/huggingface/kernels) 加载 kernel，无需安装本包：
 
@@ -85,9 +85,9 @@ out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
 需要先安装 `pip install kernels`。
 
 
-## 快速开始
+# 快速开始
 
-### 基本用法
+## 基本用法
 
 下面是三类常见用法示例：
 
@@ -162,49 +162,83 @@ print(output_gated.shape)
 ```
 
 
-## 性能
+# 性能
 
 以下基准测试涵盖前向、后向和解码工作负载。其中包括密集型、稀疏型和门控实现，并以FlashAttention作为基线。
+
+## NVIDIA GPU
+
+### H20
+
+**前向传播性能**
+
+![Attention forward speed, head dim 128, h20-3e](assets/latency_forward_h203e.png)
+
+**反向传播性能**
+
+![Attention backward speed, head dim 128, h20-3e](assets/latency_backward_h203e.png)
+
+**解码性能**
+
+![Attention decode speed, head dim 128, h20-3e](assets/latency_decode_h203e.png)
+
 
 ### RTX PRO 6000
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128](assets/latency_forward_rtxpro6000.png)
+![Attention forward speed, head dim 128, rtx pro 6000](assets/latency_forward_rtxpro6000.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128](assets/latency_backward_rtxpro6000png)
+![Attention backward speed, head dim 128, rtx pro 6000](assets/latency_backward_rtxpro6000.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128](assets/latency_decode_rtxpro6000.png)
+![Attention decode speed, head dim 128, rtx pro 6000](assets/latency_decode_rtxpro6000.png)
 
 
-## 基准测试
+## T-Head PPU
+
+### ZW810E
+
+**F前向传播性能**
+
+![Attention forward speed, head dim 128, zw810e](assets/latency_forward_ppuzw810e.png)
+
+**反向传播性能**
+
+![Attention backward speed, head dim 128, ppuzw810e](assets/latency_backward_ppuzw810e.png)
+
+**解码性能**
+
+![Attention decode speed, head dim 128, ppuzw810e](assets/latency_decode_ppuzw810e.png)
+
+
+# 基准测试
 
 基准测试脚本位于 [tests](tests/) 下, 用于评估前向、反向和解码三类场景下的性能。
 
-### 前向传播性能
+## 前向传播性能
 
 ```bash
 python tests/benchmark_forward.py
 ```
 
-### 反向传播性能
+## 反向传播性能
 
 ```bash
 python tests/benchmark_backward.py
 ```
 
-### 解码性能
+## 解码性能
 
 ```bash
 python tests/benchmark_decode.py
 ```
 
 
-## 引用
+# 引用
 
 如果您在研究中使用 FSA, 请引用：
 
@@ -220,7 +254,7 @@ python tests/benchmark_decode.py
 }
 ```
 
-## 致谢
+# 致谢
 
 本项目基于并集成了几个优秀的工作：
 
