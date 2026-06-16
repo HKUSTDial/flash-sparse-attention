@@ -13,12 +13,12 @@
 Flash-Sparse-Attention is a high-performance trainable sparse attention implementation that combines Flash Attention's memory efficiency with sparse computation for handling extremely long sequences in Transformer models.
 
 
-## Key Features
+# Key Features
 
 > [!NOTE]
 > Support for arbitrary mask and bias shapes is available in [this branch](https://github.com/HKUSTDial/flash-sparse-attention/tree/final_mask_version). The current main branch no longer maintains that feature set.
 
-### Supported Features
+## Supported Features
 
 - Forward and backward passes for dense attention, sparse attention, and gated attention
 - Regular batched inputs and varlen inputs
@@ -32,7 +32,7 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - Split-QO for workload balancing in backward workloads
 - Fused Quant for low-precision computation on hardware without native FP8 support
 
-### Features We Aim to Support
+## Features We Aim to Support
 
 - Paged Attention
 - KV-Cache Manager
@@ -40,9 +40,9 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) backend support
 
 
-## Installation
+# Installation
 
-### Requirements
+## Requirements
 
 - **Linux**: Ubuntu 22.04 or later
 - **NVIDIA GPU**: Compute Capability 8.0 or higher
@@ -51,7 +51,7 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - **PyTorch**: 2.5.1 or later
 - **Triton**: Installed automatically as a default dependency
 
-### Install
+## Install
 
 Install from PyPI:
 
@@ -68,7 +68,7 @@ pip install .
 ```
 
 
-### Install via HuggingFace Kernel
+## Install via HuggingFace Kernel
 
 You can also load the kernels directly from [HuggingFace Kernel](https://github.com/huggingface/kernels) without installing the package:
 
@@ -85,9 +85,9 @@ out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
 Requires `pip install kernels`.
 
 
-## Quick Start
+# Quick Start
 
-### Basic Usage
+## Basic Usage
 
 Below are examples for the three common attention variants:
 
@@ -162,9 +162,11 @@ print(output_gated.shape)
 ```
 
 
-## Performance
+# Performance
 
 The following benchmarks cover forward, backward, and decode workloads. They include dense, sparse, and gated implementations, with FlashAttention used as the baseline.
+
+## NVIDIA GPU
 
 ### H20
 
@@ -196,30 +198,47 @@ The following benchmarks cover forward, backward, and decode workloads. They inc
 ![Attention decode speed, head dim 128, rtx pro 6000](assets/latency_decode_rtxpro6000.png)
 
 
-## Benchmarking
+## T-Head PPU
+
+### ZW810E
+
+**Forward Performance**
+
+![Attention forward speed, head dim 128, zw810e](assets/latency_forward_ppuzw810e.png)
+
+**Backward Performance**
+
+![Attention backward speed, head dim 128, ppuzw810e](assets/latency_backward_ppuzw810e.png)
+
+**Decode Performance**
+
+![Attention decode speed, head dim 128, ppuzw810e](assets/latency_decode_ppuzw810e.png)
+
+
+# Benchmarking
 
 Benchmark scripts are located under [tests](tests/), covering forward, backward, and decoding performance.
 
-### Forward Performance
+## Forward Performance
 
 ```bash
 python tests/benchmark_forward.py
 ```
 
-### Backward Performance
+## Backward Performance
 
 ```bash
 python tests/benchmark_backward.py
 ```
 
-### Decode Performance
+## Decode Performance
 
 ```bash
 python tests/benchmark_decode.py
 ```
 
 
-## Citation
+# Citation
 
 If you use FSA in your research, please cite:
 
@@ -236,7 +255,7 @@ If you use FSA in your research, please cite:
 ```
 
 
-## Acknowledgments
+# Acknowledgments
 
 This project builds upon and integrates several excellent works:
 
@@ -244,4 +263,4 @@ This project builds upon and integrates several excellent works:
 - **[Flash-Attention](https://github.com/Dao-AILab/flash-attention)** - Memory-efficient attention computation
 - **[NVIDIA CUTLASS](https://github.com/NVIDIA/cutlass)** - High-performance matrix operations library
 
-We thank the open-source community for its contributions to efficient Transformer implementations.
+We thank the open-source community for its contributions to efficient Transformer implementations. 🤗
