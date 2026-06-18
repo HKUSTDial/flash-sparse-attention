@@ -33,7 +33,6 @@ def _bwd_inner_sparse_kernel(
     mask_sched,
     acc_dk,
     acc_dv,
-    block_max,
     k_tile,
     v_tile,
     q_ptrs,
@@ -61,8 +60,11 @@ def _bwd_inner_sparse_kernel(
             MASK_LOCAL=MASK_LOCAL,
         )
 
-    # Compute current block max
-    block_max_curr = tl.max(acc_s)
+    # Load LSE
+    lse_log2 = ptrs_sched.load_lse(config, lse_ptrs, m_block)
+
+    # Compute attention weights in log2-domain
+    p_log2 = acc_s * config.softmax_scale_log2 - lse_log2[None, :]
 
     # Compute softmax threshold for this m_block
     softmax_threshold_log2 = config.get_softmax_threshold_log2(
@@ -70,20 +72,11 @@ def _bwd_inner_sparse_kernel(
     )
 
     # Update skip condition based on threshold
-    block_max_diff_log2 = (block_max_curr - block_max) * config.softmax_scale_log2
-    skip_softmax = block_max_diff_log2 < softmax_threshold_log2
+    skip_softmax = tl.max(p_log2 - softmax_threshold_log2[None, :]) < 0.0
 
     if not skip_softmax:
-        # Update block max
-        block_max = tl.maximum(block_max_curr, block_max)
-
-        # Load LSE
-        lse_log2 = ptrs_sched.load_lse(config, lse_ptrs, m_block)
-
         # Compute attention weights
-        p = activations.exp2(acc_s * config.softmax_scale_log2 - lse_log2[None, :]).to(
-            q_tile.dtype
-        )
+        p = activations.exp2(p_log2).to(q_tile.dtype)
 
         # Load output gradients tile
         do_tile = ptrs_sched.load_do(config, do_ptrs, m_block)
@@ -109,7 +102,7 @@ def _bwd_inner_sparse_kernel(
         # Compute key gradients
         acc_dk += tl.dot(ds, q_tile)
 
-    return acc_dk, acc_dv, block_max
+    return acc_dk, acc_dv
 
 
 @triton.jit(repr=kernel_repr.bwd_sparse_repr)
@@ -299,7 +292,6 @@ def _bwd_sparse_kernel(
     dv_ptrs = ptrs_sched.make_dv_ptrs(config)
 
     # Initialize accumulators
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_dk = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
     acc_dv = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
 
@@ -314,13 +306,12 @@ def _bwd_sparse_kernel(
         for m_block in tl.range(
             block_sched.m_block_min, block_sched.m_block_min_no_mask
         ):
-            acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+            acc_dk, acc_dv = _bwd_inner_sparse_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
                 mask_sched=mask_sched,
                 acc_dk=acc_dk,
                 acc_dv=acc_dv,
-                block_max=block_max,
                 k_tile=k_tile,
                 v_tile=v_tile,
                 q_ptrs=q_ptrs,
@@ -339,13 +330,12 @@ def _bwd_sparse_kernel(
         for m_block in tl.range(
             block_sched.m_block_min_no_mask, block_sched.m_block_max
         ):
-            acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+            acc_dk, acc_dv = _bwd_inner_sparse_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
                 mask_sched=mask_sched,
                 acc_dk=acc_dk,
                 acc_dv=acc_dv,
-                block_max=block_max,
                 k_tile=k_tile,
                 v_tile=v_tile,
                 q_ptrs=q_ptrs,
@@ -366,13 +356,12 @@ def _bwd_sparse_kernel(
                 block_sched.m_block_window_min,
                 block_sched.m_block_window_min_no_mask,
             ):
-                acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                acc_dk, acc_dv = _bwd_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
-                    block_max=block_max,
                     k_tile=k_tile,
                     v_tile=v_tile,
                     q_ptrs=q_ptrs,
@@ -395,13 +384,12 @@ def _bwd_sparse_kernel(
                 block_sched.m_block_window_min_no_mask,
                 block_sched.m_block_window_max_no_mask,
             ):
-                acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                acc_dk, acc_dv = _bwd_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
-                    block_max=block_max,
                     k_tile=k_tile,
                     v_tile=v_tile,
                     q_ptrs=q_ptrs,
@@ -421,13 +409,12 @@ def _bwd_sparse_kernel(
                 block_sched.m_block_window_max_no_mask,
                 block_sched.m_block_window_max,
             ):
-                acc_dk, acc_dv, block_max = _bwd_inner_sparse_kernel(
+                acc_dk, acc_dv = _bwd_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
-                    block_max=block_max,
                     k_tile=k_tile,
                     v_tile=v_tile,
                     q_ptrs=q_ptrs,
@@ -494,7 +481,7 @@ def _flash_sparse_attn_backward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
@@ -763,7 +750,7 @@ def _flash_sparse_attn_varlen_backward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:

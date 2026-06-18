@@ -37,7 +37,6 @@ def _dec_inner_sparse_kernel(
     acc_o,
     row_max,
     row_sum,
-    block_max,
     n_block,
     n_block_min,
     IS_MASK: tl.constexpr,
@@ -61,15 +60,12 @@ def _dec_inner_sparse_kernel(
         )
 
     # Apply online sparse softmax
-    p, block_max, row_max, row_sum, row_scale, skip_softmax = (
-        softmax_sched.online_sparse_softmax(
-            acc_s=acc_s,
-            block_max=block_max,
-            row_max=row_max,
-            row_sum=row_sum,
-            softmax_threshold_log2=config.softmax_threshold_log2,
-            CHECK_INF=CHECK_INF,
-        )
+    p, row_max, row_sum, row_scale, skip_softmax = softmax_sched.online_sparse_softmax(
+        acc_s=acc_s,
+        row_max=row_max,
+        row_sum=row_sum,
+        softmax_threshold_log2=config.softmax_threshold_log2,
+        CHECK_INF=CHECK_INF,
     )
 
     if not skip_softmax:
@@ -85,7 +81,7 @@ def _dec_inner_sparse_kernel(
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
-    return k_tile, acc_o, row_max, row_sum, block_max
+    return k_tile, acc_o, row_max, row_sum
 
 
 @triton.jit(repr=kernel_repr.dec_sparse_repr)
@@ -239,10 +235,8 @@ def _dec_sparse_kernel(
     v_ptrs = ptrs_sched.make_v_ptrs(config)
 
     # Initialize accumulators
-    # TODO: Need to share block_max across threads
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load query tile
@@ -255,7 +249,7 @@ def _dec_sparse_kernel(
     for n_block in tl.range(
         block_sched.n_block_max - 1, block_sched.n_block_max_no_mask - 1, -1
     ):
-        k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+        k_tile, acc_o, row_max, row_sum = _dec_inner_sparse_kernel(
             config=config,
             ptrs_sched=ptrs_sched,
             mask_sched=mask_sched,
@@ -267,7 +261,6 @@ def _dec_sparse_kernel(
             acc_o=acc_o,
             row_max=row_max,
             row_sum=row_sum,
-            block_max=block_max,
             n_block=n_block,
             n_block_min=block_sched.n_block_max_no_mask,
             IS_MASK=True,
@@ -283,7 +276,7 @@ def _dec_sparse_kernel(
         for n_block in tl.range(
             block_sched.n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1
         ):
-            k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+            k_tile, acc_o, row_max, row_sum = _dec_inner_sparse_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
                 mask_sched=mask_sched,
@@ -295,7 +288,6 @@ def _dec_sparse_kernel(
                 acc_o=acc_o,
                 row_max=row_max,
                 row_sum=row_sum,
-                block_max=block_max,
                 n_block=n_block,
                 n_block_min=block_sched.n_block_min,
                 IS_MASK=False,
@@ -316,7 +308,7 @@ def _dec_sparse_kernel(
                 block_sched.n_block_window_max_no_mask - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+                k_tile, acc_o, row_max, row_sum = _dec_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
@@ -328,7 +320,6 @@ def _dec_sparse_kernel(
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_max_no_mask,
                     IS_MASK=True,
@@ -351,7 +342,7 @@ def _dec_sparse_kernel(
                 block_sched.n_block_window_min_no_mask - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+                k_tile, acc_o, row_max, row_sum = _dec_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
@@ -363,7 +354,6 @@ def _dec_sparse_kernel(
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_min_no_mask,
                     IS_MASK=False,
@@ -383,7 +373,7 @@ def _dec_sparse_kernel(
                 block_sched.n_block_window_min - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum, block_max = _dec_inner_sparse_kernel(
+                k_tile, acc_o, row_max, row_sum = _dec_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
@@ -395,7 +385,6 @@ def _dec_sparse_kernel(
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_min,
                     IS_MASK=True,
@@ -463,7 +452,7 @@ def _flash_sparse_attn_decode(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
@@ -662,7 +651,7 @@ def _flash_sparse_attn_varlen_decode(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:

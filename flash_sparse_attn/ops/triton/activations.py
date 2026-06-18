@@ -104,7 +104,6 @@ def online_softmax(
 @triton.jit
 def online_sparse_softmax(
     acc_s,
-    block_max,
     row_max,
     row_sum,
     scale_log2,
@@ -112,18 +111,16 @@ def online_sparse_softmax(
     CHECK_INF: tl.constexpr,
 ):
     """
-    Apply online sparse softmax to acc_s, and update block_max, row_max and row_sum.
+    Apply online sparse softmax to acc_s, and update row_max and row_sum.
 
     :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-    :param block_max: Running block-wise maximum scalar, init to -inf.
     :param row_max: Current maximum values per row of shape [BLOCK_M], init to -inf.
     :param row_sum: Current sum values per row of shape [BLOCK_M], init to 0.
     :param scale_log2: Log2 of the scaling factor to be applied to acc_s.
-    :param softmax_threshold_log2: Threshold in log2-domain for block-level skip. If > -inf and block max is below threshold relative to running max, skip softmax update.
+    :param softmax_threshold_log2: Threshold in log2-domain for block-level skip.
     :param CHECK_INF: Boolean flag indicating if -inf row_max should be clamped to 0.
 
     :return p: Softmax probabilities tensor of shape [BLOCK_M, BLOCK_N].
-    :return block_max_new: Updated block-wise maximum scalar.
     :return row_max_new: Updated maximum values per row of shape [BLOCK_M].
     :return row_sum_new: Updated sum values per row of shape [BLOCK_M].
     :return row_scale: Scaling factors per row of shape [BLOCK_M].
@@ -132,24 +129,17 @@ def online_sparse_softmax(
     # Compute current row max
     row_max_curr = tl.max(acc_s, axis=1)
 
-    # Compute current block max
-    block_max_curr = tl.max(row_max_curr)
-
     # Update skip condition based on threshold
-    block_max_diff_log2 = (block_max_curr - block_max) * scale_log2
-    skip_softmax = block_max_diff_log2 < softmax_threshold_log2
+    row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
+    skip_softmax = tl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
 
     # Return zero attention weights
     if skip_softmax:
         p = acc_s * 0.0
-        block_max_new = block_max
         row_max_new = row_max
         row_sum_new = row_sum
         row_scale = row_max * 0.0 + 1.0
     else:
-        # Update block max
-        block_max_new = tl.maximum(block_max_curr, block_max)
-
         # Update row max
         row_max_new = tl.maximum(row_max_curr, row_max)
 
@@ -170,7 +160,7 @@ def online_sparse_softmax(
         row_sum_cur = tl.sum(p, axis=1)
         row_sum_new = row_sum * row_scale + row_sum_cur
 
-    return p, block_max_new, row_max_new, row_sum_new, row_scale, skip_softmax
+    return p, row_max_new, row_sum_new, row_scale, skip_softmax
 
 
 @triton.jit
