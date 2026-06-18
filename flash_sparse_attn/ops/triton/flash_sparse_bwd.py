@@ -72,7 +72,7 @@ def _bwd_inner_sparse_kernel(
     )
 
     # Update skip condition based on threshold
-    skip_softmax = tl.min(p_log2 < softmax_threshold_log2[None, :])
+    skip_softmax = tl.max(p_log2 - softmax_threshold_log2[None, :]) < 0.0
 
     if not skip_softmax:
         # Compute attention weights
