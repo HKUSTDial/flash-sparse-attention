@@ -37,7 +37,6 @@ def _fwd_inner_sparse_kernel(
     acc_o,
     row_max,
     row_sum,
-    block_max,
     n_block,
     n_block_min,
     IS_MASK: tl.constexpr,
@@ -63,15 +62,12 @@ def _fwd_inner_sparse_kernel(
         )
 
     # Apply online sparse softmax
-    p, block_max, row_max, row_sum, row_scale, skip_softmax = (
-        softmax_sched.online_sparse_softmax(
-            acc_s=acc_s,
-            block_max=block_max,
-            row_max=row_max,
-            row_sum=row_sum,
-            softmax_threshold_log2=config.softmax_threshold_log2,
-            CHECK_INF=CHECK_INF,
-        )
+    p, row_max, row_sum, row_scale, skip_softmax = softmax_sched.online_sparse_softmax(
+        acc_s=acc_s,
+        row_max=row_max,
+        row_sum=row_sum,
+        softmax_threshold_log2=config.softmax_threshold_log2,
+        CHECK_INF=CHECK_INF,
     )
 
     if not skip_softmax:
@@ -87,7 +83,7 @@ def _fwd_inner_sparse_kernel(
         # Update output accumulator
         acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
-    return k_tile, acc_o, row_max, row_sum, block_max
+    return k_tile, acc_o, row_max, row_sum
 
 
 @triton.jit(repr=kernel_repr.fwd_sparse_repr)
@@ -253,7 +249,6 @@ def _fwd_sparse_kernel(
     # Initialize accumulators
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load query tile
@@ -268,7 +263,7 @@ def _fwd_sparse_kernel(
         for n_block in tl.range(
             block_sched.n_block_max - 1, block_sched.n_block_max_no_mask - 1, -1
         ):
-            k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+            k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
                 mask_sched=mask_sched,
@@ -280,7 +275,6 @@ def _fwd_sparse_kernel(
                 acc_o=acc_o,
                 row_max=row_max,
                 row_sum=row_sum,
-                block_max=block_max,
                 n_block=n_block,
                 n_block_min=block_sched.n_block_max_no_mask,
                 IS_MASK=True,
@@ -295,7 +289,7 @@ def _fwd_sparse_kernel(
         # block_sched.n_block_max_no_mask = n_block
         n_block_max_no_mask = n_block
 
-        k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+        k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
             config=config,
             ptrs_sched=ptrs_sched,
             mask_sched=mask_sched,
@@ -307,7 +301,6 @@ def _fwd_sparse_kernel(
             acc_o=acc_o,
             row_max=row_max,
             row_sum=row_sum,
-            block_max=block_max,
             n_block=n_block,
             n_block_min=n_block,
             IS_MASK=True,
@@ -324,7 +317,7 @@ def _fwd_sparse_kernel(
         for n_block in tl.range(
             n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1
         ):
-            k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+            k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
                 mask_sched=mask_sched,
@@ -336,7 +329,6 @@ def _fwd_sparse_kernel(
                 acc_o=acc_o,
                 row_max=row_max,
                 row_sum=row_sum,
-                block_max=block_max,
                 n_block=n_block,
                 n_block_min=block_sched.n_block_min,
                 IS_MASK=False,
@@ -358,7 +350,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_window_max_no_mask - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
@@ -370,7 +362,6 @@ def _fwd_sparse_kernel(
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_max_no_mask,
                     IS_MASK=True,
@@ -394,7 +385,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_window_min_no_mask - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
@@ -406,7 +397,6 @@ def _fwd_sparse_kernel(
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_min_no_mask,
                     IS_MASK=False,
@@ -427,7 +417,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_window_min - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum, block_max = _fwd_inner_sparse_kernel(
+                k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
                     mask_sched=mask_sched,
@@ -439,7 +429,6 @@ def _fwd_sparse_kernel(
                     acc_o=acc_o,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_min,
                     IS_MASK=True,
@@ -511,7 +500,7 @@ def _flash_sparse_attn_forward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
@@ -738,7 +727,7 @@ def _flash_sparse_attn_varlen_forward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
