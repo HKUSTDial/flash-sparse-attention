@@ -11,6 +11,7 @@ def apply_mask(
     seqlen_k,
     window_size_left,
     window_size_right,
+    window_size_dist,
     MASK_SEQLEN: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
@@ -27,8 +28,9 @@ def apply_mask(
     :param n_block: Current block index along the N dimension.
     :param seqlen_q: The sequence length of the query.
     :param seqlen_k: The sequence length of the key.
-    :param window_size_left: Left window size for local masking.
-    :param window_size_right: Right window size for local masking.
+    :param window_size_left: Distant local band token count.
+    :param window_size_right: Gap token count after the near-diagonal window before the distant band.
+    :param window_size_dist: Near-diagonal local token count.
     :param MASK_SEQLEN: Boolean flag indicating if seqlen masking should be applied.
     :param MASK_CAUSAL: Boolean flag indicating if causal masking should be applied.
     :param MASK_LOCAL: Boolean flag indicating if local masking should be applied.
@@ -67,8 +69,11 @@ def apply_mask(
 
         if MASK_CAUSAL and MASK_LOCAL:
             acc_s = tl.where(
-                (dist >= 0)
-                | ((dist >= window_size_right) & (dist <= window_size_left)),
+                ((dist >= 0) & (dist < window_size_dist))
+                | (
+                    (dist >= window_size_dist + window_size_right)
+                    & (dist < window_size_dist + window_size_right + window_size_left)
+                ),
                 acc_s,
                 float("-inf"),
             )
@@ -80,7 +85,11 @@ def apply_mask(
             )
         else:
             acc_s = tl.where(
-                (dist >= window_size_right) & (dist <= window_size_left),
+                ((dist >= 0) & (dist < window_size_dist))
+                | (
+                    (dist >= window_size_dist + window_size_right)
+                    & (dist < window_size_dist + window_size_right + window_size_left)
+                ),
                 acc_s,
                 float("-inf"),
             )
