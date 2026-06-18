@@ -80,27 +80,34 @@ def window_sizes_heuristic(
     num_heads_kv: int,
     device: torch.device,
     equal_bandwidth: bool = True,
+    window_dist: int = 256,
 ) -> torch.Tensor:
     """
-    Compute window sizes that partition the causal triangle into bands.
+    Compute token count window sizes that partition non-diagonal causal distances into bands.
 
     :param seqlen_k: Sequence length of keys.
     :param num_heads_kv: Number of KV heads.
     :param device: Target device.
     :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
+    :param window_dist: Near-diagonal token count shared by all KV heads.
 
-    :return: int32 tensor with shape [num_heads_kv, 2], columns are [left, right].
+    :return: int32 tensor with shape [num_heads_kv, 3], columns are [left, right, window_dist]. left is the distant band token count, right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
     """
+    window_dist = min(max(window_dist, 0), seqlen_k)
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
+    distance_span = max(seqlen_k - window_dist, 0)
     if equal_bandwidth:
-        breakpoints = (seqlen_k * head_kv_idx / num_heads_kv).to(torch.int32)
+        breakpoints = (distance_span * head_kv_idx / num_heads_kv).to(torch.int32)
     else:
         breakpoints = (
-            seqlen_k * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv))
+            distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv))
         ).to(torch.int32)
-    window_size_left = torch.clamp(breakpoints[1:] - 1, min=0)
+    window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
-    return torch.stack([window_size_left, window_size_right], dim=1).to(device)
+    window_size_dist = torch.full_like(window_size_left, window_dist)
+    return torch.stack(
+        [window_size_left, window_size_right, window_size_dist], dim=1
+    ).to(device)
 
 
 def alloc_fn(size: int, alignment: int, stream):
