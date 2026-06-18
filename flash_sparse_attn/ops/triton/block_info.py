@@ -93,37 +93,46 @@ def get_m_block_min_max(
         m_block_min = tl.maximum(m_block_min, m_idx // TILE_M)
         if IS_LOCAL:
             m_idx_right = m_idx + window_size_dist + window_size_right
-            m_block_window_min = tl.maximum(
-                m_block_window_min, tl.cdiv(m_idx_right, TILE_M)
-            )
+            m_block_window_min = tl.maximum(m_block_window_min, m_idx_right // TILE_M)
     if IS_LOCAL:
         n_idx_max = (n_block + 1) * TILE_N
-        n_idx_max = tl.minimum(n_idx_max, seqlen_k)
         m_idx = n_idx_max + seqlen_q - seqlen_k
         m_idx_left = m_idx + window_size_dist + window_size_right + window_size_left
         m_block_window_max = tl.minimum(m_block_window_max, tl.cdiv(m_idx_left, TILE_M))
     if IS_SPLIT_QO:
         if IS_LOCAL:
-            m_block_max = tl.minimum(m_block_max, m_block_window_max)
-            m_block_min_with_diag = m_block_min
-            m_block_min = tl.minimum(m_block_window_min, m_block_max)
-        total_m_blocks = tl.maximum(m_block_max - m_block_min, 0)
-        base = total_m_blocks // num_splits
-        extra = total_m_blocks % num_splits
-        m_block_min_new = m_block_min + tl.where(
-            split_idx < extra,
-            split_idx * (base + 1),
-            extra * (base + 1) + (split_idx - extra) * base,
-        )
-        m_block_count = tl.where(split_idx < extra, base + 1, base)
-        m_block_max = tl.minimum(m_block_min_new + m_block_count, m_block_max)
-        m_block_min = m_block_min_new
-        if IS_LOCAL:
-            m_block_min = tl.where(
-                split_idx <= 0,
-                m_block_min_with_diag,
-                m_block_min,
+            n_idx_max = (n_block + 1) * TILE_N
+            m_idx = n_idx_max + seqlen_q - seqlen_k
+            m_block_min_no_mask = tl.maximum(m_block_min, tl.cdiv(m_idx, TILE_M))
+            m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
+            m_block_window_max = tl.minimum(m_block_window_max, m_block_max)
+            win_blocks = tl.maximum(m_block_window_max - m_block_window_min, 0)
+            base = win_blocks // num_splits
+            extra = win_blocks % num_splits
+            win_off = tl.where(
+                split_idx < extra,
+                split_idx * (base + 1),
+                extra * (base + 1) + (split_idx - extra) * base,
             )
+            win_cnt = tl.where(split_idx < extra, base + 1, base)
+            m_block_window_min = m_block_window_min + win_off
+            m_block_window_max = tl.minimum(
+                m_block_window_min + win_cnt, m_block_window_max
+            )
+            # First split keeps diagonal, others skip it
+            m_block_min = tl.where(split_idx == 0, m_block_min, m_block_window_min)
+        else:
+            total_m_blocks = tl.maximum(m_block_max - m_block_min, 0)
+            base = total_m_blocks // num_splits
+            extra = total_m_blocks % num_splits
+            m_block_min_new = m_block_min + tl.where(
+                split_idx < extra,
+                split_idx * (base + 1),
+                extra * (base + 1) + (split_idx - extra) * base,
+            )
+            m_block_count = tl.where(split_idx < extra, base + 1, base)
+            m_block_max = tl.minimum(m_block_min_new + m_block_count, m_block_max)
+            m_block_min = m_block_min_new
     return m_block_min, m_block_max, m_block_window_min, m_block_window_max
 
 
