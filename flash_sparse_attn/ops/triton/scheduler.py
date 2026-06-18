@@ -2374,7 +2374,6 @@ class SoftmaxScheduler:
     def online_sparse_softmax(
         self,
         acc_s,
-        block_max,
         row_max,
         row_sum,
         softmax_threshold_log2,
@@ -2382,7 +2381,6 @@ class SoftmaxScheduler:
     ):
         return activations.online_sparse_softmax(
             acc_s=acc_s,
-            block_max=block_max,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,

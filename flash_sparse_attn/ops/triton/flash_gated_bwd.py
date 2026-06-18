@@ -36,7 +36,6 @@ def _bwd_inner_gated_kernel(
     acc_dk,
     acc_dv,
     acc_dd,
-    block_max,
     k_tile,
     v_tile,
     d_tile,
@@ -107,8 +106,11 @@ def _bwd_inner_gated_kernel(
                 MASK_LOCAL=MASK_LOCAL,
             )
 
-        # Compute current block max
-        block_max_curr = tl.max(acc_s)
+        # Load LSE
+        lse_log2 = ptrs_sched.load_lse(config, lse_ptrs, m_block)
+
+        # Compute attention weights in log2-domain
+        p_log2 = acc_s * config.softmax_scale_log2 - lse_log2[None, :]
 
         # Compute softmax threshold for this m_block
         softmax_threshold_log2 = config.get_softmax_threshold_log2(
@@ -116,20 +118,11 @@ def _bwd_inner_gated_kernel(
         )
 
         # Update skip condition based on threshold
-        block_max_diff_log2 = (block_max_curr - block_max) * config.softmax_scale_log2
-        skip_softmax = block_max_diff_log2 < softmax_threshold_log2
+        skip_softmax = tl.max(p_log2 - softmax_threshold_log2[None, :]) < 0.0
 
         if not skip_softmax:
-            # Update block max
-            block_max = tl.maximum(block_max_curr, block_max)
-
-            # Load LSE
-            lse_log2 = ptrs_sched.load_lse(config, lse_ptrs, m_block)
-
             # Compute attention weights
-            p = activations.exp2(
-                acc_s * config.softmax_scale_log2 - lse_log2[None, :]
-            ).to(q_tile.dtype)
+            p = activations.exp2(p_log2).to(q_tile.dtype)
 
             # Load output gradients tile
             do_tile = ptrs_sched.load_do(config, do_ptrs, m_block)
@@ -168,7 +161,6 @@ def _bwd_inner_gated_kernel(
         acc_dk,
         acc_dv,
         acc_dd,
-        block_max,
         gate_max,
     )
 
@@ -401,7 +393,6 @@ def _bwd_gated_kernel(
 
     # Initialize accumulators
     gate_max = tl.full((), float("-inf"), dtype=tl.float32)
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_dk = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
     acc_dv = tl.zeros((TILE_N, TILE_K), dtype=tl.float32)
     acc_dd = tl.zeros((TILE_N,), dtype=tl.float32)
@@ -426,7 +417,6 @@ def _bwd_gated_kernel(
                 acc_dk,
                 acc_dv,
                 acc_dd,
-                block_max,
                 gate_max,
             ) = _bwd_inner_gated_kernel(
                 config=config,
@@ -436,7 +426,6 @@ def _bwd_gated_kernel(
                 acc_dk=acc_dk,
                 acc_dv=acc_dv,
                 acc_dd=acc_dd,
-                block_max=block_max,
                 k_tile=k_tile,
                 v_tile=v_tile,
                 d_tile=d_tile,
@@ -465,7 +454,6 @@ def _bwd_gated_kernel(
                 acc_dk,
                 acc_dv,
                 acc_dd,
-                block_max,
                 gate_max,
             ) = _bwd_inner_gated_kernel(
                 config=config,
@@ -475,7 +463,6 @@ def _bwd_gated_kernel(
                 acc_dk=acc_dk,
                 acc_dv=acc_dv,
                 acc_dd=acc_dd,
-                block_max=block_max,
                 k_tile=k_tile,
                 v_tile=v_tile,
                 d_tile=d_tile,
@@ -506,7 +493,6 @@ def _bwd_gated_kernel(
                     acc_dk,
                     acc_dv,
                     acc_dd,
-                    block_max,
                     gate_max,
                 ) = _bwd_inner_gated_kernel(
                     config=config,
@@ -516,7 +502,6 @@ def _bwd_gated_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
                     acc_dd=acc_dd,
-                    block_max=block_max,
                     k_tile=k_tile,
                     v_tile=v_tile,
                     d_tile=d_tile,
@@ -549,7 +534,6 @@ def _bwd_gated_kernel(
                     acc_dk,
                     acc_dv,
                     acc_dd,
-                    block_max,
                     gate_max,
                 ) = _bwd_inner_gated_kernel(
                     config=config,
@@ -559,7 +543,6 @@ def _bwd_gated_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
                     acc_dd=acc_dd,
-                    block_max=block_max,
                     k_tile=k_tile,
                     v_tile=v_tile,
                     d_tile=d_tile,
@@ -589,7 +572,6 @@ def _bwd_gated_kernel(
                     acc_dk,
                     acc_dv,
                     acc_dd,
-                    block_max,
                     gate_max,
                 ) = _bwd_inner_gated_kernel(
                     config=config,
@@ -599,7 +581,6 @@ def _bwd_gated_kernel(
                     acc_dk=acc_dk,
                     acc_dv=acc_dv,
                     acc_dd=acc_dd,
-                    block_max=block_max,
                     k_tile=k_tile,
                     v_tile=v_tile,
                     d_tile=d_tile,
@@ -683,7 +664,7 @@ def _flash_gated_attn_backward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     gate_threshold = (
         gate_threshold if gate_threshold is not None else head_dim / seqlen_k
@@ -996,7 +977,7 @@ def _flash_gated_attn_varlen_backward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     gate_threshold = (
         gate_threshold if gate_threshold is not None else head_dim / seqlen_k
