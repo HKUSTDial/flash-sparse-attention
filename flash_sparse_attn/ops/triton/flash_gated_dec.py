@@ -43,7 +43,6 @@ def _dec_inner_gated_kernel(
     gate_max,
     row_max,
     row_sum,
-    block_max,
     n_block,
     n_block_min,
     IS_MASK: tl.constexpr,
@@ -77,10 +76,9 @@ def _dec_inner_gated_kernel(
             )
 
         # Apply online softmax
-        p, block_max, row_max, row_sum, row_scale, skip_softmax = (
+        p, row_max, row_sum, row_scale, skip_softmax = (
             softmax_sched.online_sparse_softmax(
                 acc_s=acc_s,
-                block_max=block_max,
                 row_max=row_max,
                 row_sum=row_sum,
                 softmax_threshold_log2=config.softmax_threshold_log2,
@@ -134,7 +132,6 @@ def _dec_inner_gated_kernel(
         gate_max,
         row_max,
         row_sum,
-        block_max,
     )
 
 
@@ -311,7 +308,6 @@ def _dec_gated_kernel(
     gate_max = tl.full((), float("-inf"), dtype=tl.float32)
     row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
-    block_max = tl.full((), float("-inf"), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
     # Load query tile
@@ -364,7 +360,6 @@ def _dec_gated_kernel(
             gate_max,
             row_max,
             row_sum,
-            block_max,
         ) = _dec_inner_gated_kernel(
             config=config,
             ptrs_sched=ptrs_sched,
@@ -383,7 +378,6 @@ def _dec_gated_kernel(
             gate_max=gate_max,
             row_max=row_max,
             row_sum=row_sum,
-            block_max=block_max,
             n_block=n_block,
             n_block_min=block_sched.n_block_max_no_mask,
             IS_MASK=True,
@@ -431,7 +425,6 @@ def _dec_gated_kernel(
                 gate_max,
                 row_max,
                 row_sum,
-                block_max,
             ) = _dec_inner_gated_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
@@ -450,7 +443,6 @@ def _dec_gated_kernel(
                 gate_max=gate_max,
                 row_max=row_max,
                 row_sum=row_sum,
-                block_max=block_max,
                 n_block=n_block,
                 n_block_min=block_sched.n_block_min,
                 IS_MASK=False,
@@ -505,7 +497,6 @@ def _dec_gated_kernel(
                     gate_max,
                     row_max,
                     row_sum,
-                    block_max,
                 ) = _dec_inner_gated_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
@@ -524,7 +515,6 @@ def _dec_gated_kernel(
                     gate_max=gate_max,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_max_no_mask,
                     IS_MASK=True,
@@ -581,7 +571,6 @@ def _dec_gated_kernel(
                     gate_max,
                     row_max,
                     row_sum,
-                    block_max,
                 ) = _dec_inner_gated_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
@@ -600,7 +589,6 @@ def _dec_gated_kernel(
                     gate_max=gate_max,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_min_no_mask,
                     IS_MASK=False,
@@ -654,7 +642,6 @@ def _dec_gated_kernel(
                     gate_max,
                     row_max,
                     row_sum,
-                    block_max,
                 ) = _dec_inner_gated_kernel(
                     config=config,
                     ptrs_sched=ptrs_sched,
@@ -673,7 +660,6 @@ def _dec_gated_kernel(
                     gate_max=gate_max,
                     row_max=row_max,
                     row_sum=row_sum,
-                    block_max=block_max,
                     n_block=n_block,
                     n_block_min=block_sched.n_block_window_min,
                     IS_MASK=True,
@@ -745,7 +731,7 @@ def _flash_gated_attn_decode(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     gate_threshold = (
         gate_threshold if gate_threshold is not None else head_dim / seqlen_k
@@ -961,7 +947,7 @@ def _flash_gated_attn_varlen_decode(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else head_dim / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
     )
     gate_threshold = (
         gate_threshold if gate_threshold is not None else head_dim / seqlen_k
