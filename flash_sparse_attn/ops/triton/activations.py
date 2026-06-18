@@ -131,7 +131,7 @@ def online_sparse_softmax(
 
     # Update skip condition based on threshold
     row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
-    skip_softmax = tl.min(row_max_diff_log2 < softmax_threshold_log2)
+    skip_softmax = tl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
 
     # Return zero attention weights
     if skip_softmax:
