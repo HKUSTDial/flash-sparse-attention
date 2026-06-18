@@ -4,7 +4,6 @@ from typing import Dict, List, Literal, Optional, Sequence
 
 import torch
 
-from flash_sparse_attn.ops.triton import launch_template
 from flash_sparse_attn.ops.triton.interface import (
     flash_dense_attn_func,
     flash_dense_attn_varlen_func,
@@ -446,55 +445,13 @@ def _reference_scores(
         causal_offset = seqlen_k - seqlen_q
         dist = q_idx + causal_offset - k_idx
 
-        tile_k = max(1 << (max(q.shape[-1], 16) - 1).bit_length(), 16)
-        if seqlen_q > 1:
-            launch_config = launch_template.load_launch_config(
-                device=q.device,
-                kernel_name=f"fwd_{kind}",
-                seqlen_q=seqlen_q,
-                seqlen_k=seqlen_k,
-                tile_k=tile_k,
-                is_local=is_local,
-                qhead_per_kvhead=qpk,
-                is_causal=is_causal,
-            )
-            if launch_config is not None:
-                tile_m, tile_n, _, _, _ = launch_config
-            else:
-                tile_m = tile_n = 64
-            m_block = q_idx // tile_m
-            n_blk = k_idx // tile_n
-            n_block_max_no_mask = (m_block * tile_m + causal_offset) // tile_n
-            n_block_max_diag = (
-                (m_block + 1) * tile_m + causal_offset + tile_n - 1
-            ) // tile_n
-            is_diagonal = (n_blk >= n_block_max_no_mask) & (n_blk < n_block_max_diag)
-            causal_mask = dist >= 0
-        else:
-            kernel_name = f"dec_{kind}"
-            launch_config = launch_template.load_launch_config(
-                device=q.device,
-                kernel_name=kernel_name,
-                seqlen_q=1,
-                seqlen_k=seqlen_k,
-                tile_k=tile_k,
-                is_local=is_local,
-                qhead_per_kvhead=qpk,
-            )
-            if launch_config is not None:
-                _, tile_n, _, _, _ = launch_config
-            else:
-                tile_n = 128
-            last_block_start = (seqlen_k - 1) // tile_n * tile_n
-            is_diagonal = k_idx >= last_block_start
-
         for h in range(num_kv_heads):
-            wl, wr = int(ws[h, 0].item()), int(ws[h, 1].item())
-            window_mask = (dist >= wr) & (dist <= wl)
-            if seqlen_q > 1:
-                allowed = (is_diagonal & causal_mask) | window_mask
-            else:
-                allowed = is_diagonal | window_mask
+            wl = int(ws[h, 0].item())
+            wr = int(ws[h, 1].item())
+            wd = int(ws[h, 2].item())
+            window_mask = (dist >= wd + wr) & (dist < wd + wr + wl)
+            dist_mask = (dist >= 0) & (dist < wd)
+            allowed = dist_mask | window_mask
             scores[:, h * qpk : (h + 1) * qpk] = scores[
                 :, h * qpk : (h + 1) * qpk
             ].masked_fill(~allowed, float("-inf"))
