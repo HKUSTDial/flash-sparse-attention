@@ -138,7 +138,7 @@ def _dec_dense_kernel(
     )
 
     # Load window sizes
-    window_size_left, window_size_right = grid_idx.load_window_sizes(
+    window_size_left, window_size_right, window_size_dist = grid_idx.load_window_sizes(
         window_sizes=window_sizes,
         stride_wh=stride_wh,
         IS_LOCAL=IS_LOCAL,
@@ -153,6 +153,7 @@ def _dec_dense_kernel(
         batch_idx=grid_idx.batch_idx,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
+        window_size_dist=window_size_dist,
         head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
@@ -450,7 +451,7 @@ def _flash_dense_attn_decode(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 3), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -644,7 +645,7 @@ def _flash_dense_attn_varlen_decode(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 3), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
