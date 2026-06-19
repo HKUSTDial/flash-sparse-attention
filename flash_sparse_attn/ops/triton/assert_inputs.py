@@ -105,7 +105,7 @@ def assert_fwd_inputs(
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
         assert window_sizes.ndim == 2 and window_sizes.shape[1] == 3, (
-            "window_sizes must have shape [num_kv_heads, 3]"
+            "window_sizes must have shape [num_kv_heads, 3] with columns [window_dist, window_right, window_left]"
         )
 
 
@@ -229,7 +229,7 @@ def assert_bwd_inputs(
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
         assert window_sizes.ndim == 2 and window_sizes.shape[1] == 3, (
-            "window_sizes must have shape [num_kv_heads, 3]"
+            "window_sizes must have shape [num_kv_heads, 3] with columns [window_dist, window_right, window_left]"
         )
 
 
@@ -323,5 +323,5 @@ def assert_dec_inputs(
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
         assert window_sizes.ndim == 2 and window_sizes.shape[1] == 3, (
-            "window_sizes must have shape [num_kv_heads, 3]"
+            "window_sizes must have shape [num_kv_heads, 3] with columns [window_dist, window_right, window_left]"
         )
