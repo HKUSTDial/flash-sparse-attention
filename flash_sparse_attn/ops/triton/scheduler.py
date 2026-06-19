@@ -780,10 +780,10 @@ class AttnFwdBlockScheduler:
             m_block=config.m_block,
             n_block_min=n_block_min,
             window_size_right=0,
-            window_size_dist=config.window_size_dist - 1,
+            window_size_dist=0,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_LOCAL=IS_LOCAL,
+            IS_LOCAL=False,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
 
@@ -916,11 +916,11 @@ class AttnBwdBlockScheduler:
             n_block=config.n_block,
             m_block_min=m_block_min,
             window_size_right=0,
-            window_size_dist=config.window_size_dist - 1,
+            window_size_dist=0,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=IS_CAUSAL or IS_LOCAL,
-            IS_LOCAL=IS_LOCAL,
+            IS_LOCAL=False,
         )
 
         # Clamp to split's range so the no-mask loop stays within bounds
@@ -1042,10 +1042,10 @@ class AttnDecBlockScheduler:
             m_block=0,
             n_block_min=n_block_min,
             window_size_right=0,
-            window_size_dist=config.window_size_dist - 1,
+            window_size_dist=0,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_LOCAL=IS_LOCAL,
+            IS_LOCAL=False,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
 
