@@ -50,9 +50,9 @@ class AttnFwdGridIndex:
     @triton.jit
     def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
         if IS_LOCAL:
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
         else:
             window_size_left = 0
             window_size_right = 0
@@ -98,9 +98,9 @@ class AttnBwdGridIndex:
     @triton.jit
     def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
         if IS_LOCAL:
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
         else:
             window_size_left = 0
             window_size_right = 0
@@ -137,9 +137,9 @@ class AttnDecGridIndex:
     @triton.jit
     def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
         if IS_LOCAL:
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
         else:
             window_size_left = 0
             window_size_right = 0
@@ -743,7 +743,9 @@ class AttnFwdBlockScheduler:
 
     @triton.jit
     def is_empty(self):
-        return self.n_block_max <= self.n_block_min
+        return (self.n_block_max <= self.n_block_min) & (
+            self.n_block_window_max <= self.n_block_window_min
+        )
 
     @staticmethod
     @triton.jit
@@ -792,8 +794,17 @@ class AttnFwdBlockScheduler:
             n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
         if IS_LOCAL:
+            if IS_SPLIT_KV:
+                n_block_max_no_mask = tl.where(
+                    split_idx >= num_splits - 1,
+                    n_block_min,
+                    n_block_max_no_mask,
+                )
+            else:
+                n_block_max_no_mask = n_block_min
             # Compute local n_block range for this m_block
-            n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
+            if IS_SPLIT_KV:
+                n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
@@ -835,6 +846,8 @@ class AttnFwdBlockScheduler:
                     n_block_window_min,
                 )
         else:
+            n_block_window_min = 0
+            n_block_window_max = 0
             n_block_window_min_no_mask = 0
             n_block_window_max_no_mask = 0
 
@@ -928,9 +941,9 @@ class AttnBwdBlockScheduler:
             m_block_min_no_mask = tl.minimum(m_block_min_no_mask, m_block_max)
 
         if IS_LOCAL:
+            m_block_min_no_mask = m_block_max
             # Compute local m_block range for this n_block
             m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
-            m_block_window_max = tl.minimum(m_block_window_max, m_block_max)
             m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -1007,7 +1020,9 @@ class AttnDecBlockScheduler:
 
     @triton.jit
     def is_empty(self):
-        return self.n_block_max <= self.n_block_min
+        return (self.n_block_max <= self.n_block_min) & (
+            self.n_block_window_max <= self.n_block_window_min
+        )
 
     @staticmethod
     @triton.jit
@@ -1053,6 +1068,11 @@ class AttnDecBlockScheduler:
         n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
         if IS_LOCAL:
+            n_block_max_no_mask = tl.where(
+                split_idx >= num_splits - 1,
+                n_block_min,
+                n_block_max_no_mask,
+            )
             # Compute local n_block range for this m_block
             n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
@@ -1095,6 +1115,8 @@ class AttnDecBlockScheduler:
                 n_block_window_min,
             )
         else:
+            n_block_window_min = 0
+            n_block_window_max = 0
             n_block_window_min_no_mask = 0
             n_block_window_max_no_mask = 0
 
@@ -1502,11 +1524,17 @@ class AttnFwdPointerScheduler:
             lse_ptrs.store([config.m_block * config.TILE_M], lse_tile)
 
     @triton.jit
-    def store_empty(self, config: AttnFwdConfig, out_ptrs, lse_ptrs):
+    def store_empty(
+        self,
+        config: AttnFwdConfig,
+        out_ptrs,
+        lse_ptrs,
+        IS_SPLIT_KV: tl.constexpr = False,
+    ):
         lse_tile = tl.full((config.TILE_M,), float("-inf"), dtype=tl.float32)
         self.store_lse(config, lse_ptrs, lse_tile)
         o_tile = tl.zeros((config.TILE_M, config.TILE_K), dtype=tl.float32)
-        self.store_out(config, out_ptrs, o_tile)
+        self.store_out(config, out_ptrs, o_tile, IS_SPLIT_KV=IS_SPLIT_KV)
 
 
 @aggregate
