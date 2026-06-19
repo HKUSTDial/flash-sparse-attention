@@ -553,6 +553,11 @@ def _flash_dense_attn_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(
+                window_sizes, TILE_N
+            )
+            if is_local
+            else None,
         )
         if is_split_kv
         else 1
@@ -775,6 +780,11 @@ def _flash_dense_attn_varlen_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(
+                window_sizes, TILE_N
+            )
+            if is_local
+            else None,
         )
         if is_split_kv
         else 1
