@@ -498,6 +498,9 @@ def _flash_dense_attn_decode(
         num_SMs=num_SMs,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
+        max_split_blocks=utils.max_split_blocks_from_window_sizes(window_sizes, TILE_N)
+        if is_local
+        else None,
     )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
@@ -692,6 +695,9 @@ def _flash_dense_attn_varlen_decode(
         num_SMs=num_SMs,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
+        max_split_blocks=utils.max_split_blocks_from_window_sizes(window_sizes, TILE_N)
+        if is_local
+        else None,
     )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
