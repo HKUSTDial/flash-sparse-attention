@@ -446,9 +446,9 @@ def _reference_scores(
         dist = q_idx + causal_offset - k_idx
 
         for h in range(num_kv_heads):
-            wl = int(ws[h, 0].item())
+            wd = int(ws[h, 0].item())
             wr = int(ws[h, 1].item())
-            wd = int(ws[h, 2].item())
+            wl = int(ws[h, 2].item())
             window_mask = (dist >= wd + wr) & (dist < wd + wr + wl)
             dist_mask = (dist >= 0) & (dist < wd)
             allowed = dist_mask | window_mask
