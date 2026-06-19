@@ -236,7 +236,7 @@ def _fwd_dense_kernel(
 
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
-        ptrs_sched.store_empty(config, out_ptrs, lse_ptrs)
+        ptrs_sched.store_empty(config, out_ptrs, lse_ptrs, IS_SPLIT_KV=IS_SPLIT_KV)
         return
 
     q_ptrs = ptrs_sched.make_q_ptrs(config)
