@@ -40,11 +40,13 @@ def get_n_block_min_max(
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
         n_idx = m_idx_min + seqlen_k - seqlen_q
+        n_idx_dist = n_idx - window_size_dist
+        n_block_min = tl.maximum(n_idx_dist // TILE_N, 0)
         n_idx_left = n_idx - window_size_dist - window_size_right - window_size_left
         n_block_window_min = tl.maximum(n_idx_left // TILE_N, 0)
     if IS_SPLIT_KV:
         if IS_LOCAL:
-            n_block_min = tl.maximum(n_block_min, n_block_window_min)
+            n_block_min = n_block_window_min
             n_block_max_with_diag = n_block_max
             n_block_max = tl.maximum(n_block_window_max, n_block_min)
         total_n_blocks = tl.maximum(n_block_max - n_block_min, 0)
@@ -97,6 +99,8 @@ def get_m_block_min_max(
     if IS_LOCAL:
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
+        m_idx_dist = m_idx + window_size_dist
+        m_block_max = tl.minimum(m_block_max, tl.cdiv(m_idx_dist, TILE_M))
         m_idx_left = m_idx + window_size_dist + window_size_right + window_size_left
         m_block_window_max = tl.minimum(m_block_window_max, tl.cdiv(m_idx_left, TILE_M))
     if IS_SPLIT_QO:
@@ -105,7 +109,6 @@ def get_m_block_min_max(
             m_idx = n_idx_max + seqlen_q - seqlen_k
             m_block_min_no_mask = tl.maximum(m_block_min, tl.cdiv(m_idx, TILE_M))
             m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
-            m_block_window_max = tl.minimum(m_block_window_max, m_block_max)
             win_blocks = tl.maximum(m_block_window_max - m_block_window_min, 0)
             base = win_blocks // num_splits
             extra = win_blocks % num_splits
@@ -121,6 +124,7 @@ def get_m_block_min_max(
             )
             # First split keeps diagonal, others skip it
             m_block_min = tl.where(split_idx == 0, m_block_min, m_block_window_min)
+            m_block_max = tl.where(split_idx == 0, m_block_max, m_block_window_min)
         else:
             total_m_blocks = tl.maximum(m_block_max - m_block_min, 0)
             base = total_m_blocks // num_splits
