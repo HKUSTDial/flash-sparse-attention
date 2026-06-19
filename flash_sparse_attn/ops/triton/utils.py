@@ -91,7 +91,7 @@ def window_sizes_heuristic(
     :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
     :param window_dist: Near-diagonal token count shared by all KV heads.
 
-    :return: int32 tensor with shape [num_heads_kv, 3], columns are [left, right, window_dist]. left is the distant band token count, right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
+    :return: int32 tensor with shape [num_heads_kv, 3], columns are [window_dist, right, left]. window_dist is the near-diagonal token count, right is the token count gap after the near-diagonal window before the distant band, and left is the distant band token count.
     """
     window_dist = min(max(window_dist, 0), seqlen_k)
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
@@ -106,7 +106,7 @@ def window_sizes_heuristic(
     window_size_right = breakpoints[:-1]
     window_size_dist = torch.full_like(window_size_left, window_dist)
     return torch.stack(
-        [window_size_left, window_size_right, window_size_dist], dim=1
+        [window_size_dist, window_size_right, window_size_left], dim=1
     ).to(device)
 
 
