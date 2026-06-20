@@ -448,8 +448,11 @@ def _fwd_dense_kernel(
                     CHECK_INF=True,
                 )
 
+        # Process n_blocks with local sink masking
         if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
+            # Load key tile
             k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_sink_max - 1)
+
             for n_block in tl.range(
                 block_sched.n_block_sink_max - 1,
                 block_sched.n_block_sink_min - 1,
