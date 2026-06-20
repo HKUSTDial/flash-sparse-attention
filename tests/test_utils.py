@@ -446,10 +446,10 @@ def _reference_scores(
         dist = q_idx + causal_offset - k_idx
 
         for h in range(num_kv_heads):
-            wd = int(ws[h, 0].item())
-            wr = int(ws[h, 1].item())
-            wl = int(ws[h, 2].item())
-            sink = int(ws[h, 3].item())
+            sink = int(ws[h, 0].item())
+            wl = int(ws[h, 1].item())
+            wr = int(ws[h, 2].item())
+            wd = int(ws[h, 3].item())
             window_mask = (dist >= wd + wr) & (dist < wd + wr + wl)
             dist_mask = (dist >= 0) & (dist < wd)
             sink_mask = (k_idx < sink) & (dist >= 0)
