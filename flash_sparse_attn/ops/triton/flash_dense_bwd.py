@@ -430,6 +430,7 @@ def _bwd_dense_kernel(
                     MASK_SINK=False,
                 )
 
+        # Process m_blocks with local sink masking
         if block_sched.m_block_sink_max > block_sched.m_block_sink_min:
             for m_block in tl.range(
                 block_sched.m_block_sink_min,
