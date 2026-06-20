@@ -104,8 +104,8 @@ def assert_fwd_inputs(
         )
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
-        assert window_sizes.ndim == 2 and window_sizes.shape[1] == 3, (
-            "window_sizes must have shape [num_kv_heads, 3] with columns [window_dist, window_right, window_left]"
+        assert window_sizes.ndim == 2 and window_sizes.shape[1] == 4, (
+            "window_sizes must have shape [num_kv_heads, 4] with columns [window_sink, window_left, window_right, window_dist]"
         )
 
 
@@ -228,8 +228,8 @@ def assert_bwd_inputs(
         )
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
-        assert window_sizes.ndim == 2 and window_sizes.shape[1] == 3, (
-            "window_sizes must have shape [num_kv_heads, 3] with columns [window_dist, window_right, window_left]"
+        assert window_sizes.ndim == 2 and window_sizes.shape[1] == 4, (
+            "window_sizes must have shape [num_kv_heads, 4] with columns [window_sink, window_left, window_right, window_dist]"
         )
 
 
@@ -322,6 +322,6 @@ def assert_dec_inputs(
         assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
-        assert window_sizes.ndim == 2 and window_sizes.shape[1] == 3, (
-            "window_sizes must have shape [num_kv_heads, 3] with columns [window_dist, window_right, window_left]"
+        assert window_sizes.ndim == 2 and window_sizes.shape[1] == 4, (
+            "window_sizes must have shape [num_kv_heads, 4] with columns [window_sink, window_left, window_right, window_dist]"
         )
