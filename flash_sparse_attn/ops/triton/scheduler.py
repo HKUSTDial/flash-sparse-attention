@@ -50,14 +50,16 @@ class AttnFwdGridIndex:
     @triton.jit
     def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
         if IS_LOCAL:
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh)
-            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
+            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
+            window_size_sink = 0
             window_size_left = 0
             window_size_right = 0
             window_size_dist = 0
-        return window_size_left, window_size_right, window_size_dist
+        return window_size_sink, window_size_left, window_size_right, window_size_dist
 
 
 @aggregate
@@ -98,14 +100,16 @@ class AttnBwdGridIndex:
     @triton.jit
     def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
         if IS_LOCAL:
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh)
-            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
+            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
+            window_size_sink = 0
             window_size_left = 0
             window_size_right = 0
             window_size_dist = 0
-        return window_size_left, window_size_right, window_size_dist
+        return window_size_sink, window_size_left, window_size_right, window_size_dist
 
 
 @aggregate
@@ -137,14 +141,16 @@ class AttnDecGridIndex:
     @triton.jit
     def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
         if IS_LOCAL:
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh)
-            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
+            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
+            window_size_sink = 0
             window_size_left = 0
             window_size_right = 0
             window_size_dist = 0
-        return window_size_left, window_size_right, window_size_dist
+        return window_size_sink, window_size_left, window_size_right, window_size_dist
 
 
 @aggregate
@@ -160,6 +166,7 @@ class AttnFwdConfig:
     offset_k: tl.tensor
     padded_offset_q: tl.tensor
     padded_offset_k: tl.tensor
+    window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
     window_size_dist: tl.tensor
@@ -185,6 +192,7 @@ class AttnFwdConfig:
         offset_k,
         padded_offset_q,
         padded_offset_k,
+        window_size_sink,
         window_size_left,
         window_size_right,
         window_size_dist,
@@ -207,6 +215,7 @@ class AttnFwdConfig:
         self.offset_k = offset_k
         self.padded_offset_q = padded_offset_q
         self.padded_offset_k = padded_offset_k
+        self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.window_size_dist = window_size_dist
@@ -229,6 +238,7 @@ class AttnFwdConfig:
         value_scale=None,
         m_block=0,
         batch_idx=0,
+        window_size_sink=0,
         window_size_left=0,
         window_size_right=0,
         window_size_dist=0,
@@ -314,6 +324,7 @@ class AttnFwdConfig:
             offset_k,
             padded_offset_q,
             padded_offset_k,
+            window_size_sink,
             window_size_left,
             window_size_right,
             window_size_dist,
@@ -350,6 +361,7 @@ class AttnBwdConfig:
     offset_k: tl.tensor
     padded_offset_q: tl.tensor
     padded_offset_k: tl.tensor
+    window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
     window_size_dist: tl.tensor
@@ -378,6 +390,7 @@ class AttnBwdConfig:
         offset_k,
         padded_offset_q,
         padded_offset_k,
+        window_size_sink,
         window_size_left,
         window_size_right,
         window_size_dist,
@@ -403,6 +416,7 @@ class AttnBwdConfig:
         self.offset_k = offset_k
         self.padded_offset_q = padded_offset_q
         self.padded_offset_k = padded_offset_k
+        self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.window_size_dist = window_size_dist
@@ -426,6 +440,7 @@ class AttnBwdConfig:
         value_scale=None,
         n_block=0,
         batch_idx=0,
+        window_size_sink=0,
         window_size_left=0,
         window_size_right=0,
         window_size_dist=0,
@@ -495,6 +510,7 @@ class AttnBwdConfig:
             offset_k,
             padded_offset_q,
             padded_offset_k,
+            window_size_sink,
             window_size_left,
             window_size_right,
             window_size_dist,
@@ -553,6 +569,7 @@ class AttnDecConfig:
     offset_k: tl.tensor
     padded_offset_q: tl.tensor
     padded_offset_k: tl.tensor
+    window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
     window_size_dist: tl.tensor
@@ -577,6 +594,7 @@ class AttnDecConfig:
         offset_k,
         padded_offset_q,
         padded_offset_k,
+        window_size_sink,
         window_size_left,
         window_size_right,
         window_size_dist,
@@ -598,6 +616,7 @@ class AttnDecConfig:
         self.offset_k = offset_k
         self.padded_offset_q = padded_offset_q
         self.padded_offset_k = padded_offset_k
+        self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.window_size_dist = window_size_dist
@@ -618,6 +637,7 @@ class AttnDecConfig:
         key_scale=None,
         value_scale=None,
         batch_idx=0,
+        window_size_sink=0,
         window_size_left=0,
         window_size_right=0,
         window_size_dist=0,
@@ -700,6 +720,7 @@ class AttnDecConfig:
             offset_k,
             padded_offset_q,
             padded_offset_k,
+            window_size_sink,
             window_size_left,
             window_size_right,
             window_size_dist,
@@ -721,6 +742,8 @@ class AttnFwdBlockScheduler:
     n_block_window_max: tl.tensor
     n_block_window_min_no_mask: tl.tensor
     n_block_window_max_no_mask: tl.tensor
+    n_block_sink_min: tl.tensor
+    n_block_sink_max: tl.tensor
 
     @constexpr_function
     def __init__(
@@ -732,6 +755,8 @@ class AttnFwdBlockScheduler:
         n_block_window_max,
         n_block_window_min_no_mask,
         n_block_window_max_no_mask,
+        n_block_sink_min,
+        n_block_sink_max,
     ):
         self.n_block_min = n_block_min
         self.n_block_max = n_block_max
@@ -740,11 +765,15 @@ class AttnFwdBlockScheduler:
         self.n_block_window_max = n_block_window_max
         self.n_block_window_min_no_mask = n_block_window_min_no_mask
         self.n_block_window_max_no_mask = n_block_window_max_no_mask
+        self.n_block_sink_min = n_block_sink_min
+        self.n_block_sink_max = n_block_sink_max
 
     @triton.jit
     def is_empty(self):
-        return (self.n_block_max <= self.n_block_min) & (
-            self.n_block_window_max <= self.n_block_window_min
+        return (
+            (self.n_block_max <= self.n_block_min)
+            & (self.n_block_window_max <= self.n_block_window_min)
+            & (self.n_block_sink_max <= self.n_block_sink_min)
         )
 
     @staticmethod
@@ -758,23 +787,29 @@ class AttnFwdBlockScheduler:
         IS_SPLIT_KV: tl.constexpr,
     ):
         # Compute causal n_block range for this m_block
-        n_block_min, n_block_max, n_block_window_min, n_block_window_max = (
-            block_info.get_n_block_min_max(
-                seqlen_q=config.actual_seqlen_q,
-                seqlen_k=config.actual_seqlen_k,
-                m_block=config.m_block,
-                split_idx=split_idx,
-                num_splits=num_splits,
-                window_size_left=config.window_size_left,
-                window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_CAUSAL=IS_CAUSAL,
-                IS_LOCAL=IS_LOCAL,
-                IS_SPLIT_KV=IS_SPLIT_KV,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
+        (
+            n_block_min,
+            n_block_max,
+            n_block_window_min,
+            n_block_window_max,
+            n_block_sink_min,
+            n_block_sink_max,
+        ) = block_info.get_n_block_min_max(
+            seqlen_q=config.actual_seqlen_q,
+            seqlen_k=config.actual_seqlen_k,
+            m_block=config.m_block,
+            split_idx=split_idx,
+            num_splits=num_splits,
+            window_size_sink=config.window_size_sink,
+            window_size_left=config.window_size_left,
+            window_size_right=config.window_size_right,
+            window_size_dist=config.window_size_dist,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=IS_CAUSAL,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_KV=IS_SPLIT_KV,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
         n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
             seqlen_q=config.actual_seqlen_q,
@@ -859,6 +894,8 @@ class AttnFwdBlockScheduler:
             n_block_window_max,
             n_block_window_min_no_mask,
             n_block_window_max_no_mask,
+            n_block_sink_min,
+            n_block_sink_max,
         )
 
 
@@ -871,6 +908,8 @@ class AttnBwdBlockScheduler:
     m_block_window_max: tl.tensor
     m_block_window_min_no_mask: tl.tensor
     m_block_window_max_no_mask: tl.tensor
+    m_block_sink_min: tl.tensor
+    m_block_sink_max: tl.tensor
 
     @constexpr_function
     def __init__(
@@ -882,6 +921,8 @@ class AttnBwdBlockScheduler:
         m_block_window_max,
         m_block_window_min_no_mask,
         m_block_window_max_no_mask,
+        m_block_sink_min,
+        m_block_sink_max,
     ):
         self.m_block_min = m_block_min
         self.m_block_max = m_block_max
@@ -890,10 +931,16 @@ class AttnBwdBlockScheduler:
         self.m_block_window_max = m_block_window_max
         self.m_block_window_min_no_mask = m_block_window_min_no_mask
         self.m_block_window_max_no_mask = m_block_window_max_no_mask
+        self.m_block_sink_min = m_block_sink_min
+        self.m_block_sink_max = m_block_sink_max
 
     @triton.jit
     def is_empty(self):
-        return self.m_block_max <= self.m_block_min
+        return (
+            (self.m_block_max <= self.m_block_min)
+            & (self.m_block_window_max <= self.m_block_window_min)
+            & (self.m_block_sink_max <= self.m_block_sink_min)
+        )
 
     @staticmethod
     @triton.jit
@@ -906,22 +953,28 @@ class AttnBwdBlockScheduler:
         IS_SPLIT_QO: tl.constexpr,
     ):
         # Compute causal m_block range for this n_block
-        m_block_min, m_block_max, m_block_window_min, m_block_window_max = (
-            block_info.get_m_block_min_max(
-                seqlen_q=config.actual_seqlen_q,
-                seqlen_k=config.actual_seqlen_k,
-                n_block=config.n_block,
-                split_idx=split_idx,
-                num_splits=num_splits,
-                window_size_left=config.window_size_left,
-                window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_CAUSAL=IS_CAUSAL,
-                IS_LOCAL=IS_LOCAL,
-                IS_SPLIT_QO=IS_SPLIT_QO,
-            )
+        (
+            m_block_min,
+            m_block_max,
+            m_block_window_min,
+            m_block_window_max,
+            m_block_sink_min,
+            m_block_sink_max,
+        ) = block_info.get_m_block_min_max(
+            seqlen_q=config.actual_seqlen_q,
+            seqlen_k=config.actual_seqlen_k,
+            n_block=config.n_block,
+            split_idx=split_idx,
+            num_splits=num_splits,
+            window_size_sink=config.window_size_sink,
+            window_size_left=config.window_size_left,
+            window_size_right=config.window_size_right,
+            window_size_dist=config.window_size_dist,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=IS_CAUSAL,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_QO=IS_SPLIT_QO,
         )
         m_block_min_no_mask = block_info.get_m_block_min_causal_local_mask(
             seqlen_q=config.actual_seqlen_q,
@@ -974,9 +1027,19 @@ class AttnBwdBlockScheduler:
             m_block_window_max_no_mask = tl.maximum(
                 m_block_window_max_no_mask, m_block_window_min_no_mask
             )
+            m_block_window_min_no_mask = tl.maximum(
+                tl.minimum(m_block_window_min_no_mask, m_block_window_max),
+                m_block_window_min,
+            )
+            m_block_window_max_no_mask = tl.maximum(
+                tl.minimum(m_block_window_max_no_mask, m_block_window_max),
+                m_block_window_min_no_mask,
+            )
         else:
             m_block_window_min_no_mask = 0
             m_block_window_max_no_mask = 0
+            m_block_sink_min = 0
+            m_block_sink_max = 0
 
         return AttnBwdBlockScheduler(
             m_block_min,
@@ -986,6 +1049,8 @@ class AttnBwdBlockScheduler:
             m_block_window_max,
             m_block_window_min_no_mask,
             m_block_window_max_no_mask,
+            m_block_sink_min,
+            m_block_sink_max,
         )
 
 
@@ -998,6 +1063,8 @@ class AttnDecBlockScheduler:
     n_block_window_max: tl.tensor
     n_block_window_min_no_mask: tl.tensor
     n_block_window_max_no_mask: tl.tensor
+    n_block_sink_min: tl.tensor
+    n_block_sink_max: tl.tensor
 
     @constexpr_function
     def __init__(
@@ -1009,6 +1076,8 @@ class AttnDecBlockScheduler:
         n_block_window_max,
         n_block_window_min_no_mask,
         n_block_window_max_no_mask,
+        n_block_sink_min,
+        n_block_sink_max,
     ):
         self.n_block_min = n_block_min
         self.n_block_max = n_block_max
@@ -1017,11 +1086,15 @@ class AttnDecBlockScheduler:
         self.n_block_window_max = n_block_window_max
         self.n_block_window_min_no_mask = n_block_window_min_no_mask
         self.n_block_window_max_no_mask = n_block_window_max_no_mask
+        self.n_block_sink_min = n_block_sink_min
+        self.n_block_sink_max = n_block_sink_max
 
     @triton.jit
     def is_empty(self):
-        return (self.n_block_max <= self.n_block_min) & (
-            self.n_block_window_max <= self.n_block_window_min
+        return (
+            (self.n_block_max <= self.n_block_min)
+            & (self.n_block_window_max <= self.n_block_window_min)
+            & (self.n_block_sink_max <= self.n_block_sink_min)
         )
 
     @staticmethod
@@ -1033,23 +1106,29 @@ class AttnDecBlockScheduler:
         IS_LOCAL: tl.constexpr,
     ):
         # Compute non-causal n_block range for this m_block
-        n_block_min, n_block_max, n_block_window_min, n_block_window_max = (
-            block_info.get_n_block_min_max(
-                seqlen_q=1,
-                seqlen_k=config.actual_seqlen_k,
-                m_block=0,
-                split_idx=split_idx,
-                num_splits=num_splits,
-                window_size_left=config.window_size_left,
-                window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_CAUSAL=False,
-                IS_LOCAL=IS_LOCAL,
-                IS_SPLIT_KV=True,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
+        (
+            n_block_min,
+            n_block_max,
+            n_block_window_min,
+            n_block_window_max,
+            n_block_sink_min,
+            n_block_sink_max,
+        ) = block_info.get_n_block_min_max(
+            seqlen_q=1,
+            seqlen_k=config.actual_seqlen_k,
+            m_block=0,
+            split_idx=split_idx,
+            num_splits=num_splits,
+            window_size_sink=config.window_size_sink,
+            window_size_left=config.window_size_left,
+            window_size_right=config.window_size_right,
+            window_size_dist=config.window_size_dist,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=False,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_KV=True,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
         n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
             seqlen_q=1,
@@ -1128,6 +1207,8 @@ class AttnDecBlockScheduler:
             n_block_window_max,
             n_block_window_min_no_mask,
             n_block_window_max_no_mask,
+            n_block_sink_min,
+            n_block_sink_max,
         )
 
 
@@ -2201,7 +2282,7 @@ class AttnDecPointerScheduler:
     def make_q_ptrs(self, config: AttnDecConfig):
         return tl.make_tensor_descriptor(
             self.q_base,
-            shape=[config.actual_seqlen_q, config.head_dim],
+            shape=[config.QHEAD_PER_KVHEAD_PACKGQA, config.head_dim],
             strides=[self.stride_qh, 1],
             block_shape=[config.TILE_M, config.TILE_K],
         )
@@ -2228,7 +2309,7 @@ class AttnDecPointerScheduler:
     def make_a_ptrs(self, config: AttnDecConfig):
         return tl.make_tensor_descriptor(
             self.a_base,
-            shape=[config.actual_seqlen_q],
+            shape=[config.QHEAD_PER_KVHEAD_PACKGQA],
             strides=[1],
             block_shape=[config.TILE_M],
         )
@@ -2246,7 +2327,7 @@ class AttnDecPointerScheduler:
     def make_out_ptrs(self, config: AttnDecConfig):
         return tl.make_tensor_descriptor(
             self.out_base,
-            shape=[config.actual_seqlen_q, config.head_dim],
+            shape=[config.QHEAD_PER_KVHEAD_PACKGQA, config.head_dim],
             strides=[self.stride_oh, 1],
             block_shape=[config.TILE_M, config.TILE_K],
         )
@@ -2255,7 +2336,7 @@ class AttnDecPointerScheduler:
     def make_lse_ptrs(self, config: AttnDecConfig):
         return tl.make_tensor_descriptor(
             self.lse_base,
-            shape=[config.actual_seqlen_q],
+            shape=[config.QHEAD_PER_KVHEAD_PACKGQA],
             strides=[1],
             block_shape=[config.TILE_M],
         )
@@ -2301,6 +2382,7 @@ class AttnMaskScheduler:
     fixed_block: tl.tensor
     actual_seqlen_q: tl.tensor
     actual_seqlen_k: tl.tensor
+    window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
     window_size_dist: tl.tensor
@@ -2315,6 +2397,7 @@ class AttnMaskScheduler:
         fixed_block,
         actual_seqlen_q,
         actual_seqlen_k,
+        window_size_sink,
         window_size_left,
         window_size_right,
         window_size_dist,
@@ -2326,6 +2409,7 @@ class AttnMaskScheduler:
         self.fixed_block = fixed_block
         self.actual_seqlen_q = actual_seqlen_q
         self.actual_seqlen_k = actual_seqlen_k
+        self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.window_size_dist = window_size_dist
@@ -2345,6 +2429,7 @@ class AttnMaskScheduler:
                 config.m_block,
                 config.actual_seqlen_q,
                 config.actual_seqlen_k,
+                config.window_size_sink,
                 config.window_size_left,
                 config.window_size_right,
                 config.window_size_dist,
@@ -2358,6 +2443,7 @@ class AttnMaskScheduler:
                 config.n_block,
                 config.actual_seqlen_q,
                 config.actual_seqlen_k,
+                config.window_size_sink,
                 config.window_size_left,
                 config.window_size_right,
                 config.window_size_dist,
@@ -2374,6 +2460,7 @@ class AttnMaskScheduler:
         iter_block,
         MASK_CAUSAL: tl.constexpr = False,
         MASK_LOCAL: tl.constexpr = False,
+        MASK_SINK: tl.constexpr = False,
     ):
         if not self.SWAP_AB:
             m_block = self.fixed_block
@@ -2387,12 +2474,14 @@ class AttnMaskScheduler:
             n_block=n_block,
             seqlen_q=self.actual_seqlen_q,
             seqlen_k=self.actual_seqlen_k,
+            window_size_sink=self.window_size_sink,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
             window_size_dist=self.window_size_dist,
             MASK_SEQLEN=True,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
+            MASK_SINK=MASK_SINK,
             TILE_M=self.TILE_M,
             TILE_N=self.TILE_N,
             QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
