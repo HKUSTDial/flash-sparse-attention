@@ -9,6 +9,7 @@ def get_n_block_min_max(
     m_block,
     split_idx,
     num_splits,
+    window_size_sink,
     window_size_left,
     window_size_right,
     window_size_dist,
@@ -23,6 +24,8 @@ def get_n_block_min_max(
     n_block_min = 0
     n_block_window_max = n_block_max
     n_block_window_min = n_block_min
+    n_block_sink_min = 0
+    n_block_sink_max = 0
     if IS_CAUSAL or IS_LOCAL:
         m_idx_max = (m_block + 1) * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
@@ -36,14 +39,21 @@ def get_n_block_min_max(
                 n_block_window_max, tl.maximum(tl.cdiv(n_idx_right, TILE_N), 0)
             )
     if IS_LOCAL:
+        n_block_sink_max = tl.minimum(
+            tl.cdiv(window_size_sink, TILE_N),
+            tl.maximum(tl.cdiv(n_idx, TILE_N), 0),
+        )
+        n_block_sink_exclude_max = tl.cdiv(window_size_sink, TILE_N)
         m_idx_min = m_block * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
         n_idx = m_idx_min + seqlen_k - seqlen_q
         n_idx_dist = n_idx - window_size_dist
         n_block_min = tl.maximum(n_idx_dist // TILE_N, 0)
+        n_block_min = tl.maximum(n_block_min, n_block_sink_exclude_max)
         n_idx_left = n_idx - window_size_dist - window_size_right - window_size_left
         n_block_window_min = tl.maximum(n_idx_left // TILE_N, 0)
+        n_block_window_min = tl.maximum(n_block_window_min, n_block_sink_exclude_max)
     if IS_SPLIT_KV:
         if IS_LOCAL:
             n_block_min = n_block_window_min
@@ -66,7 +76,16 @@ def get_n_block_min_max(
                 n_block_max_with_diag,
                 n_block_max,
             )
-    return n_block_min, n_block_max, n_block_window_min, n_block_window_max
+        if IS_SPLIT_KV:
+            n_block_sink_max = tl.where(split_idx == 0, n_block_sink_max, 0)
+    return (
+        n_block_min,
+        n_block_max,
+        n_block_window_min,
+        n_block_window_max,
+        n_block_sink_min,
+        n_block_sink_max,
+    )
 
 
 @triton.jit
@@ -76,6 +95,7 @@ def get_m_block_min_max(
     n_block,
     split_idx,
     num_splits,
+    window_size_sink,
     window_size_left,
     window_size_right,
     window_size_dist,
@@ -89,6 +109,8 @@ def get_m_block_min_max(
     m_block_min = 0
     m_block_window_max = m_block_max
     m_block_window_min = m_block_min
+    m_block_sink_min = 0
+    m_block_sink_max = 0
     if IS_CAUSAL or IS_LOCAL:
         n_idx_min = n_block * TILE_N
         m_idx = n_idx_min + seqlen_q - seqlen_k
@@ -97,12 +119,23 @@ def get_m_block_min_max(
             m_idx_right = m_idx + window_size_dist + window_size_right
             m_block_window_min = tl.maximum(m_block_window_min, m_idx_right // TILE_M)
     if IS_LOCAL:
+        n_block_sink_exclude_max = tl.cdiv(window_size_sink, TILE_N)
+        is_sink_block = n_block < n_block_sink_exclude_max
+        n_idx_min = n_block * TILE_N
+        m_idx_sink = n_idx_min + seqlen_q - seqlen_k
+        m_block_sink_min = tl.maximum(m_idx_sink // TILE_M, 0)
+        m_block_sink_max = tl.where(is_sink_block, tl.cdiv(seqlen_q, TILE_M), 0)
+        m_block_sink_min = tl.where(is_sink_block, m_block_sink_min, 0)
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
         m_idx_dist = m_idx + window_size_dist
         m_block_max = tl.minimum(m_block_max, tl.cdiv(m_idx_dist, TILE_M))
         m_idx_left = m_idx + window_size_dist + window_size_right + window_size_left
         m_block_window_max = tl.minimum(m_block_window_max, tl.cdiv(m_idx_left, TILE_M))
+        m_block_min = tl.where(is_sink_block, 0, m_block_min)
+        m_block_max = tl.where(is_sink_block, 0, m_block_max)
+        m_block_window_min = tl.where(is_sink_block, 0, m_block_window_min)
+        m_block_window_max = tl.where(is_sink_block, 0, m_block_window_max)
     if IS_SPLIT_QO:
         if IS_LOCAL:
             n_idx_max = (n_block + 1) * TILE_N
@@ -123,8 +156,9 @@ def get_m_block_min_max(
                 m_block_window_min + win_cnt, m_block_window_max
             )
             # First split keeps diagonal, others skip it
-            m_block_min = tl.where(split_idx == 0, m_block_min, m_block_window_min)
-            m_block_max = tl.where(split_idx == 0, m_block_max, m_block_window_min)
+            m_block_min = tl.where(split_idx == 0, m_block_min, m_block_max)
+            m_block_sink_max = tl.where(split_idx == 0, m_block_sink_max, 0)
+            m_block_sink_min = tl.where(split_idx == 0, m_block_sink_min, 0)
         else:
             total_m_blocks = tl.maximum(m_block_max - m_block_min, 0)
             base = total_m_blocks // num_splits
@@ -137,7 +171,14 @@ def get_m_block_min_max(
             m_block_count = tl.where(split_idx < extra, base + 1, base)
             m_block_max = tl.minimum(m_block_min_new + m_block_count, m_block_max)
             m_block_min = m_block_min_new
-    return m_block_min, m_block_max, m_block_window_min, m_block_window_max
+    return (
+        m_block_min,
+        m_block_max,
+        m_block_window_min,
+        m_block_window_max,
+        m_block_sink_min,
+        m_block_sink_max,
+    )
 
 
 @triton.jit
