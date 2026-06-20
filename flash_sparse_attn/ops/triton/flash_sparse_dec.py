@@ -41,6 +41,7 @@ def _dec_inner_sparse_kernel(
     n_block_min,
     IS_MASK: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
+    MASK_SINK: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
     # Compute attention scores
@@ -57,6 +58,7 @@ def _dec_inner_sparse_kernel(
             acc_s=acc_s,
             iter_block=n_block,
             MASK_LOCAL=MASK_LOCAL,
+            MASK_SINK=MASK_SINK,
         )
 
     # Apply online sparse softmax
@@ -141,7 +143,12 @@ def _dec_sparse_kernel(
     )
 
     # Load window sizes
-    window_size_left, window_size_right, window_size_dist = grid_idx.load_window_sizes(
+    (
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_dist,
+    ) = grid_idx.load_window_sizes(
         window_sizes=window_sizes,
         stride_wh=stride_wh,
         IS_LOCAL=IS_LOCAL,
@@ -155,6 +162,7 @@ def _dec_sparse_kernel(
         key_scale=key_scale,
         value_scale=value_scale,
         batch_idx=grid_idx.batch_idx,
+        window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
         window_size_dist=window_size_dist,
@@ -265,7 +273,8 @@ def _dec_sparse_kernel(
             n_block=n_block,
             n_block_min=block_sched.n_block_max_no_mask,
             IS_MASK=True,
-            MASK_LOCAL=False,
+            MASK_LOCAL=True if IS_LOCAL else False,
+            MASK_SINK=False,
             CHECK_INF=True,
         )
 
@@ -293,6 +302,7 @@ def _dec_sparse_kernel(
                 n_block_min=block_sched.n_block_min,
                 IS_MASK=False,
                 MASK_LOCAL=False,
+                MASK_SINK=False,
                 CHECK_INF=False,
             )
 
@@ -325,6 +335,7 @@ def _dec_sparse_kernel(
                     n_block_min=block_sched.n_block_window_max_no_mask,
                     IS_MASK=True,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
                     CHECK_INF=True,
                 )
 
@@ -359,6 +370,7 @@ def _dec_sparse_kernel(
                     n_block_min=block_sched.n_block_window_min_no_mask,
                     IS_MASK=False,
                     MASK_LOCAL=False,
+                    MASK_SINK=False,
                     CHECK_INF=False,
                 )
 
@@ -390,6 +402,34 @@ def _dec_sparse_kernel(
                     n_block_min=block_sched.n_block_window_min,
                     IS_MASK=True,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
+                    CHECK_INF=True,
+                )
+
+        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_sink_max - 1)
+            for n_block in tl.range(
+                block_sched.n_block_sink_max - 1,
+                block_sched.n_block_sink_min - 1,
+                -1,
+            ):
+                k_tile, acc_o, row_max, row_sum = _dec_inner_sparse_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    q_tile=q_tile,
+                    k_tile=k_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    acc_o=acc_o,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_sink_min,
+                    IS_MASK=True,
+                    MASK_LOCAL=True,
+                    MASK_SINK=True,
                     CHECK_INF=True,
                 )
 
@@ -459,7 +499,7 @@ def _flash_sparse_attn_decode(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 3), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -582,7 +622,7 @@ def _flash_sparse_attn_decode(
         None,
         None,
         num_splits,
-        seqlen_q=qhead_per_kvhead,
+        seqlen_q=1,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
@@ -661,7 +701,7 @@ def _flash_sparse_attn_varlen_decode(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 3), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -784,7 +824,7 @@ def _flash_sparse_attn_varlen_decode(
         None,
         seqused_k,
         num_splits,
-        seqlen_q=qhead_per_kvhead,
+        seqlen_q=1,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,

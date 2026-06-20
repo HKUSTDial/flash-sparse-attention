@@ -47,6 +47,7 @@ def _dec_inner_gated_kernel(
     n_block_min,
     IS_MASK: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
+    MASK_SINK: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
     # Load next delta tile
@@ -73,6 +74,7 @@ def _dec_inner_gated_kernel(
                 acc_s=acc_s,
                 iter_block=n_block,
                 MASK_LOCAL=MASK_LOCAL,
+                MASK_SINK=MASK_SINK,
             )
 
         # Apply online softmax
@@ -200,7 +202,12 @@ def _dec_gated_kernel(
     )
 
     # Load window sizes
-    window_size_left, window_size_right, window_size_dist = grid_idx.load_window_sizes(
+    (
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_dist,
+    ) = grid_idx.load_window_sizes(
         window_sizes=window_sizes,
         stride_wh=stride_wh,
         IS_LOCAL=IS_LOCAL,
@@ -215,6 +222,7 @@ def _dec_gated_kernel(
         key_scale=key_scale,
         value_scale=value_scale,
         batch_idx=grid_idx.batch_idx,
+        window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
         window_size_dist=window_size_dist,
@@ -382,7 +390,8 @@ def _dec_gated_kernel(
             n_block=n_block,
             n_block_min=block_sched.n_block_max_no_mask,
             IS_MASK=True,
-            MASK_LOCAL=False,
+            MASK_LOCAL=True if IS_LOCAL else False,
+            MASK_SINK=False,
             CHECK_INF=True,
         )
 
@@ -448,6 +457,7 @@ def _dec_gated_kernel(
                 n_block_min=block_sched.n_block_min,
                 IS_MASK=False,
                 MASK_LOCAL=False,
+                MASK_SINK=False,
                 CHECK_INF=False,
             )
 
@@ -520,6 +530,7 @@ def _dec_gated_kernel(
                     n_block_min=block_sched.n_block_window_max_no_mask,
                     IS_MASK=True,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
                     CHECK_INF=True,
                 )
 
@@ -594,6 +605,7 @@ def _dec_gated_kernel(
                     n_block_min=block_sched.n_block_window_min_no_mask,
                     IS_MASK=False,
                     MASK_LOCAL=False,
+                    MASK_SINK=False,
                     CHECK_INF=False,
                 )
 
@@ -665,6 +677,74 @@ def _dec_gated_kernel(
                     n_block_min=block_sched.n_block_window_min,
                     IS_MASK=True,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
+                    CHECK_INF=True,
+                )
+
+        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
+            # Load key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_sink_max - 1)
+
+            # Load delta tile
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_sink_max - 1)
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = softmax_sched.online_gate(
+                a_max=a_max,
+                a_min=a_min,
+                d_max=d_max,
+                d_min=d_min,
+                gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+            for n_block in tl.range(
+                block_sched.n_block_sink_max - 1,
+                block_sched.n_block_sink_min - 1,
+                -1,
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    gate_max,
+                    row_max,
+                    row_sum,
+                ) = _dec_inner_gated_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_sink_min,
+                    IS_MASK=True,
+                    MASK_LOCAL=True,
+                    MASK_SINK=True,
                     CHECK_INF=True,
                 )
 
@@ -741,7 +821,7 @@ def _flash_gated_attn_decode(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 3), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -873,7 +953,7 @@ def _flash_gated_attn_decode(
         None,
         None,
         num_splits,
-        seqlen_q=qhead_per_kvhead,
+        seqlen_q=1,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
@@ -960,7 +1040,7 @@ def _flash_gated_attn_varlen_decode(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 3), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -1092,7 +1172,7 @@ def _flash_gated_attn_varlen_decode(
         None,
         seqused_k,
         num_splits,
-        seqlen_q=qhead_per_kvhead,
+        seqlen_q=1,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
