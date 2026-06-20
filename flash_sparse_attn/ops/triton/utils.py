@@ -49,7 +49,8 @@ def window_sizes_heuristic(
     num_heads_kv: int,
     device: torch.device,
     equal_bandwidth: bool = True,
-    window_dist: int = 256,
+    window_dist: int = 1024,
+    window_sink: int = 64,
 ) -> torch.Tensor:
     """
     Compute token count window sizes that partition non-diagonal causal distances into bands.
@@ -59,12 +60,14 @@ def window_sizes_heuristic(
     :param device: Target device.
     :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
     :param window_dist: Near-diagonal token count shared by all KV heads.
+    :param window_sink: Sink token count shared by all KV heads.
 
-    :return: int32 tensor with shape [num_heads_kv, 3], columns are [window_dist, right, left]. window_dist is the near-diagonal token count, right is the token count gap after the near-diagonal window before the distant band, and left is the distant band token count.
+    :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_dist]. window_sink is the prefix sink token count, window_left is the distant local band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
     """
     window_dist = min(max(window_dist, 0), seqlen_k)
+    window_sink = min(max(window_sink, 0), seqlen_k)
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
-    distance_span = max(seqlen_k - window_dist, 0)
+    distance_span = max(seqlen_k - window_sink - window_dist, 0)
     if equal_bandwidth:
         breakpoints = (distance_span * head_kv_idx / num_heads_kv).to(torch.int32)
     else:
@@ -74,31 +77,45 @@ def window_sizes_heuristic(
     window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
     window_size_dist = torch.full_like(window_size_left, window_dist)
+    window_size_sink = torch.full_like(window_size_left, window_sink)
     return torch.stack(
-        [window_size_dist, window_size_right, window_size_left], dim=1
+        [window_size_sink, window_size_left, window_size_right, window_size_dist], dim=1
     ).to(device)
 
 
-def max_split_blocks_from_window_sizes(window_sizes: torch.Tensor, TILE_N: int) -> int:
+def max_split_blocks_from_window_sizes(
+    window_sizes: torch.Tensor, TILE_N: int
+) -> int | None:
     """
-    Estimate useful split-axis blocks for local two-band attention.
+    Estimate useful split-axis blocks for local attention.
 
-    Split-KV partitions the distant band across splits while the final split keeps
-    the near-diagonal band, so the useful split count is bounded by distant-band
-    blocks plus one near-diagonal split.
+    The exact useful split count depends on the max values stored in window_sizes.
 
-    :param window_sizes: Int32 tensor with shape [num_heads_kv, 3], columns are [window_dist, right, left]
+    :param window_sizes: Int32 tensor with shape [num_heads_kv, 4], columns are [sink, left, right, dist]
     :param TILE_N: Tile size for N dimension.
 
-    :return: Useful split-axis blocks.
+    :return: Useful split-axis blocks, or None when CUDA Graph capture needs a static launch-grid bound.
     """
     if window_sizes is None or window_sizes.numel() == 0:
         return 1
-    window_dist = int(torch.clamp(window_sizes[:, 0], min=0).max().item())
-    window_left = int(torch.clamp(window_sizes[:, 2], min=0).max().item())
-    distant_blocks = triton.cdiv(window_left, TILE_N)
-    near_blocks = 1 if window_dist > 0 else 0
-    return max(1, distant_blocks + near_blocks)
+    if (
+        window_sizes.is_cuda
+        and torch.cuda.is_available()
+        and torch.cuda.is_current_stream_capturing()
+    ):
+        return None
+    window_sizes = torch.clamp(window_sizes, min=0)
+    window_sink = torch.max(window_sizes[:, 0])
+    window_left = torch.max(window_sizes[:, 1])
+    window_dist = torch.max(window_sizes[:, 3])
+    distant_blocks = torch.div(window_left + TILE_N - 1, TILE_N, rounding_mode="floor")
+    near_blocks = (window_dist > 0).to(window_left.dtype)
+    sink_blocks = torch.div(window_sink + TILE_N - 1, TILE_N, rounding_mode="floor")
+    split_blocks = torch.maximum(
+        distant_blocks + near_blocks + sink_blocks,
+        torch.ones((), dtype=window_left.dtype, device=window_sizes.device),
+    )
+    return int(split_blocks)
 
 
 @functools.lru_cache(maxsize=4096)
