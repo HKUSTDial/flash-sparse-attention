@@ -1393,6 +1393,7 @@ class AttnFwdPointerScheduler:
             out_base += split_idx * stride_os
             lse_base += split_idx * stride_ls
 
+        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
         return AttnFwdPointerScheduler(
             q_base,
             k_base,
@@ -1402,14 +1403,14 @@ class AttnFwdPointerScheduler:
             out_base,
             lse_base,
             head_idx,
-            stride_qh,
-            stride_qm,
-            stride_kn,
-            stride_vn,
-            stride_ah,
-            stride_oh,
-            stride_om,
-            stride_lh,
+            stride_qh + tl.full((), 0, tl.int64),
+            stride_qm + tl.full((), 0, tl.int64),
+            stride_kn + tl.full((), 0, tl.int64),
+            stride_vn + tl.full((), 0, tl.int64),
+            stride_ah + tl.full((), 0, tl.int64),
+            stride_oh + tl.full((), 0, tl.int64),
+            stride_om + tl.full((), 0, tl.int64),
+            stride_lh + tl.full((), 0, tl.int64),
         )
 
     @triton.jit
@@ -1894,6 +1895,7 @@ class AttnBwdPointerScheduler:
             if IS_GATED:
                 dd_base += split_idx * stride_dds
 
+        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
         return AttnBwdPointerScheduler(
             q_base,
             k_base,
@@ -1908,13 +1910,13 @@ class AttnBwdPointerScheduler:
             dv_base,
             da_base,
             dd_base,
-            stride_qm,
-            stride_kn,
-            stride_vn,
-            stride_dom,
-            stride_dqam,
-            stride_dkn,
-            stride_dvn,
+            stride_qm + tl.full((), 0, tl.int64),
+            stride_kn + tl.full((), 0, tl.int64),
+            stride_vn + tl.full((), 0, tl.int64),
+            stride_dom + tl.full((), 0, tl.int64),
+            stride_dqam + tl.full((), 0, tl.int64),
+            stride_dkn + tl.full((), 0, tl.int64),
+            stride_dvn + tl.full((), 0, tl.int64),
         )
 
     @triton.jit
@@ -2264,6 +2266,7 @@ class AttnDecPointerScheduler:
         out_base += split_idx * stride_os
         lse_base += split_idx * stride_ls
 
+        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
         return AttnDecPointerScheduler(
             q_base,
             k_base,
@@ -2272,10 +2275,10 @@ class AttnDecPointerScheduler:
             d_base,
             out_base,
             lse_base,
-            stride_qh,
-            stride_kn,
-            stride_vn,
-            stride_oh,
+            stride_qh + tl.full((), 0, tl.int64),
+            stride_kn + tl.full((), 0, tl.int64),
+            stride_vn + tl.full((), 0, tl.int64),
+            stride_oh + tl.full((), 0, tl.int64),
         )
 
     @triton.jit
