@@ -74,7 +74,7 @@ pip install .
 ```python
 from kernels import get_kernel
 
-fsa = get_kernel("JingzeShi/flash-sparse-attention", version=1)
+fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
 
 out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
 out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
