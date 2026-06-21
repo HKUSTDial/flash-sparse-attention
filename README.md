@@ -74,7 +74,7 @@ You can also load the kernels directly from [HuggingFace Kernel](https://github.
 ```python
 from kernels import get_kernel
 
-fsa = get_kernel("JingzeShi/flash-sparse-attention", version=1)
+fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
 
 out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
 out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
@@ -167,6 +167,22 @@ The following benchmarks cover forward, backward, and decode workloads. They inc
 
 ## NVIDIA GPU
 
+
+### A100
+
+**Forward Performance**
+
+![Attention forward speed, head dim 128, a100](assets/latency_forward_a100.png)
+
+**Backward Performance**
+
+![Attention backward speed, head dim 128, a100](assets/latency_backward_a100.png)
+
+**Decode Performance**
+
+![Attention decode speed, head dim 128, a100](assets/latency_decode_a100.png)
+
+
 ### H20
 
 **Forward Performance**
@@ -198,6 +214,7 @@ The following benchmarks cover forward, backward, and decode workloads. They inc
 
 
 ## T-Head PPU
+
 
 ### ZW810E
 

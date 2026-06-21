@@ -74,7 +74,7 @@ pip install .
 ```python
 from kernels import get_kernel
 
-fsa = get_kernel("JingzeShi/flash-sparse-attention", version=1)
+fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
 
 out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
 out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
@@ -166,6 +166,22 @@ print(output_gated.shape)
 以下基准测试涵盖前向、后向和解码工作负载。其中包括密集型、稀疏型和门控实现，并以FlashAttention作为基线。
 
 ## NVIDIA GPU
+
+
+### A100
+
+**前向传播性能**
+
+![Attention forward speed, head dim 128, a100](assets/latency_forward_a100.png)
+
+**反向传播性能**
+
+![Attention backward speed, head dim 128, a100](assets/latency_backward_a100.png)
+
+**解码性能**
+
+![Attention decode speed, head dim 128, a100](assets/latency_decode_a100.png)
+
 
 ### H20
 
