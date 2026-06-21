@@ -65,7 +65,7 @@ def window_sizes_heuristic(
     :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_dist]. window_sink is the prefix sink token count, window_left is the distant local band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
     """
     window_dist = min(max(window_dist, 0), seqlen_k)
-    window_sink = min(max(window_sink, 0), seqlen_k)
+    window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
     distance_span = max(seqlen_k - window_sink - window_dist, 0)
     if equal_bandwidth:
