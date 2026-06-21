@@ -167,6 +167,22 @@ The following benchmarks cover forward, backward, and decode workloads. They inc
 
 ## NVIDIA GPU
 
+
+### A100
+
+**Forward Performance**
+
+![Attention forward speed, head dim 128, a100](assets/latency_forward_a100.png)
+
+**Backward Performance**
+
+![Attention backward speed, head dim 128, a100](assets/latency_backward_a100.png)
+
+**Decode Performance**
+
+![Attention decode speed, head dim 128, a100](assets/latency_decode_a100.png)
+
+
 ### H20
 
 **Forward Performance**
@@ -198,6 +214,7 @@ The following benchmarks cover forward, backward, and decode workloads. They inc
 
 
 ## T-Head PPU
+
 
 ### ZW810E
 
