@@ -272,6 +272,18 @@ def test_dense_forward():
 
 
 @pytest.mark.kernels_ci
+def test_dense_decode():
+    from {PKG_IMPORT_NAME} import flash_dense_attn_with_kvcache_func
+
+    B, H, D, S_kv = 2, 8, 64, 256
+    q = torch.randn(B, H, D, dtype=torch.float16, device="cuda")
+    k = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
+    v = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
+    out = flash_dense_attn_with_kvcache_func(q, k, v)
+    assert out.shape == (B, H, D)
+
+
+@pytest.mark.kernels_ci
 def test_sparse_forward():
     from {PKG_IMPORT_NAME} import flash_sparse_attn_func
 
@@ -281,18 +293,6 @@ def test_sparse_forward():
     v = torch.randn(B, S, H, D, dtype=torch.float16, device="cuda")
     out = flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
     assert out.shape == (B, S, H, D)
-
-
-@pytest.mark.kernels_ci
-def test_dense_decode():
-    from {PKG_IMPORT_NAME} import flash_dense_attn_with_kvcache_func
-
-    B, H, D, S_kv = 2, 8, 64, 256
-    q = torch.randn(B, H, D, dtype=torch.float16, device="cuda")
-    k = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
-    v = torch.randn(B, S_kv, H, D, dtype=torch.float16, device="cuda")
-    out = flash_dense_attn_with_kvcache_func(q, k, v, is_causal=False)
-    assert out.shape == (B, H, D)
 """
 
 
