@@ -191,7 +191,7 @@ def benchmark_triton_sparse_decode(
     q = q.squeeze(1)
     out, lse = allocate_decode_outputs(q)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 16.0
+    softmax_threshold = 1.0
 
     def fn():
         return flash_sparse_attn_with_kvcache_func(
@@ -229,7 +229,7 @@ def benchmark_triton_sparse_decode_quant(
 
     out, lse = allocate_decode_outputs(q_quant, is_quant=True)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 16.0
+    softmax_threshold = 1.0
 
     def fn():
         return flash_sparse_attn_with_kvcache_func(
@@ -271,8 +271,8 @@ def benchmark_triton_gated_decode(
     )
     out, lse = allocate_decode_outputs(q)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 16.0
-    gate_threshold = 16.0
+    softmax_threshold = 1.0
+    gate_threshold = 1.0
 
     def fn():
         return flash_gated_attn_with_kvcache_func(
@@ -324,8 +324,8 @@ def benchmark_triton_gated_decode_quant(
     )
     out, lse = allocate_decode_outputs(q_quant, is_quant=True)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = 16.0
-    gate_threshold = 16.0
+    softmax_threshold = 1.0
+    gate_threshold = 1.0
 
     def fn():
         return flash_gated_attn_with_kvcache_func(

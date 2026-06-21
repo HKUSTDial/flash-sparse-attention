@@ -44,6 +44,7 @@ def _bwd_inner_dense_kernel(
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
+    MASK_SINK: tl.constexpr,
 ):
     # Load query tile
     q_tile = ptrs_sched.load_q(config, q_ptrs, m_block)
@@ -61,6 +62,7 @@ def _bwd_inner_dense_kernel(
             iter_block=m_block,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
+            MASK_SINK=MASK_SINK,
         )
 
     # Compute attention weights
@@ -169,7 +171,12 @@ def _bwd_dense_kernel(
     )
 
     # Load window sizes
-    window_size_left, window_size_right = grid_idx.load_window_sizes(
+    (
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_dist,
+    ) = grid_idx.load_window_sizes(
         window_sizes=window_sizes,
         stride_wh=stride_wh,
         IS_LOCAL=IS_LOCAL,
@@ -183,8 +190,10 @@ def _bwd_dense_kernel(
         value_scale=value_scale,
         n_block=grid_idx.n_block,
         batch_idx=grid_idx.batch_idx,
+        window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
+        window_size_dist=window_size_dist,
         head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
@@ -311,6 +320,7 @@ def _bwd_dense_kernel(
                 IS_MASK=True,
                 MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=True if IS_LOCAL else False,
+                MASK_SINK=False,
             )
 
     # Process m_blocks without masking
@@ -335,6 +345,7 @@ def _bwd_dense_kernel(
                 IS_MASK=False,
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
+                MASK_SINK=False,
             )
 
     if IS_LOCAL:
@@ -361,6 +372,7 @@ def _bwd_dense_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
                 )
 
         # Process m_blocks without masking
@@ -389,6 +401,7 @@ def _bwd_dense_kernel(
                     IS_MASK=False,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=False,
+                    MASK_SINK=False,
                 )
 
         # Process m_blocks with local left masking
@@ -414,6 +427,33 @@ def _bwd_dense_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
+                )
+
+        # Process m_blocks with local sink masking
+        if block_sched.m_block_sink_max > block_sched.m_block_sink_min:
+            for m_block in tl.range(
+                block_sched.m_block_sink_min,
+                block_sched.m_block_sink_max,
+            ):
+                acc_dk, acc_dv = _bwd_inner_dense_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    acc_dk=acc_dk,
+                    acc_dv=acc_dv,
+                    k_tile=k_tile,
+                    v_tile=v_tile,
+                    q_ptrs=q_ptrs,
+                    do_ptrs=do_ptrs,
+                    dq_accum_ptrs=dq_accum_ptrs,
+                    lse_ptrs=lse_ptrs,
+                    dpsum_ptrs=dpsum_ptrs,
+                    m_block=m_block,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
+                    MASK_SINK=True,
                 )
 
     # Store value gradients
@@ -471,7 +511,7 @@ def _flash_dense_attn_backward(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_bwd_inputs(
@@ -525,6 +565,11 @@ def _flash_dense_attn_backward(
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(
+                window_sizes, TILE_M
+            )
+            if is_local
+            else None,
         )
         if is_split_qo
         else 1
@@ -735,7 +780,7 @@ def _flash_dense_attn_varlen_backward(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_bwd_inputs(
@@ -789,6 +834,11 @@ def _flash_dense_attn_varlen_backward(
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(
+                window_sizes, TILE_M
+            )
+            if is_local
+            else None,
         )
         if is_split_qo
         else 1
