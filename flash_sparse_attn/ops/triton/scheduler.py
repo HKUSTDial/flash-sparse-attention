@@ -829,6 +829,7 @@ class AttnFwdBlockScheduler:
             n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
         if IS_LOCAL:
+            # Compute local n_block range for this m_block
             if IS_SPLIT_KV:
                 n_block_max_no_mask = tl.where(
                     split_idx >= num_splits - 1,
@@ -837,7 +838,6 @@ class AttnFwdBlockScheduler:
                 )
             else:
                 n_block_max_no_mask = n_block_min
-            # Compute local n_block range for this m_block
             if IS_SPLIT_KV:
                 n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
@@ -994,8 +994,8 @@ class AttnBwdBlockScheduler:
             m_block_min_no_mask = tl.minimum(m_block_min_no_mask, m_block_max)
 
         if IS_LOCAL:
-            m_block_min_no_mask = m_block_max
             # Compute local m_block range for this n_block
+            m_block_min_no_mask = m_block_max
             m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
             m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
@@ -1147,12 +1147,12 @@ class AttnDecBlockScheduler:
         n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
         if IS_LOCAL:
+            # Compute local n_block range for this m_block
             n_block_max_no_mask = tl.where(
                 split_idx >= num_splits - 1,
                 n_block_min,
                 n_block_max_no_mask,
             )
-            # Compute local n_block range for this m_block
             n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
