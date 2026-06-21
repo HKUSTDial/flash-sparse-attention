@@ -18,6 +18,61 @@ PKG_NAME = "flash-sparse-attention"
 PKG_IMPORT_NAME = "flash_sparse_attention"
 
 
+# HuggingFace kernel-builder supported backends
+HF_SUPPORTED_BACKENDS = ["cuda", "rocm", "metal", "cpu", "xpu"]
+
+# Mapping from FlagGems vendor names to HF kernel-builder backends.
+VENDOR_TO_BACKEND = {
+    "nvidia": "cuda",       # NVIDIA GPU
+    "amd": "rocm",          # AMD GPU
+    "hygon": "rocm",        # Hygon DCU
+    "intel": "xpu",         # Intel GPU
+    "kunlunxin": "xpu",     # KunlunXin
+    "metax": "cuda",        # MetaX GPU
+    "iluvatar": "cuda",     # Iluvatar CoreX
+    "cambricon": "cuda",    # Cambricon MLU
+    "mthreads": "cuda",     # Moore Threads MUSA
+    "apple": "metal",       # Apple Silicon
+    "arm": "cpu",           # ARM CPU
+    "spacemit": "cpu",      # SpaceMIT RISC-V
+}
+
+# Extended backends beyond HF kernel-builder defaults.
+# These may require custom Triton backends or vendor-specific toolchains.
+EXTENDED_BACKENDS = {
+    "ascend": {
+        "device_name": "npu",
+        "vendor": "Huawei Ascend",
+        "triton_extra": "ascend",
+        "dispatch_key": "PrivateUse1",
+    },
+    "musa": {
+        "device_name": "musa",
+        "vendor": "Moore Threads",
+        "triton_extra": None,
+        "dispatch_key": "MUSA",
+    },
+    "mlu": {
+        "device_name": "mlu",
+        "vendor": "Cambricon",
+        "triton_extra": None,
+        "dispatch_key": "MLU",
+    },
+    "gcu": {
+        "device_name": "gcu",
+        "vendor": "Enflame",
+        "triton_extra": None,
+        "dispatch_key": "GCU",
+    },
+    "npu": {
+        "device_name": "npu",
+        "vendor": "Huawei Ascend",
+        "triton_extra": "ascend",
+        "dispatch_key": "PrivateUse1",
+    },
+}
+
+
 PUBLIC_FUNCTIONS = [
     "flash_dense_attn_func",
     "flash_dense_attn_with_kvcache_func",
@@ -34,31 +89,22 @@ PUBLIC_FUNCTIONS = [
 ]
 
 
-KERNEL_FILES = [
-    "interface.py",
-    "utils.py",
-    "activations.py",
-    "assert_inputs.py",
-    "block_info.py",
-    "cache_utils.py",
-    "seqlen_info.py",
-    "mask.py",
-    "launch_grid.py",
-    "launch_template.py",
-    "flash_fwd_combine.py",
-    "flash_dec_combine.py",
-    "flash_bwd_preprocess.py",
-    "flash_bwd_postprocess.py",
-    "flash_dense_fwd.py",
-    "flash_dense_bwd.py",
-    "flash_dense_dec.py",
-    "flash_sparse_fwd.py",
-    "flash_sparse_bwd.py",
-    "flash_sparse_dec.py",
-    "flash_gated_fwd.py",
-    "flash_gated_bwd.py",
-    "flash_gated_dec.py",
-]
+KERNEL_FILES_EXCLUDE = {"__init__.py"}
+
+
+def get_kernel_files() -> list[str]:
+    """Dynamically discover all .py files under ops/triton (excluding __init__.py).
+
+    This avoids hardcoding file lists that go stale as the kernel set evolves.
+    Files are sorted for deterministic output.
+    """
+    if not TRITON_SRC.is_dir():
+        return []
+    return sorted(
+        f.name
+        for f in TRITON_SRC.glob("*.py")
+        if f.name not in KERNEL_FILES_EXCLUDE
+    )
 
 
 def rewrite_imports(source: str) -> str:
@@ -93,12 +139,43 @@ __all__ = [
 """
 
 
-def generate_build_toml(repo_id: str, version: int) -> str:
+def resolve_backends(backends: list[str] | None) -> list[str]:
+    """Resolve backend list, validating against HF kernel-builder supported set.
+
+    If backends is None, defaults to ["cuda"].
+    Accepts both HF backend names (cuda, rocm, ...) and FlagGems vendor names
+    (nvidia, amd, hygon, ...) which are mapped to HF backends automatically.
+    """
+    if not backends:
+        return ["cuda"]
+
+    resolved = []
+    for b in backends:
+        b_lower = b.lower().strip()
+        # Direct HF backend name
+        if b_lower in HF_SUPPORTED_BACKENDS:
+            if b_lower not in resolved:
+                resolved.append(b_lower)
+        # FlagGems vendor name → HF backend
+        elif b_lower in VENDOR_TO_BACKEND:
+            mapped = VENDOR_TO_BACKEND[b_lower]
+            if mapped not in resolved:
+                resolved.append(mapped)
+        else:
+            print(f"WARNING: Unknown backend '{b}', skipping. "
+                  f"Supported: {HF_SUPPORTED_BACKENDS} or vendor names: "
+                  f"{list(VENDOR_TO_BACKEND.keys())}")
+    return resolved if resolved else ["cuda"]
+
+
+def generate_build_toml(repo_id: str, version: int, backends: list[str] | None = None) -> str:
+    backend_list = resolve_backends(backends)
+    backends_str = ", ".join(f'"{b}"' for b in backend_list)
     return f"""[general]
 name = "{PKG_NAME}"
 version = {version}
 license = "BSD-3-Clause"
-backends = ["cuda"]
+backends = [{backends_str}]
 
 [general.hub]
 repo-id = "{repo_id}"
@@ -128,8 +205,10 @@ def generate_flake_nix() -> str:
 """
 
 
-def generate_card(repo_id: str) -> str:
+def generate_card(repo_id: str, backends: list[str] | None = None) -> str:
     funcs_list = "\n".join(f"- `{f}`" for f in PUBLIC_FUNCTIONS)
+    resolved = resolve_backends(backends)
+    backends_list = "\n".join(f"- `{b}`" for b in resolved)
     return f"""---
 library_name: kernels
 license: bsd-3-clause
@@ -139,6 +218,10 @@ license: bsd-3-clause
 
 Flash Sparse Attention Triton kernels — dense, sparse, and gated attention
 with forward, backward, and decode paths.
+
+## Supported backends
+
+{backends_list}
 
 ## Usage
 
@@ -225,7 +308,8 @@ def check_no_absolute_imports(pkg_dir: Path) -> list[str]:
 
 def check_all_files_present(pkg_dir: Path) -> list[str]:
     missing = []
-    for fname in KERNEL_FILES:
+    kernel_files = get_kernel_files()
+    for fname in kernel_files:
         if not (pkg_dir / fname).exists():
             missing.append(fname)
     return missing
@@ -246,7 +330,7 @@ def run_checks(out_dir: Path) -> bool:
         print(f"FAIL  Missing files: {missing_files}")
         ok = False
     else:
-        print(f"OK    All {len(KERNEL_FILES)} kernel files present")
+        print(f"OK    All {len(get_kernel_files())} kernel files present")
 
     abs_imports = check_no_absolute_imports(pkg_dir)
     if abs_imports:
@@ -275,15 +359,18 @@ def run_checks(out_dir: Path) -> bool:
 
 
 def build(
-    out_dir: Path, repo_id: str, version: int, clean: bool, dry_run: bool
+    out_dir: Path, repo_id: str, version: int, clean: bool, dry_run: bool,
+    backends: list[str] | None = None,
 ) -> None:
     if dry_run:
         print("Dry-run mode: checking source only, no files written.")
-        src_missing = [f for f in KERNEL_FILES if not (TRITON_SRC / f).exists()]
-        if src_missing:
-            print(f"FAIL  Source files missing: {src_missing}")
+        kernel_files = get_kernel_files()
+        if not kernel_files:
+            print(f"FAIL  No kernel files found in {TRITON_SRC}")
             sys.exit(1)
-        print(f"OK    All {len(KERNEL_FILES)} source files found in {TRITON_SRC}")
+        print(f"OK    All {len(kernel_files)} source files found in {TRITON_SRC}")
+        resolved = resolve_backends(backends)
+        print(f"OK    Backends: {resolved}")
         return
 
     if clean and out_dir.exists():
@@ -295,8 +382,9 @@ def build(
     (out_dir / "tests").mkdir(exist_ok=True)
 
     # Copy + rewrite kernel files
+    kernel_files = get_kernel_files()
     copied = 0
-    for fname in KERNEL_FILES:
+    for fname in kernel_files:
         src = TRITON_SRC / fname
         if not src.exists():
             print(f"WARNING: {fname} not found in source, skipping")
@@ -310,15 +398,17 @@ def build(
     (pkg_dir / "__init__.py").write_text(generate_init())
 
     # Generate config files
-    (out_dir / "build.toml").write_text(generate_build_toml(repo_id, version))
+    resolved = resolve_backends(backends)
+    (out_dir / "build.toml").write_text(generate_build_toml(repo_id, version, resolved))
     (out_dir / "flake.nix").write_text(generate_flake_nix())
-    (out_dir / "CARD.md").write_text(generate_card(repo_id))
+    (out_dir / "CARD.md").write_text(generate_card(repo_id, resolved))
 
     # Generate tests
     (out_dir / "tests" / "__init__.py").write_text("")
     (out_dir / "tests" / "test_flash_attn.py").write_text(generate_tests())
 
-    print(f"\nGenerated structure in {out_dir}/\n")
+    print(f"\nGenerated structure in {out_dir}/")
+    print(f"Backends: {resolved}\n")
 
     # Run checks
     print("Running compliance checks...")
@@ -359,7 +449,7 @@ def main() -> None:
         "--output-dir", default="huggingface_kernels", help="Output directory"
     )
     parser.add_argument(
-        "--repo-id", default="JingzeShi/flash-sparse-attention", help="Hub repo ID"
+        "--repo-id", default="JingzeShi/flash-sparse-attn", help="Hub repo ID"
     )
     parser.add_argument("--version", type=int, default=1, help="Kernel version")
     parser.add_argument(
@@ -368,13 +458,24 @@ def main() -> None:
     parser.add_argument(
         "--dry-run", action="store_true", help="Check source only, no output"
     )
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        default=None,
+        help=(
+            "Target backends for kernel-builder. "
+            f"HF backends: {HF_SUPPORTED_BACKENDS}. "
+            f"Also accepts vendor names: {list(VENDOR_TO_BACKEND.keys())}. "
+            "Default: cuda"
+        ),
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
     if not out_dir.is_absolute():
         out_dir = REPO_ROOT / out_dir
 
-    build(out_dir, args.repo_id, args.version, args.clean, args.dry_run)
+    build(out_dir, args.repo_id, args.version, args.clean, args.dry_run, args.backends)
 
 
 if __name__ == "__main__":
