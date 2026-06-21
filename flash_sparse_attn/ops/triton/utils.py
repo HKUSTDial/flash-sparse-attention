@@ -81,8 +81,7 @@ def window_sizes_heuristic(
         )
     else:
         breakpoints = (
-            distance_span
-            * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global))
+            distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global))
         ).to(torch.int32)
     window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
