@@ -13,7 +13,6 @@ Package and publish Flash Sparse Attention Triton kernels to [HuggingFace Kernel
   ```bash
   hf auth login
   ```
-- Create the target repo on [huggingface.co](https://huggingface.co/new)
 
 ## Build
 
@@ -21,26 +20,23 @@ Package and publish Flash Sparse Attention Triton kernels to [HuggingFace Kernel
 
 ```bash
 python scripts/build_hf_kernels.py --clean
+cd huggingface_kernels
 ```
 
-### Configure Nix environment and build
+### Configure Nix environment
 
 ```bash
-cd huggingface_kernels
-
 export NIX_BUILD_CORES=1
 export NIX_CONFIG="max-jobs = 1
 extra-substituters = https://huggingface.cachix.org
 extra-trusted-public-keys = huggingface.cachix.org-1:ynTPbLS0W8ofXd9fDjk1KvoFky9K2jhxe6r4nXAkc/o=
 "
-
-kernel-builder build-and-copy -L
 ```
 
-### Upload to Hub
+### Build and Upload
 
 ```bash
-kernel-builder upload --repo-type model
+kernel-builder build-and-upload
 ```
 
 ## Usage
@@ -48,7 +44,7 @@ kernel-builder upload --repo-type model
 ```python
 from kernels import get_kernel
 
-fsa = get_kernel("JingzeShi/flash-sparse-attention", version=1)
+fsa = get_kernel("JingzeShi/flash-sparse-attention", version=1, trust_remote_code=True)
 
 # Dense forward
 out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
