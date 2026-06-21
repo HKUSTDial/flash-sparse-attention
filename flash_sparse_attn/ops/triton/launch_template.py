@@ -3,11 +3,8 @@ NOTE: Setting num_ctas=2 for the kernel can trigger Triton's PlanCTA assertion
 Setting num_ctas=1 for now to avoid this issue, but we may want to revisit this in the future
 """
 
-import functools
-import hashlib
 import json
 import os
-import sys
 import tempfile
 from pathlib import Path
 from filelock import ReadWriteLock
@@ -24,29 +21,6 @@ TRITON_CACHE_DIR: str = os.getenv(
 )
 
 
-@functools.lru_cache(maxsize=1)
-def _compute_source_fingerprint() -> str:
-    """
-    Hash all Triton Python sources plus runtime ABI stamps into a short fingerprint.
-    The fingerprint changes whenever any .py file under flash_sparse_attn/ops/triton is
-    modified, the Python minor version changes, or the triton package version changes.
-
-    :return: SHA-256 hex digest string.
-    """
-    triton_root = Path(__file__).resolve().parent
-    h = hashlib.sha256()
-    h.update(f"py{sys.version_info.major}.{sys.version_info.minor}".encode())
-    h.update(f"triton={getattr(triton, '__version__', 'unknown')}".encode())
-    for src in sorted(triton_root.rglob("*.py")):
-        if not src.is_file():
-            continue
-        h.update(src.relative_to(triton_root).as_posix().encode())
-        content = src.read_bytes()
-        h.update(len(content).to_bytes(8, "little"))
-        h.update(content)
-    return h.hexdigest()
-
-
 def _seqlen_bucket(seqlen: int) -> int:
     if seqlen <= 0:
         return 1
@@ -61,18 +35,17 @@ class LaunchConfigCache:
     """
     Persistent per-device cache for Triton kernel launch configurations.
     Stores tuned (TILE_M, TILE_N, num_warps, num_stages, num_ctas) keyed by
-    kernel name, sequence length buckets, and dispatch flags. Cache is namespaced
-    under a source fingerprint directory for automatic invalidation on code changes.
+    kernel name, sequence length buckets, and dispatch flags. To invalidate,
+    delete the cache directory or re-run with autotune=True.
     """
 
-    __slots__ = ("_memory", "_fingerprint")
+    __slots__ = ("_memory",)
 
     def __init__(self):
         self._memory: dict[str, dict[tuple, tuple]] = {}
-        self._fingerprint: str = _compute_source_fingerprint()
 
     def _get_cache_dir(self) -> Path:
-        cache_dir = Path(TRITON_CACHE_DIR) / self._fingerprint
+        cache_dir = Path(TRITON_CACHE_DIR)
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
@@ -254,7 +227,6 @@ class LaunchConfigCache:
         return {
             "devices": len(self._memory),
             "entries": total_entries,
-            "fingerprint": self._fingerprint,
         }
 
 
