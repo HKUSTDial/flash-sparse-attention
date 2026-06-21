@@ -596,9 +596,10 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
 
-        # Transpose for make_tensor_descriptor
-        alpha = alpha.transpose(-2, -1).contiguous()
-        delta = delta.transpose(-2, -1).contiguous()
+        # Internally gate tensors are [B, H, S] so the sequence dimension is
+        # contiguous for tensor descriptors.
+        alpha = alpha.permute(1, 2, 0).contiguous()
+        delta = delta.permute(1, 2, 0).contiguous()
 
         out, lse, softmax_scale, softmax_threshold, gate_threshold = (
             _flash_gated_attn_forward(
@@ -682,9 +683,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             skip_checks=ctx.skip_checks,
         )
 
-        # Transpose back to original layout
-        da = da.transpose(-2, -1).contiguous()
-        dd = dd.transpose(-2, -1).contiguous()
+        da = da.permute(2, 0, 1).contiguous()
+        dd = dd.permute(2, 0, 1).contiguous()
 
         return dq, dk, dv, da, dd, *((None,) * 30)
 

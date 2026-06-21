@@ -166,7 +166,7 @@ def _flash_attn_bwd_postprocess(
 ) -> torch.Tensor:
     is_varlen = cu_seqlens_q is not None
     if not is_varlen:
-        batch_size, seqlen_q, num_heads_q, head_dim = dq.shape
+        seqlen_q, batch_size, num_heads_q, head_dim = dq.shape
     else:
         _, num_heads_q, head_dim = dq.shape
         batch_size = cu_seqlens_q.shape[0] - 1
@@ -185,16 +185,18 @@ def _flash_attn_bwd_postprocess(
         dq_accum.stride(0) if not is_varlen else 0,
         dq_accum.stride(1) if not is_varlen else dq_accum.stride(0),
         head_dim_rounded,
-        dq.stride(0) if not is_varlen else 0,
+        dq.stride(1) if not is_varlen else 0,
         dq.stride(-2),
-        dq.stride(-3) if not is_varlen else dq.stride(0),
+        dq.stride(0) if not is_varlen else dq.stride(0),
         da_accum.stride(0) if (has_da and not is_varlen) else 0,
         da_accum.stride(1)
         if (has_da and not is_varlen)
         else (da_accum.stride(0) if has_da else 0),
         da_accum.stride(-1) if has_da else 0,
         da.stride(0) if (has_da and not is_varlen) else 0,
-        da.stride(-2) if has_da else 0,
+        da.stride(1)
+        if (has_da and not is_varlen)
+        else (da.stride(0) if has_da else 0),
         da.stride(-1) if has_da else 0,
         cu_seqlens_q,
         seqused_q,
