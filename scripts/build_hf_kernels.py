@@ -228,7 +228,7 @@ with forward, backward, and decode paths.
 ```python
 from kernels import get_kernel
 
-fsa = get_kernel("{repo_id}", version=1)
+fsa = get_kernel("{repo_id}", version=1, trust_remote_code=True)
 
 # Dense forward
 out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
