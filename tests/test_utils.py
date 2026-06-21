@@ -240,7 +240,8 @@ def generate_inputs(
     Generate Q/K/V tensors for benchmarks.
 
     layout:
-      - "bshd": [B, S, H, D] for Triton interfaces
+      - "sbhd": [S, B, H, D] for Triton interfaces (default)
+      - "bshd": alias for "sbhd" (legacy name, same output)
       - "bhsd": [B, H, S, D] for PyTorch SDPA backends
     input_source:
       - "random": synthetic random tensors
@@ -249,31 +250,31 @@ def generate_inputs(
         - Optional local folder path or HF repo id.
         - Defaults to Qwen/Qwen3-0.6B-Base when input_source is "llm"
     """
-    if layout not in {"bshd", "bhsd"}:
+    if layout not in {"bshd", "sbhd", "bhsd"}:
         raise ValueError(f"Unsupported layout: {layout}")
     if input_source not in {"random", "llm"}:
         raise ValueError(f"Unsupported input_source: {input_source}")
 
     if input_source == "random":
         q = torch.randn(
-            cfg.batch_size,
             cfg.seqlen_q,
+            cfg.batch_size,
             cfg.num_heads,
             cfg.head_dim,
             device=device,
             dtype=dtype,
         )
         k = torch.randn(
-            cfg.batch_size,
             cfg.seqlen_k,
+            cfg.batch_size,
             cfg.num_kv_heads,
             cfg.head_dim,
             device=device,
             dtype=dtype,
         )
         v = torch.randn(
-            cfg.batch_size,
             cfg.seqlen_k,
+            cfg.batch_size,
             cfg.num_kv_heads,
             cfg.head_dim,
             device=device,
@@ -356,18 +357,18 @@ def generate_inputs(
                 f"Config head_dim ({cfg.head_dim}) mismatch model head_dim ({head_dim_q})"
             )
 
-        q = q_lin.view(cfg.batch_size, seq_in, num_heads_q, head_dim_q)
-        k = k_lin.view(cfg.batch_size, seq_in, num_heads_kv, head_dim_q)
-        v = v_lin.view(cfg.batch_size, seq_in, num_heads_kv, head_dim_q)
+        q = q_lin.view(seq_in, cfg.batch_size, num_heads_q, head_dim_q)
+        k = k_lin.view(seq_in, cfg.batch_size, num_heads_kv, head_dim_q)
+        v = v_lin.view(seq_in, cfg.batch_size, num_heads_kv, head_dim_q)
 
-        q = q[:, : cfg.seqlen_q, :, :].contiguous()
-        k = k[:, : cfg.seqlen_k, :, :].contiguous()
-        v = v[:, : cfg.seqlen_k, :, :].contiguous()
+        q = q[: cfg.seqlen_q, :, :, :].contiguous()
+        k = k[: cfg.seqlen_k, :, :, :].contiguous()
+        v = v[: cfg.seqlen_k, :, :, :].contiguous()
 
     if layout == "bhsd":
-        q = q.transpose(1, 2).contiguous()
-        k = k.transpose(1, 2).contiguous()
-        v = v.transpose(1, 2).contiguous()
+        q = q.permute(1, 2, 0, 3).contiguous()
+        k = k.permute(1, 2, 0, 3).contiguous()
+        v = v.permute(1, 2, 0, 3).contiguous()
 
     return q, k, v
 
@@ -418,8 +419,8 @@ def _reference_scores(
     local_seqlen_k: Optional[int] = None,
     kind: KernelType = "dense",
 ) -> torch.Tensor:
-    qh = q.transpose(1, 2).float()
-    kh = k.transpose(1, 2).float()
+    qh = q.permute(1, 2, 0, 3).float()
+    kh = k.permute(1, 2, 0, 3).float()
     num_kv_heads = kh.shape[1]
     if qh.shape[1] != kh.shape[1]:
         if qh.shape[1] % kh.shape[1] != 0:
@@ -430,7 +431,7 @@ def _reference_scores(
         kh = torch.repeat_interleave(kh, repeats=repeat, dim=1)
     scores = torch.matmul(qh, kh.transpose(-2, -1)) * softmax_scale
 
-    seqlen_q, seqlen_k = q.shape[1], k.shape[1]
+    seqlen_q, seqlen_k = q.shape[0], k.shape[0]
     if is_causal and not is_local:
         mask = _make_mask(seqlen_q, seqlen_k, q.device, True, seqlen_k, 0)
         scores = scores.masked_fill(mask, float("-inf"))
@@ -473,7 +474,7 @@ def reference_dense_forward(
     scores = _reference_scores(
         q, k, softmax_scale, is_causal, is_local, local_seqlen_k, kind="dense"
     )
-    vh = v.transpose(1, 2).float()
+    vh = v.permute(1, 2, 0, 3).float()
     if scores.shape[1] != vh.shape[1]:
         if scores.shape[1] % vh.shape[1] != 0:
             raise ValueError(
@@ -484,7 +485,7 @@ def reference_dense_forward(
     attn = torch.softmax(scores, dim=-1)
     attn = torch.nan_to_num(attn, nan=0.0)
     out = torch.matmul(attn, vh)
-    return out.transpose(1, 2).contiguous().to(q.dtype)
+    return out.permute(2, 0, 1, 3).contiguous().to(q.dtype)
 
 
 def reference_sparse_forward(
@@ -499,7 +500,7 @@ def reference_sparse_forward(
     scores = _reference_scores(
         q, k, softmax_scale, is_causal, is_local, local_seqlen_k, kind="sparse"
     )
-    vh = v.transpose(1, 2).float()
+    vh = v.permute(1, 2, 0, 3).float()
     if scores.shape[1] != vh.shape[1]:
         if scores.shape[1] % vh.shape[1] != 0:
             raise ValueError(
@@ -510,7 +511,7 @@ def reference_sparse_forward(
     attn = torch.softmax(scores, dim=-1)
     attn = torch.nan_to_num(attn, nan=0.0)
     out = torch.matmul(attn, vh)
-    return out.transpose(1, 2).contiguous().to(q.dtype)
+    return out.permute(2, 0, 1, 3).contiguous().to(q.dtype)
 
 
 def reference_gated_forward(
@@ -528,8 +529,8 @@ def reference_gated_forward(
     scores = _reference_scores(
         q, k, softmax_scale, is_causal, is_local, local_seqlen_k, kind="gated"
     )
-    alpha_h = alpha.transpose(1, 2).float()
-    delta_h = delta.transpose(1, 2).float()
+    alpha_h = alpha.permute(1, 2, 0).float()
+    delta_h = delta.permute(1, 2, 0).float()
     if alpha_h.shape[1] != delta_h.shape[1]:
         if alpha_h.shape[1] % delta_h.shape[1] != 0:
             raise ValueError(
@@ -540,7 +541,7 @@ def reference_gated_forward(
     raw_gate = alpha_h.unsqueeze(-1) * delta_h.unsqueeze(-2)
     gate = torch.nn.functional.logsigmoid(raw_gate) if is_logsigmoid_gate else raw_gate
     scores = scores + gate * softmax_scale
-    vh = v.transpose(1, 2).float()
+    vh = v.permute(1, 2, 0, 3).float()
     if scores.shape[1] != vh.shape[1]:
         if scores.shape[1] % vh.shape[1] != 0:
             raise ValueError(
@@ -551,7 +552,7 @@ def reference_gated_forward(
     attn = torch.softmax(scores, dim=-1)
     attn = torch.nan_to_num(attn, nan=0.0)
     out = torch.matmul(attn, vh)
-    return out.transpose(1, 2).contiguous().to(q.dtype)
+    return out.permute(2, 0, 1, 3).contiguous().to(q.dtype)
 
 
 def _reference_varlen_forward(
@@ -579,13 +580,13 @@ def _reference_varlen_forward(
         qe = int(cu_seqlens_q[idx + 1].item())
         ks = int(cu_seqlens_k[idx].item())
         ke = int(cu_seqlens_k[idx + 1].item())
-        qi = q[qs:qe].unsqueeze(0)
-        ki = k[ks:ke].unsqueeze(0)
-        vi = v[ks:ke].unsqueeze(0)
+        qi = q[qs:qe].unsqueeze(1)
+        ki = k[ks:ke].unsqueeze(1)
+        vi = v[ks:ke].unsqueeze(1)
         lsk = max_sk if is_local else None
         if kind == "gated":
-            ai = alpha[qs:qe, :].unsqueeze(0)
-            di = delta[ks:ke, :].unsqueeze(0)
+            ai = alpha[qs:qe, :].unsqueeze(1)
+            di = delta[ks:ke, :].unsqueeze(1)
             out_i = reference_gated_forward(
                 qi,
                 ki,
@@ -618,7 +619,7 @@ def _reference_varlen_forward(
                 is_local=is_local,
                 local_seqlen_k=lsk,
             )
-        outs.append(out_i.squeeze(0))
+        outs.append(out_i.squeeze(1))
     return torch.cat(outs, dim=0)
 
 
@@ -647,14 +648,14 @@ def _reference_varlen_decode(
         ks = int(cu_seqlens_k[idx].item())
         ke = int(cu_seqlens_k[idx + 1].item())
 
-        qi = q[idx : idx + 1].unsqueeze(1)
-        ki = k[ks:ke].unsqueeze(0)
-        vi = v[ks:ke].unsqueeze(0)
+        qi = q[idx : idx + 1].unsqueeze(0)
+        ki = k[ks:ke].unsqueeze(1)
+        vi = v[ks:ke].unsqueeze(1)
         lsk = max_seqlen_k if is_local else None
 
         if kind == "gated":
-            ai = alpha[idx : idx + 1].unsqueeze(1)
-            di = delta[ks:ke, :].unsqueeze(0)
+            ai = alpha[idx : idx + 1].unsqueeze(0)
+            di = delta[ks:ke, :].unsqueeze(1)
             out_i = reference_gated_forward(
                 qi,
                 ki,
@@ -687,7 +688,7 @@ def _reference_varlen_decode(
                 is_local=is_local,
                 local_seqlen_k=lsk,
             )
-        outs.append(out_i.squeeze(0).squeeze(0))
+        outs.append(out_i.squeeze(1).squeeze(0))
     return torch.stack(outs, dim=0)
 
 
@@ -791,21 +792,21 @@ def run_forward_base_case(
 ) -> None:
     device = torch.device("cuda")
     q = torch.randn(
-        batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
+        seqlen_q, batch_size, num_heads_q, head_dim, device=device, dtype=dtype
     )
     k = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+        seqlen_k, batch_size, num_heads_kv, head_dim, device=device, dtype=dtype
     )
     v = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+        seqlen_k, batch_size, num_heads_kv, head_dim, device=device, dtype=dtype
     )
     alpha = (
-        torch.randn(batch_size, seqlen_q, num_heads_q, device=device, dtype=dtype)
+        torch.randn(seqlen_q, batch_size, num_heads_q, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
     delta = (
-        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=dtype)
+        torch.randn(seqlen_k, batch_size, num_heads_kv, device=device, dtype=dtype)
         if kind == "gated"
         else None
     )
@@ -1054,10 +1055,10 @@ def run_decode_base_case(
     gen_dtype = torch.bfloat16 if is_quant_dtype else dtype
     q = torch.randn(batch_size, num_heads_q, head_dim, device=device, dtype=gen_dtype)
     k = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=gen_dtype
+        seqlen_k, batch_size, num_heads_kv, head_dim, device=device, dtype=gen_dtype
     )
     v = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=gen_dtype
+        seqlen_k, batch_size, num_heads_kv, head_dim, device=device, dtype=gen_dtype
     )
     alpha = (
         torch.randn(batch_size, num_heads_q, device=device, dtype=gen_dtype)
@@ -1065,7 +1066,7 @@ def run_decode_base_case(
         else None
     )
     delta = (
-        torch.randn(batch_size, seqlen_k, num_heads_kv, device=device, dtype=gen_dtype)
+        torch.randn(seqlen_k, batch_size, num_heads_kv, device=device, dtype=gen_dtype)
         if kind == "gated"
         else None
     )
@@ -1145,34 +1146,34 @@ def run_decode_base_case(
         v_deq = v_quant.to(torch.bfloat16) * v_scale
         if kind == "dense":
             out_ref = reference_dense_forward(
-                q_deq.unsqueeze(1),
+                q_deq.unsqueeze(0),
                 k_deq,
                 v_deq,
                 softmax_scale=softmax_scale,
                 is_causal=False,
                 is_local=is_local,
-            ).squeeze(1)
+            ).squeeze(0)
         elif kind == "sparse":
             out_ref = reference_sparse_forward(
-                q_deq.unsqueeze(1),
+                q_deq.unsqueeze(0),
                 k_deq,
                 v_deq,
                 softmax_scale=softmax_scale,
                 is_causal=False,
                 is_local=is_local,
-            ).squeeze(1)
+            ).squeeze(0)
         else:
             out_ref = reference_gated_forward(
-                q_deq.unsqueeze(1),
+                q_deq.unsqueeze(0),
                 k_deq,
                 v_deq,
-                alpha.unsqueeze(1),
+                alpha.unsqueeze(0),
                 delta,
                 softmax_scale=softmax_scale,
                 is_causal=False,
                 is_local=is_local,
                 is_logsigmoid_gate=is_logsigmoid_gate,
-            ).squeeze(1)
+            ).squeeze(0)
 
         if use_output_buffers:
             assert out.data_ptr() == out_buffer.data_ptr()
@@ -1239,34 +1240,34 @@ def run_decode_base_case(
 
     if kind == "dense":
         out_ref = reference_dense_forward(
-            q.unsqueeze(1),
+            q.unsqueeze(0),
             k,
             v,
             softmax_scale=softmax_scale,
             is_causal=False,
             is_local=is_local,
-        ).squeeze(1)
+        ).squeeze(0)
     elif kind == "sparse":
         out_ref = reference_sparse_forward(
-            q.unsqueeze(1),
+            q.unsqueeze(0),
             k,
             v,
             softmax_scale=softmax_scale,
             is_causal=False,
             is_local=is_local,
-        ).squeeze(1)
+        ).squeeze(0)
     else:
         out_ref = reference_gated_forward(
-            q.unsqueeze(1),
+            q.unsqueeze(0),
             k,
             v,
-            alpha.unsqueeze(1),
+            alpha.unsqueeze(0),
             delta,
             softmax_scale=softmax_scale,
             is_causal=False,
             is_local=is_local,
             is_logsigmoid_gate=is_logsigmoid_gate,
-        ).squeeze(1)
+        ).squeeze(0)
 
     if use_output_buffers:
         assert out.data_ptr() == out_buffer.data_ptr()
@@ -1537,24 +1538,24 @@ def run_backward_base_case(
     threshold = -128.0
 
     q = torch.randn(
-        batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
+        seqlen_q, batch_size, num_heads_q, head_dim, device=device, dtype=dtype
     ).requires_grad_(True)
     k = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+        seqlen_k, batch_size, num_heads_kv, head_dim, device=device, dtype=dtype
     ).requires_grad_(True)
     v = torch.randn(
-        batch_size, seqlen_k, num_heads_kv, head_dim, device=device, dtype=dtype
+        seqlen_k, batch_size, num_heads_kv, head_dim, device=device, dtype=dtype
     ).requires_grad_(True)
     alpha = (
         torch.randn(
-            batch_size, seqlen_q, num_heads_q, device=device, dtype=dtype
+            seqlen_q, batch_size, num_heads_q, device=device, dtype=dtype
         ).requires_grad_(True)
         if kind == "gated"
         else None
     )
     delta = (
         torch.randn(
-            batch_size, seqlen_k, num_heads_kv, device=device, dtype=dtype
+            seqlen_k, batch_size, num_heads_kv, device=device, dtype=dtype
         ).requires_grad_(True)
         if kind == "gated"
         else None
