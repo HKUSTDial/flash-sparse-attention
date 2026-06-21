@@ -48,26 +48,11 @@ def _fwd_inner_gated_kernel(
     IS_MASK: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
+    MASK_SINK: tl.constexpr,
     CHECK_INF: tl.constexpr,
 ):
-    # Load next delta tile
-    d_tile = ptrs_sched.load_d(config, d_ptrs, n_block - 1)
-    d_max = tl.max(d_tile)
-    d_min = tl.min(d_tile)
-
     skip_gate_next = True
     if not skip_gate_curr:
-        if n_block > n_block_min:
-            # Check if any gates are active for next tile
-            gate_max, skip_gate_next = softmax_sched.online_gate(
-                a_max=a_max,
-                a_min=a_min,
-                d_max=d_max,
-                d_min=d_min,
-                gate_max=gate_max,
-                gate_threshold_log2=config.gate_threshold_log2,
-            )
-
         if IS_MASK:
             # Apply mask
             acc_s = mask_sched.apply_mask(
@@ -75,6 +60,7 @@ def _fwd_inner_gated_kernel(
                 iter_block=n_block,
                 MASK_CAUSAL=MASK_CAUSAL,
                 MASK_LOCAL=MASK_LOCAL,
+                MASK_SINK=MASK_SINK,
             )
 
         # Apply online sparse softmax
@@ -100,31 +86,36 @@ def _fwd_inner_gated_kernel(
 
             # Update output accumulator
             acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
-    else:
-        if n_block > n_block_min:
-            # Check if any gates are active for next tile
-            gate_max, skip_gate_next = softmax_sched.online_gate(
-                a_max=a_max,
-                a_min=a_min,
-                d_max=d_max,
-                d_min=d_min,
-                gate_max=gate_max,
-                gate_threshold_log2=config.gate_threshold_log2,
-            )
 
-    if not skip_gate_next:
-        # Compute attention gates for next tile
-        acc_s = a_tile[:, None] * d_tile[None, :]
-        if config.IS_LOGSIGMOID_GATE:
-            acc_s = softmax_sched.log_sigmoid(
-                acc_s=acc_s,
-            )
+    if n_block > n_block_min:
+        # Load next delta tile
+        d_tile = ptrs_sched.load_d(config, d_ptrs, n_block - 1)
+        d_max = tl.max(d_tile)
+        d_min = tl.min(d_tile)
 
-        # Load next key tile
-        k_tile = ptrs_sched.load_k(config, k_ptrs, n_block - 1)
+        # Check if any gates are active for next tile
+        gate_max, skip_gate_next = softmax_sched.online_gate(
+            a_max=a_max,
+            a_min=a_min,
+            d_max=d_max,
+            d_min=d_min,
+            gate_max=gate_max,
+            gate_threshold_log2=config.gate_threshold_log2,
+        )
 
-        # Compute attention scores for next tile
-        acc_s += tl.dot(q_tile, k_tile.T)
+        if not skip_gate_next:
+            # Compute attention gates for next tile
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if config.IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Load next key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, n_block - 1)
+
+            # Compute attention scores for next tile
+            acc_s += tl.dot(q_tile, k_tile.T)
 
     return (
         skip_gate_next,
@@ -210,7 +201,12 @@ def _fwd_gated_kernel(
     )
 
     # Load window sizes
-    window_size_left, window_size_right = grid_idx.load_window_sizes(
+    (
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_dist,
+    ) = grid_idx.load_window_sizes(
         window_sizes=window_sizes,
         stride_wh=stride_wh,
         IS_LOCAL=IS_LOCAL,
@@ -226,8 +222,10 @@ def _fwd_gated_kernel(
         value_scale=value_scale,
         m_block=grid_idx.m_block,
         batch_idx=grid_idx.batch_idx,
+        window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
+        window_size_dist=window_size_dist,
         head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
@@ -313,7 +311,7 @@ def _fwd_gated_kernel(
 
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
-        ptrs_sched.store_empty(config, out_ptrs, lse_ptrs)
+        ptrs_sched.store_empty(config, out_ptrs, lse_ptrs, IS_SPLIT_KV=IS_SPLIT_KV)
         return
 
     q_ptrs = ptrs_sched.make_q_ptrs(config)
@@ -403,6 +401,7 @@ def _fwd_gated_kernel(
                 IS_MASK=True,
                 MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=True if IS_LOCAL else False,
+                MASK_SINK=False,
                 CHECK_INF=True,
             )
     else:
@@ -442,6 +441,7 @@ def _fwd_gated_kernel(
             IS_MASK=True,
             MASK_CAUSAL=False,
             MASK_LOCAL=False,
+            MASK_SINK=False,
             CHECK_INF=True,
         )
 
@@ -508,6 +508,7 @@ def _fwd_gated_kernel(
                 IS_MASK=False,
                 MASK_CAUSAL=False,
                 MASK_LOCAL=False,
+                MASK_SINK=False,
                 CHECK_INF=False,
             )
 
@@ -581,6 +582,7 @@ def _fwd_gated_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
                     CHECK_INF=True,
                 )
 
@@ -656,6 +658,7 @@ def _fwd_gated_kernel(
                     IS_MASK=False,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=False,
+                    MASK_SINK=False,
                     CHECK_INF=False,
                 )
 
@@ -728,6 +731,76 @@ def _fwd_gated_kernel(
                     IS_MASK=True,
                     MASK_CAUSAL=False,
                     MASK_LOCAL=True,
+                    MASK_SINK=False,
+                    CHECK_INF=True,
+                )
+
+        # Process n_blocks with local sink masking
+        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
+            # Load key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_sink_max - 1)
+
+            # Load delta tile
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_sink_max - 1)
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = softmax_sched.online_gate(
+                a_max=a_max,
+                a_min=a_min,
+                d_max=d_max,
+                d_min=d_min,
+                gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+            for n_block in tl.range(
+                block_sched.n_block_sink_max - 1,
+                block_sched.n_block_sink_min - 1,
+                -1,
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    gate_max,
+                    row_max,
+                    row_sum,
+                ) = _fwd_inner_gated_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_sink_min,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
+                    MASK_SINK=True,
                     CHECK_INF=True,
                 )
 
@@ -809,7 +882,7 @@ def _flash_gated_attn_forward(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -864,6 +937,11 @@ def _flash_gated_attn_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(
+                window_sizes, TILE_N
+            )
+            if is_local
+            else None,
         )
         if is_split_kv
         else 1
@@ -1057,7 +1135,7 @@ def _flash_gated_attn_varlen_forward(
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
     elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 2), dtype=torch.int32, device=device)
+        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -1112,6 +1190,11 @@ def _flash_gated_attn_varlen_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(
+                window_sizes, TILE_N
+            )
+            if is_local
+            else None,
         )
         if is_split_kv
         else 1

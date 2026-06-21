@@ -4,7 +4,6 @@ from typing import Dict, List, Literal, Optional, Sequence
 
 import torch
 
-from flash_sparse_attn.ops.triton import launch_template
 from flash_sparse_attn.ops.triton.interface import (
     flash_dense_attn_func,
     flash_dense_attn_varlen_func,
@@ -33,24 +32,24 @@ CORRECTNESS_DTYPE = torch.bfloat16
 KernelType = Literal["dense", "sparse", "gated"]
 
 _DEFAULT_RTOL = {
-    "dense": 8e-2,
-    "sparse": 2.0e-1,
-    "gated": 2.0e-1,
+    "dense": 1.6e-2,
+    "sparse": 1.6e-2,
+    "gated": 1.6e-2,
 }
 _DEFAULT_ATOL = {
-    "dense": 8e-2,
-    "sparse": 2.0e-1,
-    "gated": 2.0e-1,
+    "dense": 1.0e-5,
+    "sparse": 1.0e-5,
+    "gated": 1.0e-5,
 }
 _DEFAULT_BWD_RTOL = {
-    "dense": 1.0e-1,
-    "sparse": 2.0e-1,
-    "gated": 2.0e-1,
+    "dense": 1.6e-2,
+    "sparse": 1.6e-2,
+    "gated": 1.6e-2,
 }
 _DEFAULT_BWD_ATOL = {
-    "dense": 1.0e-1,
-    "sparse": 2.0e-1,
-    "gated": 2.0e-1,
+    "dense": 1.0e-5,
+    "sparse": 1.0e-5,
+    "gated": 1.0e-5,
 }
 
 
@@ -446,55 +445,15 @@ def _reference_scores(
         causal_offset = seqlen_k - seqlen_q
         dist = q_idx + causal_offset - k_idx
 
-        tile_k = max(1 << (max(q.shape[-1], 16) - 1).bit_length(), 16)
-        if seqlen_q > 1:
-            launch_config = launch_template.load_launch_config(
-                device=q.device,
-                kernel_name=f"fwd_{kind}",
-                seqlen_q=seqlen_q,
-                seqlen_k=seqlen_k,
-                tile_k=tile_k,
-                is_local=is_local,
-                qhead_per_kvhead=qpk,
-                is_causal=is_causal,
-            )
-            if launch_config is not None:
-                tile_m, tile_n, _, _, _ = launch_config
-            else:
-                tile_m = tile_n = 64
-            m_block = q_idx // tile_m
-            n_blk = k_idx // tile_n
-            n_block_max_no_mask = (m_block * tile_m + causal_offset) // tile_n
-            n_block_max_diag = (
-                (m_block + 1) * tile_m + causal_offset + tile_n - 1
-            ) // tile_n
-            is_diagonal = (n_blk >= n_block_max_no_mask) & (n_blk < n_block_max_diag)
-            causal_mask = dist >= 0
-        else:
-            kernel_name = f"dec_{kind}"
-            launch_config = launch_template.load_launch_config(
-                device=q.device,
-                kernel_name=kernel_name,
-                seqlen_q=1,
-                seqlen_k=seqlen_k,
-                tile_k=tile_k,
-                is_local=is_local,
-                qhead_per_kvhead=qpk,
-            )
-            if launch_config is not None:
-                _, tile_n, _, _, _ = launch_config
-            else:
-                tile_n = 128
-            last_block_start = (seqlen_k - 1) // tile_n * tile_n
-            is_diagonal = k_idx >= last_block_start
-
         for h in range(num_kv_heads):
-            wl, wr = int(ws[h, 0].item()), int(ws[h, 1].item())
-            window_mask = (dist >= wr) & (dist <= wl)
-            if seqlen_q > 1:
-                allowed = (is_diagonal & causal_mask) | window_mask
-            else:
-                allowed = is_diagonal | window_mask
+            sink = int(ws[h, 0].item())
+            wl = int(ws[h, 1].item())
+            wr = int(ws[h, 2].item())
+            wd = int(ws[h, 3].item())
+            window_mask = (dist >= wd + wr) & (dist < wd + wr + wl)
+            dist_mask = (dist >= 0) & (dist < wd)
+            sink_mask = (k_idx < sink) & (dist >= 0)
+            allowed = sink_mask | dist_mask | window_mask
             scores[:, h * qpk : (h + 1) * qpk] = scores[
                 :, h * qpk : (h + 1) * qpk
             ].masked_fill(~allowed, float("-inf"))
@@ -771,7 +730,7 @@ def _run_forward_base(
     pack_gqa: bool = False,
 ):
     softmax_scale = q.shape[-1] ** -0.5
-    threshold = q.shape[-1] / k.shape[1]
+    threshold = -128.0
     if kind == "dense":
         out = flash_dense_attn_func(
             q,
@@ -921,7 +880,7 @@ def _run_forward_varlen(
     pack_gqa: bool = False,
 ):
     softmax_scale = q.shape[-1] ** -0.5
-    threshold = q.shape[-1] / max_seqlen_k
+    threshold = -128.0
     if kind == "dense":
         out = flash_dense_attn_varlen_func(
             q,
@@ -1111,7 +1070,7 @@ def run_decode_base_case(
         else None
     )
     softmax_scale = head_dim**-0.5
-    threshold = head_dim / seqlen_k
+    threshold = -128.0
 
     if is_quant_dtype:
         q_quant, q_scale = _quantize_per_tensor_quant(q)
@@ -1367,7 +1326,7 @@ def run_decode_varlen_case(
 
     cu_seqlens_k = make_cu_seqlens(lens_k, device)
     softmax_scale = head_dim**-0.5
-    threshold = head_dim / max(lens_k)
+    threshold = -128.0
 
     if is_quant_dtype:
         q_quant, q_scale = _quantize_per_tensor_quant(q)
@@ -1575,7 +1534,7 @@ def run_backward_base_case(
 ) -> None:
     device = torch.device("cuda")
     softmax_scale = head_dim**-0.5
-    threshold = head_dim / seqlen_k
+    threshold = -128.0
 
     q = torch.randn(
         batch_size, seqlen_q, num_heads_q, head_dim, device=device, dtype=dtype
@@ -1719,7 +1678,7 @@ def run_backward_varlen_case(
     device = torch.device("cuda")
     max_seqlen_k = max(lens_k)
     softmax_scale = head_dim**-0.5
-    threshold = head_dim / max_seqlen_k
+    threshold = -128.0
 
     q = torch.cat(
         [
