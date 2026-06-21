@@ -167,6 +167,22 @@ print(output_gated.shape)
 
 ## NVIDIA GPU
 
+
+### A100
+
+**前向传播性能**
+
+![Attention forward speed, head dim 128, a100](assets/latency_forward_a100.png)
+
+**反向传播性能**
+
+![Attention backward speed, head dim 128, a100](assets/latency_backward_a100.png)
+
+**解码性能**
+
+![Attention decode speed, head dim 128, a100](assets/latency_decode_a100.png)
+
+
 ### H20
 
 **前向传播性能**
