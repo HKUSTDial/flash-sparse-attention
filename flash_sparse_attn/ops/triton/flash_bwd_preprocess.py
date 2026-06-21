@@ -214,7 +214,7 @@ def _flash_attn_bwd_preprocess(
 ) -> torch.Tensor:
     is_varlen = cu_seqlens_q is not None
     if not is_varlen:
-        batch_size, seqlen_q, num_heads_q, head_dim = out.shape
+        seqlen_q, batch_size, num_heads_q, head_dim = out.shape
     else:
         _, num_heads_q, head_dim = out.shape
         batch_size = cu_seqlens_q.shape[0] - 1
@@ -231,12 +231,12 @@ def _flash_attn_bwd_preprocess(
         lse,
         lse_log2,
         dq_accum,
-        out.stride(0) if not is_varlen else 0,
-        out.stride(-2),
-        out.stride(-3) if not is_varlen else out.stride(0),
-        dout.stride(0) if not is_varlen else 0,
-        dout.stride(-2),
-        dout.stride(-3) if not is_varlen else dout.stride(0),
+        out.stride(1) if not is_varlen else 0,
+        out.stride(2),
+        out.stride(0) if not is_varlen else out.stride(0),
+        dout.stride(1) if not is_varlen else 0,
+        dout.stride(2),
+        dout.stride(0) if not is_varlen else dout.stride(0),
         dpsum.stride(0) if not is_varlen else 0,
         dpsum.stride(1) if not is_varlen else dpsum.stride(0),
         dpsum.stride(-1),

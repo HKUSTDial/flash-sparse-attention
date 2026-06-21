@@ -502,8 +502,8 @@ def _flash_dense_attn_backward(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
-    batch_size, seqlen_q, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
+    seqlen_q, batch_size, num_heads_q, head_dim = query.shape
+    seqlen_k, _, num_heads_kv, _ = key.shape
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
@@ -602,16 +602,16 @@ def _flash_dense_attn_backward(
         device=query.device,
     )
     dk_accum = torch.zeros(
-        (num_splits, batch_size, seqlen_k, num_heads_kv, head_dim)
+        (num_splits, seqlen_k, batch_size, num_heads_kv, head_dim)
         if is_split_qo and num_splits > 1
-        else (batch_size, seqlen_k, num_heads_kv, head_dim),
+        else (seqlen_k, batch_size, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
     dv_accum = torch.zeros(
-        (num_splits, batch_size, seqlen_k, num_heads_kv, head_dim)
+        (num_splits, seqlen_k, batch_size, num_heads_kv, head_dim)
         if is_split_qo and num_splits > 1
-        else (batch_size, seqlen_k, num_heads_kv, head_dim),
+        else (seqlen_k, batch_size, num_heads_kv, head_dim),
         dtype=torch.float32,
         device=query.device,
     )
@@ -652,18 +652,18 @@ def _flash_dense_attn_backward(
         key_scale,
         value_scale,
         window_sizes,
-        query.stride(0),
+        query.stride(1),
         query.stride(-2),
-        query.stride(-3),
-        key.stride(0),
+        query.stride(0),
+        key.stride(1),
         key.stride(-2),
-        key.stride(-3),
-        value.stride(0),
+        key.stride(0),
+        value.stride(1),
         value.stride(-2),
-        value.stride(-3),
-        dout.stride(0),
+        value.stride(0),
+        dout.stride(1),
         dout.stride(-2),
-        dout.stride(-3),
+        dout.stride(0),
         lse_log2.stride(0),
         lse_log2.stride(-2),
         dpsum.stride(0),
@@ -671,13 +671,13 @@ def _flash_dense_attn_backward(
         dq_accum.stride(0),
         dq_accum.stride(1),
         head_dim_rounded,
-        dk_accum.stride(-4) if is_split_qo and num_splits > 1 else dk_accum.stride(0),
+        dk_accum.stride(-3) if is_split_qo and num_splits > 1 else dk_accum.stride(1),
         dk_accum.stride(-2),
-        dk_accum.stride(-3),
+        dk_accum.stride(-4) if is_split_qo and num_splits > 1 else dk_accum.stride(0),
         dk_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
-        dv_accum.stride(-4) if is_split_qo and num_splits > 1 else dv_accum.stride(0),
+        dv_accum.stride(-3) if is_split_qo and num_splits > 1 else dv_accum.stride(1),
         dv_accum.stride(-2),
-        dv_accum.stride(-3),
+        dv_accum.stride(-4) if is_split_qo and num_splits > 1 else dv_accum.stride(0),
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
         window_sizes.stride(0),
         None,

@@ -70,7 +70,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
-        is_causal = False if query.shape[1] == 1 else is_causal
+        is_causal = False if query.shape[0] == 1 else is_causal
 
         if window_sizes is not None:
             is_local = True
@@ -321,7 +321,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
-        is_causal = False if query.shape[1] == 1 else is_causal
+        is_causal = False if query.shape[0] == 1 else is_causal
 
         if window_sizes is not None:
             is_local = True
@@ -584,7 +584,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         return_lse: bool = False,
     ):
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
-        is_causal = False if query.shape[1] == 1 else is_causal
+        is_causal = False if query.shape[0] == 1 else is_causal
 
         if window_sizes is not None:
             is_local = True
@@ -924,9 +924,9 @@ def flash_dense_attn_func(
     """
     Flash dense attention function that computes the attention output and optionally the logsumexp.
 
-    :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
-    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param query: Query tensor of shape [seqlen_q, batch_size, num_heads, head_dim].
+    :param key: Key tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param query_scale: Optional per-tensor scale for query dequantization.
@@ -938,13 +938,13 @@ def flash_dense_attn_func(
     :param is_split_kv: Whether to enable split-KV for forward occupancy.
     :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
-    :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param out: Optional preallocated output tensor with shape [seqlen_q, batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
+    :returns: If return_lse is False, returns out with shape [seqlen_q, batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
     """
     return FlashDenseAttnFunc.apply(
         query,
@@ -990,8 +990,8 @@ def flash_dense_attn_with_kvcache_func(
     Flash dense attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [batch_size, num_heads, head_dim].
-    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param key: Key tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param query_scale: Optional per-tensor scale for query dequantization.
     :param key_scale: Optional per-tensor scale for key dequantization.
@@ -1088,7 +1088,7 @@ def flash_dense_attn_varlen_func(
     :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
-    :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param out: Optional preallocated output tensor with shape [seqlen_q, batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
@@ -1228,9 +1228,9 @@ def flash_sparse_attn_func(
     """
     Flash sparse attention function that computes the attention output and optionally the logsumexp.
 
-    :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
-    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param query: Query tensor of shape [seqlen_q, batch_size, num_heads, head_dim].
+    :param key: Key tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param query_scale: Optional per-tensor scale for query dequantization.
@@ -1243,13 +1243,13 @@ def flash_sparse_attn_func(
     :param is_split_kv: Whether to enable split-KV for forward ccupancy.
     :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
-    :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param out: Optional preallocated output tensor with shape [seqlen_q, batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
+    :returns: If return_lse is False, returns out with shape [seqlen_q, batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
     """
     return FlashSparseAttnFunc.apply(
         query,
@@ -1297,8 +1297,8 @@ def flash_sparse_attn_with_kvcache_func(
     Flash sparse attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [batch_size, num_heads, head_dim].
-    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param key: Key tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param query_scale: Optional per-tensor scale for query dequantization.
@@ -1399,7 +1399,7 @@ def flash_sparse_attn_varlen_func(
     :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
-    :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param out: Optional preallocated output tensor with shape [seqlen_q, batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
@@ -1548,11 +1548,11 @@ def flash_gated_attn_func(
     """
     Flash gated attention function that computes the attention output and optionally the logsumexp.
 
-    :param query: Query tensor of shape [batch_size, seqlen_q, num_heads, head_dim].
-    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param alpha: Tensor of shape [batch_size, seqlen_q, num_heads] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [batch_size, seqlen_k, num_kv_heads] representing the sparsity pattern for keys/values.
+    :param query: Query tensor of shape [seqlen_q, batch_size, num_heads, head_dim].
+    :param key: Key tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param alpha: Tensor of shape [seqlen_q, batch_size, num_heads] representing the sparsity pattern for queries.
+    :param delta: Tensor of shape [seqlen_k, batch_size, num_kv_heads] representing the sparsity pattern for keys/values.
     :param is_causal: Whether to apply a causal mask.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param query_scale: Optional per-tensor scale for query dequantization.
@@ -1568,13 +1568,13 @@ def flash_gated_attn_func(
     :param is_split_kv: Whether to enable split-KV for forward occupancy.
     :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
-    :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param out: Optional preallocated output tensor with shape [seqlen_q, batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.
     :param return_lse: Whether to return the logsumexp tensor for numerical stability analysis. If True, returns a tuple (out, lse). If False, returns only out.
 
-    :returns: If return_lse is False, returns out with shape [batch_size, seqlen_q, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
+    :returns: If return_lse is False, returns out with shape [seqlen_q, batch_size, num_heads, head_dim]. If return_lse is True, returns a tuple (out, lse), where lse has shape [batch_size, num_heads, seqlen_q].
     """
     return FlashGatedAttnFunc.apply(
         query,
@@ -1631,10 +1631,10 @@ def flash_gated_attn_with_kvcache_func(
     Flash gated attention function for decoding with KV cache that computes the attention output and optionally the logsumexp.
 
     :param query: Query tensor of shape [batch_size, num_heads, head_dim].
-    :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
-    :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
+    :param key: Key tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
+    :param value: Value tensor of shape [seqlen_k, batch_size, num_kv_heads, head_dim].
     :param alpha: Tensor of shape [batch_size, num_heads] representing the sparsity pattern for queries.
-    :param delta: Tensor of shape [batch_size, seqlen_k, num_kv_heads] representing the sparsity pattern for keys/values.
+    :param delta: Tensor of shape [seqlen_k, batch_size, num_kv_heads] representing the sparsity pattern for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
     :param softmax_threshold: Optional threshold for the sparse softmax.
     :param gate_threshold: Optional threshold for the sparsity gate.
@@ -1754,7 +1754,7 @@ def flash_gated_attn_varlen_func(
     :param pack_gqa: Whether to pack grouped-query attention.
     :param seqused_q: Optional tensor of shape [total_seqlen_q] indicating the actual sequence lengths for queries. If provided, overrides cu_seqlens_q for masking.
     :param seqused_k: Optional tensor of shape [total_seqlen_k] indicating the actual sequence lengths for keys/values. If provided, overrides cu_seqlens_k for masking.
-    :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
+    :param out: Optional preallocated output tensor with shape [seqlen_q, batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
     :param skip_checks: Whether to skip input validation checks for faster performance.

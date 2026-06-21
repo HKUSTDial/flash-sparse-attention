@@ -540,8 +540,8 @@ def _flash_sparse_attn_forward(
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
-    batch_size, seqlen_q, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
+    seqlen_q, batch_size, num_heads_q, head_dim = query.shape
+    seqlen_k, _, num_heads_kv, _ = key.shape
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
@@ -630,7 +630,7 @@ def _flash_sparse_attn_forward(
 
     if is_split_kv:
         out_partial = torch.empty(
-            (num_splits, batch_size, seqlen_q, num_heads_q, head_dim),
+            (num_splits, seqlen_q, batch_size, num_heads_q, head_dim),
             dtype=torch.float32,
             device=query.device,
         )
@@ -668,18 +668,18 @@ def _flash_sparse_attn_forward(
         key_scale,
         value_scale,
         window_sizes,
-        query.stride(0),
+        query.stride(1),
         query.stride(-2),
-        query.stride(-3),
-        key.stride(0),
+        query.stride(0),
+        key.stride(1),
         key.stride(-2),
-        key.stride(-3),
-        value.stride(0),
+        key.stride(0),
+        value.stride(1),
         value.stride(-2),
-        value.stride(-3),
-        out.stride(0) if not is_split_kv else out_partial.stride(1),
+        value.stride(0),
+        out.stride(1) if not is_split_kv else out_partial.stride(2),
         out.stride(-2) if not is_split_kv else out_partial.stride(-2),
-        out.stride(-3) if not is_split_kv else out_partial.stride(-3),
+        out.stride(0) if not is_split_kv else out_partial.stride(1),
         0 if not is_split_kv else out_partial.stride(0),
         lse.stride(0) if not is_split_kv else lse_partial.stride(1),
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),

@@ -491,7 +491,7 @@ def _flash_sparse_attn_decode(
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
+    seqlen_k, _, num_heads_kv, _ = key.shape
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
@@ -605,12 +605,12 @@ def _flash_sparse_attn_decode(
         query.stride(0),
         query.stride(-2),
         1,
+        key.stride(1),
+        key.stride(2),
         key.stride(0),
-        key.stride(-2),
-        key.stride(-3),
+        value.stride(1),
+        value.stride(2),
         value.stride(0),
-        value.stride(-2),
-        value.stride(-3),
         out_partial.stride(1),
         out_partial.stride(-2),
         1,

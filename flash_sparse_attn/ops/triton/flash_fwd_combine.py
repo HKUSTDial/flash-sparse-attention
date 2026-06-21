@@ -182,7 +182,7 @@ def _flash_attn_fwd_combine(
     is_varlen = cu_seqlens_q is not None
     num_splits = out_partial.shape[0]
     if not is_varlen:
-        batch_size, seqlen_q, num_heads_q, head_dim = out_partial.shape[1:]
+        seqlen_q, batch_size, num_heads_q, head_dim = out_partial.shape[1:]
     else:
         total_q, num_heads_q, head_dim = out_partial.shape[1:]
         batch_size = cu_seqlens_q.shape[0] - 1
@@ -212,15 +212,15 @@ def _flash_attn_fwd_combine(
         out,
         lse,
         out_partial.stride(0),
-        out_partial.stride(1) if not is_varlen else 0,
-        out_partial.stride(-2),
-        out_partial.stride(-3),
+        out_partial.stride(2) if not is_varlen else 0,
+        out_partial.stride(3) if not is_varlen else out_partial.stride(-2),
+        out_partial.stride(1) if not is_varlen else out_partial.stride(-3),
         lse_partial.stride(0),
         lse_partial.stride(1) if not is_varlen else 0,
         lse_partial.stride(-2),
-        out.stride(0) if not is_varlen else 0,
-        out.stride(-2),
-        out.stride(-3) if not is_varlen else out.stride(0),
+        out.stride(1) if not is_varlen else 0,
+        out.stride(2) if not is_varlen else out.stride(-2),
+        out.stride(0) if not is_varlen else out.stride(0),
         lse.stride(0) if not is_varlen else 0,
         lse.stride(-2) if not is_varlen else lse.stride(0),
         cu_seqlens_q,
