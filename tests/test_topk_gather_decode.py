@@ -323,7 +323,7 @@ def _run_contiguous_topk_matches_regular_case(kind: KernelType) -> None:
     dtype = torch.bfloat16
     batch_size = 2
     seqlen_k = 512
-    num_heads_q = 8
+    num_heads_q = 32
     num_heads_kv = 2
     head_dim = 64
     softmax_scale = head_dim**-0.5
