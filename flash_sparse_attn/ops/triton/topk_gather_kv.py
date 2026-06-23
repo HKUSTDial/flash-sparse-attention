@@ -72,6 +72,12 @@ def load_gathered_d(
 def apply_gather_mask(
     acc_s,
     topk_indices,
+    actual_seqlen_q,
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    TILE_M: tl.constexpr,
 ):
     valid_mask = make_valid_mask(topk_indices)
-    return tl.where(valid_mask[None, :], acc_s, float("-inf"))
+    offs_m = tl.arange(0, TILE_M)
+    q_idx = offs_m // QHEAD_PER_KVHEAD_PACKGQA
+    valid_m = q_idx < actual_seqlen_q
+    return tl.where(valid_m[:, None] & valid_mask[None, :], acc_s, float("-inf"))
