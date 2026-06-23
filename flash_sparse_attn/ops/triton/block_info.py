@@ -275,3 +275,34 @@ def get_m_block_max_before_local_mask(
         m_idx = n_idx_min + seqlen_q - seqlen_k
         m_idx_left = m_idx + window_size_dist + window_size_right + window_size_left
         return tl.minimum(m_block_max, m_idx_left // TILE_M)
+
+
+@triton.jit
+def get_topk_n_block_min_max(
+    topk_seqlen_k,
+    split_idx,
+    num_splits,
+    TILE_N: tl.constexpr,
+):
+    total_n_blocks = tl.cdiv(topk_seqlen_k, TILE_N)
+    base = total_n_blocks // num_splits
+    extra = total_n_blocks % num_splits
+    n_block_min = tl.where(
+        split_idx < extra,
+        split_idx * (base + 1),
+        extra * (base + 1) + (split_idx - extra) * base,
+    )
+    n_block_count = tl.where(split_idx < extra, base + 1, base)
+    n_block_max = tl.minimum(n_block_min + n_block_count, total_n_blocks)
+    n_block_window_min = 0
+    n_block_window_max = 0
+    n_block_sink_min = 0
+    n_block_sink_max = 0
+    return (
+        n_block_min,
+        n_block_max,
+        n_block_window_min,
+        n_block_window_max,
+        n_block_sink_min,
+        n_block_sink_max,
+    )
