@@ -2487,9 +2487,6 @@ class AttnDecPointerScheduler:
         return topk_gather_kv.apply_gather_mask(
             acc_s,
             topk_indices,
-            config.actual_seqlen_q,
-            config.QHEAD_PER_KVHEAD_PACKGQA,
-            config.TILE_M,
         )
 
 
