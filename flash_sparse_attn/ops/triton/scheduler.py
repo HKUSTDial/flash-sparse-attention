@@ -3,9 +3,13 @@ import triton.language as tl
 from triton.language.core import _aggregate as aggregate
 from triton.runtime.jit import constexpr_function
 
-from flash_sparse_attn.ops.triton import mask
-from flash_sparse_attn.ops.triton import activations
-from flash_sparse_attn.ops.triton import seqlen_info, block_info
+from flash_sparse_attn.ops.triton import (
+    seqlen_info,
+    block_info,
+    mask,
+    activations,
+    topk_gather_kv,
+)
 
 
 @aggregate
@@ -1103,50 +1107,70 @@ class AttnDecBlockScheduler:
         config: AttnDecConfig,
         split_idx,
         num_splits,
+        topk_seqlen_k,
         IS_LOCAL: tl.constexpr,
+        HAS_GATHER_KV: tl.constexpr = False,
     ):
-        # Compute non-causal n_block range for this m_block
-        (
-            n_block_min,
-            n_block_max,
-            n_block_window_min,
-            n_block_window_max,
-            n_block_sink_min,
-            n_block_sink_max,
-        ) = block_info.get_n_block_min_max(
-            seqlen_q=1,
-            seqlen_k=config.actual_seqlen_k,
-            m_block=0,
-            split_idx=split_idx,
-            num_splits=num_splits,
-            window_size_sink=config.window_size_sink,
-            window_size_left=config.window_size_left,
-            window_size_right=config.window_size_right,
-            window_size_dist=config.window_size_dist,
-            TILE_N=config.TILE_N,
-            TILE_M=config.TILE_M,
-            IS_CAUSAL=False,
-            IS_LOCAL=IS_LOCAL,
-            IS_SPLIT_KV=True,
-            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-        )
-        n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
-            seqlen_q=1,
-            seqlen_k=config.actual_seqlen_k,
-            m_block=0,
-            n_block_min=n_block_min,
-            window_size_right=0,
-            window_size_dist=0,
-            TILE_N=config.TILE_N,
-            TILE_M=config.TILE_M,
-            IS_LOCAL=False,
-            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-        )
+        if HAS_GATHER_KV:
+            (
+                n_block_min,
+                n_block_max,
+                n_block_window_min,
+                n_block_window_max,
+                n_block_sink_min,
+                n_block_sink_max,
+            ) = block_info.get_topk_n_block_min_max(
+                topk_seqlen_k=topk_seqlen_k,
+                split_idx=split_idx,
+                num_splits=num_splits,
+                TILE_N=config.TILE_N,
+            )
+            n_block_max_no_mask = n_block_max
+            n_block_window_min_no_mask = 0
+            n_block_window_max_no_mask = 0
+        else:
+            # Compute non-causal n_block range for this m_block
+            (
+                n_block_min,
+                n_block_max,
+                n_block_window_min,
+                n_block_window_max,
+                n_block_sink_min,
+                n_block_sink_max,
+            ) = block_info.get_n_block_min_max(
+                seqlen_q=1,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=0,
+                split_idx=split_idx,
+                num_splits=num_splits,
+                window_size_sink=config.window_size_sink,
+                window_size_left=config.window_size_left,
+                window_size_right=config.window_size_right,
+                window_size_dist=config.window_size_dist,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_CAUSAL=False,
+                IS_LOCAL=IS_LOCAL,
+                IS_SPLIT_KV=True,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+            n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+                seqlen_q=1,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=0,
+                n_block_min=n_block_min,
+                window_size_right=0,
+                window_size_dist=0,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=False,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
 
-        # Clamp to split's range so the no-mask loop stays within bounds
-        n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
+            # Clamp to split's range so the no-mask loop stays within bounds
+            n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
-        if IS_LOCAL:
+        if IS_LOCAL and not HAS_GATHER_KV:
             # Compute local n_block range for this m_block
             n_block_max_no_mask = tl.where(
                 split_idx >= num_splits - 1,
@@ -1193,7 +1217,7 @@ class AttnDecBlockScheduler:
                 tl.minimum(n_block_window_min_no_mask, n_block_window_max),
                 n_block_window_min,
             )
-        else:
+        elif not HAS_GATHER_KV:
             n_block_window_min = 0
             n_block_window_max = 0
             n_block_window_min_no_mask = 0
@@ -2113,10 +2137,12 @@ class AttnDecPointerScheduler:
     d_base: tl.tensor
     out_base: tl.tensor
     lse_base: tl.tensor
+    gather_kv_base: tl.tensor
     stride_qh: tl.tensor
     stride_kn: tl.tensor
     stride_vn: tl.tensor
     stride_oh: tl.tensor
+    stride_gn: tl.tensor
 
     @constexpr_function
     def __init__(
@@ -2128,10 +2154,12 @@ class AttnDecPointerScheduler:
         d_base,
         out_base,
         lse_base,
+        gather_kv_base,
         stride_qh,
         stride_kn,
         stride_vn,
         stride_oh,
+        stride_gn,
     ):
         self.q_base = q_base
         self.k_base = k_base
@@ -2140,10 +2168,12 @@ class AttnDecPointerScheduler:
         self.d_base = d_base
         self.out_base = out_base
         self.lse_base = lse_base
+        self.gather_kv_base = gather_kv_base
         self.stride_qh = stride_qh
         self.stride_kn = stride_kn
         self.stride_vn = stride_vn
         self.stride_oh = stride_oh
+        self.stride_gn = stride_gn
 
     @staticmethod
     @triton.jit
@@ -2154,6 +2184,7 @@ class AttnDecPointerScheduler:
         V=None,
         A=None,
         D=None,
+        GatherKVIndices=None,
         Out=None,
         Lse=None,
         batch_idx=0,
@@ -2181,7 +2212,10 @@ class AttnDecPointerScheduler:
         stride_lh=0,
         stride_lm=0,
         stride_ls=0,
+        stride_gb=0,
+        stride_gn=0,
         IS_GATED: tl.constexpr = False,
+        HAS_GATHER_KV: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
     ):
@@ -2236,6 +2270,10 @@ class AttnDecPointerScheduler:
             HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
+        if HAS_GATHER_KV:
+            gather_kv_base = GatherKVIndices + batch_idx * stride_gb
+        else:
+            gather_kv_base = tl.full((), 0, tl.int64)
 
         if IS_GATED:
             a_base = seqlen_info.offset_batch_Q(
@@ -2275,10 +2313,12 @@ class AttnDecPointerScheduler:
             d_base,
             out_base,
             lse_base,
+            gather_kv_base,
             stride_qh + tl.full((), 0, tl.int64),
             stride_kn + tl.full((), 0, tl.int64),
             stride_vn + tl.full((), 0, tl.int64),
             stride_oh + tl.full((), 0, tl.int64),
+            stride_gn + tl.full((), 0, tl.int64),
         )
 
     @triton.jit
@@ -2349,20 +2389,78 @@ class AttnDecPointerScheduler:
         return q_ptrs.load([0, 0])
 
     @triton.jit
-    def load_k(self, config: AttnDecConfig, k_ptrs, n_block):
-        return k_ptrs.load([n_block * config.TILE_N, 0])
+    def load_k(
+        self,
+        config: AttnDecConfig,
+        k_ptrs,
+        n_block,
+        topk_indices=None,
+        HAS_GATHER_KV: tl.constexpr = False,
+    ):
+        if HAS_GATHER_KV:
+            return topk_gather_kv.load_gathered_k(
+                self.k_base,
+                topk_indices,
+                self.stride_kn,
+                config.head_dim,
+                config.TILE_K,
+            )
+        else:
+            return k_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
-    def load_v(self, config: AttnDecConfig, v_ptrs, n_block):
-        return v_ptrs.load([n_block * config.TILE_N, 0])
+    def load_v(
+        self,
+        config: AttnDecConfig,
+        v_ptrs,
+        n_block,
+        topk_indices=None,
+        HAS_GATHER_KV: tl.constexpr = False,
+    ):
+        if HAS_GATHER_KV:
+            return topk_gather_kv.load_gathered_v(
+                self.v_base,
+                topk_indices,
+                self.stride_vn,
+                config.head_dim,
+                config.TILE_K,
+            )
+        else:
+            return v_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
     def load_a(self, config: AttnDecConfig, a_ptrs):
         return a_ptrs.load([0]).to(tl.float32)
 
     @triton.jit
-    def load_d(self, config: AttnDecConfig, d_ptrs, n_block):
-        return d_ptrs.load([n_block * config.TILE_N]).to(tl.float32)
+    def load_d(
+        self,
+        config: AttnDecConfig,
+        d_ptrs,
+        n_block,
+        topk_indices=None,
+        HAS_GATHER_KV: tl.constexpr = False,
+    ):
+        if HAS_GATHER_KV:
+            return topk_gather_kv.load_gathered_d(
+                self.d_base,
+                topk_indices,
+            )
+        else:
+            return d_ptrs.load([n_block * config.TILE_N]).to(tl.float32)
+
+    @triton.jit
+    def load_topk_indices(
+        self,
+        config: AttnDecConfig,
+        n_block,
+    ):
+        return topk_gather_kv.load_topk_indices(
+            self.gather_kv_base,
+            self.stride_gn,
+            n_block,
+            config.TILE_N,
+        )
 
     @triton.jit
     def store_out(self, config: AttnDecConfig, out_ptrs, o_tile):
@@ -2378,6 +2476,18 @@ class AttnDecPointerScheduler:
         self.store_lse(config, lse_ptrs, lse_tile)
         o_tile = tl.zeros((config.TILE_M, config.TILE_K), dtype=Out.dtype.element_ty)
         self.store_out(config, out_ptrs, o_tile)
+
+    @triton.jit
+    def apply_gather_mask(
+        self,
+        config: AttnDecConfig,
+        acc_s,
+        topk_indices,
+    ):
+        return topk_gather_kv.apply_gather_mask(
+            acc_s,
+            topk_indices,
+        )
 
 
 @aggregate
