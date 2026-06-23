@@ -980,6 +980,7 @@ def flash_dense_attn_with_kvcache_func(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1027,6 +1028,7 @@ def flash_dense_attn_with_kvcache_func(
         window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
+        gather_kv_indices=gather_kv_indices,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1139,6 +1141,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
     is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1192,6 +1195,7 @@ def flash_dense_attn_varlen_with_kvcache_func(
         is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
+        gather_kv_indices=gather_kv_indices,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1287,6 +1291,7 @@ def flash_sparse_attn_with_kvcache_func(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1336,6 +1341,7 @@ def flash_sparse_attn_with_kvcache_func(
         window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
+        gather_kv_indices=gather_kv_indices,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1452,6 +1458,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1507,6 +1514,7 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
+        gather_kv_indices=gather_kv_indices,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1621,6 +1629,7 @@ def flash_gated_attn_with_kvcache_func(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1645,6 +1654,7 @@ def flash_gated_attn_with_kvcache_func(
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
+    :param gather_kv_indices: Optional topk gather indices with shape [batch_size, topk_seqlen_k].
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
@@ -1681,6 +1691,7 @@ def flash_gated_attn_with_kvcache_func(
         window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
+        gather_kv_indices=gather_kv_indices,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1816,6 +1827,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = False,
@@ -1843,6 +1855,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
+    :param gather_kv_indices: Optional topk gather indices with shape [batch_size, topk_seqlen_k].
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads_q, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads_q].
     :param is_autotune: Force re-run Triton autotuner and overwrite cache. Default False uses cached config.
@@ -1882,6 +1895,7 @@ def flash_gated_attn_varlen_with_kvcache_func(
         is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
+        gather_kv_indices=gather_kv_indices,
         out=out,
         lse=lse,
         is_autotune=is_autotune,

@@ -31,6 +31,7 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - Split-KV for workload balancing in forward and decode workloads
 - Split-QO for workload balancing in backward workloads
 - Fused Quant for low-precision computation on hardware without native FP8 support
+- Top-k gather KV-cache decode
 
 ## Features We Aim to Support
 
