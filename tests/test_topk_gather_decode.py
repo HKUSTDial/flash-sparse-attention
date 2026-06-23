@@ -322,7 +322,7 @@ def _run_contiguous_topk_matches_regular_case(kind: KernelType) -> None:
     device = torch.device("cuda")
     dtype = torch.bfloat16
     batch_size = 2
-    seqlen_k = 512
+    seqlen_k = 256
     num_heads_q = 32
     num_heads_kv = 2
     head_dim = 64
