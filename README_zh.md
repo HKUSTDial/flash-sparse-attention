@@ -31,6 +31,7 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - Split-KV 适用于前向和解码的工作负载均衡
 - Split-QO 适用于反向的工作负载均衡
 - Fused Quant 支持非FP8原生支持的硬件使用低精度计算
+- Top-k gather KV-cache 解码
 
 ## 我们想要支持的功能
 

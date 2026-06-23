@@ -54,7 +54,7 @@ def _fwd_inner_gated_kernel(
     skip_gate_next = True
     if not skip_gate_curr:
         if IS_MASK:
-            # Apply mask
+            # Apply mask to attention scores
             acc_s = mask_sched.apply_mask(
                 acc_s=acc_s,
                 iter_block=n_block,
