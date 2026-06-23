@@ -78,21 +78,24 @@ def dec_dense_repr(specialization):
     c = specialization.constants
     mask = "local" if _get(c, "IS_LOCAL") else "full"
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
-    return f"flash_dense_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
+    gather = "_topk" if _get(c, "HAS_GATHER_KV") else ""
+    return f"flash_dense_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{gather}{varlen}"
 
 
 def dec_sparse_repr(specialization):
     c = specialization.constants
     mask = "local" if _get(c, "IS_LOCAL") else "full"
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
-    return f"flash_sparse_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
+    gather = "_topk" if _get(c, "HAS_GATHER_KV") else ""
+    return f"flash_sparse_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{gather}{varlen}"
 
 
 def dec_gated_repr(specialization):
     c = specialization.constants
     mask = "local" if _get(c, "IS_LOCAL") else "full"
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
-    return f"flash_gated_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
+    gather = "_topk" if _get(c, "HAS_GATHER_KV") else ""
+    return f"flash_gated_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{gather}{varlen}"
 
 
 def fwd_combine_repr(specialization):
