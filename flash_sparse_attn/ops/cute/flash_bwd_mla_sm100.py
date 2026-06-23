@@ -16,11 +16,11 @@ from cutlass.utils import ClcDynamicPersistentTileScheduler
 
 from quack import copy_utils, layout_utils
 
-from flash_attn.cute.pack_gqa import pack_gqa_layout
-from flash_attn.cute.seqlen_info import SeqlenInfoQK
-from flash_attn.cute.block_info import BlockInfo
-import flash_attn.cute.blackwell_helpers as fa_sm100_utils
-from flash_attn.cute.tile_scheduler import (
+from flash_sparse_attn.ops.cute.pack_gqa import pack_gqa_layout
+from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
+from flash_sparse_attn.ops.cute.block_info import BlockInfo
+import flash_sparse_attn.ops.cute.blackwell_helpers as fa_sm100_utils
+from flash_sparse_attn.ops.cute.tile_scheduler import (
     ClcState,
     SchedulingMode,
     TileSchedulerArguments,
@@ -30,14 +30,14 @@ from flash_attn.cute.tile_scheduler import (
     SingleTileVarlenScheduler,
     ParamsBase,
 )
-from flash_attn.cute.fa_logging import fa_log, fa_printf
-from flash_attn.cute.utils import smid, elem_pointer, get_batch_from_cu_tensor
-from flash_attn.cute.copy_utils import tiled_copy_2d, atomic_add_fp32x4
+from flash_sparse_attn.ops.cute.fa_logging import fa_log, fa_printf
+from flash_sparse_attn.ops.cute.utils import smid, elem_pointer, get_batch_from_cu_tensor
+from flash_sparse_attn.ops.cute.copy_utils import tiled_copy_2d, atomic_add_fp32x4
 
-from flash_attn.cute.topk_gather_kv import CpasyncGatherKVManager
+from flash_sparse_attn.ops.cute.topk_gather_kv import CpasyncGatherKVManager
 
 
-from flash_attn.cute.named_barrier import NamedBarrierBwdSm100_MLA2CTA
+from flash_sparse_attn.ops.cute.named_barrier import NamedBarrierBwdSm100_MLA2CTA
 
 
 class FlashAttentionSparseMLABackwardSm100:
