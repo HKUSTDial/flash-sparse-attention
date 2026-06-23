@@ -52,6 +52,7 @@ def _dec_inner_gated_kernel(
     CHECK_INF: tl.constexpr,
     HAS_GATHER_KV: tl.constexpr,
 ):
+    next_topk_indices = topk_indices
     skip_gate_next = True
     if not skip_gate_curr:
         if HAS_GATHER_KV:
@@ -98,7 +99,6 @@ def _dec_inner_gated_kernel(
             acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
 
     if n_block > n_block_min:
-        next_topk_indices = topk_indices
         if HAS_GATHER_KV:
             # Load next topk indices
             next_topk_indices = ptrs_sched.load_topk_indices(config, n_block - 1)

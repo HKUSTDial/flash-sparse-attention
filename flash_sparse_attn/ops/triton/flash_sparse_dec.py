@@ -46,11 +46,12 @@ def _dec_inner_sparse_kernel(
     CHECK_INF: tl.constexpr,
     HAS_GATHER_KV: tl.constexpr,
 ):
+    next_topk_indices = topk_indices
+
     # Compute attention scores
     acc_s = tl.dot(q_tile, k_tile.T)
 
     # Prefetch next key tile
-    next_topk_indices = topk_indices
     if n_block > n_block_min:
         if HAS_GATHER_KV:
             # Load next topk indices
