@@ -956,16 +956,19 @@ def _flash_gated_attn_decode(
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
 
-    num_splits = utils.num_splits_heuristic(
-        seqlen_q=qhead_per_kvhead,
-        seqlen_k=seqlen_k if gather_kv_indices is None else topk_seqlen_k,
-        num_SMs=num_SMs,
-        TILE_M=TILE_M,
-        TILE_N=TILE_N,
-        max_split_blocks=utils.max_split_blocks_from_window_sizes(window_sizes, TILE_N)
-        if is_local
-        else None,
-    )
+    if gather_kv_indices is not None:
+        num_splits = 1
+    else:
+        num_splits = utils.num_splits_heuristic(
+            seqlen_q=qhead_per_kvhead,
+            seqlen_k=seqlen_k,
+            num_SMs=num_SMs,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(window_sizes, TILE_N)
+            if is_local
+            else None,
+        )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
     out = (
@@ -1184,16 +1187,19 @@ def _flash_gated_attn_varlen_decode(
         TILE_N = 128
         num_warps = num_stages = num_ctas = None
 
-    num_splits = utils.num_splits_heuristic(
-        seqlen_q=qhead_per_kvhead,
-        seqlen_k=seqlen_k if gather_kv_indices is None else topk_seqlen_k,
-        num_SMs=num_SMs,
-        TILE_M=TILE_M,
-        TILE_N=TILE_N,
-        max_split_blocks=utils.max_split_blocks_from_window_sizes(window_sizes, TILE_N)
-        if is_local
-        else None,
-    )
+    if gather_kv_indices is not None:
+        num_splits = 1
+    else:
+        num_splits = utils.num_splits_heuristic(
+            seqlen_q=qhead_per_kvhead,
+            seqlen_k=seqlen_k,
+            num_SMs=num_SMs,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            max_split_blocks=utils.max_split_blocks_from_window_sizes(window_sizes, TILE_N)
+            if is_local
+            else None,
+        )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
     out = (
