@@ -168,6 +168,7 @@ def _bwd_sparse_kernel(
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_QUANT: tl.constexpr,
     IS_SPLIT_QO: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
@@ -218,6 +219,7 @@ def _bwd_sparse_kernel(
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
+        IS_QUANT=IS_QUANT,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
         HAS_SEQUSED_Q=HAS_SEQUSED_Q,
@@ -526,8 +528,6 @@ def _flash_sparse_attn_backward(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_bwd_inputs(
@@ -594,14 +594,9 @@ def _flash_sparse_attn_backward(
     seqlen_q_rounded = int(math.ceil(seqlen_q / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
-    dq = torch.empty_like(query, dtype=query_scale.dtype)
-    dk = torch.empty_like(key, dtype=key_scale.dtype)
-    dv = torch.empty_like(value, dtype=value_scale.dtype)
+    dq = torch.empty_like(query, dtype=dout.dtype)
+    dk = torch.empty_like(key, dtype=dout.dtype)
+    dv = torch.empty_like(value, dtype=dout.dtype)
     lse_log2 = torch.empty(
         (batch_size, num_heads_q, seqlen_q_rounded),
         dtype=torch.float32,
@@ -696,7 +691,7 @@ def _flash_sparse_attn_backward(
         dv_accum.stride(-2),
         dv_accum.stride(-3),
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         None,
         None,
         None,
@@ -713,6 +708,7 @@ def _flash_sparse_attn_backward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         IS_SPLIT_QO=is_split_qo and num_splits > 1,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
@@ -800,8 +796,6 @@ def _flash_sparse_attn_varlen_backward(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_bwd_inputs(
@@ -868,14 +862,9 @@ def _flash_sparse_attn_varlen_backward(
     total_q_rounded_padded = int(math.ceil((total_q + batch_size * 128) / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
-    dq = torch.empty_like(query, dtype=query_scale.dtype)
-    dk = torch.empty_like(key, dtype=key_scale.dtype)
-    dv = torch.empty_like(value, dtype=value_scale.dtype)
+    dq = torch.empty_like(query, dtype=dout.dtype)
+    dk = torch.empty_like(key, dtype=dout.dtype)
+    dv = torch.empty_like(value, dtype=dout.dtype)
     lse_log2 = torch.empty(
         num_heads_q,
         total_q_rounded_padded,
@@ -976,7 +965,7 @@ def _flash_sparse_attn_varlen_backward(
         dv_accum.stride(-2),
         dv_accum.stride(-3),
         dv_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
@@ -993,6 +982,7 @@ def _flash_sparse_attn_varlen_backward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         IS_SPLIT_QO=is_split_qo and num_splits > 1,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
