@@ -259,6 +259,7 @@ class AttnFwdConfig:
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
         IS_CAUSAL: tl.constexpr = False,
+        IS_QUANT: tl.constexpr = False,
         IS_LOGSIGMOID_GATE: tl.constexpr = False,
         IS_ADAPT_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
@@ -289,12 +290,14 @@ class AttnFwdConfig:
             HAS_SEQUSED_Q=HAS_SEQUSED_Q,
             HAS_SEQUSED_K=HAS_SEQUSED_K,
         )
-        # Load query scale
-        q_scale = tl.load(query_scale)
-        # Load key scale
-        k_scale = tl.load(key_scale)
-        # Load value scale
-        v_scale = tl.load(value_scale)
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
         softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
@@ -460,6 +463,7 @@ class AttnBwdConfig:
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
         IS_CAUSAL: tl.constexpr = False,
+        IS_QUANT: tl.constexpr = False,
         IS_LOGSIGMOID_GATE: tl.constexpr = False,
         IS_ADAPT_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
@@ -490,12 +494,14 @@ class AttnBwdConfig:
             HAS_SEQUSED_Q=HAS_SEQUSED_Q,
             HAS_SEQUSED_K=HAS_SEQUSED_K,
         )
-        # Load query scale
-        q_scale = tl.load(query_scale)
-        # Load key scale
-        k_scale = tl.load(key_scale)
-        # Load value scale
-        v_scale = tl.load(value_scale)
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E
         softmax_threshold = tl.full((), softmax_threshold, tl.float32)
@@ -656,6 +662,7 @@ class AttnDecConfig:
         TILE_M: tl.constexpr = 16,
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
+        IS_QUANT: tl.constexpr = False,
         IS_LOGSIGMOID_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
@@ -685,12 +692,14 @@ class AttnDecConfig:
             HAS_SEQUSED_Q=HAS_SEQUSED_Q,
             HAS_SEQUSED_K=HAS_SEQUSED_K,
         )
-        # Load query scale
-        q_scale = tl.load(query_scale)
-        # Load key scale
-        k_scale = tl.load(key_scale)
-        # Load value scale
-        v_scale = tl.load(value_scale)
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
         softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
