@@ -212,6 +212,7 @@ def _dec_gated_kernel(
     TILE_K: tl.constexpr,
     topk_seqlen_k: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_QUANT: tl.constexpr,
     HAS_GATHER_KV: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
@@ -260,6 +261,7 @@ def _dec_gated_kernel(
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
+        IS_QUANT=IS_QUANT,
         IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
@@ -912,8 +914,6 @@ def _flash_gated_attn_decode(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -995,11 +995,6 @@ def _flash_gated_attn_decode(
         device=device,
     )
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
     grid = launch_grid.get_dec_grid(
         batch_size=batch_size,
         num_heads_kv=num_heads_kv,
@@ -1045,7 +1040,7 @@ def _flash_gated_attn_decode(
         lse_partial.stride(-1),
         1,
         lse_partial.stride(0),
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         gather_kv_indices.stride(0) if gather_kv_indices is not None else 0,
         gather_kv_indices.stride(-1) if gather_kv_indices is not None else 0,
         None,
@@ -1064,6 +1059,7 @@ def _flash_gated_attn_decode(
         TILE_K=TILE_K,
         topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         HAS_GATHER_KV=gather_kv_indices is not None,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
@@ -1145,8 +1141,6 @@ def _flash_gated_attn_varlen_decode(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_dec_inputs(
@@ -1228,11 +1222,6 @@ def _flash_gated_attn_varlen_decode(
         device=device,
     )
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
     grid = launch_grid.get_dec_grid(
         batch_size=batch_size,
         num_heads_kv=num_heads_kv,
@@ -1278,7 +1267,7 @@ def _flash_gated_attn_varlen_decode(
         lse_partial.stride(-1),
         1,
         lse_partial.stride(0),
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         gather_kv_indices.stride(0) if gather_kv_indices is not None else 0,
         gather_kv_indices.stride(-1) if gather_kv_indices is not None else 0,
         None,
@@ -1297,6 +1286,7 @@ def _flash_gated_attn_varlen_decode(
         TILE_K=TILE_K,
         topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         HAS_GATHER_KV=gather_kv_indices is not None,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=True,
