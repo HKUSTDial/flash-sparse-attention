@@ -136,6 +136,7 @@ def _fwd_sparse_kernel(
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_QUANT: tl.constexpr,
     IS_SPLIT_KV: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
@@ -187,6 +188,8 @@ def _fwd_sparse_kernel(
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
+        IS_CAUSAL=IS_CAUSAL,
+        IS_QUANT=IS_QUANT,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
         HAS_SEQUSED_Q=HAS_SEQUSED_Q,
@@ -552,8 +555,6 @@ def _flash_sparse_attn_forward(
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -640,11 +641,6 @@ def _flash_sparse_attn_forward(
             device=query.device,
         )
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
     grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
@@ -684,7 +680,7 @@ def _flash_sparse_attn_forward(
         lse.stride(0) if not is_split_kv else lse_partial.stride(1),
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
         0 if not is_split_kv else lse_partial.stride(0),
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         None,
         None,
         None,
@@ -703,6 +699,7 @@ def _flash_sparse_attn_forward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         IS_SPLIT_KV=is_split_kv,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
@@ -784,8 +781,6 @@ def _flash_sparse_attn_varlen_forward(
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_fwd_inputs(
@@ -872,11 +867,6 @@ def _flash_sparse_attn_varlen_forward(
             device=query.device,
         )
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
     grid = launch_grid.get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
@@ -916,7 +906,7 @@ def _flash_sparse_attn_varlen_forward(
         0,
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
         0 if not is_split_kv else lse_partial.stride(0),
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
@@ -935,6 +925,7 @@ def _flash_sparse_attn_varlen_forward(
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         IS_SPLIT_KV=is_split_kv,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
