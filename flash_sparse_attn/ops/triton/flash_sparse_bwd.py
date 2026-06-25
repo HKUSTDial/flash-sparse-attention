@@ -512,7 +512,9 @@ def _flash_sparse_attn_backward(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_qo: bool = False,
-    is_autotune: bool = False,
+    num_splits: Optional[int] = None,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -554,28 +556,34 @@ def _flash_sparse_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    launch_config = launch_template.load_launch_config(
-        device=device,
-        kernel_name="bwd_sparse",
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        tile_k=TILE_K,
-        is_local=is_local,
-        qhead_per_kvhead=qhead_per_kvhead,
-        is_causal=is_causal,
-        is_quant=is_quant,
-    )
-    if launch_config is not None and not is_autotune:
+    launch_config = None
+    if not is_autotune:
         kernel = _bwd_sparse_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 8, 1, 1
     else:
-        kernel = _get_autotuned_kernel()
-        # Placeholder for pre-launch computations
-        TILE_M = TILE_N = 64
-        num_warps = num_stages = num_ctas = None
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name="bwd_sparse",
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _bwd_sparse_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
 
-    num_splits = (
-        utils.num_splits_heuristic(
+    if is_split_qo and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
             seqlen_q=seqlen_k,
             seqlen_k=seqlen_q,
             num_SMs=num_SMs,
@@ -587,9 +595,8 @@ def _flash_sparse_attn_backward(
             if is_local
             else None,
         )
-        if is_split_qo
-        else 1
-    )
+    elif not is_split_qo:
+        num_splits = 1
 
     seqlen_q_rounded = int(math.ceil(seqlen_q / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
@@ -719,7 +726,7 @@ def _flash_sparse_attn_backward(
         num_ctas=num_ctas,
     )
 
-    if launch_config is None or is_autotune:
+    if is_autotune and launch_config is None:
         best = launch_template.extract_best_config(_get_autotuned_kernel())
         if best is not None:
             launch_template.store_launch_config(
@@ -777,7 +784,9 @@ def _flash_sparse_attn_varlen_backward(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     is_split_qo: bool = False,
-    is_autotune: bool = False,
+    num_splits: Optional[int] = None,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -822,28 +831,34 @@ def _flash_sparse_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    launch_config = launch_template.load_launch_config(
-        device=device,
-        kernel_name="bwd_sparse",
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        tile_k=TILE_K,
-        is_local=is_local,
-        qhead_per_kvhead=qhead_per_kvhead,
-        is_causal=is_causal,
-        is_quant=is_quant,
-    )
-    if launch_config is not None and not is_autotune:
+    launch_config = None
+    if not is_autotune:
         kernel = _bwd_sparse_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 8, 1, 1
     else:
-        kernel = _get_autotuned_kernel()
-        # Placeholder for pre-launch computations
-        TILE_M = TILE_N = 64
-        num_warps = num_stages = num_ctas = None
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name="bwd_sparse",
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _bwd_sparse_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
 
-    num_splits = (
-        utils.num_splits_heuristic(
+    if is_split_qo and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
             seqlen_q=seqlen_k,
             seqlen_k=seqlen_q,
             num_SMs=num_SMs,
@@ -855,9 +870,8 @@ def _flash_sparse_attn_varlen_backward(
             if is_local
             else None,
         )
-        if is_split_qo
-        else 1
-    )
+    elif not is_split_qo:
+        num_splits = 1
 
     total_q_rounded_padded = int(math.ceil((total_q + batch_size * 128) / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
@@ -993,7 +1007,7 @@ def _flash_sparse_attn_varlen_backward(
         num_ctas=num_ctas,
     )
 
-    if launch_config is None or is_autotune:
+    if is_autotune and launch_config is None:
         best = launch_template.extract_best_config(_get_autotuned_kernel())
         if best is not None:
             launch_template.store_launch_config(
