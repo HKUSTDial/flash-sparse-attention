@@ -127,7 +127,7 @@ def benchmark_triton_dense_decode(
             softmax_scale=softmax_scale,
             out=out,
             lse=lse,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -168,7 +168,7 @@ def benchmark_triton_dense_decode_quant(
             is_quant=True,
             out=out,
             lse=lse,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -202,7 +202,7 @@ def benchmark_triton_sparse_decode(
             softmax_threshold=softmax_threshold,
             out=out,
             lse=lse,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -244,7 +244,7 @@ def benchmark_triton_sparse_decode_quant(
             is_quant=True,
             out=out,
             lse=lse,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -287,7 +287,7 @@ def benchmark_triton_gated_decode(
             is_logsigmoid_gate=False,
             out=out,
             lse=lse,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -344,7 +344,7 @@ def benchmark_triton_gated_decode_quant(
             is_quant=True,
             out=out,
             lse=lse,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 

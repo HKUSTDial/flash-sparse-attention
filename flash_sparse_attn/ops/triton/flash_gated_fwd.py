@@ -861,9 +861,11 @@ def _flash_gated_attn_forward(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    num_splits: Optional[int] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
-    is_autotune: bool = False,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
     device = query.device
@@ -909,29 +911,35 @@ def _flash_gated_attn_forward(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     _kernel_name = f"fwd_gated{'_split' if is_split_kv else ''}"
-    launch_config = launch_template.load_launch_config(
-        device=device,
-        kernel_name=_kernel_name,
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        tile_k=TILE_K,
-        is_local=is_local,
-        qhead_per_kvhead=qhead_per_kvhead,
-        is_causal=is_causal,
-        pack_gqa=pack_gqa,
-        is_quant=is_quant,
-    )
-    if launch_config is not None and not is_autotune:
+    launch_config = None
+    if not is_autotune:
         kernel = _fwd_gated_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 4, 1, 1
     else:
-        kernel = _get_autotuned_kernel()
-        # Placeholder for pre-launch computations
-        TILE_M = TILE_N = 64
-        num_warps = num_stages = num_ctas = None
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name=_kernel_name,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            pack_gqa=pack_gqa,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _fwd_gated_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
 
-    num_splits = (
-        utils.num_splits_heuristic(
+    if is_split_kv and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
             seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
             seqlen_k=seqlen_k,
             num_SMs=num_SMs,
@@ -943,9 +951,8 @@ def _flash_gated_attn_forward(
             if is_local
             else None,
         )
-        if is_split_kv
-        else 1
-    )
+    elif not is_split_kv:
+        num_splits = 1
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
     out = out if out is not None else torch.zeros_like(query, dtype=out_dtype)
@@ -1051,7 +1058,7 @@ def _flash_gated_attn_forward(
         num_ctas=num_ctas,
     )
 
-    if launch_config is None or is_autotune:
+    if is_autotune and launch_config is None:
         best = launch_template.extract_best_config(_get_autotuned_kernel())
         if best is not None:
             launch_template.store_launch_config(
@@ -1103,11 +1110,13 @@ def _flash_gated_attn_varlen_forward(
     is_quant: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
+    num_splits: Optional[int] = None,
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
-    is_autotune: bool = False,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
     device = query.device
@@ -1156,29 +1165,35 @@ def _flash_gated_attn_varlen_forward(
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
     _kernel_name = f"fwd_gated{'_split' if is_split_kv else ''}"
-    launch_config = launch_template.load_launch_config(
-        device=device,
-        kernel_name=_kernel_name,
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        tile_k=TILE_K,
-        is_local=is_local,
-        qhead_per_kvhead=qhead_per_kvhead,
-        is_causal=is_causal,
-        pack_gqa=pack_gqa,
-        is_quant=is_quant,
-    )
-    if launch_config is not None and not is_autotune:
+    launch_config = None
+    if not is_autotune:
         kernel = _fwd_gated_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 4, 1, 1
     else:
-        kernel = _get_autotuned_kernel()
-        # Placeholder for pre-launch computations
-        TILE_M = TILE_N = 64
-        num_warps = num_stages = num_ctas = None
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name=_kernel_name,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            pack_gqa=pack_gqa,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _fwd_gated_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
 
-    num_splits = (
-        utils.num_splits_heuristic(
+    if is_split_kv and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
             seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
             seqlen_k=seqlen_k,
             num_SMs=num_SMs,
@@ -1190,9 +1205,8 @@ def _flash_gated_attn_varlen_forward(
             if is_local
             else None,
         )
-        if is_split_kv
-        else 1
-    )
+    elif not is_split_kv:
+        num_splits = 1
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
     out = out if out is not None else torch.zeros_like(query, dtype=out_dtype)
@@ -1298,7 +1312,7 @@ def _flash_gated_attn_varlen_forward(
         num_ctas=num_ctas,
     )
 
-    if launch_config is None or is_autotune:
+    if is_autotune and launch_config is None:
         best = launch_template.extract_best_config(_get_autotuned_kernel())
         if best is not None:
             launch_template.store_launch_config(
