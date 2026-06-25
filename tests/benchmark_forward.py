@@ -42,7 +42,7 @@ def benchmark_triton_dense_forward(
             v,
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -77,7 +77,7 @@ def benchmark_triton_dense_forward_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -105,7 +105,7 @@ def benchmark_triton_sparse_forward(
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -142,7 +142,7 @@ def benchmark_triton_sparse_forward_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -182,7 +182,7 @@ def benchmark_triton_gated_forward(
             gate_threshold=gate_threshold,
             is_logsigmoid_gate=False,
             is_adapt_gate=False,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 
@@ -235,7 +235,7 @@ def benchmark_triton_gated_forward_quant(
             key_scale=k_scale,
             value_scale=v_scale,
             is_quant=True,
-            is_autotune=False,
+            is_autotune=True,
             skip_checks=True,
         )
 

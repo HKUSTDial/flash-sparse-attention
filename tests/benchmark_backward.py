@@ -43,7 +43,7 @@ def benchmark_triton_dense_backward(
         v,
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
-        is_autotune=False,
+        is_autotune=True,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -79,7 +79,7 @@ def benchmark_triton_dense_backward_quant(
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
         is_quant=True,
-        is_autotune=False,
+        is_autotune=True,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -116,7 +116,7 @@ def benchmark_triton_sparse_backward(
         is_causal=cfg.is_causal,
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
-        is_autotune=False,
+        is_autotune=True,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -154,7 +154,7 @@ def benchmark_triton_sparse_backward_quant(
         softmax_scale=softmax_scale,
         softmax_threshold=softmax_threshold,
         is_quant=True,
-        is_autotune=False,
+        is_autotune=True,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -203,7 +203,7 @@ def benchmark_triton_gated_backward(
         gate_threshold=gate_threshold,
         is_logsigmoid_gate=False,
         is_adapt_gate=False,
-        is_autotune=False,
+        is_autotune=True,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
@@ -255,7 +255,7 @@ def benchmark_triton_gated_backward_quant(
         is_logsigmoid_gate=False,
         is_adapt_gate=False,
         is_quant=True,
-        is_autotune=False,
+        is_autotune=True,
         skip_checks=True,
     )
     dout = torch.randn_like(out)
