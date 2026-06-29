@@ -1397,8 +1397,8 @@ class AttnFwdPointerScheduler:
         stride_ls=0,
         stride_pb=0,
         IS_SPLIT_KV: tl.constexpr = False,
-        IS_GATED: tl.constexpr = False,
         IS_PAGED_KV: tl.constexpr = False,
+        IS_GATED: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
     ):
@@ -2356,8 +2356,8 @@ class AttnDecPointerScheduler:
         stride_pb=0,
         stride_gb=0,
         stride_gn=0,
-        IS_GATED: tl.constexpr = False,
         IS_PAGED_KV: tl.constexpr = False,
+        IS_GATED: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
     ):
