@@ -64,6 +64,8 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         is_split_qo: bool = False,
         pack_gqa: bool = False,
         num_splits: Optional[int] = None,
+        page_table: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = True,
@@ -102,6 +104,8 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
             num_splits=num_splits,
+            page_table=page_table,
+            seqused_k=seqused_k,
             out=out,
             lse=lse,
             is_autotune=is_autotune,
@@ -337,6 +341,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         is_split_qo: bool = False,
         pack_gqa: bool = False,
         num_splits: Optional[int] = None,
+        page_table: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = True,
@@ -376,6 +382,8 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             is_split_kv=is_split_kv,
             pack_gqa=pack_gqa,
             num_splits=num_splits,
+            page_table=page_table,
+            seqused_k=seqused_k,
             out=out,
             lse=lse,
             is_autotune=is_autotune,
@@ -622,6 +630,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         is_split_qo: bool = False,
         pack_gqa: bool = False,
         num_splits: Optional[int] = None,
+        page_table: Optional[torch.Tensor] = None,
+        seqused_k: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
         lse: Optional[torch.Tensor] = None,
         is_autotune: bool = True,
@@ -671,6 +681,8 @@ class FlashGatedAttnFunc(torch.autograd.Function):
                 is_split_kv=is_split_kv,
                 pack_gqa=pack_gqa,
                 num_splits=num_splits,
+                page_table=page_table,
+                seqused_k=seqused_k,
                 out=out,
                 lse=lse,
                 is_autotune=is_autotune,
@@ -982,6 +994,8 @@ def flash_dense_attn_func(
     is_split_qo: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -1007,6 +1021,8 @@ def flash_dense_attn_func(
     :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param num_splits: Optional split count for split-KV and split-QO. If provided, enables split-KV and split-QO, if omitted with split-KV and split-QO enabled, a heuristic is used.
+    :param page_table: Optional paged KV table with shape [batch_size, max_pages_per_seq]. If provided, key/value must have shape [num_pages, page_size, num_kv_heads, head_dim].
+    :param seqused_k: Optional tensor of shape [batch_size] indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: If True, use the cached launch config when present, on cache miss, run autotune and store the selected config. If False, tile_mn is used directly.
@@ -1032,6 +1048,8 @@ def flash_dense_attn_func(
         is_split_qo,
         pack_gqa,
         num_splits,
+        page_table,
+        seqused_k,
         out,
         lse,
         is_autotune,
@@ -1052,8 +1070,10 @@ def flash_dense_attn_with_kvcache_func(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    gather_kv_indices: Optional[torch.Tensor] = None,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -1074,8 +1094,10 @@ def flash_dense_attn_with_kvcache_func(
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
-    :param gather_kv_indices: Optional TopK gather indices with shape [batch_size, topk_seqlen_k]. Each non-negative entry is an original KV sequence position to gather for decode, negative entries are masked out.
     :param num_splits: Optional split count for decode. If omitted, gather decode uses 1 split and regular decode uses a heuristic.
+    :param page_table: Optional paged KV table with shape [batch_size, max_pages_per_seq]. If provided, key/value must have shape [num_pages, page_size, num_kv_heads, head_dim].
+    :param gather_kv_indices: Optional TopK gather indices with shape [batch_size, topk_seqlen_k]. Each non-negative entry is an original KV sequence position to gather for decode, negative entries are masked out.
+    :param seqused_k: Optional tensor of shape [batch_size] indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
     :param is_autotune: If True, use the cached launch config when present, on cache miss, run autotune and store the selected config. If False, tile_mn is used directly.
@@ -1105,8 +1127,10 @@ def flash_dense_attn_with_kvcache_func(
         window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        gather_kv_indices=gather_kv_indices,
         num_splits=num_splits,
+        page_table=page_table,
+        gather_kv_indices=gather_kv_indices,
+        seqused_k=seqused_k,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1316,6 +1340,8 @@ def flash_sparse_attn_func(
     is_split_qo: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -1342,6 +1368,8 @@ def flash_sparse_attn_func(
     :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param num_splits: Optional split count for split-KV and split-QO. If provided, enables split-KV and split-QO, if omitted with split-KV and split-QO enabled, a heuristic is used.
+    :param page_table: Optional paged KV table with shape [batch_size, max_pages_per_seq]. If provided, key/value must have shape [num_pages, page_size, num_kv_heads, head_dim].
+    :param seqused_k: Optional tensor of shape [batch_size] indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: If True, use the cached launch config when present, on cache miss, run autotune and store the selected config. If False, tile_mn is used directly.
@@ -1368,6 +1396,8 @@ def flash_sparse_attn_func(
         is_split_qo,
         pack_gqa,
         num_splits,
+        page_table,
+        seqused_k,
         out,
         lse,
         is_autotune,
@@ -1389,8 +1419,10 @@ def flash_sparse_attn_with_kvcache_func(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    gather_kv_indices: Optional[torch.Tensor] = None,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -1412,8 +1444,10 @@ def flash_sparse_attn_with_kvcache_func(
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
-    :param gather_kv_indices: Optional TopK gather indices with shape [batch_size, topk_seqlen_k]. Each non-negative entry is an original KV sequence position to gather for decode, negative entries are masked out.
     :param num_splits: Optional split count for decode. If omitted, gather decode uses 1 split and regular decode uses a heuristic.
+    :param page_table: Optional paged KV table with shape [batch_size, max_pages_per_seq]. If provided, key/value must be shaped [num_pages, page_size, num_kv_heads, head_dim].
+    :param gather_kv_indices: Optional TopK gather indices with shape [batch_size, topk_seqlen_k]. Each non-negative entry is an original KV sequence position to gather for decode, negative entries are masked out.
+    :param seqused_k: Optional tensor of shape [batch_size] indicating the actual sequence lengths for keys/values.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
     :param is_autotune: If True, use the cached launch config when present, on cache miss, run autotune and store the selected config. If False, tile_mn is used directly.
@@ -1444,8 +1478,10 @@ def flash_sparse_attn_with_kvcache_func(
         window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        gather_kv_indices=gather_kv_indices,
         num_splits=num_splits,
+        page_table=page_table,
+        gather_kv_indices=gather_kv_indices,
+        seqused_k=seqused_k,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
@@ -1666,6 +1702,8 @@ def flash_gated_attn_func(
     is_split_qo: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -1697,6 +1735,8 @@ def flash_gated_attn_func(
     :param is_split_qo: Whether to enable split-QO for backward occupancy.
     :param pack_gqa: Whether to pack grouped-query attention.
     :param num_splits: Optional split count for split-KV and split-QO. If provided, enables split-KV and split-QO, if omitted with split-KV and split-QO enabled, a heuristic is used.
+    :param page_table: Optional paged KV table with shape [batch_size, max_pages_per_seq]. If provided, key/value must have shape [num_pages, page_size, num_kv_heads, head_dim], delta must have shape [num_pages, page_size, num_kv_heads].
+    :param seqused_k: Optional tensor of shape [batch_size] indicating the actual sequence lengths for keys/values/delta.
     :param out: Optional preallocated output tensor with shape [batch_size, seqlen_q, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads, seqlen_q].
     :param is_autotune: If True, use the cached launch config when present, on cache miss, run autotune and store the selected config. If False, tile_mn is used directly.
@@ -1728,6 +1768,8 @@ def flash_gated_attn_func(
         is_split_qo,
         pack_gqa,
         num_splits,
+        page_table,
+        seqused_k,
         out,
         lse,
         is_autotune,
@@ -1753,8 +1795,10 @@ def flash_gated_attn_with_kvcache_func(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    gather_kv_indices: Optional[torch.Tensor] = None,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -1780,8 +1824,10 @@ def flash_gated_attn_with_kvcache_func(
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
-    :param gather_kv_indices: Optional TopK gather indices with shape [batch_size, topk_seqlen_k]. Each non-negative entry is an original KV sequence position to gather for decode, negative entries are masked out.
     :param num_splits: Optional split count for decode. If omitted, gather decode uses 1 split and regular decode uses a heuristic.
+    :param page_table: Optional paged KV table with shape [batch_size, max_pages_per_seq]. If provided, key/value must have shape [num_pages, page_size, num_kv_heads, head_dim], delta must have shape [num_pages, page_size, num_kv_heads].
+    :param gather_kv_indices: Optional TopK gather indices with shape [batch_size, topk_seqlen_k]. Each non-negative entry is an original KV sequence position to gather for decode, negative entries are masked out.
+    :param seqused_k: Optional tensor of shape [batch_size] indicating the actual sequence lengths for keys/values/delta.
     :param out: Optional preallocated output tensor with shape [batch_size, num_heads, head_dim].
     :param lse: Optional preallocated logsumexp tensor with shape [batch_size, num_heads].
     :param is_autotune: If True, use the cached launch config when present, on cache miss, run autotune and store the selected config. If False, tile_mn is used directly.
@@ -1819,8 +1865,10 @@ def flash_gated_attn_with_kvcache_func(
         window_sizes=window_sizes,
         is_local=is_local,
         is_quant=is_quant,
-        gather_kv_indices=gather_kv_indices,
         num_splits=num_splits,
+        page_table=page_table,
+        gather_kv_indices=gather_kv_indices,
+        seqused_k=seqused_k,
         out=out,
         lse=lse,
         is_autotune=is_autotune,
