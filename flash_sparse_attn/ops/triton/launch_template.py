@@ -69,6 +69,7 @@ class LaunchConfigCache:
                     entry["seqlen_q_bucket"],
                     entry["seqlen_k_bucket"],
                     entry["tile_k"],
+                    entry.get("tile_n", None),
                     entry["is_local"],
                     entry["qhead_per_kvhead"],
                     entry.get("is_causal", False),
@@ -83,8 +84,8 @@ class LaunchConfigCache:
     def _write_unlocked(self, device_name: str, cache: dict[tuple, tuple]) -> None:
         json_path = self._json_path(device_name)
         data = []
-        for (k_name, sq, sk, tk, local, qpk, causal, pgqa, quant), config in sorted(
-            cache.items(), key=lambda x: x[0]
+        for (k_name, sq, sk, tk, tn, local, qpk, causal, pgqa, quant), config in sorted(
+            cache.items(), key=lambda x: repr(x[0])
         ):
             data.append(
                 {
@@ -92,6 +93,7 @@ class LaunchConfigCache:
                     "seqlen_q_bucket": sq,
                     "seqlen_k_bucket": sk,
                     "tile_k": tk,
+                    "tile_n": tn,
                     "is_local": local,
                     "qhead_per_kvhead": qpk,
                     "is_causal": causal,
@@ -130,6 +132,7 @@ class LaunchConfigCache:
         seqlen_q: int,
         seqlen_k: int,
         tile_k: int,
+        tile_n: int | None = None,
         is_local: bool = False,
         qhead_per_kvhead: int = 1,
         is_causal: bool = False,
@@ -144,6 +147,7 @@ class LaunchConfigCache:
         :param seqlen_q: Sequence length of queries
         :param seqlen_k: Sequence length of keys
         :param tile_k: Tile size along the K dimension
+        :param tile_n: Optional required tile size along the N dimension
         :param is_local: Whether local mask is applied
         :param qhead_per_kvhead: Ratio of query heads to key/value heads
         :param is_causal: Whether causal mask is applied
@@ -159,13 +163,17 @@ class LaunchConfigCache:
             _seqlen_bucket(seqlen_q),
             _seqlen_bucket(seqlen_k),
             tile_k,
+            tile_n,
             is_local,
             qhead_per_kvhead,
             is_causal,
             pack_gqa,
             is_quant,
         )
-        return cache.get(key)
+        config = cache.get(key)
+        if config is not None and tile_n is not None and config[1] != tile_n:
+            return None
+        return config
 
     def put(
         self,
@@ -174,6 +182,7 @@ class LaunchConfigCache:
         seqlen_q: int,
         seqlen_k: int,
         tile_k: int,
+        tile_n: int | None = None,
         is_local: bool = False,
         qhead_per_kvhead: int = 1,
         is_causal: bool = False,
@@ -190,6 +199,7 @@ class LaunchConfigCache:
         :param seqlen_q: Sequence length of queries
         :param seqlen_k: Sequence length of keys
         :param tile_k: Tile size along the K dimension
+        :param tile_n: Optional tile size along the N dimension
         :param is_local: Whether local mask is applied
         :param qhead_per_kvhead: Ratio of query heads to key/value heads
         :param is_causal: Whether causal mask is applied
@@ -203,12 +213,15 @@ class LaunchConfigCache:
             _seqlen_bucket(seqlen_q),
             _seqlen_bucket(seqlen_k),
             tile_k,
+            tile_n,
             is_local,
             qhead_per_kvhead,
             is_causal,
             pack_gqa,
             is_quant,
         )
+        if tile_n is not None and config[1] != tile_n:
+            return
         # Skip disk write if memory cache already has the same config
         mem = self._memory.get(device_name)
         if mem is not None and mem.get(key) == config:
@@ -246,6 +259,7 @@ def load_launch_config(
     seqlen_q: int,
     seqlen_k: int,
     tile_k: int,
+    tile_n: int | None = None,
     is_local: bool = False,
     qhead_per_kvhead: int = 1,
     is_causal: bool = False,
@@ -260,6 +274,7 @@ def load_launch_config(
     :param seqlen_q: Sequence length of queries
     :param seqlen_k: Sequence length of keys
     :param tile_k: Tile size along the K dimension
+    :param tile_n: Optional required tile size along the N dimension
     :param is_local: Whether local mask is applied
     :param qhead_per_kvhead: Ratio of query heads to key/value heads
     :param is_causal: Whether causal mask is applied
@@ -274,6 +289,7 @@ def load_launch_config(
         seqlen_q,
         seqlen_k,
         tile_k,
+        tile_n,
         is_local,
         qhead_per_kvhead,
         is_causal,
@@ -288,6 +304,7 @@ def store_launch_config(
     seqlen_q: int,
     seqlen_k: int,
     tile_k: int,
+    tile_n: int | None = None,
     *,
     config: tuple[int, int, int, int, int],
     is_local: bool = False,
@@ -304,6 +321,7 @@ def store_launch_config(
     :param seqlen_q: Sequence length of queries
     :param seqlen_k: Sequence length of keys
     :param tile_k: Tile size along the K dimension
+    :param tile_n: Optional tile size along the N dimension
     :param config: Tuple of (TILE_M, TILE_N, num_warps, num_stages, num_ctas)
     :param is_local: Whether local mask is applied
     :param qhead_per_kvhead: Ratio of query heads to key/value heads
@@ -317,6 +335,7 @@ def store_launch_config(
         seqlen_q,
         seqlen_k,
         tile_k,
+        tile_n,
         is_local,
         qhead_per_kvhead,
         is_causal,
