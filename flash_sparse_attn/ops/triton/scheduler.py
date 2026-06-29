@@ -355,6 +355,10 @@ class AttnFwdConfig:
         return self.m_block * self.TILE_M + tl.arange(0, self.TILE_M)
 
     @triton.jit
+    def get_offs_n(self, n_block):
+        return n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
     def get_offs_k(self):
         return tl.arange(0, self.TILE_K)
 
@@ -571,6 +575,18 @@ class AttnBwdConfig:
             IS_ADAPT_GATE=self.IS_ADAPT_GATE,
         )
 
+    @triton.jit
+    def get_offs_m(self, m_block):
+        return m_block * self.TILE_M + tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self):
+        return self.n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def get_offs_k(self):
+        return tl.arange(0, self.TILE_K)
+
 
 @aggregate
 class AttnDecConfig:
@@ -760,6 +776,18 @@ class AttnDecConfig:
             IS_GATHER_KV,
             IS_LOGSIGMOID_GATE,
         )
+
+    @triton.jit
+    def get_offs_m(self):
+        return tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self, n_block):
+        return n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def get_offs_k(self):
+        return tl.arange(0, self.TILE_K)
 
 
 @aggregate
@@ -1550,21 +1578,11 @@ class AttnFwdPointerScheduler:
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
         else:
-            return tl.make_tensor_descriptor(
-                self.a_base,
-                shape=[config.actual_seqlen_q],
-                strides=[1],
-                block_shape=[config.TILE_M],
-            )
+            return self.a_base + config.get_offs_m()
 
     @triton.jit
     def make_d_ptrs(self, config: AttnFwdConfig):
-        return tl.make_tensor_descriptor(
-            self.d_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.d_base
 
     @triton.jit
     def make_out_ptrs(self, config: AttnFwdConfig):
@@ -1601,12 +1619,7 @@ class AttnFwdPointerScheduler:
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
         else:
-            return tl.make_tensor_descriptor(
-                self.lse_base,
-                shape=[config.actual_seqlen_q],
-                strides=[1],
-                block_shape=[config.TILE_M],
-            )
+            return self.lse_base + config.get_offs_m()
 
     @triton.jit
     def load_q(self, config: AttnFwdConfig, q_ptrs):
@@ -1661,8 +1674,8 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def load_a(self, config: AttnFwdConfig, a_ptrs):
+        offs_m = config.get_offs_m()
         if config.PACK_GQA:
-            offs_m = config.get_offs_m()
             return tl.load(
                 a_ptrs,
                 mask=(offs_m // config.QHEAD_PER_KVHEAD_PACKGQA)
@@ -1670,7 +1683,11 @@ class AttnFwdPointerScheduler:
                 other=0.0,
             ).to(tl.float32)
         else:
-            return a_ptrs.load([config.m_block * config.TILE_M]).to(tl.float32)
+            return tl.load(
+                a_ptrs,
+                mask=offs_m < config.actual_seqlen_q,
+                other=0.0,
+            ).to(tl.float32)
 
     @triton.jit
     def load_d(self, config: AttnFwdConfig, d_ptrs, n_block):
@@ -1685,7 +1702,12 @@ class AttnFwdPointerScheduler:
                 config.TILE_N,
             )
         else:
-            return d_ptrs.load([n_block * config.TILE_N]).to(tl.float32)
+            offs_n = config.get_offs_n(n_block)
+            return tl.load(
+                d_ptrs + offs_n,
+                mask=offs_n < config.actual_seqlen_k,
+                other=0.0,
+            ).to(tl.float32)
 
     @triton.jit
     def store_out(
@@ -1713,8 +1735,8 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def store_lse(self, config: AttnFwdConfig, lse_ptrs, lse_tile):
+        offs_m = config.get_offs_m()
         if config.PACK_GQA:
-            offs_m = config.get_offs_m()
             tl.store(
                 lse_ptrs,
                 lse_tile,
@@ -1724,7 +1746,12 @@ class AttnFwdPointerScheduler:
                 cache_modifier=".wb",
             )
         else:
-            lse_ptrs.store([config.m_block * config.TILE_M], lse_tile)
+            tl.store(
+                lse_ptrs,
+                lse_tile,
+                mask=offs_m < config.actual_seqlen_q,
+                cache_modifier=".wb",
+            )
 
     @triton.jit
     def store_empty(
@@ -2069,21 +2096,11 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_a_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.a_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.a_base
 
     @triton.jit
     def make_d_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.d_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.d_base + config.get_offs_n()
 
     @triton.jit
     def make_do_ptrs(self, config: AttnBwdConfig):
@@ -2096,21 +2113,11 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_lse_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.lse_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.lse_base
 
     @triton.jit
     def make_dpsum_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.dpsum_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.dpsum_base
 
     @triton.jit
     def make_dq_accum_ptrs(self, config: AttnBwdConfig):
@@ -2141,21 +2148,11 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_da_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.da_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.da_base
 
     @triton.jit
     def make_dd_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.dd_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.dd_base + config.get_offs_n()
 
     @triton.jit
     def load_q(self, config: AttnBwdConfig, q_ptrs, m_block):
@@ -2177,11 +2174,21 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def load_a(self, config: AttnBwdConfig, a_ptrs, m_block):
-        return a_ptrs.load([m_block * config.TILE_M]).to(tl.float32)
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            a_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        ).to(tl.float32)
 
     @triton.jit
     def load_d(self, config: AttnBwdConfig, d_ptrs):
-        return d_ptrs.load([config.n_block * config.TILE_N]).to(tl.float32)
+        offs_n = config.get_offs_n()
+        return tl.load(
+            d_ptrs,
+            mask=offs_n < config.actual_seqlen_k,
+            other=0.0,
+        ).to(tl.float32)
 
     @triton.jit
     def load_do(self, config: AttnBwdConfig, do_ptrs, m_block):
@@ -2189,11 +2196,21 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def load_lse(self, config: AttnBwdConfig, lse_ptrs, m_block):
-        return lse_ptrs.load([m_block * config.TILE_M])
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            lse_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        )
 
     @triton.jit
     def load_dpsum(self, config: AttnBwdConfig, dpsum_ptrs, m_block):
-        return dpsum_ptrs.load([m_block * config.TILE_M])
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            dpsum_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        )
 
     @triton.jit
     def store_dq(self, config: AttnBwdConfig, dq_ptrs, m_block, dq_tile):
@@ -2215,14 +2232,28 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def store_da(self, config: AttnBwdConfig, da_ptrs, m_block, da_tile):
-        da_ptrs.atomic_add([m_block * config.TILE_M], da_tile)
+        offs_m = config.get_offs_m(m_block)
+        tl.atomic_add(
+            da_ptrs + offs_m,
+            da_tile,
+            mask=offs_m < config.actual_seqlen_q,
+        )
 
     @triton.jit
     def store_dd(self, config: AttnBwdConfig, dd_ptrs, dd_tile):
+        offs_n = config.get_offs_n()
         if config.QHEAD_PER_KVHEAD > 1:
-            dd_ptrs.atomic_add([config.n_block * config.TILE_N], dd_tile)
+            tl.atomic_add(
+                dd_ptrs,
+                dd_tile,
+                mask=offs_n < config.actual_seqlen_k,
+            )
         else:
-            dd_ptrs.store([config.n_block * config.TILE_N], dd_tile)
+            tl.store(
+                dd_ptrs,
+                dd_tile,
+                mask=offs_n < config.actual_seqlen_k,
+            )
 
 
 @aggregate
@@ -2480,21 +2511,11 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def make_a_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.a_base,
-            shape=[config.QHEAD_PER_KVHEAD_PACKGQA],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.a_base + config.get_offs_m()
 
     @triton.jit
     def make_d_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.d_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.d_base
 
     @triton.jit
     def make_out_ptrs(self, config: AttnDecConfig):
@@ -2507,12 +2528,7 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def make_lse_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.lse_base,
-            shape=[config.QHEAD_PER_KVHEAD_PACKGQA],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.lse_base + config.get_offs_m()
 
     @triton.jit
     def load_q(self, config: AttnDecConfig, q_ptrs):
@@ -2570,7 +2586,12 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def load_a(self, config: AttnDecConfig, a_ptrs):
-        return a_ptrs.load([0]).to(tl.float32)
+        offs_m = config.get_offs_m()
+        return tl.load(
+            a_ptrs,
+            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
+            other=0.0,
+        ).to(tl.float32)
 
     @triton.jit
     def load_d(self, config: AttnDecConfig, d_ptrs, n_block, topk_indices=None):
@@ -2590,7 +2611,12 @@ class AttnDecPointerScheduler:
                 topk_indices,
             )
         else:
-            return d_ptrs.load([n_block * config.TILE_N]).to(tl.float32)
+            offs_n = config.get_offs_n(n_block)
+            return tl.load(
+                d_ptrs + offs_n,
+                mask=offs_n < config.actual_seqlen_k,
+                other=0.0,
+            ).to(tl.float32)
 
     @triton.jit
     def load_topk_indices(
@@ -2611,7 +2637,13 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def store_lse(self, config: AttnDecConfig, lse_ptrs, lse_tile):
-        lse_ptrs.store([0], lse_tile)
+        offs_m = config.get_offs_m()
+        tl.store(
+            lse_ptrs,
+            lse_tile,
+            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
+            cache_modifier=".wb",
+        )
 
     @triton.jit
     def store_empty(self, config: AttnDecConfig, out_ptrs, lse_ptrs, Out):
