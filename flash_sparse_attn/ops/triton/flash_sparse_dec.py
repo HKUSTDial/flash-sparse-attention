@@ -44,7 +44,6 @@ def _dec_inner_sparse_kernel(
     MASK_LOCAL: tl.constexpr,
     MASK_SINK: tl.constexpr,
     CHECK_INF: tl.constexpr,
-    HAS_GATHER_KV: tl.constexpr,
 ):
     next_topk_indices = topk_indices
 
@@ -53,20 +52,14 @@ def _dec_inner_sparse_kernel(
 
     # Prefetch next key tile
     if n_block > n_block_min:
-        if HAS_GATHER_KV:
+        if config.IS_GATHER_KV:
             # Load next topk indices
             next_topk_indices = ptrs_sched.load_topk_indices(config, n_block - 1)
 
         # Load next key tile
-        k_tile = ptrs_sched.load_k(
-            config,
-            k_ptrs,
-            n_block - 1,
-            next_topk_indices,
-            HAS_GATHER_KV=HAS_GATHER_KV,
-        )
+        k_tile = ptrs_sched.load_k(config, k_ptrs, n_block - 1, next_topk_indices)
 
-    if HAS_GATHER_KV:
+    if config.IS_GATHER_KV:
         # Apply mask to attention scores
         acc_s = ptrs_sched.apply_gather_mask(
             config,
@@ -94,9 +87,7 @@ def _dec_inner_sparse_kernel(
 
     if not skip_softmax:
         # Load value tile
-        v_tile = ptrs_sched.load_v(
-            config, v_ptrs, n_block, topk_indices, HAS_GATHER_KV=HAS_GATHER_KV
-        )
+        v_tile = ptrs_sched.load_v(config, v_ptrs, n_block, topk_indices)
 
         # Rescale output accumulator
         acc_o = softmax_sched.rescale_o(
@@ -123,6 +114,7 @@ def _dec_sparse_kernel(
     value_scale,
     softmax_threshold,
     window_sizes,
+    page_table,
     gather_kv_indices,
     stride_qb,
     stride_qh,
@@ -142,6 +134,7 @@ def _dec_sparse_kernel(
     stride_lm,
     stride_ls,
     stride_wh,
+    stride_pb,
     stride_gb,
     stride_gn,
     cu_seqlens_q,
@@ -161,7 +154,8 @@ def _dec_sparse_kernel(
     topk_seqlen_k: tl.constexpr,
     IS_LOCAL: tl.constexpr,
     IS_QUANT: tl.constexpr,
-    HAS_GATHER_KV: tl.constexpr,
+    IS_PAGED_KV: tl.constexpr,
+    IS_GATHER_KV: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
@@ -208,6 +202,8 @@ def _dec_sparse_kernel(
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_QUANT=IS_QUANT,
+        IS_PAGED_KV=IS_PAGED_KV,
+        IS_GATHER_KV=IS_GATHER_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
         HAS_SEQUSED_Q=HAS_SEQUSED_Q,
@@ -220,6 +216,7 @@ def _dec_sparse_kernel(
         Q=Q,
         K=K,
         V=V,
+        PageTable=page_table,
         GatherKVIndices=gather_kv_indices,
         Out=Out,
         Lse=Lse,
@@ -244,9 +241,10 @@ def _dec_sparse_kernel(
         stride_lh=stride_lh,
         stride_lm=stride_lm,
         stride_ls=stride_ls,
+        stride_pb=stride_pb,
         stride_gb=stride_gb,
         stride_gn=stride_gn,
-        HAS_GATHER_KV=HAS_GATHER_KV,
+        IS_PAGED_KV=IS_PAGED_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
@@ -258,7 +256,7 @@ def _dec_sparse_kernel(
         num_splits=num_splits,
         topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=IS_LOCAL,
-        HAS_GATHER_KV=HAS_GATHER_KV,
+        IS_GATHER_KV=IS_GATHER_KV,
     )
 
     # Create mask scheduler
@@ -291,17 +289,13 @@ def _dec_sparse_kernel(
     # Load query tile
     q_tile = ptrs_sched.load_q(config, q_ptrs)
 
-    if HAS_GATHER_KV:
+    if IS_GATHER_KV:
         # Load topk indices
         topk_indices = ptrs_sched.load_topk_indices(config, block_sched.n_block_max - 1)
 
     # Load key tile
     k_tile = ptrs_sched.load_k(
-        config,
-        k_ptrs,
-        block_sched.n_block_max - 1,
-        topk_indices,
-        HAS_GATHER_KV=HAS_GATHER_KV,
+        config, k_ptrs, block_sched.n_block_max - 1, topk_indices
     )
 
     # Process n_blocks with seqlen masking
@@ -327,14 +321,13 @@ def _dec_sparse_kernel(
             MASK_LOCAL=True if IS_LOCAL else False,
             MASK_SINK=False,
             CHECK_INF=True,
-            HAS_GATHER_KV=HAS_GATHER_KV,
         )
 
     # Process n_blocks without masking
     if (
-        not IS_LOCAL or HAS_GATHER_KV
+        not IS_LOCAL or IS_GATHER_KV
     ) and block_sched.n_block_max_no_mask > block_sched.n_block_min:
-        if HAS_GATHER_KV:
+        if IS_GATHER_KV:
             # Load topk indices
             topk_indices = ptrs_sched.load_topk_indices(
                 config,
@@ -343,11 +336,7 @@ def _dec_sparse_kernel(
 
         # Load key tile
         k_tile = ptrs_sched.load_k(
-            config,
-            k_ptrs,
-            block_sched.n_block_max_no_mask - 1,
-            topk_indices,
-            HAS_GATHER_KV=HAS_GATHER_KV,
+            config, k_ptrs, block_sched.n_block_max_no_mask - 1, topk_indices
         )
 
         for n_block in tl.range(
@@ -371,11 +360,10 @@ def _dec_sparse_kernel(
                 IS_MASK=False,
                 MASK_LOCAL=False,
                 MASK_SINK=False,
-                CHECK_INF=True if HAS_GATHER_KV else False,
-                HAS_GATHER_KV=HAS_GATHER_KV,
+                CHECK_INF=True if IS_GATHER_KV else False,
             )
 
-    if IS_LOCAL and not HAS_GATHER_KV:
+    if IS_LOCAL and not IS_GATHER_KV:
         # Process n_blocks with local right masking
         if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
             # Load key tile
@@ -408,7 +396,6 @@ def _dec_sparse_kernel(
                         MASK_LOCAL=True,
                         MASK_SINK=False,
                         CHECK_INF=True,
-                        HAS_GATHER_KV=False,
                     )
                 )
 
@@ -447,7 +434,6 @@ def _dec_sparse_kernel(
                         MASK_LOCAL=False,
                         MASK_SINK=False,
                         CHECK_INF=False,
-                        HAS_GATHER_KV=False,
                     )
                 )
 
@@ -483,7 +469,6 @@ def _dec_sparse_kernel(
                         MASK_LOCAL=True,
                         MASK_SINK=False,
                         CHECK_INF=True,
-                        HAS_GATHER_KV=False,
                     )
                 )
 
@@ -517,7 +502,6 @@ def _dec_sparse_kernel(
                         MASK_LOCAL=True,
                         MASK_SINK=True,
                         CHECK_INF=True,
-                        HAS_GATHER_KV=False,
                     )
                 )
 
@@ -544,16 +528,18 @@ def _dec_sparse_kernel(
 _dec_sparse_kernel = cache_utils.wrap_kernel(_dec_sparse_kernel)
 
 
-_dec_sparse_kernel_autotuned = None
+_dec_sparse_kernel_autotuned = {}
 
 
-def _get_autotuned_kernel():
+def _get_autotuned_kernel(tile_n=None):
     global _dec_sparse_kernel_autotuned
-    if _dec_sparse_kernel_autotuned is None:
+    if tile_n not in _dec_sparse_kernel_autotuned:
         jit_kernel = _dec_sparse_kernel._kernel
-        autotuned = autotuner.make_dec_sparse_autotuned_kernel(jit_kernel)
-        _dec_sparse_kernel_autotuned = autotuner.AutotunedKernel(autotuned)
-    return _dec_sparse_kernel_autotuned
+        autotuned = autotuner.make_dec_sparse_autotuned_kernel(
+            jit_kernel, tile_n=tile_n
+        )
+        _dec_sparse_kernel_autotuned[tile_n] = autotuner.AutotunedKernel(autotuned)
+    return _dec_sparse_kernel_autotuned[tile_n]
 
 
 def _flash_sparse_attn_decode(
@@ -568,8 +554,10 @@ def _flash_sparse_attn_decode(
     window_sizes: Optional[torch.Tensor] = None,
     is_local: bool = False,
     is_quant: bool = False,
-    gather_kv_indices: Optional[torch.Tensor] = None,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -579,10 +567,15 @@ def _flash_sparse_attn_decode(
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
-    topk_seqlen_k = (
-        gather_kv_indices.shape[-1] if gather_kv_indices is not None else seqlen_k
-    )
+    if page_table is not None:
+        _, page_size, num_heads_kv, _ = key.shape
+        seqlen_k = page_table.shape[1] * page_size
+    else:
+        page_size = None
+        _, seqlen_k, num_heads_kv, _ = key.shape
+    is_paged_kv = page_table is not None
+    is_gather_kv = gather_kv_indices is not None and not is_paged_kv
+    topk_seqlen_k = gather_kv_indices.shape[-1] if is_gather_kv else seqlen_k
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
@@ -602,11 +595,15 @@ def _flash_sparse_attn_decode(
             key_scale=key_scale,
             value_scale=value_scale,
             window_sizes=window_sizes,
+            page_table=page_table,
+            gather_kv_indices=gather_kv_indices,
             cu_seqlens_k=None,
-            seqused_k=None,
+            seqused_k=seqused_k,
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            page_size=page_size,
+            tile_mn=tile_mn,
             is_quant=is_quant,
             device=device,
         )
@@ -616,15 +613,23 @@ def _flash_sparse_attn_decode(
     launch_config = None
     if not is_autotune:
         kernel = _dec_sparse_kernel
-        TILE_M, TILE_N = tile_mn if tile_mn is not None else (16, 64)
+        TILE_M, TILE_N = (
+            tile_mn
+            if tile_mn is not None
+            else (
+                16,
+                page_size if page_table is not None else 64,
+            )
+        )
         num_warps, num_stages, num_ctas = 4, 1, 1
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
             kernel_name="dec_sparse",
             seqlen_q=1,
-            seqlen_k=seqlen_k if gather_kv_indices is None else topk_seqlen_k,
+            seqlen_k=topk_seqlen_k if is_gather_kv else seqlen_k,
             tile_k=TILE_K,
+            tile_n=page_size if page_table is not None else None,
             is_local=is_local,
             qhead_per_kvhead=qhead_per_kvhead,
             is_quant=is_quant,
@@ -633,12 +638,14 @@ def _flash_sparse_attn_decode(
             kernel = _dec_sparse_kernel
             TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
         else:
-            kernel = _get_autotuned_kernel()
+            kernel = _get_autotuned_kernel(
+                page_size if page_table is not None else None
+            )
             TILE_M = max(triton.next_power_of_2(qhead_per_kvhead), 16)
-            TILE_N = 128
+            TILE_N = page_size if page_table is not None else 128
             num_warps = num_stages = num_ctas = None
 
-    if num_splits is None and gather_kv_indices is not None:
+    if num_splits is None and is_gather_kv:
         num_splits = 1
     elif num_splits is None:
         num_splits = utils.num_splits_heuristic(
@@ -697,6 +704,7 @@ def _flash_sparse_attn_decode(
         value_scale,
         softmax_threshold,
         window_sizes,
+        page_table,
         gather_kv_indices,
         query.stride(0),
         query.stride(-2),
@@ -716,12 +724,13 @@ def _flash_sparse_attn_decode(
         1,
         lse_partial.stride(0),
         window_sizes.stride(0) if window_sizes is not None else 0,
+        page_table.stride(0) if page_table is not None else 0,
         gather_kv_indices.stride(0) if gather_kv_indices is not None else 0,
         gather_kv_indices.stride(-1) if gather_kv_indices is not None else 0,
         None,
         None,
         None,
-        None,
+        seqused_k,
         num_splits,
         seqlen_q=1,
         seqlen_k=seqlen_k,
@@ -735,25 +744,29 @@ def _flash_sparse_attn_decode(
         topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=is_local,
         IS_QUANT=is_quant,
-        HAS_GATHER_KV=gather_kv_indices is not None,
+        IS_PAGED_KV=is_paged_kv,
+        IS_GATHER_KV=is_gather_kv,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
-        HAS_SEQUSED_K=False,
+        HAS_SEQUSED_K=seqused_k is not None,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
 
     if is_autotune and launch_config is None:
-        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        best = launch_template.extract_best_config(
+            _get_autotuned_kernel(page_size if page_table is not None else None)
+        )
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
                 kernel_name="dec_sparse",
                 seqlen_q=1,
-                seqlen_k=seqlen_k if gather_kv_indices is None else topk_seqlen_k,
+                seqlen_k=topk_seqlen_k if is_gather_kv else seqlen_k,
                 tile_k=TILE_K,
+                tile_n=page_size if page_table is not None else None,
                 config=best,
                 is_local=is_local,
                 qhead_per_kvhead=qhead_per_kvhead,
@@ -915,6 +928,7 @@ def _flash_sparse_attn_varlen_decode(
         value_scale,
         softmax_threshold,
         window_sizes,
+        None,
         gather_kv_indices,
         query.stride(0),
         query.stride(-2),
@@ -934,6 +948,7 @@ def _flash_sparse_attn_varlen_decode(
         1,
         lse_partial.stride(0),
         window_sizes.stride(0) if window_sizes is not None else 0,
+        0,
         gather_kv_indices.stride(0) if gather_kv_indices is not None else 0,
         gather_kv_indices.stride(-1) if gather_kv_indices is not None else 0,
         None,
@@ -953,7 +968,8 @@ def _flash_sparse_attn_varlen_decode(
         topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=is_local,
         IS_QUANT=is_quant,
-        HAS_GATHER_KV=gather_kv_indices is not None,
+        IS_PAGED_KV=False,
+        IS_GATHER_KV=gather_kv_indices is not None,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=False,

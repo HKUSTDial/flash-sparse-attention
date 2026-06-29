@@ -20,6 +20,8 @@ def assert_fwd_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    page_size: Optional[int] = None,
+    tile_mn: Optional[tuple] = None,
     is_quant: bool = False,
     device: torch.device = None,
 ):
@@ -42,6 +44,8 @@ def assert_fwd_inputs(
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param page_size: Optional paged KV page size
+    :param tile_mn: Optional launch tile size
     :param is_quant: Whether the inputs are quantized
     :param device: Device of the tensors
 
@@ -84,6 +88,12 @@ def assert_fwd_inputs(
     assert head_dim <= 512, (
         "head_dim must be less than or equal to 512 for efficient memory access"
     )
+    if page_size is not None:
+        assert page_size in [32, 64, 128, 256], (
+            "paged KV page_size must be one of 32, 64, 128, or 256"
+        )
+        if tile_mn is not None:
+            assert tile_mn[1] == page_size, "paged KV requires tile_mn[1] == page_size"
     if alpha is not None and delta is not None:
         assert device == alpha.device == delta.device, (
             "All inputs must be on the same device"
@@ -243,11 +253,15 @@ def assert_dec_inputs(
     window_sizes: Optional[torch.Tensor] = None,
     alpha: Optional[torch.Tensor] = None,
     delta: Optional[torch.Tensor] = None,
+    page_table: Optional[torch.Tensor] = None,
+    gather_kv_indices: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
+    page_size: Optional[int] = None,
+    tile_mn: Optional[tuple] = None,
     is_quant: bool = False,
     device: torch.device = None,
 ):
@@ -263,11 +277,15 @@ def assert_dec_inputs(
     :param window_sizes: Optional window sizes tensor for local attention
     :param alpha: Alpha tensor for gated attention
     :param delta: Delta tensor for gated attention
+    :param page_table: Optional paged KV table
+    :param gather_kv_indices: Optional TopK gather indices
     :param cu_seqlens_k: Cumulative sequence lengths for keys
     :param seqused_k: Sequence used for keys
     :param num_heads_q: Number of query heads
     :param num_heads_kv: Number of key/value heads
     :param head_dim: Head dimension
+    :param page_size: Optional paged KV page size
+    :param tile_mn: Optional launch tile size
     :param is_quant: Whether the inputs are quantized
     :param device: Device of the tensors
 
@@ -309,6 +327,15 @@ def assert_dec_inputs(
     )
     assert head_dim <= 512, (
         "head_dim must be less than or equal to 512 for efficient memory access"
+    )
+    if page_size is not None:
+        assert page_size in [32, 64, 128, 256], (
+            "paged KV page_size must be one of 32, 64, 128, or 256"
+        )
+        if tile_mn is not None:
+            assert tile_mn[1] == page_size, "paged KV requires tile_mn[1] == page_size"
+    assert page_table is None or gather_kv_indices is None, (
+        "decode does not support gather_kv_indices with paged KV"
     )
     if alpha is not None and delta is not None:
         assert device == alpha.device == delta.device, (
