@@ -101,6 +101,7 @@ def _fwd_sparse_kernel(
     key_scale,
     value_scale,
     window_sizes,
+    page_table,
     stride_qb,
     stride_qh,
     stride_qm,
@@ -118,6 +119,7 @@ def _fwd_sparse_kernel(
     stride_lh,
     stride_ls,
     stride_wh,
+    stride_pb,
     cu_seqlens_q,
     cu_seqlens_k,
     seqused_q,
@@ -138,6 +140,7 @@ def _fwd_sparse_kernel(
     IS_LOCAL: tl.constexpr,
     IS_QUANT: tl.constexpr,
     IS_SPLIT_KV: tl.constexpr,
+    IS_PAGED_KV: tl.constexpr,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_CU_SEQLENS_K: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
@@ -190,6 +193,7 @@ def _fwd_sparse_kernel(
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
         IS_QUANT=IS_QUANT,
+        IS_PAGED_KV=IS_PAGED_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
         HAS_SEQUSED_Q=HAS_SEQUSED_Q,
@@ -202,6 +206,7 @@ def _fwd_sparse_kernel(
         Q=Q,
         K=K,
         V=V,
+        PageTable=page_table,
         Out=Out,
         Lse=Lse,
         batch_idx=grid_idx.batch_idx,
@@ -224,7 +229,9 @@ def _fwd_sparse_kernel(
         stride_lb=stride_lb,
         stride_lh=stride_lh,
         stride_ls=stride_ls,
+        stride_pb=stride_pb,
         IS_SPLIT_KV=IS_SPLIT_KV,
+        IS_PAGED_KV=IS_PAGED_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
@@ -509,16 +516,18 @@ def _fwd_sparse_kernel(
 _fwd_sparse_kernel = cache_utils.wrap_kernel(_fwd_sparse_kernel)
 
 
-_fwd_sparse_kernel_autotuned = None
+_fwd_sparse_kernel_autotuned = {}
 
 
-def _get_autotuned_kernel():
+def _get_autotuned_kernel(tile_n=None):
     global _fwd_sparse_kernel_autotuned
-    if _fwd_sparse_kernel_autotuned is None:
+    if tile_n not in _fwd_sparse_kernel_autotuned:
         jit_kernel = _fwd_sparse_kernel._kernel
-        autotuned = autotuner.make_fwd_sparse_autotuned_kernel(jit_kernel)
-        _fwd_sparse_kernel_autotuned = autotuner.AutotunedKernel(autotuned)
-    return _fwd_sparse_kernel_autotuned
+        autotuned = autotuner.make_fwd_sparse_autotuned_kernel(
+            jit_kernel, tile_n=tile_n
+        )
+        _fwd_sparse_kernel_autotuned[tile_n] = autotuner.AutotunedKernel(autotuned)
+    return _fwd_sparse_kernel_autotuned[tile_n]
 
 
 def _flash_sparse_attn_forward(
@@ -537,6 +546,8 @@ def _flash_sparse_attn_forward(
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
     is_autotune: bool = True,
@@ -546,7 +557,12 @@ def _flash_sparse_attn_forward(
     device = query.device
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
+    if page_table is not None:
+        _, page_size, num_heads_kv, _ = key.shape
+        seqlen_k = page_table.shape[1] * page_size
+    else:
+        page_size = None
+        _, seqlen_k, num_heads_kv, _ = key.shape
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
@@ -570,10 +586,12 @@ def _flash_sparse_attn_forward(
             cu_seqlens_q=None,
             cu_seqlens_k=None,
             seqused_q=None,
-            seqused_k=None,
+            seqused_k=seqused_k,
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             head_dim=head_dim,
+            page_size=page_size,
+            tile_mn=tile_mn,
             is_quant=is_quant,
             device=device,
         )
@@ -584,7 +602,14 @@ def _flash_sparse_attn_forward(
     launch_config = None
     if not is_autotune:
         kernel = _fwd_sparse_kernel
-        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        TILE_M, TILE_N = (
+            tile_mn
+            if tile_mn is not None
+            else (
+                64,
+                page_size if page_table is not None else 64,
+            )
+        )
         num_warps, num_stages, num_ctas = 4, 1, 1
     else:
         launch_config = launch_template.load_launch_config(
@@ -593,6 +618,7 @@ def _flash_sparse_attn_forward(
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
+            tile_n=page_size if page_table is not None else None,
             is_local=is_local,
             qhead_per_kvhead=qhead_per_kvhead,
             is_causal=is_causal,
@@ -603,9 +629,12 @@ def _flash_sparse_attn_forward(
             kernel = _fwd_sparse_kernel
             TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
         else:
-            kernel = _get_autotuned_kernel()
+            kernel = _get_autotuned_kernel(
+                page_size if page_table is not None else None
+            )
             # Placeholder for pre-launch computations
-            TILE_M = TILE_N = 64
+            TILE_M = 64
+            TILE_N = page_size if page_table is not None else 64
             num_warps = num_stages = num_ctas = None
 
     if is_split_kv and num_splits is None:
@@ -671,6 +700,7 @@ def _flash_sparse_attn_forward(
         key_scale,
         value_scale,
         window_sizes,
+        page_table,
         query.stride(0),
         query.stride(-2),
         query.stride(-3),
@@ -688,10 +718,11 @@ def _flash_sparse_attn_forward(
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
         0 if not is_split_kv else lse_partial.stride(0),
         window_sizes.stride(0) if window_sizes is not None else 0,
+        page_table.stride(0) if page_table is not None else 0,
         None,
         None,
         None,
-        None,
+        seqused_k,
         num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
@@ -708,17 +739,20 @@ def _flash_sparse_attn_forward(
         IS_LOCAL=is_local,
         IS_QUANT=is_quant,
         IS_SPLIT_KV=is_split_kv,
+        IS_PAGED_KV=page_table is not None,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
-        HAS_SEQUSED_K=False,
+        HAS_SEQUSED_K=seqused_k is not None,
         num_warps=num_warps,
         num_stages=num_stages,
         num_ctas=num_ctas,
     )
 
     if is_autotune and launch_config is None:
-        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        best = launch_template.extract_best_config(
+            _get_autotuned_kernel(page_size if page_table is not None else None)
+        )
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
@@ -726,6 +760,7 @@ def _flash_sparse_attn_forward(
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,
+                tile_n=page_size if page_table is not None else None,
                 config=best,
                 is_local=is_local,
                 qhead_per_kvhead=qhead_per_kvhead,
@@ -904,6 +939,7 @@ def _flash_sparse_attn_varlen_forward(
         key_scale,
         value_scale,
         window_sizes,
+        None,
         0,
         query.stride(-2),
         query.stride(0),
@@ -921,6 +957,7 @@ def _flash_sparse_attn_varlen_forward(
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
         0 if not is_split_kv else lse_partial.stride(0),
         window_sizes.stride(0) if window_sizes is not None else 0,
+        0,
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
@@ -941,6 +978,7 @@ def _flash_sparse_attn_varlen_forward(
         IS_LOCAL=is_local,
         IS_QUANT=is_quant,
         IS_SPLIT_KV=is_split_kv,
+        IS_PAGED_KV=False,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
