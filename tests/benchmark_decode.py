@@ -424,10 +424,10 @@ def print_results(results: List[DecBenchmarkResult]) -> None:
         "FA",
         "cuDNN",
         "FSA Base",
-        "FSA +Local",
-        "FSA +Split",
-        "FSA +Quant",
-        "FSA +Thresh",
+        "FSA Window",
+        "FSA Split",
+        "FSA Quant",
+        "FSA Skip",
         "FSA All",
     ]
     rows = []

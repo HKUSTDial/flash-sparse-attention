@@ -419,10 +419,10 @@ def print_results(results: List[BwdBenchmarkResult]) -> None:
         "FA",
         "cuDNN",
         "FSA Base",
-        "FSA +Local",
-        "FSA +Split",
-        "FSA +Quant",
-        "FSA +Thresh",
+        "FSA Window",
+        "FSA Split",
+        "FSA Quant",
+        "FSA Skip",
         "FSA All",
     ]
     rows = []
