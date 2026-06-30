@@ -589,11 +589,8 @@ def _flash_sparse_attn_backward(
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_M
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_qo:
         num_splits = 1
@@ -864,11 +861,8 @@ def _flash_sparse_attn_varlen_backward(
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_M
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_qo:
         num_splits = 1
