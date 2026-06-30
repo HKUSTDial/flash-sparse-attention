@@ -34,6 +34,8 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - Top-k gather KV-cache decode
 - Paged Attention
 
+**For complete API documentation, please refer to [here](https://hkustdial.github.io/flash-sparse-attention/)**
+
 ## Features We Aim to Support
 
 - KV-Cache Manager

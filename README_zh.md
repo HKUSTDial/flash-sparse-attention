@@ -34,6 +34,8 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - Top-k gather KV-cache 解码
 - 分页注意力
 
+**完整API文档请参考 [这里](https://hkustdial.github.io/flash-sparse-attention/)**
+
 ## 我们想要支持的功能
 
 - KV-Cache 管理器
