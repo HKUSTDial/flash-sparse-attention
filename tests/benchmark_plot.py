@@ -29,10 +29,10 @@ _SERIES_COLORS = {
     "FA Dense": "C0",  # blue
     "CUDNN Dense": "C1",  # orange
     "FSA Base": "C2",  # green
-    "FSA Local": "C4",  # purple
+    "FSA Window": "C4",  # purple
     "FSA Split": "C5",  # brown
     "FSA Quant": "C6",  # pink
-    "FSA Threshold": "C7",  # gray
+    "FSA Skip": "C7",  # gray
     "FSA All": "C3",  # red
 }
 

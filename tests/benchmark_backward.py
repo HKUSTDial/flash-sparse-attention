@@ -27,10 +27,10 @@ class BwdBenchmarkResult:
     fa_ms: Optional[float] = None
     cudnn_ms: Optional[float] = None
     fsa_base_ms: Optional[float] = None
-    fsa_local_ms: Optional[float] = None
+    fsa_window_ms: Optional[float] = None
     fsa_split_ms: Optional[float] = None
     fsa_quant_ms: Optional[float] = None
-    fsa_threshold_ms: Optional[float] = None
+    fsa_skip_ms: Optional[float] = None
     fsa_all_ms: Optional[float] = None
     error_message: Optional[str] = None
 
@@ -143,7 +143,7 @@ def benchmark_fsa_base_backward(
         return None
 
 
-def benchmark_fsa_local_backward(
+def benchmark_fsa_window_backward(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -287,7 +287,7 @@ def benchmark_fsa_quant_backward(
         return None
 
 
-def benchmark_fsa_threshold_backward(
+def benchmark_fsa_skip_backward(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -394,10 +394,10 @@ def run_benchmark(cfg: BenchmarkConfig) -> BwdBenchmarkResult:
             fa_ms=benchmark_fa_backward(cfg),
             cudnn_ms=benchmark_cudnn_backward(cfg),
             fsa_base_ms=benchmark_fsa_base_backward(cfg),
-            fsa_local_ms=benchmark_fsa_local_backward(cfg),
+            fsa_window_ms=benchmark_fsa_window_backward(cfg),
             fsa_split_ms=benchmark_fsa_split_backward(cfg),
             fsa_quant_ms=benchmark_fsa_quant_backward(cfg),
-            fsa_threshold_ms=benchmark_fsa_threshold_backward(cfg),
+            fsa_skip_ms=benchmark_fsa_skip_backward(cfg),
             fsa_all_ms=benchmark_fsa_all_backward(cfg),
         )
     except Exception as e:
@@ -453,10 +453,10 @@ def print_results(results: List[BwdBenchmarkResult]) -> None:
                     format_ms(r.fa_ms),
                     format_ms(r.cudnn_ms),
                     format_ms(r.fsa_base_ms),
-                    format_ms(r.fsa_local_ms),
+                    format_ms(r.fsa_window_ms),
                     format_ms(r.fsa_split_ms),
                     format_ms(r.fsa_quant_ms),
-                    format_ms(r.fsa_threshold_ms),
+                    format_ms(r.fsa_skip_ms),
                     format_ms(r.fsa_all_ms),
                 ]
             )
