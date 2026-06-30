@@ -7,7 +7,6 @@ from typing import List, Optional
 
 import torch
 
-from test_utils import BenchmarkResult
 
 try:
     import matplotlib
@@ -24,38 +23,38 @@ except ImportError:
 
 _DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "figures"
 
-_HATCHES = ["///", "xx", "\\\\", "..", "++", "OO", "**", "||"]
+_HATCHES = ["///", "\\\\", "||", "..", "++", "OO", "**", "xx"]
+
+_SERIES_COLORS = {
+    "FA Dense": "C0",  # blue
+    "CUDNN Dense": "C1",  # orange
+    "FSA Base": "C2",  # green
+    "FSA Local": "C4",  # purple
+    "FSA Split": "C5",  # brown
+    "FSA Quant": "C6",  # pink
+    "FSA Threshold": "C7",  # gray
+    "FSA All": "C3",  # red
+}
 
 
 def _field_to_label(field_name: str) -> str:
-    """``triton_dense_ms`` → ``Triton Dense``, ``fa_dense_ms`` → ``FA Dense``."""
     parts = field_name.removesuffix("_ms").split("_")
     return " ".join(
-        p.upper() if p in ("fa", "cudnn") else p.capitalize() for p in parts
+        p.upper() if p in ("fa", "cudnn", "fsa") else p.capitalize() for p in parts
     )
 
 
-def _discover_active_series(ok: list[BenchmarkResult]):
+def _discover_active_series(ok: list):
     """Discover series from dataclass fields, return [(label, [vals])]."""
+    result_cls = type(ok[0])
     ms_fields = [
-        f.name for f in dataclasses.fields(BenchmarkResult) if f.name.endswith("_ms")
+        f.name for f in dataclasses.fields(result_cls) if f.name.endswith("_ms")
     ]
 
-    # Split into non-triton and triton
-    non_triton = [f for f in ms_fields if not f.startswith("triton")]
-    triton = [f for f in ms_fields if f.startswith("triton")]
+    baseline = [f for f in ms_fields if not f.startswith("fsa")]
+    fsa = [f for f in ms_fields if f.startswith("fsa")]
 
-    triton_bf16 = [f for f in triton if "quant" not in f]
-    triton_quant = {f.replace("_quant", ""): f for f in triton if "quant" in f}
-
-    triton_paired = []
-    for f in triton_bf16:
-        triton_paired.append(f)
-        base = f
-        if base in triton_quant:
-            triton_paired.append(triton_quant[base])
-
-    ordered = non_triton + triton_paired
+    ordered = baseline + fsa
 
     def _collect(fields):
         out = []
@@ -95,7 +94,7 @@ def _get_device_name() -> str | None:
     return None
 
 
-def _title_for(ok: list[BenchmarkResult], phase: str, device_name: str | None) -> str:
+def _title_for(ok, phase: str, device_name: str | None) -> str:
     title = f"Attention {phase} latency with head dim {ok[0].config.head_dim}"
     if device_name:
         title += f" on {device_name}"
@@ -103,7 +102,7 @@ def _title_for(ok: list[BenchmarkResult], phase: str, device_name: str | None) -
 
 
 def _plot_line(
-    ok: list[BenchmarkResult],
+    ok,
     active: list[tuple[str, list[float]]],
     phase: str,
     output_dir: Path,
@@ -116,7 +115,7 @@ def _plot_line(
     x = np.array(seqlens, dtype=float)
 
     for idx, (label, vals) in enumerate(active):
-        ci = f"C{idx}"
+        ci = _SERIES_COLORS.get(label, f"C{idx}")
         ax.plot(x, vals, label=label, color=ci, linewidth=2, linestyle="-")
         ax.scatter(
             x,
@@ -178,7 +177,7 @@ def _plot_line(
 
 
 def _plot_bar(
-    ok: list[BenchmarkResult],
+    ok,
     active: list[tuple[str, list[float]]],
     phase: str,
     output_dir: Path,
@@ -216,7 +215,7 @@ def _plot_bar(
     fig, ax = plt.subplots(figsize=(max(10.5, n_groups * 1.8), 4.5))
 
     for j, (label, vals) in enumerate(active):
-        ci = f"C{j}"
+        ci = _SERIES_COLORS.get(label, f"C{j}")
         offset = -group_width / 2 + j * (bar_width + intra_gap) + bar_width / 2
         positions = group_centers + offset
         ax.bar(
@@ -249,7 +248,7 @@ def _plot_bar(
         spine.set_linewidth(1.2)
     ax.legend(
         loc="upper left",
-        ncols=2,
+        ncols=1,
         frameon=True,
         framealpha=0.0,
         fontsize=11,
@@ -260,7 +259,7 @@ def _plot_bar(
 
 
 def plot_benchmark_results(
-    results: List[BenchmarkResult],
+    results,
     phase: str,
     output_dir: Optional[Path] = None,
     device_name: Optional[str] = None,
