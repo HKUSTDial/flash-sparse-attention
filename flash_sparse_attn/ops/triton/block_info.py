@@ -56,7 +56,12 @@ def get_n_block_min_max(
         n_block_window_min = tl.maximum(n_block_window_min, n_block_sink_exclude_max)
     if IS_SPLIT_KV:
         if IS_LOCAL:
-            n_block_diag_min = n_block_min
+            n_block_diag_min = tl.where(
+                seqlen_q == 1,
+                tl.maximum(tl.cdiv(tl.maximum(n_idx_dist + 1, 0), TILE_N), 0),
+                n_block_min,
+            )
+            n_block_diag_min = tl.maximum(n_block_diag_min, n_block_sink_exclude_max)
             n_block_diag_max = n_block_max
             n_block_window_max = tl.maximum(n_block_window_max, n_block_window_min)
             total_n_blocks = tl.maximum(n_block_window_max - n_block_window_min, 0)
