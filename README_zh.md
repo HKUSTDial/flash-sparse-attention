@@ -52,6 +52,7 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - **Python**: 3.9 或更高版本
 - **PyTorch**: 2.5.1 或更高版本
 - **Triton**: 3.6.0 或更高版本
+- **Triton Kernels**: 3.6.0 或更高版本
 
 ## 安装
 
@@ -61,7 +62,13 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 pip install flash-sparse-attn
 ```
 
-如果您希望从源码安装：
+此外，需要安装 `triton_kernels`：
+
+```bash
+pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v3.6.0#subdirectory=python/triton_kernels"
+```
+
+如果您希望从源码安装（自动包含所有依赖）：
 
 ```bash
 git clone https://github.com/flash-algo/flash-sparse-attn.git
