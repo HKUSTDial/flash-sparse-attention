@@ -52,6 +52,7 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - **Python**: 3.9 or later
 - **PyTorch**: 2.5.1 or later
 - **Triton**: 3.6.0 or later
+- **Triton Kernels**: 3.6.0 or later
 
 ## Install
 
@@ -61,7 +62,13 @@ Install from PyPI:
 pip install flash-sparse-attn
 ```
 
-To install from source:
+Additionally, install `triton_kernels`:
+
+```bash
+pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v3.6.0#subdirectory=python/triton_kernels"
+```
+
+To install from source (includes all dependencies automatically):
 
 ```bash
 git clone https://github.com/flash-algo/flash-sparse-attn.git
