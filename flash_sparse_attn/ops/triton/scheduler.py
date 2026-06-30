@@ -2652,18 +2652,6 @@ class AttnDecPointerScheduler:
         o_tile = tl.zeros((config.TILE_M, config.TILE_K), dtype=Out.dtype.element_ty)
         self.store_out(config, out_ptrs, o_tile)
 
-    @triton.jit
-    def apply_gather_mask(
-        self,
-        config: AttnDecConfig,
-        acc_s,
-        topk_indices,
-    ):
-        return topk_gather_kv.apply_gather_mask(
-            acc_s,
-            topk_indices,
-        )
-
 
 @aggregate
 class AttnMaskScheduler:
@@ -2774,6 +2762,17 @@ class AttnMaskScheduler:
             TILE_N=self.TILE_N,
             QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
             SWAP_AB=self.SWAP_AB,
+        )
+
+    @triton.jit
+    def apply_gather_mask(
+        self,
+        acc_s,
+        topk_indices,
+    ):
+        return topk_gather_kv.apply_gather_mask(
+            acc_s=acc_s,
+            topk_indices=topk_indices,
         )
 
 

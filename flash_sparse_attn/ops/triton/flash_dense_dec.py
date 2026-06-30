@@ -61,10 +61,9 @@ def _dec_inner_dense_kernel(
 
     if config.IS_GATHER_KV:
         # Apply mask to attention scores
-        acc_s = ptrs_sched.apply_gather_mask(
-            config,
-            acc_s,
-            topk_indices,
+        acc_s = mask_sched.apply_gather_mask(
+            acc_s=acc_s,
+            topk_indices=topk_indices,
         )
 
     if IS_MASK:
