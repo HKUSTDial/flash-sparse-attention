@@ -154,7 +154,7 @@ def benchmark_cudnn_decode(
         return None
 
 
-def benchmark_fsa_base_dec(
+def benchmark_fsa_base_decode(
     cfg: BenchmarkConfig, device: str = "cuda", mode: BenchmarkMode = "auto"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -191,7 +191,7 @@ def benchmark_fsa_base_dec(
         return None
 
 
-def benchmark_fsa_local_dec(
+def benchmark_fsa_local_decode(
     cfg: BenchmarkConfig, device: str = "cuda", mode: BenchmarkMode = "auto"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -231,7 +231,7 @@ def benchmark_fsa_local_dec(
         return None
 
 
-def benchmark_fsa_split_dec(
+def benchmark_fsa_split_decode(
     cfg: BenchmarkConfig, device: str = "cuda", mode: BenchmarkMode = "auto"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -268,7 +268,7 @@ def benchmark_fsa_split_dec(
         return None
 
 
-def benchmark_fsa_quant_dec(
+def benchmark_fsa_quant_decode(
     cfg: BenchmarkConfig, device: str = "cuda", mode: BenchmarkMode = "auto"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -308,7 +308,7 @@ def benchmark_fsa_quant_dec(
         return None
 
 
-def benchmark_fsa_threshold_dec(
+def benchmark_fsa_threshold_decode(
     cfg: BenchmarkConfig, device: str = "cuda", mode: BenchmarkMode = "auto"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -346,7 +346,7 @@ def benchmark_fsa_threshold_dec(
         return None
 
 
-def benchmark_fsa_all_dec(
+def benchmark_fsa_all_decode(
     cfg: BenchmarkConfig, device: str = "cuda", mode: BenchmarkMode = "auto"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -398,12 +398,12 @@ def run_benchmark(
             config=cfg,
             fa_ms=benchmark_fa_decode(cfg, mode=benchmark_mode),
             cudnn_ms=benchmark_cudnn_decode(cfg, mode=benchmark_mode),
-            fsa_base_ms=benchmark_fsa_base_dec(cfg, mode=benchmark_mode),
-            fsa_local_ms=benchmark_fsa_local_dec(cfg, mode=benchmark_mode),
-            fsa_split_ms=benchmark_fsa_split_dec(cfg, mode=benchmark_mode),
-            fsa_quant_ms=benchmark_fsa_quant_dec(cfg, mode=benchmark_mode),
-            fsa_threshold_ms=benchmark_fsa_threshold_dec(cfg, mode=benchmark_mode),
-            fsa_all_ms=benchmark_fsa_all_dec(cfg, mode=benchmark_mode),
+            fsa_base_ms=benchmark_fsa_base_decode(cfg, mode=benchmark_mode),
+            fsa_local_ms=benchmark_fsa_local_decode(cfg, mode=benchmark_mode),
+            fsa_split_ms=benchmark_fsa_split_decode(cfg, mode=benchmark_mode),
+            fsa_quant_ms=benchmark_fsa_quant_decode(cfg, mode=benchmark_mode),
+            fsa_threshold_ms=benchmark_fsa_threshold_decode(cfg, mode=benchmark_mode),
+            fsa_all_ms=benchmark_fsa_all_decode(cfg, mode=benchmark_mode),
         )
     except Exception as e:
         return DecBenchmarkResult(
