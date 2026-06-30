@@ -52,4 +52,4 @@ jobs:
           if [ -z "$TWINE_PASSWORD" ]; then
             echo "::error::PYPI_API_TOKEN secret not set; aborting publish."; exit 1
           fi
-          python -m twine upload dist/*
+          python -m twine upload --skip-existing dist/*
