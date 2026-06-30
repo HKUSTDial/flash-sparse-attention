@@ -32,10 +32,10 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 - Split-QO 适用于反向的工作负载均衡
 - Fused Quant 支持非FP8原生支持的硬件使用低精度计算
 - Top-k gather KV-cache 解码
+- 分页注意力
 
 ## 我们想要支持的功能
 
-- 分页注意力
 - KV-Cache 管理器
 - [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE) 后端支持
 - [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) 后端支持

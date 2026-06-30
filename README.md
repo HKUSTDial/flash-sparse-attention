@@ -32,10 +32,10 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 - Split-QO for workload balancing in backward workloads
 - Fused Quant for low-precision computation on hardware without native FP8 support
 - Top-k gather KV-cache decode
+- Paged Attention
 
 ## Features We Aim to Support
 
-- Paged Attention
 - KV-Cache Manager
 - [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE) backend support
 - [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) backend support
