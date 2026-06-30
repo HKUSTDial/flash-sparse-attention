@@ -27,10 +27,10 @@ class FwdBenchmarkResult:
     fa_ms: Optional[float] = None
     cudnn_ms: Optional[float] = None
     fsa_base_ms: Optional[float] = None
-    fsa_local_ms: Optional[float] = None
+    fsa_window_ms: Optional[float] = None
     fsa_split_ms: Optional[float] = None
     fsa_quant_ms: Optional[float] = None
-    fsa_threshold_ms: Optional[float] = None
+    fsa_skip_ms: Optional[float] = None
     fsa_all_ms: Optional[float] = None
     error_message: Optional[str] = None
 
@@ -116,7 +116,7 @@ def benchmark_fsa_base_forward(
         return None
 
 
-def benchmark_fsa_local_forward(
+def benchmark_fsa_window_forward(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -233,7 +233,7 @@ def benchmark_fsa_quant_forward(
         return None
 
 
-def benchmark_fsa_threshold_forward(
+def benchmark_fsa_skip_forward(
     cfg: BenchmarkConfig, device: str = "cuda"
 ) -> Optional[float]:
     q, k, v = generate_inputs(
@@ -320,10 +320,10 @@ def run_benchmark(cfg: BenchmarkConfig) -> FwdBenchmarkResult:
         fa_ms = benchmark_fa_forward(cfg)
         cudnn_ms = benchmark_cudnn_forward(cfg)
         base_ms = benchmark_fsa_base_forward(cfg)
-        local_ms = benchmark_fsa_local_forward(cfg)
+        local_ms = benchmark_fsa_window_forward(cfg)
         split_ms = benchmark_fsa_split_forward(cfg)
         quant_ms = benchmark_fsa_quant_forward(cfg)
-        threshold_ms = benchmark_fsa_threshold_forward(cfg)
+        threshold_ms = benchmark_fsa_skip_forward(cfg)
         all_ms = benchmark_fsa_all_forward(cfg)
 
         return FwdBenchmarkResult(
@@ -331,10 +331,10 @@ def run_benchmark(cfg: BenchmarkConfig) -> FwdBenchmarkResult:
             fa_ms=fa_ms,
             cudnn_ms=cudnn_ms,
             fsa_base_ms=base_ms,
-            fsa_local_ms=local_ms,
+            fsa_window_ms=local_ms,
             fsa_split_ms=split_ms,
             fsa_quant_ms=quant_ms,
-            fsa_threshold_ms=threshold_ms,
+            fsa_skip_ms=threshold_ms,
             fsa_all_ms=all_ms,
         )
     except Exception as e:
@@ -397,10 +397,10 @@ def print_results(results: List[FwdBenchmarkResult]) -> None:
                     format_ms(r.fa_ms),
                     format_ms(r.cudnn_ms),
                     format_ms(r.fsa_base_ms),
-                    format_ms(r.fsa_local_ms),
+                    format_ms(r.fsa_window_ms),
                     format_ms(r.fsa_split_ms),
                     format_ms(r.fsa_quant_ms),
-                    format_ms(r.fsa_threshold_ms),
+                    format_ms(r.fsa_skip_ms),
                     format_ms(r.fsa_all_ms),
                 ]
             )
