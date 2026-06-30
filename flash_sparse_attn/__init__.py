@@ -1,6 +1,6 @@
 # Copyright (c) 2025, Jingze Shi.
 
-__version__ = "2.0.4"
+__version__ = "2.0.5"
 
 from flash_sparse_attn.ops.triton.interface import (
     flash_dense_attn_func,
