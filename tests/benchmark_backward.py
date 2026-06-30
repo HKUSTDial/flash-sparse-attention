@@ -10,7 +10,6 @@ from tqdm import tqdm
 from triton.testing import do_bench
 
 from flash_sparse_attn.ops.triton.interface import flash_sparse_attn_func
-from flash_sparse_attn.ops.triton import quant
 from flash_sparse_attn.ops.triton.utils import window_sizes_heuristic
 from test_utils import (
     BenchmarkConfig,
