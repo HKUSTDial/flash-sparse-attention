@@ -972,11 +972,8 @@ def _flash_gated_attn_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_N
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_kv:
         num_splits = 1
@@ -1232,11 +1229,8 @@ def _flash_gated_attn_varlen_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_N
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_kv:
         num_splits = 1
