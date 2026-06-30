@@ -298,12 +298,12 @@ def get_m_block_max_before_local_mask(
 
 @triton.jit
 def get_topk_n_block_min_max(
-    topk_seqlen_k,
     split_idx,
     NUM_SPLITS: tl.constexpr,
+    TOPK_SEQLEN_K: tl.constexpr,
     TILE_N: tl.constexpr,
 ):
-    total_n_blocks = tl.cdiv(topk_seqlen_k, TILE_N)
+    total_n_blocks = tl.cdiv(TOPK_SEQLEN_K, TILE_N)
     base = total_n_blocks // NUM_SPLITS
     extra = total_n_blocks % NUM_SPLITS
     n_block_min = tl.where(
