@@ -79,13 +79,16 @@ def _prune_bwd_configs(configs, named_args, **kwargs):
 
 def _prune_dec_configs(configs, named_args, **kwargs):
     tile_k = kwargs.get("TILE_K", named_args.get("TILE_K", 128))
-    seqlen_q = kwargs.get("seqlen_q", named_args.get("seqlen_q", None))
+    qhead_per_kvhead = kwargs.get(
+        "QHEAD_PER_KVHEAD_PACKGQA",
+        named_args.get("QHEAD_PER_KVHEAD_PACKGQA", 1),
+    )
     dtype_bytes = named_args["Q"].element_size()
     max_smem = _get_max_shared_mem() - 4 * 1024
     pruned = []
     for cfg in configs:
         tm, tn, ns = cfg.kwargs["TILE_M"], cfg.kwargs["TILE_N"], cfg.num_stages
-        if seqlen_q is not None and tm > seqlen_q:
+        if tm < qhead_per_kvhead:
             continue
         if _smem_bytes_dec(tm, tn, tile_k, ns, dtype_bytes) <= max_smem:
             pruned.append(cfg)
