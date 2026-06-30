@@ -252,19 +252,16 @@ def benchmark_fsa_quant_backward(
     k = k.requires_grad_(True)
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
-    q_quant, q_scale = quant.quantize_fp8(q)
-    k_quant, k_scale = quant.quantize_fp8(k)
-    v_quant, v_scale = quant.quantize_fp8(v)
     try:
         out = flash_sparse_attn_func(
-            q_quant,
-            k_quant,
-            v_quant,
+            q,
+            k,
+            v,
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
-            query_scale=q_scale,
-            key_scale=k_scale,
-            value_scale=v_scale,
+            query_scale=None,
+            key_scale=None,
+            value_scale=None,
             window_sizes=None,
             softmax_threshold=0.0,
             is_local=False,
@@ -348,23 +345,20 @@ def benchmark_fsa_all_backward(
     k = k.requires_grad_(True)
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
-    q_quant, q_scale = quant.quantize_fp8(q)
-    k_quant, k_scale = quant.quantize_fp8(k)
-    v_quant, v_scale = quant.quantize_fp8(v)
     softmax_threshold = cfg.head_dim / cfg.seqlen_k
     window_sizes = window_sizes_heuristic(
         cfg.seqlen_k, cfg.num_kv_heads, device=torch.device(device)
     )
     try:
         out = flash_sparse_attn_func(
-            q_quant,
-            k_quant,
-            v_quant,
+            q,
+            k,
+            v,
             is_causal=cfg.is_causal,
             softmax_scale=softmax_scale,
-            query_scale=q_scale,
-            key_scale=k_scale,
-            value_scale=v_scale,
+            query_scale=None,
+            key_scale=None,
+            value_scale=None,
             window_sizes=window_sizes,
             softmax_threshold=softmax_threshold,
             is_local=True,
