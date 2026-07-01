@@ -86,94 +86,109 @@ from kernels import get_kernel
 
 fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
 
-out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
-out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
-out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
+# Forward
+out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True)
+# Backward
+out.sum().backward()
+# Decode
+out = fsa.flash_sparse_attn_with_kvcache_func(q, k_cache, v_cache)
 ```
-
-Requires `pip install kernels`.
 
 
 # Quick Start
 
 ## Basic Usage
 
-Below are examples for the three common attention variants:
+Below are examples for forward, backward, and decode.
 
 ```python
 import torch
 from flash_sparse_attn.ops.triton.interface import (
-    flash_dense_attn_func,
     flash_sparse_attn_func,
-    flash_gated_attn_func,
+    flash_sparse_attn_with_kvcache_func,
 )
 
 dtype = torch.bfloat16
 device = torch.device("cuda")
-batch_size, seqlen_q, seqlen_k, num_heads, num_kv_heads, head_dim = 2, 1024, 1024, 8, 2, 64
-
-query = torch.randn(batch_size, seqlen_q, num_heads, head_dim, dtype=dtype, device=device)
-key = torch.randn(batch_size, seqlen_k, num_kv_heads, head_dim, dtype=dtype, device=device)
-value = torch.randn(batch_size, seqlen_k, num_kv_heads, head_dim, dtype=dtype, device=device)
+batch_size, seqlen, num_heads, num_kv_heads, head_dim = 2, 4096, 32, 8, 128
 ```
 
-### Dense Attention
+### Forward
 
-Use this when you do not need explicit sparsification but still want an efficient attention kernel.
+Combine flex window, split-KV, fused quant, and sparse softmax for maximum performance.
 
 ```python
-output_dense = flash_dense_attn_func(
-    query=query,
-    key=key,
-    value=value,
-    is_causal=True,
-)
+query = torch.randn(batch_size, seqlen, num_heads, head_dim, dtype=dtype, device=device)
+key = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
+value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
 
-print(output_dense.shape)
+output = flash_sparse_attn_func(
+    query, key, value,
+    is_causal=True,
+    softmax_threshold=128.0 / seqlen,
+    is_local=True,
+    is_quant=True,
+    is_split_kv=True,
+)
 ```
 
-### Sparse Attention
+### Backward
 
-Use this when you want to skip low-contribution attention weights through `softmax_threshold` and reduce effective compute on long sequences.
+Combine flex window, split-QO, fused quant, and low-contribution skipping for maximum backward performance.
 
 ```python
-output_sparse = flash_sparse_attn_func(
-    query=query,
-    key=key,
-    value=value,
+query = torch.randn(batch_size, seqlen, num_heads, head_dim, dtype=dtype, device=device, requires_grad=True)
+key = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device, requires_grad=True)
+value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device, requires_grad=True)
+
+output = flash_sparse_attn_func(
+    query, key, value,
     is_causal=True,
-    softmax_threshold=1.0,
+    softmax_threshold=1.0 / seqlen,
+    is_local=True,
+    is_quant=True,
+    is_split_kv=True,
+    is_split_qo=True,
 )
 
-print(output_sparse.shape)
+output.sum().backward()
 ```
 
-### Gated Attention
+### Decode
 
-Use this when you need explicit gating signals for sparse attention. `alpha` controls query-side gating and `delta` controls key-side gating.
+Combine flex window, split-KV, fused quant, sparse softmax, packed GQA, and Graph for maximum decode performance.
 
 ```python
-alpha = torch.randn(batch_size, num_heads, seqlen_q, device=device, dtype=dtype)
-delta = torch.randn(batch_size, num_kv_heads, seqlen_k, device=device, dtype=dtype)
+query = torch.randn(batch_size, num_heads, head_dim, dtype=dtype, device=device)
+key = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
+value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
 
-output_gated = flash_gated_attn_func(
-    query=query,
-    key=key,
-    value=value,
-    alpha=alpha,
-    delta=delta,
-    is_causal=True,
-    softmax_threshold=1.0,
-    gate_threshold=1.0,
-)
+def fsa_decode_fn():
+    return flash_sparse_attn_with_kvcache_func(
+        query, key, value,
+        softmax_threshold=128.0 / seqlen,
+        is_local=True,
+        is_quant=True,
+    )
 
-print(output_gated.shape)
+# Warmup
+for _ in range(3):
+    fsa_decode_fn()
+torch.cuda.synchronize()
+
+# Capture Graph
+graph = torch.cuda.CUDAGraph()
+with torch.cuda.graph(graph):
+    output = fsa_decode_fn()
+
+# Replay
+graph.replay()
 ```
 
 
 # Performance
 
-The following benchmarks cover forward, backward, and decode workloads. They include dense, sparse, and gated implementations, with FlashAttention used as the baseline.
+The following benchmarks cover forward, backward, and decode workloads, using FlashAttention as the baseline.
 
 ## NVIDIA GPU
 
@@ -182,63 +197,45 @@ The following benchmarks cover forward, backward, and decode workloads. They inc
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128, a100](assets/latency_forward_a100.png)
+![Attention forward speed, head dim 128, a100](assets/fsa/latency_forward_a100sxm4.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128, a100](assets/latency_backward_a100.png)
+![Attention backward speed, head dim 128, a100](assets/fsa/latency_backward_a100sxm4.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, a100](assets/latency_decode_a100.png)
+![Attention decode speed, head dim 128, a100](assets/fsa/latency_decode_a100sxm4.png)
 
 
 ### H20
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128, h20-3e](assets/latency_forward_h203e.png)
+![Attention forward speed, head dim 128, h20-3e](assets/fsa/latency_forward_h203e.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128, h20-3e](assets/latency_backward_h203e.png)
+![Attention backward speed, head dim 128, h20-3e](assets/fsa/latency_backward_h203e.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, h20-3e](assets/latency_decode_h203e.png)
+![Attention decode speed, head dim 128, h20-3e](assets/fsa/latency_decode_h203e.png)
 
 
 ### RTX PRO 6000
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128, rtx pro 6000](assets/latency_forward_rtxpro6000.png)
+![Attention forward speed, head dim 128, rtx pro 6000](assets/fsa/latency_forward_rtxpro6000.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128, rtx pro 6000](assets/latency_backward_rtxpro6000.png)
+![Attention backward speed, head dim 128, rtx pro 6000](assets/fsa/latency_backward_rtxpro6000.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, rtx pro 6000](assets/latency_decode_rtxpro6000.png)
-
-
-## T-Head PPU
-
-
-### ZW810E
-
-**Forward Performance**
-
-![Attention forward speed, head dim 128, zw810e](assets/latency_forward_ppuzw810e.png)
-
-**Backward Performance**
-
-![Attention backward speed, head dim 128, ppuzw810e](assets/latency_backward_ppuzw810e.png)
-
-**Decode Performance**
-
-![Attention decode speed, head dim 128, ppuzw810e](assets/latency_decode_ppuzw810e.png)
+![Attention decode speed, head dim 128, rtx pro 6000](assets/fsa/latency_decode_rtxpro6000.png)
 
 
 # Benchmarking

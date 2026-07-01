@@ -111,8 +111,8 @@ def _dec_sparse_kernel(
     query_scale,
     key_scale,
     value_scale,
-    softmax_threshold,
     window_sizes,
+    softmax_threshold,
     page_table,
     gather_kv_indices,
     stride_qb,
@@ -140,17 +140,17 @@ def _dec_sparse_kernel(
     cu_seqlens_k,
     seqused_q,
     seqused_k,
-    num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    TOPK_SEQLEN_K: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
-    topk_seqlen_k: tl.constexpr,
     IS_LOCAL: tl.constexpr,
     IS_QUANT: tl.constexpr,
     IS_PAGED_KV: tl.constexpr,
@@ -162,7 +162,7 @@ def _dec_sparse_kernel(
 ):
     # Create grid index
     grid_idx = AttnDecGridIndex.create(
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
     )
 
     # Load window sizes
@@ -252,8 +252,8 @@ def _dec_sparse_kernel(
     block_sched = AttnDecBlockScheduler.create(
         config=config,
         split_idx=grid_idx.split_idx,
-        num_splits=num_splits,
-        topk_seqlen_k=topk_seqlen_k,
+        NUM_SPLITS=NUM_SPLITS,
+        TOPK_SEQLEN_K=TOPK_SEQLEN_K,
         IS_LOCAL=IS_LOCAL,
         IS_GATHER_KV=IS_GATHER_KV,
     )
@@ -546,11 +546,11 @@ def _flash_sparse_attn_decode(
     key: torch.Tensor,
     value: torch.Tensor,
     softmax_scale: float = None,
-    softmax_threshold: float = None,
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: float = None,
     is_local: bool = False,
     is_quant: bool = False,
     num_splits: Optional[int] = None,
@@ -653,11 +653,8 @@ def _flash_sparse_attn_decode(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_N
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
@@ -701,8 +698,8 @@ def _flash_sparse_attn_decode(
         query_scale,
         key_scale,
         value_scale,
-        softmax_threshold,
         window_sizes,
+        softmax_threshold,
         page_table,
         gather_kv_indices,
         query.stride(0),
@@ -730,17 +727,17 @@ def _flash_sparse_attn_decode(
         None,
         None,
         seqused_k,
-        num_splits,
         seqlen_q=1,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
         SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead,
+        NUM_SPLITS=num_splits,
+        TOPK_SEQLEN_K=topk_seqlen_k,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
-        topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=is_local,
         IS_QUANT=is_quant,
         IS_PAGED_KV=is_paged_kv,
@@ -789,11 +786,11 @@ def _flash_sparse_attn_varlen_decode(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: float = None,
-    softmax_threshold: float = None,
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: float = None,
     is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
@@ -877,11 +874,8 @@ def _flash_sparse_attn_varlen_decode(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_N
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
@@ -925,8 +919,8 @@ def _flash_sparse_attn_varlen_decode(
         query_scale,
         key_scale,
         value_scale,
-        softmax_threshold,
         window_sizes,
+        softmax_threshold,
         None,
         gather_kv_indices,
         query.stride(0),
@@ -954,17 +948,17 @@ def _flash_sparse_attn_varlen_decode(
         cu_seqlens_k,
         None,
         seqused_k,
-        num_splits,
         seqlen_q=1,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=0,
         SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead,
+        NUM_SPLITS=num_splits,
+        TOPK_SEQLEN_K=topk_seqlen_k,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
-        topk_seqlen_k=topk_seqlen_k,
         IS_LOCAL=is_local,
         IS_QUANT=is_quant,
         IS_PAGED_KV=False,

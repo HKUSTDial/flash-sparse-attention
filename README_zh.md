@@ -86,9 +86,12 @@ from kernels import get_kernel
 
 fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
 
-out = fsa.flash_dense_attn_func(q, k, v, is_causal=True)
-out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True, softmax_threshold=0.01)
-out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
+# 前向
+out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True)
+# 反向
+out.sum().backward()
+# 解码
+out = fsa.flash_sparse_attn_with_kvcache_func(q, k_cache, v_cache)
 ```
 
 需要先安装 `pip install kernels`。
@@ -98,82 +101,96 @@ out = fsa.flash_gated_attn_func(q, k, v, alpha, delta, is_causal=True)
 
 ## 基本用法
 
-下面是三类常见用法示例：
+以下是前向、反向和解码的示例。
 
 ```python
 import torch
 from flash_sparse_attn.ops.triton.interface import (
-    flash_dense_attn_func,
     flash_sparse_attn_func,
-    flash_gated_attn_func,
+    flash_sparse_attn_with_kvcache_func,
 )
 
 dtype = torch.bfloat16
 device = torch.device("cuda")
-batch_size, seqlen_q, seqlen_k, num_heads, num_kv_heads, head_dim = 2, 1024, 1024, 8, 2, 64
-
-query = torch.randn(batch_size, seqlen_q, num_heads, head_dim, dtype=dtype, device=device)
-key = torch.randn(batch_size, seqlen_k, num_kv_heads, head_dim, dtype=dtype, device=device)
-value = torch.randn(batch_size, seqlen_k, num_kv_heads, head_dim, dtype=dtype, device=device)
+batch_size, seqlen, num_heads, num_kv_heads, head_dim = 2, 4096, 32, 8, 128
 ```
 
-### Dense Attention
+### 前向
 
-适用于不需要显式稀疏化, 但仍希望获得高效 attention 计算的场景。
+组合 flex window, split-KV, fused quant, 和 sparse softmax 以获得最大性能。
 
 ```python
-output_dense = flash_dense_attn_func(
-    query=query,
-    key=key,
-    value=value,
-    is_causal=True,
-)
+query = torch.randn(batch_size, seqlen, num_heads, head_dim, dtype=dtype, device=device)
+key = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
+value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
 
-print(output_dense.shape)
+output = flash_sparse_attn_func(
+    query, key, value,
+    is_causal=True,
+    softmax_threshold=128.0 / seqlen,
+    is_local=True,
+    is_quant=True,
+    is_split_kv=True,
+)
 ```
 
-### Sparse Attention
+### 反向
 
-适用于希望通过 `softmax_threshold` 跳过低贡献注意力权重, 在长序列上减少有效计算量的场景。
+组合 flex window, split-QO, split-KV, fused quant, 和 low-contribution skipping 以获得最大反向性能。
 
 ```python
-output_sparse = flash_sparse_attn_func(
-    query=query,
-    key=key,
-    value=value,
+query = torch.randn(batch_size, seqlen, num_heads, head_dim, dtype=dtype, device=device, requires_grad=True)
+key = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device, requires_grad=True)
+value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device, requires_grad=True)
+
+output = flash_sparse_attn_func(
+    query, key, value,
     is_causal=True,
-    softmax_threshold=1.0,
+    softmax_threshold=1.0 / seqlen,
+    is_local=True,
+    is_quant=True,
+    is_split_kv=True,
+    is_split_qo=True,
 )
 
-print(output_sparse.shape)
+output.sum().backward()
 ```
 
-### Gated Attention
+### 解码
 
-适用于需要显式门控信号的稀疏注意力场景。`alpha` 控制 query 侧门控, `delta` 控制 key 侧门控。
+组合 flex window, split-KV, fused quant, sparse softmax, packed GQA 和 Graph 以获得最大解码性能。
 
 ```python
-alpha = torch.randn(batch_size, num_heads, seqlen_q, device=device, dtype=dtype)
-delta = torch.randn(batch_size, num_kv_heads, seqlen_k, device=device, dtype=dtype)
+query = torch.randn(batch_size, num_heads, head_dim, dtype=dtype, device=device)
+key = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
+value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, device=device)
 
-output_gated = flash_gated_attn_func(
-    query=query,
-    key=key,
-    value=value,
-    alpha=alpha,
-    delta=delta,
-    is_causal=True,
-    softmax_threshold=1.0,
-    gate_threshold=1.0,
-)
+def fsa_decode_fn():
+    return flash_sparse_attn_with_kvcache_func(
+        query, key, value,
+        softmax_threshold=128.0 / seqlen,
+        is_local=True,
+        is_quant=True,
+    )
 
-print(output_gated.shape)
+# 预热
+for _ in range(3):
+    fsa_decode_fn()
+torch.cuda.synchronize()
+
+# 捕获 Graph
+graph = torch.cuda.CUDAGraph()
+with torch.cuda.graph(graph):
+    output = fsa_decode_fn()
+
+# 重放
+graph.replay()
 ```
 
 
 # 性能
 
-以下基准测试涵盖前向、后向和解码工作负载。其中包括密集型、稀疏型和门控实现，并以FlashAttention作为基线。
+以下基准测试涵盖前向、后向和解码工作负载, 以FlashAttention作为基线。
 
 ## NVIDIA GPU
 
@@ -182,62 +199,45 @@ print(output_gated.shape)
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128, a100](assets/latency_forward_a100.png)
+![Attention forward speed, head dim 128, a100](assets/fsa/latency_forward_a100sxm4.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128, a100](assets/latency_backward_a100.png)
+![Attention backward speed, head dim 128, a100](assets/fsa/latency_backward_a100sxm4.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128, a100](assets/latency_decode_a100.png)
+![Attention decode speed, head dim 128, a100](assets/fsa/latency_decode_a100sxm4.png)
 
 
 ### H20
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128, h20-3e](assets/latency_forward_h203e.png)
+![Attention forward speed, head dim 128, h20-3e](assets/fsa/latency_forward_h203e.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128, h20-3e](assets/latency_backward_h203e.png)
+![Attention backward speed, head dim 128, h20-3e](assets/fsa/latency_backward_h203e.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128, h20-3e](assets/latency_decode_h203e.png)
+![Attention decode speed, head dim 128, h20-3e](assets/fsa/latency_decode_h203e.png)
 
 
 ### RTX PRO 6000
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128, rtx pro 6000](assets/latency_forward_rtxpro6000.png)
+![Attention forward speed, head dim 128, rtx pro 6000](assets/fsa/latency_forward_rtxpro6000.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128, rtx pro 6000](assets/latency_backward_rtxpro6000.png)
+![Attention backward speed, head dim 128, rtx pro 6000](assets/fsa/latency_backward_rtxpro6000.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128, rtx pro 6000](assets/latency_decode_rtxpro6000.png)
-
-
-## T-Head PPU
-
-### ZW810E
-
-**F前向传播性能**
-
-![Attention forward speed, head dim 128, zw810e](assets/latency_forward_ppuzw810e.png)
-
-**反向传播性能**
-
-![Attention backward speed, head dim 128, ppuzw810e](assets/latency_backward_ppuzw810e.png)
-
-**解码性能**
-
-![Attention decode speed, head dim 128, ppuzw810e](assets/latency_decode_ppuzw810e.png)
+![Attention decode speed, head dim 128, rtx pro 6000](assets/fsa/latency_decode_rtxpro6000.png)
 
 
 # 基准测试

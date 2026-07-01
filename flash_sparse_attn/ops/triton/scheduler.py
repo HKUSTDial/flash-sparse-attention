@@ -32,7 +32,7 @@ class AttnFwdGridIndex:
     @staticmethod
     @triton.jit
     def create(
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         QHEAD_PER_KVHEAD: tl.constexpr,
         IS_SPLIT_KV: tl.constexpr,
         PACK_GQA: tl.constexpr,
@@ -41,8 +41,8 @@ class AttnFwdGridIndex:
         head_idx = tl.program_id(1)
         batch_split_idx = tl.program_id(2)
         if IS_SPLIT_KV:
-            batch_idx = batch_split_idx // num_splits
-            split_idx = batch_split_idx - batch_idx * num_splits
+            batch_idx = batch_split_idx // NUM_SPLITS
+            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
         else:
             batch_idx = batch_split_idx
             split_idx = 0
@@ -86,7 +86,7 @@ class AttnBwdGridIndex:
     @staticmethod
     @triton.jit
     def create(
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         QHEAD_PER_KVHEAD: tl.constexpr,
         IS_SPLIT_QO: tl.constexpr,
     ):
@@ -94,8 +94,8 @@ class AttnBwdGridIndex:
         head_idx = tl.program_id(1)
         batch_split_idx = tl.program_id(2)
         if IS_SPLIT_QO:
-            batch_idx = batch_split_idx // num_splits
-            split_idx = batch_split_idx - batch_idx * num_splits
+            batch_idx = batch_split_idx // NUM_SPLITS
+            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
         else:
             batch_idx = batch_split_idx
             split_idx = 0
@@ -134,12 +134,12 @@ class AttnDecGridIndex:
     @staticmethod
     @triton.jit
     def create(
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
     ):
         head_idx = tl.program_id(0)
         batch_split_idx = tl.program_id(1)
-        batch_idx = batch_split_idx // num_splits
-        split_idx = batch_split_idx - batch_idx * num_splits
+        batch_idx = batch_split_idx // NUM_SPLITS
+        split_idx = batch_split_idx - batch_idx * NUM_SPLITS
         head_kv_idx = head_idx
         return AttnDecGridIndex(batch_idx, head_idx, head_kv_idx, split_idx)
 
@@ -838,7 +838,7 @@ class AttnFwdBlockScheduler:
     def create(
         config: AttnFwdConfig,
         split_idx,
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         IS_CAUSAL: tl.constexpr,
         IS_LOCAL: tl.constexpr,
         IS_SPLIT_KV: tl.constexpr,
@@ -856,11 +856,11 @@ class AttnFwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
             split_idx=split_idx,
-            num_splits=num_splits,
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
             window_size_dist=config.window_size_dist,
+            NUM_SPLITS=NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=IS_CAUSAL,
@@ -889,14 +889,12 @@ class AttnFwdBlockScheduler:
             # Compute local n_block range for this m_block
             if IS_SPLIT_KV:
                 n_block_max_no_mask = tl.where(
-                    split_idx >= num_splits - 1,
+                    split_idx >= NUM_SPLITS - 1,
                     n_block_min,
                     n_block_max_no_mask,
                 )
             else:
                 n_block_max_no_mask = n_block_min
-            if IS_SPLIT_KV:
-                n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
@@ -1004,7 +1002,7 @@ class AttnBwdBlockScheduler:
     def create(
         config: AttnBwdConfig,
         split_idx,
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         IS_CAUSAL: tl.constexpr,
         IS_LOCAL: tl.constexpr,
         IS_SPLIT_QO: tl.constexpr,
@@ -1022,11 +1020,11 @@ class AttnBwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
             split_idx=split_idx,
-            num_splits=num_splits,
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
             window_size_dist=config.window_size_dist,
+            NUM_SPLITS=NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=IS_CAUSAL,
@@ -1159,8 +1157,8 @@ class AttnDecBlockScheduler:
     def create(
         config: AttnDecConfig,
         split_idx,
-        num_splits,
-        topk_seqlen_k,
+        NUM_SPLITS: tl.constexpr,
+        TOPK_SEQLEN_K: tl.constexpr,
         IS_LOCAL: tl.constexpr,
         IS_GATHER_KV: tl.constexpr = False,
     ):
@@ -1173,9 +1171,9 @@ class AttnDecBlockScheduler:
                 n_block_sink_min,
                 n_block_sink_max,
             ) = block_info.get_topk_n_block_min_max(
-                topk_seqlen_k=topk_seqlen_k,
                 split_idx=split_idx,
-                num_splits=num_splits,
+                NUM_SPLITS=NUM_SPLITS,
+                TOPK_SEQLEN_K=TOPK_SEQLEN_K,
                 TILE_N=config.TILE_N,
             )
             n_block_max_no_mask = n_block_max
@@ -1195,11 +1193,11 @@ class AttnDecBlockScheduler:
                 seqlen_k=config.actual_seqlen_k,
                 m_block=0,
                 split_idx=split_idx,
-                num_splits=num_splits,
                 window_size_sink=config.window_size_sink,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
                 window_size_dist=config.window_size_dist,
+                NUM_SPLITS=NUM_SPLITS,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_CAUSAL=False,
@@ -1226,11 +1224,10 @@ class AttnDecBlockScheduler:
         if IS_LOCAL and not IS_GATHER_KV:
             # Compute local n_block range for this m_block
             n_block_max_no_mask = tl.where(
-                split_idx >= num_splits - 1,
+                split_idx >= NUM_SPLITS - 1,
                 n_block_min,
                 n_block_max_no_mask,
             )
-            n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=1,
