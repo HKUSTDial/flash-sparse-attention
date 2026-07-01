@@ -121,7 +121,6 @@ def _fwd_dense_kernel(
     cu_seqlens_k,
     seqused_q,
     seqused_k,
-    num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
@@ -130,6 +129,7 @@ def _fwd_dense_kernel(
     QHEAD_PER_KVHEAD: tl.constexpr,
     PACK_GQA: tl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
@@ -145,7 +145,7 @@ def _fwd_dense_kernel(
 ):
     # Create grid index
     grid_idx = AttnFwdGridIndex.create(
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
         IS_SPLIT_KV=IS_SPLIT_KV,
         PACK_GQA=PACK_GQA,
@@ -236,7 +236,7 @@ def _fwd_dense_kernel(
     block_sched = AttnFwdBlockScheduler.create(
         config=config,
         split_idx=grid_idx.split_idx,
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
         IS_SPLIT_KV=IS_SPLIT_KV,
@@ -588,7 +588,7 @@ def _flash_dense_attn_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    _kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
+    kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
     launch_config = None
     if not is_autotune:
         kernel = _fwd_dense_kernel
@@ -604,7 +604,7 @@ def _flash_dense_attn_forward(
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
-            kernel_name=_kernel_name,
+            kernel_name=kernel_name,
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
@@ -634,11 +634,8 @@ def _flash_dense_attn_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_N
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_kv:
         num_splits = 1
@@ -712,7 +709,6 @@ def _flash_dense_attn_forward(
         None,
         None,
         seqused_k,
-        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
@@ -721,6 +717,7 @@ def _flash_dense_attn_forward(
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
+        NUM_SPLITS=num_splits,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -745,7 +742,7 @@ def _flash_dense_attn_forward(
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name=_kernel_name,
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,
@@ -833,7 +830,7 @@ def _flash_dense_attn_varlen_forward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    _kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
+    kernel_name = f"fwd_dense{'_split' if is_split_kv else ''}"
     launch_config = None
     if not is_autotune:
         kernel = _fwd_dense_kernel
@@ -842,7 +839,7 @@ def _flash_dense_attn_varlen_forward(
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
-            kernel_name=_kernel_name,
+            kernel_name=kernel_name,
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
@@ -869,11 +866,8 @@ def _flash_dense_attn_varlen_forward(
             num_SMs=num_SMs,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_N
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_kv:
         num_splits = 1
@@ -943,7 +937,6 @@ def _flash_dense_attn_varlen_forward(
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
@@ -952,6 +945,7 @@ def _flash_dense_attn_varlen_forward(
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
+        NUM_SPLITS=num_splits,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -974,7 +968,7 @@ def _flash_dense_attn_varlen_forward(
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name=_kernel_name,
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,

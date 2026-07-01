@@ -145,13 +145,13 @@ def _bwd_dense_kernel(
     cu_seqlens_k,
     seqused_q,
     seqused_k,
-    num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
     QHEAD_PER_KVHEAD: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
@@ -166,7 +166,7 @@ def _bwd_dense_kernel(
 ):
     # Create grid index
     grid_idx = AttnBwdGridIndex.create(
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
         IS_SPLIT_QO=IS_SPLIT_QO,
     )
@@ -266,7 +266,7 @@ def _bwd_dense_kernel(
     block_sched = AttnBwdBlockScheduler.create(
         config=config,
         split_idx=grid_idx.split_idx,
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
         IS_SPLIT_QO=IS_SPLIT_QO,
@@ -540,6 +540,7 @@ def _flash_dense_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
+    kernel_name = f"bwd_dense{'_split' if is_split_qo else ''}"
     launch_config = None
     if not is_autotune:
         kernel = _bwd_dense_kernel
@@ -548,7 +549,7 @@ def _flash_dense_attn_backward(
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
-            kernel_name="bwd_dense",
+            kernel_name=kernel_name,
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
@@ -573,11 +574,8 @@ def _flash_dense_attn_backward(
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_M
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_qo:
         num_splits = 1
@@ -686,13 +684,13 @@ def _flash_dense_attn_backward(
         None,
         None,
         None,
-        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=max(triton.next_power_of_2(seqlen_q), 256),
         SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        NUM_SPLITS=num_splits,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -714,7 +712,7 @@ def _flash_dense_attn_backward(
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name="bwd_dense",
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,
@@ -810,6 +808,7 @@ def _flash_dense_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
+    kernel_name = f"bwd_dense{'_split' if is_split_qo else ''}"
     launch_config = None
     if not is_autotune:
         kernel = _bwd_dense_kernel
@@ -818,7 +817,7 @@ def _flash_dense_attn_varlen_backward(
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
-            kernel_name="bwd_dense",
+            kernel_name=kernel_name,
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
@@ -843,11 +842,8 @@ def _flash_dense_attn_varlen_backward(
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_M
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
     elif not is_split_qo:
         num_splits = 1
@@ -962,13 +958,13 @@ def _flash_dense_attn_varlen_backward(
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=max(triton.next_power_of_2(seqlen_q), 256),
         SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        NUM_SPLITS=num_splits,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
@@ -990,7 +986,7 @@ def _flash_dense_attn_varlen_backward(
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name="bwd_dense",
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,

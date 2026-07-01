@@ -8,11 +8,11 @@ def get_n_block_min_max(
     seqlen_k,
     m_block,
     split_idx,
-    num_splits,
     window_size_sink,
     window_size_left,
     window_size_right,
     window_size_dist,
+    NUM_SPLITS: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
@@ -56,27 +56,51 @@ def get_n_block_min_max(
         n_block_window_min = tl.maximum(n_block_window_min, n_block_sink_exclude_max)
     if IS_SPLIT_KV:
         if IS_LOCAL:
-            n_block_min = n_block_window_min
-            n_block_max_with_diag = n_block_max
-            n_block_max = tl.maximum(n_block_window_max, n_block_min)
-        total_n_blocks = tl.maximum(n_block_max - n_block_min, 0)
-        base = total_n_blocks // num_splits
-        extra = total_n_blocks % num_splits
-        n_block_min_new = n_block_min + tl.where(
-            split_idx < extra,
-            split_idx * (base + 1),
-            extra * (base + 1) + (split_idx - extra) * base,
-        )
-        n_block_count = tl.where(split_idx < extra, base + 1, base)
-        n_block_max = tl.minimum(n_block_min_new + n_block_count, n_block_max)
-        n_block_min = n_block_min_new
-        if IS_LOCAL:
-            n_block_max = tl.where(
-                split_idx >= num_splits - 1,
-                n_block_max_with_diag,
-                n_block_max,
+            n_block_diag_min = tl.where(
+                seqlen_q == 1,
+                tl.maximum(tl.cdiv(tl.maximum(n_idx_dist + 1, 0), TILE_N), 0),
+                n_block_min,
             )
-        if IS_SPLIT_KV:
+            n_block_diag_min = tl.maximum(n_block_diag_min, n_block_sink_exclude_max)
+            n_block_diag_max = n_block_max
+            n_block_window_max = tl.maximum(n_block_window_max, n_block_window_min)
+            total_n_blocks = tl.maximum(n_block_window_max - n_block_window_min, 0)
+            base = total_n_blocks // NUM_SPLITS
+            extra = total_n_blocks % NUM_SPLITS
+            n_block_window_min_new = n_block_window_min + tl.where(
+                split_idx < extra,
+                split_idx * (base + 1),
+                extra * (base + 1) + (split_idx - extra) * base,
+            )
+            n_block_count = tl.where(split_idx < extra, base + 1, base)
+            n_block_window_max = tl.minimum(
+                n_block_window_min_new + n_block_count, n_block_window_max
+            )
+            n_block_window_min = n_block_window_min_new
+            n_block_sink_max = tl.where(split_idx == 0, n_block_sink_max, 0)
+            n_block_non_diag_max = tl.maximum(n_block_window_max, n_block_sink_max)
+            n_block_max = tl.where(
+                split_idx >= NUM_SPLITS - 1,
+                n_block_diag_max,
+                n_block_non_diag_max,
+            )
+            n_block_min = tl.where(
+                split_idx >= NUM_SPLITS - 1,
+                n_block_diag_min,
+                n_block_non_diag_max,
+            )
+        else:
+            total_n_blocks = tl.maximum(n_block_max - n_block_min, 0)
+            base = total_n_blocks // NUM_SPLITS
+            extra = total_n_blocks % NUM_SPLITS
+            n_block_min_new = n_block_min + tl.where(
+                split_idx < extra,
+                split_idx * (base + 1),
+                extra * (base + 1) + (split_idx - extra) * base,
+            )
+            n_block_count = tl.where(split_idx < extra, base + 1, base)
+            n_block_max = tl.minimum(n_block_min_new + n_block_count, n_block_max)
+            n_block_min = n_block_min_new
             n_block_sink_max = tl.where(split_idx == 0, n_block_sink_max, 0)
     return (
         n_block_min,
@@ -94,11 +118,11 @@ def get_m_block_min_max(
     seqlen_k,
     n_block,
     split_idx,
-    num_splits,
     window_size_sink,
     window_size_left,
     window_size_right,
     window_size_dist,
+    NUM_SPLITS: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
@@ -143,8 +167,8 @@ def get_m_block_min_max(
             m_block_min_no_mask = tl.maximum(m_block_min, tl.cdiv(m_idx, TILE_M))
             m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
             win_blocks = tl.maximum(m_block_window_max - m_block_window_min, 0)
-            base = win_blocks // num_splits
-            extra = win_blocks % num_splits
+            base = win_blocks // NUM_SPLITS
+            extra = win_blocks % NUM_SPLITS
             win_off = tl.where(
                 split_idx < extra,
                 split_idx * (base + 1),
@@ -161,8 +185,8 @@ def get_m_block_min_max(
             m_block_sink_min = tl.where(split_idx == 0, m_block_sink_min, 0)
         else:
             total_m_blocks = tl.maximum(m_block_max - m_block_min, 0)
-            base = total_m_blocks // num_splits
-            extra = total_m_blocks % num_splits
+            base = total_m_blocks // NUM_SPLITS
+            extra = total_m_blocks % NUM_SPLITS
             m_block_min_new = m_block_min + tl.where(
                 split_idx < extra,
                 split_idx * (base + 1),
@@ -279,14 +303,14 @@ def get_m_block_max_before_local_mask(
 
 @triton.jit
 def get_topk_n_block_min_max(
-    topk_seqlen_k,
     split_idx,
-    num_splits,
+    NUM_SPLITS: tl.constexpr,
+    TOPK_SEQLEN_K: tl.constexpr,
     TILE_N: tl.constexpr,
 ):
-    total_n_blocks = tl.cdiv(topk_seqlen_k, TILE_N)
-    base = total_n_blocks // num_splits
-    extra = total_n_blocks % num_splits
+    total_n_blocks = tl.cdiv(TOPK_SEQLEN_K, TILE_N)
+    base = total_n_blocks // NUM_SPLITS
+    extra = total_n_blocks % NUM_SPLITS
     n_block_min = tl.where(
         split_idx < extra,
         split_idx * (base + 1),

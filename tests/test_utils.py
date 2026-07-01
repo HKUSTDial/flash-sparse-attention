@@ -30,6 +30,7 @@ _TEXT_CACHE = {}
 
 CORRECTNESS_DTYPE = torch.bfloat16
 KernelType = Literal["dense", "sparse", "gated"]
+InputSource = Literal["random", "synthetic_llm", "llm"]
 
 _DEFAULT_RTOL = {
     "dense": 1.6e-2,
@@ -228,12 +229,112 @@ def _build_input_ids(
     return input_ids
 
 
+def _smooth_position_features(
+    seqlen: int,
+    head_dim: int,
+    device: str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    pair_dim = (head_dim + 1) // 2
+    pos = torch.arange(seqlen, device=device, dtype=torch.float32)
+    max_period = max(float(seqlen), 1024.0)
+    freqs = torch.exp(
+        torch.linspace(
+            torch.log(torch.tensor(1.0 / max_period, device=device)),
+            torch.log(torch.tensor(1.0 / 64.0, device=device)),
+            pair_dim,
+            device=device,
+            dtype=torch.float32,
+        )
+    )
+    angles = pos[:, None] * freqs[None, :]
+    features = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
+    return features[:, :head_dim].to(dtype=dtype)
+
+
+def _generate_synthetic_llm_inputs(
+    cfg: BenchmarkConfig,
+    device: str,
+    dtype: torch.dtype,
+):
+    qpk = cfg.num_heads // cfg.num_kv_heads
+    h_to_kv = torch.arange(cfg.num_heads, device=device) // qpk
+
+    pos_k = _smooth_position_features(cfg.seqlen_k, cfg.head_dim, device, dtype)
+    q_offset = cfg.seqlen_k - cfg.seqlen_q
+    pos_q = pos_k[q_offset : q_offset + cfg.seqlen_q]
+
+    noise_scale = 0.35
+    pos_scale = 0.65
+    local_block_scale = 0.75
+    sink_query_scale = 0.45
+    sink_key_scale = 1.10
+
+    q = torch.randn(
+        cfg.batch_size,
+        cfg.seqlen_q,
+        cfg.num_heads,
+        cfg.head_dim,
+        device=device,
+        dtype=dtype,
+    )
+    k = torch.randn(
+        cfg.batch_size,
+        cfg.seqlen_k,
+        cfg.num_kv_heads,
+        cfg.head_dim,
+        device=device,
+        dtype=dtype,
+    )
+    v = torch.randn(
+        cfg.batch_size,
+        cfg.seqlen_k,
+        cfg.num_kv_heads,
+        cfg.head_dim,
+        device=device,
+        dtype=dtype,
+    )
+
+    q.mul_(noise_scale).add_(pos_q[None, :, None, :], alpha=pos_scale)
+    k.mul_(noise_scale).add_(pos_k[None, :, None, :], alpha=pos_scale)
+
+    local_block = 1024
+    block_ids_k = torch.arange(cfg.seqlen_k, device=device) // local_block
+    block_ids_q = (torch.arange(cfg.seqlen_q, device=device) + q_offset) // local_block
+    num_local_blocks = (cfg.seqlen_k + local_block - 1) // local_block
+    block_latent = torch.randn(
+        cfg.batch_size,
+        num_local_blocks,
+        cfg.num_kv_heads,
+        cfg.head_dim,
+        device=device,
+        dtype=dtype,
+    )
+    q.add_(block_latent[:, block_ids_q][:, :, h_to_kv, :], alpha=local_block_scale)
+    k.add_(block_latent[:, block_ids_k], alpha=local_block_scale)
+
+    sink_tokens = min(64, cfg.seqlen_k)
+    if sink_tokens > 0:
+        sink_latent = torch.randn(
+            cfg.batch_size,
+            cfg.num_kv_heads,
+            cfg.head_dim,
+            device=device,
+            dtype=dtype,
+        )
+        q.add_(sink_latent[:, None, h_to_kv, :], alpha=sink_query_scale)
+        k[:, :sink_tokens].add_(sink_latent[:, None, :, :], alpha=sink_key_scale)
+        v[:, :sink_tokens].mul_(1.15)
+
+    return q, k, v
+
+
 def generate_inputs(
     cfg: BenchmarkConfig,
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
     layout: str = "bshd",
-    input_source: str = "random",
+    input_source: InputSource = "random",
     model_path: Optional[str] = None,
 ):
     """
@@ -244,6 +345,7 @@ def generate_inputs(
       - "bhsd": [B, H, S, D] for PyTorch SDPA backends
     input_source:
       - "random": synthetic random tensors
+      - "synthetic_llm": synthetic tensors with stronger sink and near-diagonal attention
       - "llm": tensors from a model layer q/k/v projections
     model_path:
         - Optional local folder path or HF repo id.
@@ -251,7 +353,7 @@ def generate_inputs(
     """
     if layout not in {"bshd", "bhsd"}:
         raise ValueError(f"Unsupported layout: {layout}")
-    if input_source not in {"random", "llm"}:
+    if input_source not in {"random", "synthetic_llm", "llm"}:
         raise ValueError(f"Unsupported input_source: {input_source}")
 
     if input_source == "random":
@@ -279,6 +381,8 @@ def generate_inputs(
             device=device,
             dtype=dtype,
         )
+    elif input_source == "synthetic_llm":
+        q, k, v = _generate_synthetic_llm_inputs(cfg, device=device, dtype=dtype)
     else:
         try:
             from transformers import AutoModelForCausalLM

@@ -1412,11 +1412,11 @@ def flash_sparse_attn_with_kvcache_func(
     key: torch.Tensor,
     value: torch.Tensor,
     softmax_scale: Optional[float] = None,
-    softmax_threshold: Optional[float] = None,
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
     is_quant: bool = False,
     num_splits: Optional[int] = None,
@@ -1437,11 +1437,11 @@ def flash_sparse_attn_with_kvcache_func(
     :param key: Key tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param value: Value tensor of shape [batch_size, seqlen_k, num_kv_heads, head_dim].
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
-    :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param query_scale: Optional per-tensor scale for query dequantization.
     :param key_scale: Optional per-tensor scale for key dequantization.
     :param value_scale: Optional per-tensor scale for value dequantization.
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
+    :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param num_splits: Optional split count for decode. If omitted, gather decode uses 1 split and regular decode uses a heuristic.
@@ -1471,11 +1471,11 @@ def flash_sparse_attn_with_kvcache_func(
         key=key,
         value=value,
         softmax_scale=softmax_scale,
-        softmax_threshold=softmax_threshold,
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
         window_sizes=window_sizes,
+        softmax_threshold=softmax_threshold,
         is_local=is_local,
         is_quant=is_quant,
         num_splits=num_splits,
@@ -1597,11 +1597,11 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
-    softmax_threshold: Optional[float] = None,
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
@@ -1623,11 +1623,12 @@ def flash_sparse_attn_varlen_with_kvcache_func(
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
-    :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
+
     :param query_scale: Optional per-tensor scale for query dequantization.
     :param key_scale: Optional per-tensor scale for key dequantization.
     :param value_scale: Optional per-tensor scale for value dequantization.
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
+    :param softmax_threshold: Optional threshold for the sparse softmax. If None, defaults to head_dim / max_seqlen_k.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -1658,11 +1659,11 @@ def flash_sparse_attn_varlen_with_kvcache_func(
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
-        softmax_threshold=softmax_threshold,
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
         window_sizes=window_sizes,
+        softmax_threshold=softmax_threshold,
         is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
@@ -1786,13 +1787,13 @@ def flash_gated_attn_with_kvcache_func(
     alpha: torch.Tensor,
     delta: torch.Tensor,
     softmax_scale: Optional[float] = None,
-    softmax_threshold: Optional[float] = None,
-    gate_threshold: Optional[float] = None,
-    is_logsigmoid_gate: bool = True,
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
+    gate_threshold: Optional[float] = None,
+    is_logsigmoid_gate: bool = True,
     is_local: bool = False,
     is_quant: bool = False,
     num_splits: Optional[int] = None,
@@ -1815,13 +1816,13 @@ def flash_gated_attn_with_kvcache_func(
     :param alpha: Tensor of shape [batch_size, num_heads] representing the sparsity pattern for queries.
     :param delta: Tensor of shape [batch_size, seqlen_k, num_kv_heads] representing the sparsity pattern for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
-    :param softmax_threshold: Optional threshold for the sparse softmax.
-    :param gate_threshold: Optional threshold for the sparsity gate.
-    :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param query_scale: Optional per-tensor scale for query dequantization.
     :param key_scale: Optional per-tensor scale for key dequantization.
     :param value_scale: Optional per-tensor scale for value dequantization.
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
+    :param softmax_threshold: Optional threshold for the sparse softmax.
+    :param gate_threshold: Optional threshold for the sparsity gate.
+    :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param num_splits: Optional split count for decode. If omitted, gather decode uses 1 split and regular decode uses a heuristic.
@@ -1856,13 +1857,13 @@ def flash_gated_attn_with_kvcache_func(
         alpha=alpha,
         delta=delta,
         softmax_scale=softmax_scale,
-        softmax_threshold=softmax_threshold,
-        gate_threshold=gate_threshold,
-        is_logsigmoid_gate=is_logsigmoid_gate,
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
         window_sizes=window_sizes,
+        softmax_threshold=softmax_threshold,
+        gate_threshold=gate_threshold,
+        is_logsigmoid_gate=is_logsigmoid_gate,
         is_local=is_local,
         is_quant=is_quant,
         num_splits=num_splits,
@@ -2001,13 +2002,13 @@ def flash_gated_attn_varlen_with_kvcache_func(
     cu_seqlens_k: torch.Tensor,
     max_seqlen_k: int,
     softmax_scale: Optional[float] = None,
-    softmax_threshold: Optional[float] = None,
-    gate_threshold: Optional[float] = None,
-    is_logsigmoid_gate: bool = True,
     query_scale: Optional[torch.Tensor] = None,
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
+    gate_threshold: Optional[float] = None,
+    is_logsigmoid_gate: bool = True,
     is_local: bool = False,
     is_quant: bool = False,
     seqused_k: Optional[torch.Tensor] = None,
@@ -2031,13 +2032,13 @@ def flash_gated_attn_varlen_with_kvcache_func(
     :param cu_seqlens_k: Cumulative sequence lengths for keys/values, shape [batch_size + 1].
     :param max_seqlen_k: Maximum sequence length for keys/values.
     :param softmax_scale: Optional scaling factor for the softmax. If None, defaults to 1/sqrt(head_dim).
-    :param softmax_threshold: Optional threshold for the sparse softmax.
-    :param gate_threshold: Optional threshold for the sparsity gate.
-    :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param query_scale: Optional per-tensor scale for query dequantization.
     :param key_scale: Optional per-tensor scale for key dequantization.
     :param value_scale: Optional per-tensor scale for value dequantization.
     :param window_sizes: Optional window sizes tensor for flexible local attention. Must be shape [num_kv_heads, 4] with dtype int32, with columns [window_sink, window_left, window_right, window_dist]. If provided, is_local is automatically set to True.
+    :param softmax_threshold: Optional threshold for the sparse softmax.
+    :param gate_threshold: Optional threshold for the sparsity gate.
+    :param is_logsigmoid_gate: Whether to use a log-sigmoid function for the sparsity gate. If False, uses a linear function.
     :param is_local: Whether to apply a local mask.
     :param is_quant: Whether the inputs are quantized. If True, query_scale, key_scale, and value_scale must be provided for dequantization.
     :param seqused_k: Optional tensor indicating the actual sequence lengths for keys/values.
@@ -2073,13 +2074,13 @@ def flash_gated_attn_varlen_with_kvcache_func(
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_k=max_seqlen_k,
         softmax_scale=softmax_scale,
-        softmax_threshold=softmax_threshold,
-        gate_threshold=gate_threshold,
-        is_logsigmoid_gate=is_logsigmoid_gate,
         query_scale=query_scale,
         key_scale=key_scale,
         value_scale=value_scale,
         window_sizes=window_sizes,
+        softmax_threshold=softmax_threshold,
+        gate_threshold=gate_threshold,
+        is_logsigmoid_gate=is_logsigmoid_gate,
         is_local=is_local,
         is_quant=is_quant,
         seqused_k=seqused_k,
