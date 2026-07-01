@@ -26,8 +26,8 @@ _DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "figures"
 _HATCHES = ["///", "\\\\", "||", "..", "++", "OO", "**", "xx"]
 
 _SERIES_COLORS = {
-    "FA Dense": "C0",  # blue
-    "CUDNN Dense": "C1",  # orange
+    "FA": "C0",  # blue
+    "cuDNN": "C1",  # orange
     "FSA Base": "C2",  # green
     "FSA Window": "C4",  # purple
     "FSA Split": "C5",  # brown
@@ -38,14 +38,18 @@ _SERIES_COLORS = {
 
 
 def _field_to_label(field_name: str) -> str:
-    parts = field_name.removesuffix("_ms").split("_")
-    return " ".join(
-        p.upper() if p in ("fa", "cudnn", "fsa") else p.capitalize() for p in parts
-    )
+    _LABEL_MAP = {
+        "fa": "FA",
+        "cudnn": "cuDNN",
+    }
+    stem = field_name.removesuffix("_ms")
+    if stem in _LABEL_MAP:
+        return _LABEL_MAP[stem]
+    parts = stem.split("_")
+    return " ".join(p.upper() if p in ("fsa",) else p.capitalize() for p in parts)
 
 
 def _discover_active_series(ok: list):
-    """Discover series from dataclass fields, return [(label, [vals])]."""
     result_cls = type(ok[0])
     ms_fields = [
         f.name for f in dataclasses.fields(result_cls) if f.name.endswith("_ms")
@@ -114,6 +118,13 @@ def _plot_line(
     ax.set_facecolor("white")
     x = np.array(seqlens, dtype=float)
 
+    # Identify baseline series for speedup annotations
+    baseline_vals = None
+    for label, vals in active:
+        if label == "FA":
+            baseline_vals = vals
+            break
+
     for idx, (label, vals) in enumerate(active):
         ci = _SERIES_COLORS.get(label, f"C{idx}")
         ax.plot(x, vals, label=label, color=ci, linewidth=2, linestyle="-")
@@ -137,6 +148,24 @@ def _plot_line(
             linewidth=0.9,
             zorder=4,
         )
+
+        # Annotate speedup relative to FA on non-FA series
+        if baseline_vals is not None and label != "FA":
+            for i, (xi, val, base) in enumerate(zip(x, vals, baseline_vals)):
+                if math.isnan(val) or math.isnan(base) or val <= 0:
+                    continue
+                speedup = base / val
+                ax.annotate(
+                    f"{speedup:.1f}x",
+                    xy=(xi, val),
+                    xytext=(0, -14),
+                    textcoords="offset points",
+                    ha="center",
+                    va="top",
+                    fontsize=8,
+                    fontweight="bold",
+                    color=ci,
+                )
 
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
@@ -187,32 +216,37 @@ def _plot_bar(
     n_groups = len(seqlens)
     n_methods = len(active)
 
-    # Bar geometry — thin bars, tight intra-group gap, wider inter-group gap
-    bar_width = 0.12
-    intra_gap = 0.02
+    # Bar geometry
+    bar_width = 0.1
+    intra_gap = 0.05
     group_width = n_methods * bar_width + (n_methods - 1) * intra_gap
-    inter_gap = group_width * 0.6
+    inter_gap = 0.2
 
     # X positions for each group center
     group_centers = np.zeros(n_groups)
     for i in range(1, n_groups):
         group_centers[i] = group_centers[i - 1] + group_width + inter_gap
 
-    # Dark edge colors — one per method, darkened from the default cycle
-    edge_colors = [
-        "#1f3a5f",
-        "#2f5a3a",
-        "#5a2f2f",
-        "#4a2f6e",
-        "#6d4f1f",
-        "#3a5a5f",
-        "#5f3a1f",
-        "#2f4a3a",
-        "#5a3f5f",
-        "#4f5a2f",
-    ]
+    # Dark edge colors
+    _EDGE_COLORS = {
+        "FA": "#0e3b5a",  # dark blue (C0)
+        "cuDNN": "#b35608",  # dark orange (C1)
+        "FSA Base": "#1a6b1a",  # dark green (C2)
+        "FSA Window": "#5c3d7a",  # dark purple (C4)
+        "FSA Split": "#5a3730",  # dark brown (C5)
+        "FSA Quant": "#a34d8a",  # dark pink (C6)
+        "FSA Skip": "#4a4a4a",  # dark gray (C7)
+        "FSA All": "#8b1a1a",  # dark red (C3)
+    }
 
     fig, ax = plt.subplots(figsize=(max(10.5, n_groups * 1.8), 4.5))
+
+    # Identify baseline series for speedup annotations
+    baseline_vals = None
+    for label, vals in active:
+        if label == "FA":
+            baseline_vals = vals
+            break
 
     for j, (label, vals) in enumerate(active):
         ci = _SERIES_COLORS.get(label, f"C{j}")
@@ -224,11 +258,29 @@ def _plot_bar(
             bar_width,
             label=label,
             color=ci,
-            edgecolor=edge_colors[j % len(edge_colors)],
+            edgecolor=_EDGE_COLORS.get(label, "#333333"),
             linewidth=1.0,
             hatch=_HATCHES[j % len(_HATCHES)],
             alpha=0.9,
         )
+
+        # Annotate speedup relative to FA on non-FA bars
+        if baseline_vals is not None and label != "FA":
+            for i, (pos, val, base) in enumerate(zip(positions, vals, baseline_vals)):
+                if math.isnan(val) or math.isnan(base) or val <= 0:
+                    continue
+                speedup = base / val
+                ax.annotate(
+                    f"{speedup:.1f}x",
+                    xy=(pos, val),
+                    xytext=(0, 4),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    fontsize=5,
+                    fontweight="bold",
+                    color=ci,
+                )
 
     ax.set_xticks(group_centers)
     ax.set_xticklabels([str(v) for v in seqlens], rotation=30, ha="right", fontsize=11)
@@ -241,8 +293,8 @@ def _plot_bar(
     )
     ax.set_ylabel("Latency (ms)", fontsize=14)
     ax.set_xlabel("Sequence Length", fontsize=14)
-    ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.6)
-    ax.set_axisbelow(True)
+    ax.grid(False)
+    ax.set_facecolor("white")
     for spine in ax.spines.values():
         spine.set_color("black")
         spine.set_linewidth(1.2)
