@@ -79,13 +79,16 @@ def _prune_bwd_configs(configs, named_args, **kwargs):
 
 def _prune_dec_configs(configs, named_args, **kwargs):
     tile_k = kwargs.get("TILE_K", named_args.get("TILE_K", 128))
-    seqlen_q = kwargs.get("seqlen_q", named_args.get("seqlen_q", None))
+    qhead_per_kvhead = kwargs.get(
+        "QHEAD_PER_KVHEAD_PACKGQA",
+        named_args.get("QHEAD_PER_KVHEAD_PACKGQA", 1),
+    )
     dtype_bytes = named_args["Q"].element_size()
     max_smem = _get_max_shared_mem() - 4 * 1024
     pruned = []
     for cfg in configs:
         tm, tn, ns = cfg.kwargs["TILE_M"], cfg.kwargs["TILE_N"], cfg.num_stages
-        if seqlen_q is not None and tm > seqlen_q:
+        if tm < qhead_per_kvhead:
             continue
         if _smem_bytes_dec(tm, tn, tile_k, ns, dtype_bytes) <= max_smem:
             pruned.append(cfg)
@@ -105,10 +108,11 @@ def _prune_dec_configs(configs, named_args, **kwargs):
     return pruned
 
 
-def get_fwd_dense_autotune_configs():
+def get_fwd_dense_autotune_configs(tile_n=None):
     configs = []
+    tile_ns = [tile_n] if tile_n is not None else [32, 64, 128]
     for tile_m in [64, 128, 256]:
-        for tile_n in [32, 64, 128]:
+        for tile_n in tile_ns:
             for num_warps in [4, 8]:
                 for num_stages in [1, 2, 3]:
                     configs.append(
@@ -122,10 +126,11 @@ def get_fwd_dense_autotune_configs():
     return configs
 
 
-def get_fwd_sparse_autotune_configs():
+def get_fwd_sparse_autotune_configs(tile_n=None):
     configs = []
+    tile_ns = [tile_n] if tile_n is not None else [32, 64, 128]
     for tile_m in [64, 128, 256]:
-        for tile_n in [32, 64, 128]:
+        for tile_n in tile_ns:
             for num_warps in [4, 8]:
                 for num_stages in [1, 2, 3]:
                     configs.append(
@@ -139,10 +144,11 @@ def get_fwd_sparse_autotune_configs():
     return configs
 
 
-def get_fwd_gated_autotune_configs():
+def get_fwd_gated_autotune_configs(tile_n=None):
     configs = []
+    tile_ns = [tile_n] if tile_n is not None else [32, 64, 128]
     for tile_m in [64, 128, 256]:
-        for tile_n in [32, 64, 128]:
+        for tile_n in tile_ns:
             for num_warps in [4, 8]:
                 for num_stages in [1, 2, 3]:
                     configs.append(
@@ -207,10 +213,11 @@ def get_bwd_gated_autotune_configs():
     return configs
 
 
-def get_dec_dense_autotune_configs():
+def get_dec_dense_autotune_configs(tile_n=None):
     configs = []
+    tile_ns = [tile_n] if tile_n is not None else [64, 128, 256]
     for tile_m in [16, 32, 64]:
-        for tile_n in [64, 128, 256]:
+        for tile_n in tile_ns:
             for num_warps in [4, 8]:
                 for num_stages in [1, 2, 3]:
                     configs.append(
@@ -224,10 +231,11 @@ def get_dec_dense_autotune_configs():
     return configs
 
 
-def get_dec_sparse_autotune_configs():
+def get_dec_sparse_autotune_configs(tile_n=None):
     configs = []
+    tile_ns = [tile_n] if tile_n is not None else [64, 128, 256]
     for tile_m in [16, 32, 64]:
-        for tile_n in [64, 128, 256]:
+        for tile_n in tile_ns:
             for num_warps in [4, 8]:
                 for num_stages in [1, 2, 3]:
                     configs.append(
@@ -241,10 +249,11 @@ def get_dec_sparse_autotune_configs():
     return configs
 
 
-def get_dec_gated_autotune_configs():
+def get_dec_gated_autotune_configs(tile_n=None):
     configs = []
+    tile_ns = [tile_n] if tile_n is not None else [64, 128, 256]
     for tile_m in [16, 32, 64]:
-        for tile_n in [64, 128, 256]:
+        for tile_n in tile_ns:
             for num_warps in [4, 8]:
                 for num_stages in [1, 2, 3]:
                     configs.append(
@@ -258,8 +267,8 @@ def get_dec_gated_autotune_configs():
     return configs
 
 
-def make_fwd_dense_autotuned_kernel(jit_kernel):
-    configs = get_fwd_dense_autotune_configs()
+def make_fwd_dense_autotuned_kernel(jit_kernel, tile_n=None):
+    configs = get_fwd_dense_autotune_configs(tile_n=tile_n)
     return triton.autotune(
         configs=configs,
         key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
@@ -267,8 +276,8 @@ def make_fwd_dense_autotuned_kernel(jit_kernel):
     )(jit_kernel)
 
 
-def make_fwd_sparse_autotuned_kernel(jit_kernel):
-    configs = get_fwd_sparse_autotune_configs()
+def make_fwd_sparse_autotuned_kernel(jit_kernel, tile_n=None):
+    configs = get_fwd_sparse_autotune_configs(tile_n=tile_n)
     return triton.autotune(
         configs=configs,
         key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
@@ -276,8 +285,8 @@ def make_fwd_sparse_autotuned_kernel(jit_kernel):
     )(jit_kernel)
 
 
-def make_fwd_gated_autotuned_kernel(jit_kernel):
-    configs = get_fwd_gated_autotune_configs()
+def make_fwd_gated_autotuned_kernel(jit_kernel, tile_n=None):
+    configs = get_fwd_gated_autotune_configs(tile_n=tile_n)
     return triton.autotune(
         configs=configs,
         key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_CAUSAL", "IS_LOCAL"],
@@ -312,8 +321,8 @@ def make_bwd_gated_autotuned_kernel(jit_kernel):
     )(jit_kernel)
 
 
-def make_dec_dense_autotuned_kernel(jit_kernel):
-    configs = get_dec_dense_autotune_configs()
+def make_dec_dense_autotuned_kernel(jit_kernel, tile_n=None):
+    configs = get_dec_dense_autotune_configs(tile_n=tile_n)
     return triton.autotune(
         configs=configs,
         key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_LOCAL"],
@@ -321,8 +330,8 @@ def make_dec_dense_autotuned_kernel(jit_kernel):
     )(jit_kernel)
 
 
-def make_dec_sparse_autotuned_kernel(jit_kernel):
-    configs = get_dec_sparse_autotune_configs()
+def make_dec_sparse_autotuned_kernel(jit_kernel, tile_n=None):
+    configs = get_dec_sparse_autotune_configs(tile_n=tile_n)
     return triton.autotune(
         configs=configs,
         key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_LOCAL"],
@@ -330,8 +339,8 @@ def make_dec_sparse_autotuned_kernel(jit_kernel):
     )(jit_kernel)
 
 
-def make_dec_gated_autotuned_kernel(jit_kernel):
-    configs = get_dec_gated_autotune_configs()
+def make_dec_gated_autotuned_kernel(jit_kernel, tile_n=None):
+    configs = get_dec_gated_autotune_configs(tile_n=tile_n)
     return triton.autotune(
         configs=configs,
         key=["SEQLEN_Q_CACHE", "SEQLEN_K_CACHE", "TILE_K", "IS_LOCAL"],

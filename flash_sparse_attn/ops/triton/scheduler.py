@@ -3,9 +3,14 @@ import triton.language as tl
 from triton.language.core import _aggregate as aggregate
 from triton.runtime.jit import constexpr_function
 
-from flash_sparse_attn.ops.triton import mask
-from flash_sparse_attn.ops.triton import activations
-from flash_sparse_attn.ops.triton import seqlen_info, block_info
+from flash_sparse_attn.ops.triton import (
+    seqlen_info,
+    block_info,
+    mask,
+    activations,
+    paged_kv,
+    topk_gather_kv,
+)
 
 
 @aggregate
@@ -27,7 +32,7 @@ class AttnFwdGridIndex:
     @staticmethod
     @triton.jit
     def create(
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         QHEAD_PER_KVHEAD: tl.constexpr,
         IS_SPLIT_KV: tl.constexpr,
         PACK_GQA: tl.constexpr,
@@ -36,8 +41,8 @@ class AttnFwdGridIndex:
         head_idx = tl.program_id(1)
         batch_split_idx = tl.program_id(2)
         if IS_SPLIT_KV:
-            batch_idx = batch_split_idx // num_splits
-            split_idx = batch_split_idx - batch_idx * num_splits
+            batch_idx = batch_split_idx // NUM_SPLITS
+            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
         else:
             batch_idx = batch_split_idx
             split_idx = 0
@@ -81,7 +86,7 @@ class AttnBwdGridIndex:
     @staticmethod
     @triton.jit
     def create(
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         QHEAD_PER_KVHEAD: tl.constexpr,
         IS_SPLIT_QO: tl.constexpr,
     ):
@@ -89,8 +94,8 @@ class AttnBwdGridIndex:
         head_idx = tl.program_id(1)
         batch_split_idx = tl.program_id(2)
         if IS_SPLIT_QO:
-            batch_idx = batch_split_idx // num_splits
-            split_idx = batch_split_idx - batch_idx * num_splits
+            batch_idx = batch_split_idx // NUM_SPLITS
+            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
         else:
             batch_idx = batch_split_idx
             split_idx = 0
@@ -129,12 +134,12 @@ class AttnDecGridIndex:
     @staticmethod
     @triton.jit
     def create(
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
     ):
         head_idx = tl.program_id(0)
         batch_split_idx = tl.program_id(1)
-        batch_idx = batch_split_idx // num_splits
-        split_idx = batch_split_idx - batch_idx * num_splits
+        batch_idx = batch_split_idx // NUM_SPLITS
+        split_idx = batch_split_idx - batch_idx * NUM_SPLITS
         head_kv_idx = head_idx
         return AttnDecGridIndex(batch_idx, head_idx, head_kv_idx, split_idx)
 
@@ -176,6 +181,7 @@ class AttnFwdConfig:
     TILE_M: tl.constexpr
     TILE_N: tl.constexpr
     TILE_K: tl.constexpr
+    IS_PAGED_KV: tl.constexpr
     IS_LOGSIGMOID_GATE: tl.constexpr
 
     @constexpr_function
@@ -202,6 +208,7 @@ class AttnFwdConfig:
         TILE_M,
         TILE_N,
         TILE_K,
+        IS_PAGED_KV,
         IS_LOGSIGMOID_GATE,
     ):
         self.softmax_scale_log2 = softmax_scale_log2
@@ -225,6 +232,7 @@ class AttnFwdConfig:
         self.TILE_M = tl.constexpr(TILE_M)
         self.TILE_N = tl.constexpr(TILE_N)
         self.TILE_K = tl.constexpr(TILE_K)
+        self.IS_PAGED_KV = tl.constexpr(IS_PAGED_KV)
         self.IS_LOGSIGMOID_GATE = tl.constexpr(IS_LOGSIGMOID_GATE)
 
     @staticmethod
@@ -255,6 +263,8 @@ class AttnFwdConfig:
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
         IS_CAUSAL: tl.constexpr = False,
+        IS_QUANT: tl.constexpr = False,
+        IS_PAGED_KV: tl.constexpr = False,
         IS_LOGSIGMOID_GATE: tl.constexpr = False,
         IS_ADAPT_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
@@ -285,12 +295,14 @@ class AttnFwdConfig:
             HAS_SEQUSED_Q=HAS_SEQUSED_Q,
             HAS_SEQUSED_K=HAS_SEQUSED_K,
         )
-        # Load query scale
-        q_scale = tl.load(query_scale)
-        # Load key scale
-        k_scale = tl.load(key_scale)
-        # Load value scale
-        v_scale = tl.load(value_scale)
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
         softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
@@ -334,12 +346,17 @@ class AttnFwdConfig:
             TILE_M,
             TILE_N,
             TILE_K,
+            IS_PAGED_KV,
             IS_LOGSIGMOID_GATE,
         )
 
     @triton.jit
     def get_offs_m(self):
         return self.m_block * self.TILE_M + tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self, n_block):
+        return n_block * self.TILE_N + tl.arange(0, self.TILE_N)
 
     @triton.jit
     def get_offs_k(self):
@@ -456,6 +473,7 @@ class AttnBwdConfig:
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
         IS_CAUSAL: tl.constexpr = False,
+        IS_QUANT: tl.constexpr = False,
         IS_LOGSIGMOID_GATE: tl.constexpr = False,
         IS_ADAPT_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
@@ -486,12 +504,14 @@ class AttnBwdConfig:
             HAS_SEQUSED_Q=HAS_SEQUSED_Q,
             HAS_SEQUSED_K=HAS_SEQUSED_K,
         )
-        # Load query scale
-        q_scale = tl.load(query_scale)
-        # Load key scale
-        k_scale = tl.load(key_scale)
-        # Load value scale
-        v_scale = tl.load(value_scale)
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E
         softmax_threshold = tl.full((), softmax_threshold, tl.float32)
@@ -555,6 +575,18 @@ class AttnBwdConfig:
             IS_ADAPT_GATE=self.IS_ADAPT_GATE,
         )
 
+    @triton.jit
+    def get_offs_m(self, m_block):
+        return m_block * self.TILE_M + tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self):
+        return self.n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def get_offs_k(self):
+        return tl.arange(0, self.TILE_K)
+
 
 @aggregate
 class AttnDecConfig:
@@ -578,6 +610,8 @@ class AttnDecConfig:
     TILE_M: tl.constexpr
     TILE_N: tl.constexpr
     TILE_K: tl.constexpr
+    IS_PAGED_KV: tl.constexpr
+    IS_GATHER_KV: tl.constexpr
     IS_LOGSIGMOID_GATE: tl.constexpr
 
     @constexpr_function
@@ -603,6 +637,8 @@ class AttnDecConfig:
         TILE_M,
         TILE_N,
         TILE_K,
+        IS_PAGED_KV,
+        IS_GATHER_KV,
         IS_LOGSIGMOID_GATE,
     ):
         self.softmax_scale_log2 = softmax_scale_log2
@@ -625,6 +661,8 @@ class AttnDecConfig:
         self.TILE_M = tl.constexpr(TILE_M)
         self.TILE_N = tl.constexpr(TILE_N)
         self.TILE_K = tl.constexpr(TILE_K)
+        self.IS_PAGED_KV = tl.constexpr(IS_PAGED_KV)
+        self.IS_GATHER_KV = tl.constexpr(IS_GATHER_KV)
         self.IS_LOGSIGMOID_GATE = tl.constexpr(IS_LOGSIGMOID_GATE)
 
     @staticmethod
@@ -652,6 +690,9 @@ class AttnDecConfig:
         TILE_M: tl.constexpr = 16,
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
+        IS_QUANT: tl.constexpr = False,
+        IS_PAGED_KV: tl.constexpr = False,
+        IS_GATHER_KV: tl.constexpr = False,
         IS_LOGSIGMOID_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
@@ -681,12 +722,14 @@ class AttnDecConfig:
             HAS_SEQUSED_Q=HAS_SEQUSED_Q,
             HAS_SEQUSED_K=HAS_SEQUSED_K,
         )
-        # Load query scale
-        q_scale = tl.load(query_scale)
-        # Load key scale
-        k_scale = tl.load(key_scale)
-        # Load value scale
-        v_scale = tl.load(value_scale)
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
         softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
@@ -729,8 +772,22 @@ class AttnDecConfig:
             TILE_M,
             TILE_N,
             TILE_K,
+            IS_PAGED_KV,
+            IS_GATHER_KV,
             IS_LOGSIGMOID_GATE,
         )
+
+    @triton.jit
+    def get_offs_m(self):
+        return tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self, n_block):
+        return n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def get_offs_k(self):
+        return tl.arange(0, self.TILE_K)
 
 
 @aggregate
@@ -781,7 +838,7 @@ class AttnFwdBlockScheduler:
     def create(
         config: AttnFwdConfig,
         split_idx,
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         IS_CAUSAL: tl.constexpr,
         IS_LOCAL: tl.constexpr,
         IS_SPLIT_KV: tl.constexpr,
@@ -799,11 +856,11 @@ class AttnFwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
             split_idx=split_idx,
-            num_splits=num_splits,
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
             window_size_dist=config.window_size_dist,
+            NUM_SPLITS=NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=IS_CAUSAL,
@@ -832,14 +889,12 @@ class AttnFwdBlockScheduler:
             # Compute local n_block range for this m_block
             if IS_SPLIT_KV:
                 n_block_max_no_mask = tl.where(
-                    split_idx >= num_splits - 1,
+                    split_idx >= NUM_SPLITS - 1,
                     n_block_min,
                     n_block_max_no_mask,
                 )
             else:
                 n_block_max_no_mask = n_block_min
-            if IS_SPLIT_KV:
-                n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
@@ -947,7 +1002,7 @@ class AttnBwdBlockScheduler:
     def create(
         config: AttnBwdConfig,
         split_idx,
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
         IS_CAUSAL: tl.constexpr,
         IS_LOCAL: tl.constexpr,
         IS_SPLIT_QO: tl.constexpr,
@@ -965,11 +1020,11 @@ class AttnBwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
             split_idx=split_idx,
-            num_splits=num_splits,
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
             window_size_dist=config.window_size_dist,
+            NUM_SPLITS=NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=IS_CAUSAL,
@@ -1102,58 +1157,77 @@ class AttnDecBlockScheduler:
     def create(
         config: AttnDecConfig,
         split_idx,
-        num_splits,
+        NUM_SPLITS: tl.constexpr,
+        TOPK_SEQLEN_K: tl.constexpr,
         IS_LOCAL: tl.constexpr,
+        IS_GATHER_KV: tl.constexpr = False,
     ):
-        # Compute non-causal n_block range for this m_block
-        (
-            n_block_min,
-            n_block_max,
-            n_block_window_min,
-            n_block_window_max,
-            n_block_sink_min,
-            n_block_sink_max,
-        ) = block_info.get_n_block_min_max(
-            seqlen_q=1,
-            seqlen_k=config.actual_seqlen_k,
-            m_block=0,
-            split_idx=split_idx,
-            num_splits=num_splits,
-            window_size_sink=config.window_size_sink,
-            window_size_left=config.window_size_left,
-            window_size_right=config.window_size_right,
-            window_size_dist=config.window_size_dist,
-            TILE_N=config.TILE_N,
-            TILE_M=config.TILE_M,
-            IS_CAUSAL=False,
-            IS_LOCAL=IS_LOCAL,
-            IS_SPLIT_KV=True,
-            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-        )
-        n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
-            seqlen_q=1,
-            seqlen_k=config.actual_seqlen_k,
-            m_block=0,
-            n_block_min=n_block_min,
-            window_size_right=0,
-            window_size_dist=0,
-            TILE_N=config.TILE_N,
-            TILE_M=config.TILE_M,
-            IS_LOCAL=False,
-            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-        )
+        if IS_GATHER_KV:
+            (
+                n_block_min,
+                n_block_max,
+                n_block_window_min,
+                n_block_window_max,
+                n_block_sink_min,
+                n_block_sink_max,
+            ) = block_info.get_topk_n_block_min_max(
+                split_idx=split_idx,
+                NUM_SPLITS=NUM_SPLITS,
+                TOPK_SEQLEN_K=TOPK_SEQLEN_K,
+                TILE_N=config.TILE_N,
+            )
+            n_block_max_no_mask = n_block_max
+            n_block_window_min_no_mask = 0
+            n_block_window_max_no_mask = 0
+        else:
+            # Compute non-causal n_block range for this m_block
+            (
+                n_block_min,
+                n_block_max,
+                n_block_window_min,
+                n_block_window_max,
+                n_block_sink_min,
+                n_block_sink_max,
+            ) = block_info.get_n_block_min_max(
+                seqlen_q=1,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=0,
+                split_idx=split_idx,
+                window_size_sink=config.window_size_sink,
+                window_size_left=config.window_size_left,
+                window_size_right=config.window_size_right,
+                window_size_dist=config.window_size_dist,
+                NUM_SPLITS=NUM_SPLITS,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_CAUSAL=False,
+                IS_LOCAL=IS_LOCAL,
+                IS_SPLIT_KV=True,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+            n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+                seqlen_q=1,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=0,
+                n_block_min=n_block_min,
+                window_size_right=0,
+                window_size_dist=0,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=False,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
 
-        # Clamp to split's range so the no-mask loop stays within bounds
-        n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
+            # Clamp to split's range so the no-mask loop stays within bounds
+            n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
 
-        if IS_LOCAL:
+        if IS_LOCAL and not IS_GATHER_KV:
             # Compute local n_block range for this m_block
             n_block_max_no_mask = tl.where(
-                split_idx >= num_splits - 1,
+                split_idx >= NUM_SPLITS - 1,
                 n_block_min,
                 n_block_max_no_mask,
             )
-            n_block_window_min = tl.maximum(n_block_window_min, n_block_min)
             n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=1,
@@ -1193,7 +1267,7 @@ class AttnDecBlockScheduler:
                 tl.minimum(n_block_window_min_no_mask, n_block_window_max),
                 n_block_window_min,
             )
-        else:
+        elif not IS_GATHER_KV:
             n_block_window_min = 0
             n_block_window_max = 0
             n_block_window_min_no_mask = 0
@@ -1221,12 +1295,16 @@ class AttnFwdPointerScheduler:
     d_base: tl.tensor
     out_base: tl.tensor
     lse_base: tl.tensor
+    page_table_base: tl.tensor
     head_idx: tl.tensor
     stride_qh: tl.tensor
     stride_qm: tl.tensor
+    stride_kb: tl.tensor
     stride_kn: tl.tensor
+    stride_vb: tl.tensor
     stride_vn: tl.tensor
     stride_ah: tl.tensor
+    stride_db: tl.tensor
     stride_oh: tl.tensor
     stride_om: tl.tensor
     stride_lh: tl.tensor
@@ -1241,12 +1319,16 @@ class AttnFwdPointerScheduler:
         d_base,
         out_base,
         lse_base,
+        page_table_base,
         head_idx,
         stride_qh,
         stride_qm,
+        stride_kb,
         stride_kn,
+        stride_vb,
         stride_vn,
         stride_ah,
+        stride_db,
         stride_oh,
         stride_om,
         stride_lh,
@@ -1258,12 +1340,16 @@ class AttnFwdPointerScheduler:
         self.d_base = d_base
         self.out_base = out_base
         self.lse_base = lse_base
+        self.page_table_base = page_table_base
         self.head_idx = head_idx
         self.stride_qh = stride_qh
         self.stride_qm = stride_qm
+        self.stride_kb = stride_kb
         self.stride_kn = stride_kn
+        self.stride_vb = stride_vb
         self.stride_vn = stride_vn
         self.stride_ah = stride_ah
+        self.stride_db = stride_db
         self.stride_oh = stride_oh
         self.stride_om = stride_om
         self.stride_lh = stride_lh
@@ -1277,6 +1363,7 @@ class AttnFwdPointerScheduler:
         V=None,
         A=None,
         D=None,
+        PageTable=None,
         Out=None,
         Lse=None,
         batch_idx=0,
@@ -1305,7 +1392,9 @@ class AttnFwdPointerScheduler:
         stride_lb=0,
         stride_lh=0,
         stride_ls=0,
+        stride_pb=0,
         IS_SPLIT_KV: tl.constexpr = False,
+        IS_PAGED_KV: tl.constexpr = False,
         IS_GATED: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
@@ -1321,26 +1410,32 @@ class AttnFwdPointerScheduler:
             HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
-        k_base = seqlen_info.offset_batch_K(
-            K + head_kv_idx * stride_kh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_kb,
-            stride_kn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
-        v_base = seqlen_info.offset_batch_K(
-            V + head_kv_idx * stride_vh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_vb,
-            stride_vn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
+        if IS_PAGED_KV:
+            k_base = K + head_kv_idx * stride_kh
+            v_base = V + head_kv_idx * stride_vh
+            page_table_base = PageTable + batch_idx * stride_pb
+        else:
+            k_base = seqlen_info.offset_batch_K(
+                K + head_kv_idx * stride_kh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_kb,
+                stride_kn,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            v_base = seqlen_info.offset_batch_K(
+                V + head_kv_idx * stride_vh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_vb,
+                stride_vn,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            page_table_base = tl.full((), 0, tl.int64)
         out_base = seqlen_info.offset_batch_Q(
             Out + head_idx * stride_oh if not config.PACK_GQA else Out,
             batch_idx,
@@ -1373,20 +1468,24 @@ class AttnFwdPointerScheduler:
                 HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
-            d_base = seqlen_info.offset_batch_K(
-                D + head_kv_idx * stride_dh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_db,
-                stride_dn,
-                HAS_CU_SEQLENS_K,
-                USE_PADDED=False,
-            )
+            if IS_PAGED_KV:
+                d_base = D + head_kv_idx * stride_dh
+            else:
+                d_base = seqlen_info.offset_batch_K(
+                    D + head_kv_idx * stride_dh,
+                    batch_idx,
+                    config.offset_k,
+                    config.padded_offset_k,
+                    stride_db,
+                    stride_dn,
+                    HAS_CU_SEQLENS_K,
+                    USE_PADDED=False,
+                )
         else:
             a_base = tl.full((), 0, tl.int64)
             d_base = tl.full((), 0, tl.int64)
             stride_ah = tl.full((), 0, tl.int64)
+            stride_db = tl.full((), 0, tl.int64)
 
         # For split KV, offset output and LSE base pointers by split_idx
         if IS_SPLIT_KV:
@@ -1402,12 +1501,16 @@ class AttnFwdPointerScheduler:
             d_base,
             out_base,
             lse_base,
+            page_table_base,
             head_idx,
             stride_qh + tl.full((), 0, tl.int64),
             stride_qm + tl.full((), 0, tl.int64),
+            stride_kb + tl.full((), 0, tl.int64),
             stride_kn + tl.full((), 0, tl.int64),
+            stride_vb + tl.full((), 0, tl.int64),
             stride_vn + tl.full((), 0, tl.int64),
             stride_ah + tl.full((), 0, tl.int64),
+            stride_db + tl.full((), 0, tl.int64),
             stride_oh + tl.full((), 0, tl.int64),
             stride_om + tl.full((), 0, tl.int64),
             stride_lh + tl.full((), 0, tl.int64),
@@ -1436,21 +1539,27 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def make_k_ptrs(self, config: AttnFwdConfig):
-        return tl.make_tensor_descriptor(
-            self.k_base,
-            shape=[config.actual_seqlen_k, config.head_dim],
-            strides=[self.stride_kn, 1],
-            block_shape=[config.TILE_N, config.TILE_K],
-        )
+        if config.IS_PAGED_KV:
+            return tl.full((), 0, tl.int64)
+        else:
+            return tl.make_tensor_descriptor(
+                self.k_base,
+                shape=[config.actual_seqlen_k, config.head_dim],
+                strides=[self.stride_kn, 1],
+                block_shape=[config.TILE_N, config.TILE_K],
+            )
 
     @triton.jit
     def make_v_ptrs(self, config: AttnFwdConfig):
-        return tl.make_tensor_descriptor(
-            self.v_base,
-            shape=[config.actual_seqlen_k, config.head_dim],
-            strides=[self.stride_vn, 1],
-            block_shape=[config.TILE_N, config.TILE_K],
-        )
+        if config.IS_PAGED_KV:
+            return tl.full((), 0, tl.int64)
+        else:
+            return tl.make_tensor_descriptor(
+                self.v_base,
+                shape=[config.actual_seqlen_k, config.head_dim],
+                strides=[self.stride_vn, 1],
+                block_shape=[config.TILE_N, config.TILE_K],
+            )
 
     @triton.jit
     def make_a_ptrs(self, config: AttnFwdConfig):
@@ -1466,21 +1575,11 @@ class AttnFwdPointerScheduler:
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
         else:
-            return tl.make_tensor_descriptor(
-                self.a_base,
-                shape=[config.actual_seqlen_q],
-                strides=[1],
-                block_shape=[config.TILE_M],
-            )
+            return self.a_base + config.get_offs_m()
 
     @triton.jit
     def make_d_ptrs(self, config: AttnFwdConfig):
-        return tl.make_tensor_descriptor(
-            self.d_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.d_base
 
     @triton.jit
     def make_out_ptrs(self, config: AttnFwdConfig):
@@ -1517,12 +1616,7 @@ class AttnFwdPointerScheduler:
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
         else:
-            return tl.make_tensor_descriptor(
-                self.lse_base,
-                shape=[config.actual_seqlen_q],
-                strides=[1],
-                block_shape=[config.TILE_M],
-            )
+            return self.lse_base + config.get_offs_m()
 
     @triton.jit
     def load_q(self, config: AttnFwdConfig, q_ptrs):
@@ -1543,16 +1637,42 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def load_k(self, config: AttnFwdConfig, k_ptrs, n_block):
-        return k_ptrs.load([n_block * config.TILE_N, 0])
+        if config.IS_PAGED_KV:
+            return paged_kv.load_paged_k(
+                self.k_base,
+                self.page_table_base,
+                self.stride_kb,
+                self.stride_kn,
+                n_block,
+                config.actual_seqlen_k,
+                config.head_dim,
+                config.TILE_N,
+                config.TILE_K,
+            )
+        else:
+            return k_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
     def load_v(self, config: AttnFwdConfig, v_ptrs, n_block):
-        return v_ptrs.load([n_block * config.TILE_N, 0])
+        if config.IS_PAGED_KV:
+            return paged_kv.load_paged_v(
+                self.v_base,
+                self.page_table_base,
+                self.stride_vb,
+                self.stride_vn,
+                n_block,
+                config.actual_seqlen_k,
+                config.head_dim,
+                config.TILE_N,
+                config.TILE_K,
+            )
+        else:
+            return v_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
     def load_a(self, config: AttnFwdConfig, a_ptrs):
+        offs_m = config.get_offs_m()
         if config.PACK_GQA:
-            offs_m = config.get_offs_m()
             return tl.load(
                 a_ptrs,
                 mask=(offs_m // config.QHEAD_PER_KVHEAD_PACKGQA)
@@ -1560,11 +1680,31 @@ class AttnFwdPointerScheduler:
                 other=0.0,
             ).to(tl.float32)
         else:
-            return a_ptrs.load([config.m_block * config.TILE_M]).to(tl.float32)
+            return tl.load(
+                a_ptrs,
+                mask=offs_m < config.actual_seqlen_q,
+                other=0.0,
+            ).to(tl.float32)
 
     @triton.jit
     def load_d(self, config: AttnFwdConfig, d_ptrs, n_block):
-        return d_ptrs.load([n_block * config.TILE_N]).to(tl.float32)
+        if config.IS_PAGED_KV:
+            return paged_kv.load_paged_d(
+                self.d_base,
+                self.page_table_base,
+                self.stride_db,
+                1,
+                n_block,
+                config.actual_seqlen_k,
+                config.TILE_N,
+            )
+        else:
+            offs_n = config.get_offs_n(n_block)
+            return tl.load(
+                d_ptrs + offs_n,
+                mask=offs_n < config.actual_seqlen_k,
+                other=0.0,
+            ).to(tl.float32)
 
     @triton.jit
     def store_out(
@@ -1592,8 +1732,8 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def store_lse(self, config: AttnFwdConfig, lse_ptrs, lse_tile):
+        offs_m = config.get_offs_m()
         if config.PACK_GQA:
-            offs_m = config.get_offs_m()
             tl.store(
                 lse_ptrs,
                 lse_tile,
@@ -1603,7 +1743,12 @@ class AttnFwdPointerScheduler:
                 cache_modifier=".wb",
             )
         else:
-            lse_ptrs.store([config.m_block * config.TILE_M], lse_tile)
+            tl.store(
+                lse_ptrs,
+                lse_tile,
+                mask=offs_m < config.actual_seqlen_q,
+                cache_modifier=".wb",
+            )
 
     @triton.jit
     def store_empty(
@@ -1948,21 +2093,11 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_a_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.a_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.a_base
 
     @triton.jit
     def make_d_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.d_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.d_base + config.get_offs_n()
 
     @triton.jit
     def make_do_ptrs(self, config: AttnBwdConfig):
@@ -1975,21 +2110,11 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_lse_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.lse_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.lse_base
 
     @triton.jit
     def make_dpsum_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.dpsum_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.dpsum_base
 
     @triton.jit
     def make_dq_accum_ptrs(self, config: AttnBwdConfig):
@@ -2020,21 +2145,11 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_da_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.da_base,
-            shape=[config.actual_seqlen_q],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.da_base
 
     @triton.jit
     def make_dd_ptrs(self, config: AttnBwdConfig):
-        return tl.make_tensor_descriptor(
-            self.dd_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.dd_base + config.get_offs_n()
 
     @triton.jit
     def load_q(self, config: AttnBwdConfig, q_ptrs, m_block):
@@ -2056,11 +2171,21 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def load_a(self, config: AttnBwdConfig, a_ptrs, m_block):
-        return a_ptrs.load([m_block * config.TILE_M]).to(tl.float32)
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            a_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        ).to(tl.float32)
 
     @triton.jit
     def load_d(self, config: AttnBwdConfig, d_ptrs):
-        return d_ptrs.load([config.n_block * config.TILE_N]).to(tl.float32)
+        offs_n = config.get_offs_n()
+        return tl.load(
+            d_ptrs,
+            mask=offs_n < config.actual_seqlen_k,
+            other=0.0,
+        ).to(tl.float32)
 
     @triton.jit
     def load_do(self, config: AttnBwdConfig, do_ptrs, m_block):
@@ -2068,11 +2193,21 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def load_lse(self, config: AttnBwdConfig, lse_ptrs, m_block):
-        return lse_ptrs.load([m_block * config.TILE_M])
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            lse_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        )
 
     @triton.jit
     def load_dpsum(self, config: AttnBwdConfig, dpsum_ptrs, m_block):
-        return dpsum_ptrs.load([m_block * config.TILE_M])
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            dpsum_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        )
 
     @triton.jit
     def store_dq(self, config: AttnBwdConfig, dq_ptrs, m_block, dq_tile):
@@ -2094,14 +2229,28 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def store_da(self, config: AttnBwdConfig, da_ptrs, m_block, da_tile):
-        da_ptrs.atomic_add([m_block * config.TILE_M], da_tile)
+        offs_m = config.get_offs_m(m_block)
+        tl.atomic_add(
+            da_ptrs + offs_m,
+            da_tile,
+            mask=offs_m < config.actual_seqlen_q,
+        )
 
     @triton.jit
     def store_dd(self, config: AttnBwdConfig, dd_ptrs, dd_tile):
+        offs_n = config.get_offs_n()
         if config.QHEAD_PER_KVHEAD > 1:
-            dd_ptrs.atomic_add([config.n_block * config.TILE_N], dd_tile)
+            tl.atomic_add(
+                dd_ptrs,
+                dd_tile,
+                mask=offs_n < config.actual_seqlen_k,
+            )
         else:
-            dd_ptrs.store([config.n_block * config.TILE_N], dd_tile)
+            tl.store(
+                dd_ptrs,
+                dd_tile,
+                mask=offs_n < config.actual_seqlen_k,
+            )
 
 
 @aggregate
@@ -2113,10 +2262,16 @@ class AttnDecPointerScheduler:
     d_base: tl.tensor
     out_base: tl.tensor
     lse_base: tl.tensor
+    page_table_base: tl.tensor
+    gather_kv_base: tl.tensor
     stride_qh: tl.tensor
+    stride_kb: tl.tensor
     stride_kn: tl.tensor
+    stride_vb: tl.tensor
     stride_vn: tl.tensor
+    stride_db: tl.tensor
     stride_oh: tl.tensor
+    stride_gn: tl.tensor
 
     @constexpr_function
     def __init__(
@@ -2128,10 +2283,16 @@ class AttnDecPointerScheduler:
         d_base,
         out_base,
         lse_base,
+        page_table_base,
+        gather_kv_base,
         stride_qh,
+        stride_kb,
         stride_kn,
+        stride_vb,
         stride_vn,
+        stride_db,
         stride_oh,
+        stride_gn,
     ):
         self.q_base = q_base
         self.k_base = k_base
@@ -2140,10 +2301,16 @@ class AttnDecPointerScheduler:
         self.d_base = d_base
         self.out_base = out_base
         self.lse_base = lse_base
+        self.page_table_base = page_table_base
+        self.gather_kv_base = gather_kv_base
         self.stride_qh = stride_qh
+        self.stride_kb = stride_kb
         self.stride_kn = stride_kn
+        self.stride_vb = stride_vb
         self.stride_vn = stride_vn
+        self.stride_db = stride_db
         self.stride_oh = stride_oh
+        self.stride_gn = stride_gn
 
     @staticmethod
     @triton.jit
@@ -2154,6 +2321,8 @@ class AttnDecPointerScheduler:
         V=None,
         A=None,
         D=None,
+        PageTable=None,
+        GatherKVIndices=None,
         Out=None,
         Lse=None,
         batch_idx=0,
@@ -2181,6 +2350,10 @@ class AttnDecPointerScheduler:
         stride_lh=0,
         stride_lm=0,
         stride_ls=0,
+        stride_pb=0,
+        stride_gb=0,
+        stride_gn=0,
+        IS_PAGED_KV: tl.constexpr = False,
         IS_GATED: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
@@ -2196,26 +2369,32 @@ class AttnDecPointerScheduler:
             HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
-        k_base = seqlen_info.offset_batch_K(
-            K + head_kv_idx * stride_kh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_kb,
-            stride_kn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
-        v_base = seqlen_info.offset_batch_K(
-            V + head_kv_idx * stride_vh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_vb,
-            stride_vn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
+        if IS_PAGED_KV:
+            k_base = K + head_kv_idx * stride_kh
+            v_base = V + head_kv_idx * stride_vh
+            page_table_base = PageTable + batch_idx * stride_pb
+        else:
+            k_base = seqlen_info.offset_batch_K(
+                K + head_kv_idx * stride_kh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_kb,
+                stride_kn,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            v_base = seqlen_info.offset_batch_K(
+                V + head_kv_idx * stride_vh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_vb,
+                stride_vn,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            page_table_base = tl.full((), 0, tl.int64)
         out_base = seqlen_info.offset_batch_Q(
             Out + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_oh,
             batch_idx,
@@ -2236,6 +2415,10 @@ class AttnDecPointerScheduler:
             HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
+        if config.IS_GATHER_KV:
+            gather_kv_base = GatherKVIndices + batch_idx * stride_gb
+        else:
+            gather_kv_base = tl.full((), 0, tl.int64)
 
         if IS_GATED:
             a_base = seqlen_info.offset_batch_Q(
@@ -2248,16 +2431,19 @@ class AttnDecPointerScheduler:
                 HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
-            d_base = seqlen_info.offset_batch_K(
-                D + head_kv_idx * stride_dh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_db,
-                1,
-                HAS_CU_SEQLENS_K,
-                USE_PADDED=False,
-            )
+            if IS_PAGED_KV:
+                d_base = D + head_kv_idx * stride_dh
+            else:
+                d_base = seqlen_info.offset_batch_K(
+                    D + head_kv_idx * stride_dh,
+                    batch_idx,
+                    config.offset_k,
+                    config.padded_offset_k,
+                    stride_db,
+                    1,
+                    HAS_CU_SEQLENS_K,
+                    USE_PADDED=False,
+                )
         else:
             a_base = tl.full((), 0, tl.int64)
             d_base = tl.full((), 0, tl.int64)
@@ -2275,10 +2461,16 @@ class AttnDecPointerScheduler:
             d_base,
             out_base,
             lse_base,
+            page_table_base,
+            gather_kv_base,
             stride_qh + tl.full((), 0, tl.int64),
+            stride_kb + tl.full((), 0, tl.int64),
             stride_kn + tl.full((), 0, tl.int64),
+            stride_vb + tl.full((), 0, tl.int64),
             stride_vn + tl.full((), 0, tl.int64),
+            stride_db + tl.full((), 0, tl.int64),
             stride_oh + tl.full((), 0, tl.int64),
+            stride_gn + tl.full((), 0, tl.int64),
         )
 
     @triton.jit
@@ -2292,39 +2484,35 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def make_k_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.k_base,
-            shape=[config.actual_seqlen_k, config.head_dim],
-            strides=[self.stride_kn, 1],
-            block_shape=[config.TILE_N, config.TILE_K],
-        )
+        if config.IS_PAGED_KV:
+            return tl.full((), 0, tl.int64)
+        else:
+            return tl.make_tensor_descriptor(
+                self.k_base,
+                shape=[config.actual_seqlen_k, config.head_dim],
+                strides=[self.stride_kn, 1],
+                block_shape=[config.TILE_N, config.TILE_K],
+            )
 
     @triton.jit
     def make_v_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.v_base,
-            shape=[config.actual_seqlen_k, config.head_dim],
-            strides=[self.stride_vn, 1],
-            block_shape=[config.TILE_N, config.TILE_K],
-        )
+        if config.IS_PAGED_KV:
+            return tl.full((), 0, tl.int64)
+        else:
+            return tl.make_tensor_descriptor(
+                self.v_base,
+                shape=[config.actual_seqlen_k, config.head_dim],
+                strides=[self.stride_vn, 1],
+                block_shape=[config.TILE_N, config.TILE_K],
+            )
 
     @triton.jit
     def make_a_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.a_base,
-            shape=[config.QHEAD_PER_KVHEAD_PACKGQA],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.a_base + config.get_offs_m()
 
     @triton.jit
     def make_d_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.d_base,
-            shape=[config.actual_seqlen_k],
-            strides=[1],
-            block_shape=[config.TILE_N],
-        )
+        return self.d_base
 
     @triton.jit
     def make_out_ptrs(self, config: AttnDecConfig):
@@ -2337,32 +2525,108 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def make_lse_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.lse_base,
-            shape=[config.QHEAD_PER_KVHEAD_PACKGQA],
-            strides=[1],
-            block_shape=[config.TILE_M],
-        )
+        return self.lse_base + config.get_offs_m()
 
     @triton.jit
     def load_q(self, config: AttnDecConfig, q_ptrs):
         return q_ptrs.load([0, 0])
 
     @triton.jit
-    def load_k(self, config: AttnDecConfig, k_ptrs, n_block):
-        return k_ptrs.load([n_block * config.TILE_N, 0])
+    def load_k(self, config: AttnDecConfig, k_ptrs, n_block, topk_indices=None):
+        if config.IS_PAGED_KV:
+            return paged_kv.load_paged_k(
+                self.k_base,
+                self.page_table_base,
+                self.stride_kb,
+                self.stride_kn,
+                n_block,
+                config.actual_seqlen_k,
+                config.head_dim,
+                config.TILE_N,
+                config.TILE_K,
+            )
+        elif config.IS_GATHER_KV:
+            return topk_gather_kv.load_gathered_k(
+                self.k_base,
+                topk_indices,
+                self.stride_kn,
+                config.head_dim,
+                config.TILE_K,
+            )
+        else:
+            return k_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
-    def load_v(self, config: AttnDecConfig, v_ptrs, n_block):
-        return v_ptrs.load([n_block * config.TILE_N, 0])
+    def load_v(self, config: AttnDecConfig, v_ptrs, n_block, topk_indices=None):
+        if config.IS_PAGED_KV:
+            return paged_kv.load_paged_v(
+                self.v_base,
+                self.page_table_base,
+                self.stride_vb,
+                self.stride_vn,
+                n_block,
+                config.actual_seqlen_k,
+                config.head_dim,
+                config.TILE_N,
+                config.TILE_K,
+            )
+        elif config.IS_GATHER_KV:
+            return topk_gather_kv.load_gathered_v(
+                self.v_base,
+                topk_indices,
+                self.stride_vn,
+                config.head_dim,
+                config.TILE_K,
+            )
+        else:
+            return v_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
     def load_a(self, config: AttnDecConfig, a_ptrs):
-        return a_ptrs.load([0]).to(tl.float32)
+        offs_m = config.get_offs_m()
+        return tl.load(
+            a_ptrs,
+            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
+            other=0.0,
+        ).to(tl.float32)
 
     @triton.jit
-    def load_d(self, config: AttnDecConfig, d_ptrs, n_block):
-        return d_ptrs.load([n_block * config.TILE_N]).to(tl.float32)
+    def load_d(self, config: AttnDecConfig, d_ptrs, n_block, topk_indices=None):
+        if config.IS_PAGED_KV:
+            return paged_kv.load_paged_d(
+                self.d_base,
+                self.page_table_base,
+                self.stride_db,
+                1,
+                n_block,
+                config.actual_seqlen_k,
+                config.TILE_N,
+            )
+        elif config.IS_GATHER_KV:
+            return topk_gather_kv.load_gathered_d(
+                self.d_base,
+                topk_indices,
+            )
+        else:
+            offs_n = config.get_offs_n(n_block)
+            return tl.load(
+                d_ptrs + offs_n,
+                mask=offs_n < config.actual_seqlen_k,
+                other=0.0,
+            ).to(tl.float32)
+
+    @triton.jit
+    def load_topk_indices(
+        self,
+        config: AttnDecConfig,
+        n_block,
+    ):
+        return topk_gather_kv.load_topk_indices(
+            self.gather_kv_base,
+            self.stride_gn,
+            n_block,
+            config.TILE_N,
+        )
 
     @triton.jit
     def store_out(self, config: AttnDecConfig, out_ptrs, o_tile):
@@ -2370,7 +2634,13 @@ class AttnDecPointerScheduler:
 
     @triton.jit
     def store_lse(self, config: AttnDecConfig, lse_ptrs, lse_tile):
-        lse_ptrs.store([0], lse_tile)
+        offs_m = config.get_offs_m()
+        tl.store(
+            lse_ptrs,
+            lse_tile,
+            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
+            cache_modifier=".wb",
+        )
 
     @triton.jit
     def store_empty(self, config: AttnDecConfig, out_ptrs, lse_ptrs, Out):
@@ -2489,6 +2759,17 @@ class AttnMaskScheduler:
             TILE_N=self.TILE_N,
             QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
             SWAP_AB=self.SWAP_AB,
+        )
+
+    @triton.jit
+    def apply_gather_mask(
+        self,
+        acc_s,
+        topk_indices,
+    ):
+        return topk_gather_kv.apply_gather_mask(
+            acc_s=acc_s,
+            topk_indices=topk_indices,
         )
 
 

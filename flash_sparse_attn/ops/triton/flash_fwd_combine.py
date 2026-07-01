@@ -45,6 +45,7 @@ def _fwd_combine_kernel(
     bh_idx = tl.program_id(1)
     batch_idx = bh_idx // num_heads_q
     head_idx = bh_idx - batch_idx * num_heads_q
+    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
 
     # Get seqlen info for this batch
     offset_q, actual_seqlen_q = seqlen_info.get_seqlen_info(
@@ -105,24 +106,14 @@ def _fwd_combine_kernel(
         strides=[stride_ops, stride_opm, 1],
         block_shape=[1, TILE_M, TILE_K],
     )
-    lse_part_desc = tl.make_tensor_descriptor(
-        base=lse_part_base,
-        shape=[num_splits, actual_seqlen_q],
-        strides=[stride_lps, 1],
-        block_shape=[1, TILE_M],
-    )
     out_desc = tl.make_tensor_descriptor(
         base=out_base,
         shape=[actual_seqlen_q, head_dim],
         strides=[stride_om, 1],
         block_shape=[TILE_M, TILE_K],
     )
-    lse_desc = tl.make_tensor_descriptor(
-        base=lse_base,
-        shape=[actual_seqlen_q],
-        strides=[1],
-        block_shape=[TILE_M],
-    )
+    lse_part_ptrs = lse_part_base + offs_m
+    lse_ptrs = lse_base + offs_m
 
     # Initialize accumulators
     e_sum = tl.zeros((TILE_M,), dtype=tl.float32)
@@ -132,7 +123,11 @@ def _fwd_combine_kernel(
     # Combine split outputs
     for s in tl.range(0, num_splits):
         # Load partial LSE
-        lse_s = tl.sum(lse_part_desc.load([s, m_block * TILE_M]), axis=0)
+        lse_s = tl.load(
+            lse_part_ptrs + s * stride_lps,
+            mask=offs_m < actual_seqlen_q,
+            other=float("-inf"),
+        )
 
         # Compute normalized exponentials
         new_e_max = tl.maximum(lse_s, e_max)
@@ -163,7 +158,7 @@ def _fwd_combine_kernel(
     lse = tl.where(e_sum > 0.0, (e_max + tl.log2(e_sum)) * ln2, float("-inf"))
 
     # Store LSE
-    lse_desc.store([m_block * TILE_M], lse)
+    tl.store(lse_ptrs, lse, mask=offs_m < actual_seqlen_q)
 
 
 _fwd_combine_kernel = cache_utils.wrap_kernel(_fwd_combine_kernel)

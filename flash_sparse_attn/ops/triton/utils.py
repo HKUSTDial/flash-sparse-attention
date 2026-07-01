@@ -92,41 +92,6 @@ def window_sizes_heuristic(
     ).to(device)
 
 
-def max_split_blocks_from_window_sizes(
-    window_sizes: torch.Tensor, TILE_N: int
-) -> int | None:
-    """
-    Estimate useful split-axis blocks for local attention.
-
-    The exact useful split count depends on the max values stored in window_sizes.
-
-    :param window_sizes: Int32 tensor with shape [num_heads_kv, 4], columns are [sink, left, right, dist]
-    :param TILE_N: Tile size for N dimension.
-
-    :return: Useful split-axis blocks, or None when CUDA Graph capture needs a static launch-grid bound.
-    """
-    if window_sizes is None or window_sizes.numel() == 0:
-        return 1
-    if (
-        window_sizes.is_cuda
-        and torch.cuda.is_available()
-        and torch.cuda.is_current_stream_capturing()
-    ):
-        return None
-    window_sizes = torch.clamp(window_sizes, min=0)
-    window_sink = torch.max(window_sizes[:, 0])
-    window_left = torch.max(window_sizes[:, 1])
-    window_dist = torch.max(window_sizes[:, 3])
-    distant_blocks = torch.div(window_left + TILE_N - 1, TILE_N, rounding_mode="floor")
-    near_blocks = (window_dist > 0).to(window_left.dtype)
-    sink_blocks = torch.div(window_sink + TILE_N - 1, TILE_N, rounding_mode="floor")
-    split_blocks = torch.maximum(
-        distant_blocks + near_blocks + sink_blocks,
-        torch.ones((), dtype=window_left.dtype, device=window_sizes.device),
-    )
-    return int(split_blocks)
-
-
 @functools.lru_cache(maxsize=4096)
 def num_splits_heuristic(
     seqlen_q: int,
@@ -134,7 +99,10 @@ def num_splits_heuristic(
     num_SMs: int,
     TILE_M: int,
     TILE_N: int,
-    max_split_blocks: int | None = None,
+    is_local: bool = False,
+    num_heads_kv: int = 1,
+    window_dist: int = 1024,
+    window_sink: int = 64,
 ) -> int:
     """
     Determine the number of KV splits for FlashDecoding.
@@ -147,15 +115,26 @@ def num_splits_heuristic(
     :param num_SMs: Number of streaming multiprocessors on the device.
     :param TILE_M: Tile size for M dimension.
     :param TILE_N: Tile size for N dimension.
-    :param max_split_blocks: Optional cap on useful split-axis blocks. Local two-band attention should pass this to avoid assigning splits to empty gap regions.
+    :param is_local: Whether local attention is used.
+    :param num_heads_kv: Number of KV heads.
+    :param window_dist: Near-diagonal token count shared by all KV heads.
+    :param window_sink: Sink token count shared by all KV heads.
 
     :return: Number of splits.
     """
     total_mblocks = triton.cdiv(seqlen_q, TILE_M)
     num_n_blocks = triton.cdiv(seqlen_k, TILE_N)
     effective_n_blocks = num_n_blocks
-    if max_split_blocks is not None:
-        effective_n_blocks = min(num_n_blocks, max(max_split_blocks, 1))
+    if is_local:
+        window_dist = min(max(window_dist, 0), seqlen_k)
+        window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
+        distance_span = max(seqlen_k - window_sink - window_dist, 0)
+        max_window_left = triton.cdiv(distance_span, max(num_heads_kv, 1))
+        distant_blocks = triton.cdiv(max_window_left, TILE_N)
+        near_blocks = 1 if window_dist > 0 else 0
+        sink_blocks = triton.cdiv(window_sink, TILE_N)
+        max_split_blocks = max(distant_blocks + near_blocks + sink_blocks, 1)
+        effective_n_blocks = min(num_n_blocks, max_split_blocks)
     max_splits = 1 << (max(num_SMs, 1).bit_length() - 1)
     if effective_n_blocks <= 4:
         # 1 means no splitting

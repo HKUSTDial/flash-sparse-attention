@@ -230,18 +230,19 @@ def _bwd_gated_kernel(
     cu_seqlens_k,
     seqused_q,
     seqused_k,
-    num_splits,
     seqlen_q,
     seqlen_k,
     head_dim,
     SEQLEN_Q_CACHE: tl.constexpr,
     SEQLEN_K_CACHE: tl.constexpr,
     QHEAD_PER_KVHEAD: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
+    IS_QUANT: tl.constexpr,
     IS_SPLIT_QO: tl.constexpr,
     IS_LOGSIGMOID_GATE: tl.constexpr,
     IS_ADAPT_GATE: tl.constexpr,
@@ -252,7 +253,7 @@ def _bwd_gated_kernel(
 ):
     # Create grid index
     grid_idx = AttnBwdGridIndex.create(
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
         IS_SPLIT_QO=IS_SPLIT_QO,
     )
@@ -295,6 +296,7 @@ def _bwd_gated_kernel(
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
+        IS_QUANT=IS_QUANT,
         IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
         IS_ADAPT_GATE=IS_ADAPT_GATE,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
@@ -369,7 +371,7 @@ def _bwd_gated_kernel(
     block_sched = AttnBwdBlockScheduler.create(
         config=config,
         split_idx=grid_idx.split_idx,
-        num_splits=num_splits,
+        NUM_SPLITS=NUM_SPLITS,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
         IS_SPLIT_QO=IS_SPLIT_QO,
@@ -706,7 +708,9 @@ def _flash_gated_attn_backward(
     is_local: bool = False,
     is_quant: bool = False,
     is_split_qo: bool = False,
-    is_autotune: bool = False,
+    num_splits: Optional[int] = None,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -725,8 +729,6 @@ def _flash_gated_attn_backward(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_bwd_inputs(
@@ -755,54 +757,52 @@ def _flash_gated_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    launch_config = launch_template.load_launch_config(
-        device=device,
-        kernel_name="bwd_gated",
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        tile_k=TILE_K,
-        is_local=is_local,
-        qhead_per_kvhead=qhead_per_kvhead,
-        is_causal=is_causal,
-        is_quant=is_quant,
-    )
-    if launch_config is not None and not is_autotune:
+    kernel_name = f"bwd_gated{'_split' if is_split_qo else ''}"
+    launch_config = None
+    if not is_autotune:
         kernel = _bwd_gated_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 8, 1, 1
     else:
-        kernel = _get_autotuned_kernel()
-        # Placeholder for pre-launch computations
-        TILE_M = TILE_N = 64
-        num_warps = num_stages = num_ctas = None
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name=kernel_name,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _bwd_gated_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
 
-    num_splits = (
-        utils.num_splits_heuristic(
+    if is_split_qo and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
             seqlen_q=seqlen_k,
             seqlen_k=seqlen_q,
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_M
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
-        if is_split_qo
-        else 1
-    )
+    elif not is_split_qo:
+        num_splits = 1
 
     seqlen_q_rounded = int(math.ceil(seqlen_q / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
-    dq = torch.empty_like(query, dtype=query_scale.dtype)
-    dk = torch.empty_like(key, dtype=key_scale.dtype)
-    dv = torch.empty_like(value, dtype=value_scale.dtype)
+    dq = torch.empty_like(query, dtype=dout.dtype)
+    dk = torch.empty_like(key, dtype=dout.dtype)
+    dv = torch.empty_like(value, dtype=dout.dtype)
     da = torch.empty_like(alpha)
     dd = torch.empty_like(delta)
     lse_log2 = torch.empty(
@@ -925,23 +925,24 @@ def _flash_gated_attn_backward(
         dd_accum.stride(-3) if is_split_qo and num_splits > 1 else dd_accum.stride(0),
         dd_accum.stride(-2),
         dd_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         None,
         None,
         None,
         None,
-        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=max(triton.next_power_of_2(seqlen_q), 256),
         SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        NUM_SPLITS=num_splits,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         IS_SPLIT_QO=is_split_qo and num_splits > 1,
         IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
         IS_ADAPT_GATE=is_adapt_gate,
@@ -954,12 +955,12 @@ def _flash_gated_attn_backward(
         num_ctas=num_ctas,
     )
 
-    if launch_config is None or is_autotune:
+    if is_autotune and launch_config is None:
         best = launch_template.extract_best_config(_get_autotuned_kernel())
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name="bwd_gated",
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,
@@ -1021,7 +1022,9 @@ def _flash_gated_attn_varlen_backward(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     is_split_qo: bool = False,
-    is_autotune: bool = False,
+    num_splits: Optional[int] = None,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     device = query.device
@@ -1043,8 +1046,6 @@ def _flash_gated_attn_varlen_backward(
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
-    elif not is_local:
-        window_sizes = torch.zeros((num_heads_kv, 4), dtype=torch.int32, device=device)
 
     if not skip_checks:
         assert_inputs.assert_bwd_inputs(
@@ -1073,54 +1074,52 @@ def _flash_gated_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    launch_config = launch_template.load_launch_config(
-        device=device,
-        kernel_name="bwd_gated",
-        seqlen_q=seqlen_q,
-        seqlen_k=seqlen_k,
-        tile_k=TILE_K,
-        is_local=is_local,
-        qhead_per_kvhead=qhead_per_kvhead,
-        is_causal=is_causal,
-        is_quant=is_quant,
-    )
-    if launch_config is not None and not is_autotune:
+    kernel_name = f"bwd_gated{'_split' if is_split_qo else ''}"
+    launch_config = None
+    if not is_autotune:
         kernel = _bwd_gated_kernel
-        TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 8, 1, 1
     else:
-        kernel = _get_autotuned_kernel()
-        # Placeholder for pre-launch computations
-        TILE_M = TILE_N = 64
-        num_warps = num_stages = num_ctas = None
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name=kernel_name,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _bwd_gated_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
 
-    num_splits = (
-        utils.num_splits_heuristic(
+    if is_split_qo and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
             seqlen_q=seqlen_k,
             seqlen_k=seqlen_q,
             num_SMs=num_SMs,
             TILE_M=TILE_N,
             TILE_N=TILE_M,
-            max_split_blocks=utils.max_split_blocks_from_window_sizes(
-                window_sizes, TILE_M
-            )
-            if is_local
-            else None,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
         )
-        if is_split_qo
-        else 1
-    )
+    elif not is_split_qo:
+        num_splits = 1
 
     total_q_rounded_padded = int(math.ceil((total_q + batch_size * 128) / 128) * 128)
     head_dim_rounded = int(math.ceil(head_dim / 32) * 32)
 
-    if not is_quant:
-        query_scale = torch.ones(1, device=device, dtype=query.dtype)
-        key_scale = torch.ones(1, device=device, dtype=query.dtype)
-        value_scale = torch.ones(1, device=device, dtype=query.dtype)
-
-    dq = torch.empty_like(query, dtype=query_scale.dtype)
-    dk = torch.empty_like(key, dtype=key_scale.dtype)
-    dv = torch.empty_like(value, dtype=value_scale.dtype)
+    dq = torch.empty_like(query, dtype=dout.dtype)
+    dk = torch.empty_like(key, dtype=dout.dtype)
+    dv = torch.empty_like(value, dtype=dout.dtype)
     da = torch.empty_like(alpha)
     dd = torch.empty_like(delta)
     lse_log2 = torch.empty(
@@ -1246,23 +1245,24 @@ def _flash_gated_attn_varlen_backward(
         0,
         dd_accum.stride(-2),
         dd_accum.stride(0) if is_split_qo and num_splits > 1 else 0,
-        window_sizes.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        num_splits,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
         head_dim=head_dim,
         SEQLEN_Q_CACHE=max(triton.next_power_of_2(seqlen_q), 256),
         SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        NUM_SPLITS=num_splits,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
         IS_SPLIT_QO=is_split_qo and num_splits > 1,
         IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
         IS_ADAPT_GATE=is_adapt_gate,
@@ -1275,12 +1275,12 @@ def _flash_gated_attn_varlen_backward(
         num_ctas=num_ctas,
     )
 
-    if launch_config is None or is_autotune:
+    if is_autotune and launch_config is None:
         best = launch_template.extract_best_config(_get_autotuned_kernel())
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name="bwd_gated",
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,

@@ -24,7 +24,6 @@ maintainers = [
 requires-python = ">=3.10"
 dependencies = [
   "triton>=3.6.0",
-  "triton_kernels @ git+https://github.com/triton-lang/triton.git@v3.6.0#subdirectory=python/triton_kernels"
 ]
 
 classifiers = [

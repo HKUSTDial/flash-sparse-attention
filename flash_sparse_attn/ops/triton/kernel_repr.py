@@ -14,7 +14,10 @@ def fwd_dense_repr(specialization):
     )
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     split = "_splitkv" if _get(c, "IS_SPLIT_KV") else ""
-    return f"flash_dense_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{varlen}"
+    is_paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
+    return (
+        f"flash_dense_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
+    )
 
 
 def fwd_sparse_repr(specialization):
@@ -26,7 +29,10 @@ def fwd_sparse_repr(specialization):
     )
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     split = "_splitkv" if _get(c, "IS_SPLIT_KV") else ""
-    return f"flash_sparse_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{varlen}"
+    is_paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
+    return (
+        f"flash_sparse_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
+    )
 
 
 def fwd_gated_repr(specialization):
@@ -38,7 +44,10 @@ def fwd_gated_repr(specialization):
     )
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     split = "_splitkv" if _get(c, "IS_SPLIT_KV") else ""
-    return f"flash_gated_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{varlen}"
+    is_paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
+    return (
+        f"flash_gated_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
+    )
 
 
 def bwd_dense_repr(specialization):
@@ -78,21 +87,27 @@ def dec_dense_repr(specialization):
     c = specialization.constants
     mask = "local" if _get(c, "IS_LOCAL") else "full"
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
-    return f"flash_dense_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
+    paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
+    gather = "_topk" if _get(c, "IS_GATHER_KV") else ""
+    return f"flash_dense_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{paged}{gather}{varlen}"
 
 
 def dec_sparse_repr(specialization):
     c = specialization.constants
     mask = "local" if _get(c, "IS_LOCAL") else "full"
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
-    return f"flash_sparse_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
+    paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
+    gather = "_topk" if _get(c, "IS_GATHER_KV") else ""
+    return f"flash_sparse_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{paged}{gather}{varlen}"
 
 
 def dec_gated_repr(specialization):
     c = specialization.constants
     mask = "local" if _get(c, "IS_LOCAL") else "full"
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
-    return f"flash_gated_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
+    paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
+    gather = "_topk" if _get(c, "IS_GATHER_KV") else ""
+    return f"flash_gated_dec_{mask}_{c['TILE_M']}x{c['TILE_N']}{paged}{gather}{varlen}"
 
 
 def fwd_combine_repr(specialization):
