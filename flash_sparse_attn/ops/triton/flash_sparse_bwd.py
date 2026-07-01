@@ -556,6 +556,7 @@ def _flash_sparse_attn_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
+    kernel_name = f"bwd_sparse{'_split' if is_split_qo else ''}"
     launch_config = None
     if not is_autotune:
         kernel = _bwd_sparse_kernel
@@ -564,7 +565,7 @@ def _flash_sparse_attn_backward(
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
-            kernel_name="bwd_sparse",
+            kernel_name=kernel_name,
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
@@ -728,7 +729,7 @@ def _flash_sparse_attn_backward(
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name="bwd_sparse",
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,
@@ -828,6 +829,7 @@ def _flash_sparse_attn_varlen_backward(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
+    kernel_name = f"bwd_sparse{'_split' if is_split_qo else ''}"
     launch_config = None
     if not is_autotune:
         kernel = _bwd_sparse_kernel
@@ -836,7 +838,7 @@ def _flash_sparse_attn_varlen_backward(
     else:
         launch_config = launch_template.load_launch_config(
             device=device,
-            kernel_name="bwd_sparse",
+            kernel_name=kernel_name,
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             tile_k=TILE_K,
@@ -1006,7 +1008,7 @@ def _flash_sparse_attn_varlen_backward(
         if best is not None:
             launch_template.store_launch_config(
                 device=device,
-                kernel_name="bwd_sparse",
+                kernel_name=kernel_name,
                 seqlen_q=seqlen_q,
                 seqlen_k=seqlen_k,
                 tile_k=TILE_K,
