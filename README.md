@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./assets/logo.png" alt="flash-algo" width="100%">
+  <img src="https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/logo.png" alt="flash-algo" width="100%">
 </div>
 
 <div align="center">
@@ -197,45 +197,45 @@ The following benchmarks cover forward, backward, and decode workloads, using Fl
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128, a100](assets/fsa/latency_forward_a100sxm4.png)
+![Attention forward speed, head dim 128, a100](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_forward_a100sxm4.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128, a100](assets/fsa/latency_backward_a100sxm4.png)
+![Attention backward speed, head dim 128, a100](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_backward_a100sxm4.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, a100](assets/fsa/latency_decode_a100sxm4.png)
+![Attention decode speed, head dim 128, a100](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_a100sxm4.png)
 
 
 ### H20
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128, h20-3e](assets/fsa/latency_forward_h203e.png)
+![Attention forward speed, head dim 128, h20-3e](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_forward_h203e.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128, h20-3e](assets/fsa/latency_backward_h203e.png)
+![Attention backward speed, head dim 128, h20-3e](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_backward_h203e.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, h20-3e](assets/fsa/latency_decode_h203e.png)
+![Attention decode speed, head dim 128, h20-3e](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_h203e.png)
 
 
 ### RTX PRO 6000
 
 **Forward Performance**
 
-![Attention forward speed, head dim 128, rtx pro 6000](assets/fsa/latency_forward_rtxpro6000.png)
+![Attention forward speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_forward_rtxpro6000.png)
 
 **Backward Performance**
 
-![Attention backward speed, head dim 128, rtx pro 6000](assets/fsa/latency_backward_rtxpro6000.png)
+![Attention backward speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_backward_rtxpro6000.png)
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, rtx pro 6000](assets/fsa/latency_decode_rtxpro6000.png)
+![Attention decode speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_rtxpro6000.png)
 
 
 # Benchmarking
