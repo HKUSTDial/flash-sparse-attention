@@ -348,7 +348,7 @@ def print_results(results: List[FwdBenchmarkResult]) -> None:
     headers = [
         "B",
         "H",
-        "KVH",
+        "H_kv",
         "D",
         "SeqQ",
         "SeqK",
