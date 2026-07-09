@@ -129,8 +129,13 @@ def online_sparse_softmax(
     # Compute current row max
     row_max_curr = tl.max(acc_s, axis=1)
 
-    # Update skip condition based on threshold
+    # Compute scaled differences to new row max
     row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
+
+    # Compute approximate final probability with current row max diff and row sum
+    row_max_diff_log2 -= tl.log2(row_sum)
+
+    # Update skip condition based on threshold
     skip_softmax = tl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
 
     # Return zero attention weights

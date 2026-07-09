@@ -29,10 +29,10 @@ _SERIES_COLORS = {
     "FA": "C0",  # blue
     "cuDNN": "C1",  # orange
     "FSA Base": "C2",  # green
-    "FSA Window": "C4",  # purple
-    "FSA Split": "C5",  # brown
-    "FSA Quant": "C6",  # pink
-    "FSA Skip": "C7",  # gray
+    "FSA Flex Window": "C4",  # purple
+    "FSA Split Combine": "C5",  # brown
+    "FSA Fused Quant": "C6",  # pink
+    "FSA Sparse Softmax": "C7",  # gray
     "FSA All": "C3",  # red
 }
 
@@ -41,6 +41,12 @@ def _field_to_label(field_name: str) -> str:
     _LABEL_MAP = {
         "fa": "FA",
         "cudnn": "cuDNN",
+        "fsa_base": "FSA Base",
+        "fsa_window": "FSA Flex Window",
+        "fsa_split": "FSA Split Combine",
+        "fsa_quant": "FSA Fused Quant",
+        "fsa_skip": "FSA Sparse Softmax",
+        "fsa_all": "FSA All",
     }
     stem = field_name.removesuffix("_ms")
     if stem in _LABEL_MAP:
@@ -99,10 +105,18 @@ def _get_device_name() -> str | None:
 
 
 def _title_for(ok, phase: str, device_name: str | None) -> str:
-    title = f"Attention {phase} latency with head dim {ok[0].config.head_dim}"
+    title = f"Attention {phase} latency"
     if device_name:
         title += f" on {device_name}"
     return title
+
+
+def _config_info_text(ok) -> str:
+    cfg = ok[0].config
+    return (
+        f"batch={cfg.batch_size}  heads={cfg.num_heads}  "
+        f"kv_heads={cfg.num_kv_heads}  head_dim={cfg.head_dim}"
+    )
 
 
 def _plot_line(
@@ -200,6 +214,17 @@ def _plot_line(
         edgecolor="#cccccc",
         facecolor="white",
     )
+    # Show config info to the right of the legend area
+    ax.annotate(
+        _config_info_text(ok),
+        xy=(0.5, 1.0),
+        xycoords="axes fraction",
+        ha="center",
+        va="top",
+        fontsize=10,
+        fontstyle="italic",
+        color="#555555",
+    )
     fig.tight_layout()
 
     return _save_fig(fig, f"latency_{phase}", output_dir)
@@ -232,10 +257,10 @@ def _plot_bar(
         "FA": "#0e3b5a",  # dark blue (C0)
         "cuDNN": "#b35608",  # dark orange (C1)
         "FSA Base": "#1a6b1a",  # dark green (C2)
-        "FSA Window": "#5c3d7a",  # dark purple (C4)
-        "FSA Split": "#5a3730",  # dark brown (C5)
-        "FSA Quant": "#a34d8a",  # dark pink (C6)
-        "FSA Skip": "#4a4a4a",  # dark gray (C7)
+        "FSA Flex Window": "#5c3d7a",  # dark purple (C4)
+        "FSA Split Combine": "#5a3730",  # dark brown (C5)
+        "FSA Fused Quant": "#a34d8a",  # dark pink (C6)
+        "FSA Sparse Softmax": "#4a4a4a",  # dark gray (C7)
         "FSA All": "#8b1a1a",  # dark red (C3)
     }
 
@@ -303,7 +328,17 @@ def _plot_bar(
         ncols=1,
         frameon=True,
         framealpha=0.0,
-        fontsize=11,
+        fontsize=10,
+    )
+    ax.annotate(
+        _config_info_text(ok),
+        xy=(0.5, 0.95),
+        xycoords="axes fraction",
+        ha="center",
+        va="top",
+        fontsize=10,
+        fontstyle="italic",
+        color="#000000",
     )
     fig.tight_layout()
 

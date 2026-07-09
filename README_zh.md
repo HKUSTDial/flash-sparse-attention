@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./assets/logo.png" alt="flash-algo" width="100%">
+  <img src="https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/logo.png" alt="flash-algo" width="100%">
 </div>
 
 <div align="center">
@@ -199,45 +199,45 @@ graph.replay()
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128, a100](assets/fsa/latency_forward_a100sxm4.png)
+![Attention forward speed, head dim 128, a100](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_forward_a100sxm4.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128, a100](assets/fsa/latency_backward_a100sxm4.png)
+![Attention backward speed, head dim 128, a100](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_backward_a100sxm4.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128, a100](assets/fsa/latency_decode_a100sxm4.png)
+![Attention decode speed, head dim 128, a100](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_a100sxm4.png)
 
 
 ### H20
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128, h20-3e](assets/fsa/latency_forward_h203e.png)
+![Attention forward speed, head dim 128, h20-3e](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_forward_h203e.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128, h20-3e](assets/fsa/latency_backward_h203e.png)
+![Attention backward speed, head dim 128, h20-3e](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_backward_h203e.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128, h20-3e](assets/fsa/latency_decode_h203e.png)
+![Attention decode speed, head dim 128, h20-3e](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_h203e.png)
 
 
 ### RTX PRO 6000
 
 **前向传播性能**
 
-![Attention forward speed, head dim 128, rtx pro 6000](assets/fsa/latency_forward_rtxpro6000.png)
+![Attention forward speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_forward_rtxpro6000.png)
 
 **反向传播性能**
 
-![Attention backward speed, head dim 128, rtx pro 6000](assets/fsa/latency_backward_rtxpro6000.png)
+![Attention backward speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_backward_rtxpro6000.png)
 
 **解码性能**
 
-![Attention decode speed, head dim 128, rtx pro 6000](assets/fsa/latency_decode_rtxpro6000.png)
+![Attention decode speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_rtxpro6000.png)
 
 
 # 基准测试
