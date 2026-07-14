@@ -721,11 +721,9 @@ def _flash_gated_attn_backward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1.0 / seqlen_k
     )
-    gate_threshold = (
-        gate_threshold if gate_threshold is not None else head_dim / seqlen_k
-    )
+    gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
@@ -1038,11 +1036,9 @@ def _flash_gated_attn_varlen_backward(
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
     softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
+        softmax_threshold if softmax_threshold is not None else 1.0 / seqlen_k
     )
-    gate_threshold = (
-        gate_threshold if gate_threshold is not None else head_dim / seqlen_k
-    )
+    gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
