@@ -128,7 +128,7 @@ def get_softmax_threshold(
     """
     Compute the softmax threshold for a given block.
 
-    :param softmax_threshold: Threshold value normalized by full key length.
+    :param softmax_threshold: Dimensionless multiple of uniform attention.
     :param m_block: Current block index along the M dimension.
     :param seqlen_q: Sequence length of the query.
     :param seqlen_k: Sequence length of the key.
@@ -144,10 +144,12 @@ def get_softmax_threshold(
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             q_idx = q_idx // QHEAD_PER_KVHEAD_PACKGQA
         causal_offset = seqlen_k - seqlen_q
-        s_thr = softmax_threshold * (q_idx + causal_offset + 1.0) / seqlen_k
+        visible_len = (q_idx + causal_offset + 1).to(tl.float32)
     else:
-        s_thr = tl.full((TILE_M,), softmax_threshold, dtype=tl.float32)
-    softmax_threshold_log2 = tl.log2(s_thr)
+        visible_len = tl.full((TILE_M,), seqlen_k, dtype=tl.float32)
+    softmax_threshold_log2 = tl.log2(
+        tl.maximum(tl.minimum(softmax_threshold / visible_len, 1.0), 0.0)
+    )
     return softmax_threshold_log2
 
 
