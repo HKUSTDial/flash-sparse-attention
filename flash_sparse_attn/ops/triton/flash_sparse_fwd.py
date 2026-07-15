@@ -566,9 +566,7 @@ def _flash_sparse_attn_forward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
-    softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
-    )
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
@@ -815,9 +813,7 @@ def _flash_sparse_attn_varlen_forward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
-    softmax_threshold = (
-        softmax_threshold if softmax_threshold is not None else 1 / seqlen_k
-    )
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:

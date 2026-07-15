@@ -125,7 +125,7 @@ value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, dev
 output = flash_sparse_attn_func(
     query, key, value,
     is_causal=True,
-    softmax_threshold=128.0 / seqlen,
+    softmax_threshold=1.0,
     is_local=True,
     is_quant=True,
     is_split_kv=True,
@@ -144,7 +144,7 @@ value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, dev
 output = flash_sparse_attn_func(
     query, key, value,
     is_causal=True,
-    softmax_threshold=1.0 / seqlen,
+    softmax_threshold=1.0,
     is_local=True,
     is_quant=True,
     is_split_kv=True,
@@ -166,7 +166,7 @@ value = torch.randn(batch_size, seqlen, num_kv_heads, head_dim, dtype=dtype, dev
 def fsa_decode_fn():
     return flash_sparse_attn_with_kvcache_func(
         query, key, value,
-        softmax_threshold=128.0 / seqlen,
+        softmax_threshold=1.0,
         is_local=True,
         is_quant=True,
     )
