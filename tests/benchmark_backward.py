@@ -297,7 +297,7 @@ def benchmark_fsa_skip_backward(
     k = k.requires_grad_(True)
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = cfg.head_dim / cfg.seqlen_k
+    softmax_threshold = 1.0
     try:
         out = flash_sparse_attn_func(
             q,
@@ -344,7 +344,7 @@ def benchmark_fsa_all_backward(
     k = k.requires_grad_(True)
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = cfg.head_dim / cfg.seqlen_k
+    softmax_threshold = 1.0
     window_sizes = window_sizes_heuristic(
         cfg.seqlen_k, cfg.num_kv_heads, device=torch.device(device)
     )
