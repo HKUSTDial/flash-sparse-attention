@@ -244,7 +244,7 @@ def benchmark_fsa_skip_forward(
         layout="bshd",
     )
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = cfg.head_dim / cfg.seqlen_k
+    softmax_threshold = 1.0
     try:
 
         def fn():
@@ -285,7 +285,7 @@ def benchmark_fsa_all_forward(
     k_quant, k_scale = quant.quantize_fp8(k)
     v_quant, v_scale = quant.quantize_fp8(v)
     softmax_scale = cfg.head_dim**-0.5
-    softmax_threshold = cfg.head_dim / cfg.seqlen_k
+    softmax_threshold = 1.0
     window_sizes = window_sizes_heuristic(
         cfg.seqlen_k, cfg.num_kv_heads, device=torch.device(device)
     )
