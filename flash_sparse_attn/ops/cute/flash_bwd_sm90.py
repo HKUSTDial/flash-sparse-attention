@@ -17,25 +17,25 @@ from quack import layout_utils
 from quack import sm90_utils
 from quack.sm90_utils import gemm_zero_init, gemm_w_idx
 
-from flash_sparse_attn.ops.cute.cute_dsl_utils import assume_tensor_aligned
-from flash_sparse_attn.ops.cute import utils
-from flash_sparse_attn.ops.cute.mask import AttentionMask
-from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
-from flash_sparse_attn.ops.cute.block_info import BlockInfo
-from flash_sparse_attn.ops.cute import pipeline
+from flash_attn.cute.cute_dsl_utils import assume_tensor_aligned
+from flash_attn.cute import utils
+from flash_attn.cute.mask import AttentionMask
+from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute.block_info import BlockInfo
+from flash_attn.cute import pipeline
 from quack.cute_dsl_utils import ParamsBase
-from flash_sparse_attn.ops.cute.tile_scheduler import (
+from flash_attn.cute.tile_scheduler import (
     TileSchedulerArguments,
     SingleTileScheduler,
     SingleTileLPTBwdScheduler,
     SingleTileVarlenScheduler,
 )
-from flash_sparse_attn.ops.cute import barrier
-from flash_sparse_attn.ops.cute.named_barrier import NamedBarrierBwd
-from flash_sparse_attn.ops.cute.softmax import apply_score_mod_inner, apply_score_mod_bwd_inner
-from flash_sparse_attn.ops.cute.block_sparsity import BlockSparseTensors
-from flash_sparse_attn.ops.cute.utils import AuxData
-from flash_sparse_attn.ops.cute.block_sparse_utils import (
+from flash_attn.cute import barrier
+from flash_attn.cute.named_barrier import NamedBarrierBwd
+from flash_attn.cute.softmax import apply_score_mod_inner, apply_score_mod_bwd_inner
+from flash_attn.cute.block_sparsity import BlockSparseTensors
+from flash_attn.cute.utils import AuxData
+from flash_attn.cute.block_sparse_utils import (
     get_total_q_block_count_bwd,
     produce_block_sparse_q_loads_bwd_sm90,
     consume_block_sparse_mma_bwd_sm90,

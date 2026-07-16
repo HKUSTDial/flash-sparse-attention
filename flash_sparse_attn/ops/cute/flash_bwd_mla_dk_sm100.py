@@ -45,7 +45,7 @@ import cutlass.pipeline as pipeline
 from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
 from cutlass.cute.nvgpu import cpasync, tcgen05
 
-from flash_sparse_attn.ops.cute.utils import get_batch_from_cu_tensor
+from flash_attn.cute.utils import get_batch_from_cu_tensor
 
 
 @dsl_user_op

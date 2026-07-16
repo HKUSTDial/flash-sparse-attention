@@ -10,10 +10,10 @@ from cutlass import Float32, Int32, Uint32, const_expr
 from cutlass.cutlass_dsl import min as dsl_min
 
 from quack import layout_utils
-import flash_sparse_attn.ops.cute.utils as utils
-from flash_sparse_attn.ops.cute.block_info import BlockInfo
-from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
-from flash_sparse_attn.ops.cute.utils import AuxData
+import flash_attn.cute.utils as utils
+from flash_attn.cute.block_info import BlockInfo
+from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute.utils import AuxData
 
 MaskGenFn: TypeAlias = Callable[[int], Uint32]
 MASK_R2P_CHUNK_SIZE: int = 32
