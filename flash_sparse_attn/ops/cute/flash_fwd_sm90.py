@@ -33,7 +33,11 @@ from flash_sparse_attn.ops.cute.block_sparse_utils import (
     consume_block_sparse_loads,
 )
 from flash_sparse_attn.ops.cute import pipeline as pipeline_custom
-from flash_sparse_attn.ops.cute.pack_gqa import PackGQA, pack_gqa_layout, make_packgqa_tiled_tma_atom
+from flash_sparse_attn.ops.cute.pack_gqa import (
+    PackGQA,
+    pack_gqa_layout,
+    make_packgqa_tiled_tma_atom,
+)
 from flash_sparse_attn.ops.cute.paged_kv import PagedKVManager
 from flash_sparse_attn.ops.cute.named_barrier import NamedBarrierFwd
 from quack.cute_dsl_utils import ParamsBase

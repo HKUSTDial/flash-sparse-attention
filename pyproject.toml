@@ -1,6 +1,6 @@
 
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=75", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,28 +8,20 @@ name = "flash-sparse-attn"
 dynamic = ["version"]
 description = "Flash Sparse Attention: Fast and Memory-Efficient Trainable Sparse Attention"
 readme = "README.md"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
   { name = "Jingze Shi", email = "losercheems@gmail.com" },
-  { name = "Yifan Wu", email = "ywu012@connect.hkust-gz.edu.cn" },
-  { name = "Bingheng Wu", email = "wubingheng52136@gmail.com" },
-  { name = "Yiran Peng", email = "amagipeng@gmail.com" },
-  { name = "Liangdong Wang", email = "wangliangdong@baai.ac.cn" },
-  { name = "Guang Li", email = "liuguang@baai.ac.cn" },
-  { name = "Yuyu Luo", email = "yuyuluo@hkust-gz.edu.cn" }
-]
-maintainers = [
-  { name = "Jingze Shi", email = "losercheems@gmail.com" }
-]
-requires-python = ">=3.10"
-dependencies = [
-  "triton>=3.6.0",
 ]
 
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: BSD License",
   "Operating System :: Unix"
+]
+
+dependencies = [
+  "triton>=3.6.0",
 ]
 
 [project.urls]
@@ -39,12 +31,12 @@ Issues = "https://github.com/HKUSTDial/flash-sparse-attention/issues"
 
 [project.optional-dependencies]
 cute = [
-  "nvidia-cutlass-dsl>=4.4.2",
+  "nvidia-cutlass-dsl>=4.6.0",
   "einops",
   "typing_extensions",
-  "apache-tvm-ffi>=0.1.5,<0.2",
+  "apache-tvm-ffi>=0.1.12,<0.2",
   "torch-c-dlpack-ext",
-  "quack-kernels>=0.3.3"
+  "quack-kernels>=0.5.3"
 ]
 dev = [
   "transformers>=4.38.0",
@@ -74,3 +66,13 @@ exclude = [
 flash_sparse_attn = ["*.py"]
 
 [tool.setuptools]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu130", marker = "extra == 'cu13'" },
+]
