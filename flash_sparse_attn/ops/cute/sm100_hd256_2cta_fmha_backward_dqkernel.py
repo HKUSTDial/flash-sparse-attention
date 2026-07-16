@@ -15,7 +15,7 @@ import cutlass.utils.blackwell_helpers as sm100_utils
 from cutlass.cute.typing import Int32, Int64, Float32
 
 from cutlass.utils import ClcDynamicPersistentTileScheduler
-from flash_sparse_attn.ops.cute.tile_scheduler import (
+from flash_attn.cute.tile_scheduler import (
     ClcState,
     compute_sm100_fmha_grid as compute_grid,
     compute_sm100_fmha_grid_clc as compute_grid_clc,
@@ -25,11 +25,11 @@ from flash_sparse_attn.ops.cute.tile_scheduler import (
     Sm100FmhaClcDynamicTileScheduler as FmhaClcDynamicTileScheduler,
     Sm100FmhaClcDynamicTileSchedulerParams as FmhaClcDynamicTileSchedulerParams,
 )
-from flash_sparse_attn.ops.cute.mask import (
+from flash_attn.cute.mask import (
     Sm100FusedMask as FusedMask,
 )
-from flash_sparse_attn.ops.cute.tile_scheduler import SM100_TMEM_CAPACITY_COLUMNS
-import flash_sparse_attn.ops.cute.copy_utils as fa_copy_utils
+from flash_attn.cute.tile_scheduler import SM100_TMEM_CAPACITY_COLUMNS
+import flash_attn.cute.copy_utils as fa_copy_utils
 
 
 class BlackwellFusedMultiHeadAttentionBackwardDQKernel:

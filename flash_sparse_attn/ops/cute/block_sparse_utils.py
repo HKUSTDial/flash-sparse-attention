@@ -15,10 +15,10 @@ from cutlass import Float32, Int32, const_expr
 from quack import copy_utils
 
 # Import data structures from block_sparsity
-from flash_sparse_attn.ops.cute.block_sparsity import BlockSparseTensors
-from flash_sparse_attn.ops.cute.named_barrier import NamedBarrierBwd
-from flash_sparse_attn.ops.cute.seqlen_info import SeqlenInfoQK
-from flash_sparse_attn.ops.cute.utils import AuxData
+from flash_attn.cute.block_sparsity import BlockSparseTensors
+from flash_attn.cute.named_barrier import NamedBarrierBwd
+from flash_attn.cute.seqlen_info import SeqlenInfoQK
+from flash_attn.cute.utils import AuxData
 
 
 @cute.jit
