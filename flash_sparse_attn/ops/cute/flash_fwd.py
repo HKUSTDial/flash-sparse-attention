@@ -33,12 +33,15 @@ from flash_sparse_attn.ops.cute.block_info import BlockInfo
 from flash_sparse_attn.ops.cute.pack_gqa import PackGQA, pack_gqa_layout
 from flash_sparse_attn.ops.cute.named_barrier import NamedBarrierFwd
 from flash_sparse_attn.ops.cute.block_sparsity import BlockSparseTensors
-from flash_sparse_attn.ops.cute.tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, TileSchedulerArguments
+from flash_sparse_attn.ops.cute.tile_scheduler import (
+    SingleTileScheduler,
+    SingleTileVarlenScheduler,
+    TileSchedulerArguments,
+)
 from flash_sparse_attn.ops.cute.utils import AuxData
 
 
 class FlashAttentionForwardBase:
-
     def __init__(
         self,
         dtype: Type[cutlass.Numeric],
@@ -351,7 +354,9 @@ class FlashAttentionForwardBase:
         cute.arch.barrier(
             barrier_id=int(NamedBarrierFwd.Epilogue), number_of_threads=self.num_epilogue_threads
         )
-        smem_copy_atom_O = utils.get_smem_store_atom(self.arch.major * 10 + self.arch.minor, self.dtype)
+        smem_copy_atom_O = utils.get_smem_store_atom(
+            self.arch.major * 10 + self.arch.minor, self.dtype
+        )
         smem_thr_copy_O = cute.make_tiled_copy_C(smem_copy_atom_O, tiled_mma).get_slice(tidx)
         taccOrO = smem_thr_copy_O.retile(rO)
         taccOsO = smem_thr_copy_O.partition_D(sO)
@@ -648,7 +653,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         """
         assert learnable_sink is None, "Learnable sink is not supported in this kernel"
         self._check_type(
-            *(t.element_type if t is not None else None for t in (mQ, mK, mV, mO, mLSE, mCuSeqlensQ, mCuSeqlensK, mSeqUsedQ, mSeqUsedK))
+            *(
+                t.element_type if t is not None else None
+                for t in (mQ, mK, mV, mO, mLSE, mCuSeqlensQ, mCuSeqlensK, mSeqUsedQ, mSeqUsedK)
+            )
         )
         tiled_mma_qk, tiled_mma_pv = self._get_tiled_mma()
         self.num_mma_threads = tiled_mma_pv.size
@@ -672,7 +680,9 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         ]
         if const_expr(mLSE is not None):
             LSE_layout_transpose = [2, 1, 0] if const_expr(mCuSeqlensQ is None) else [1, 0]
-            mLSE = cute.make_tensor(mLSE.iterator, cute.select(mLSE.layout, mode=LSE_layout_transpose))
+            mLSE = cute.make_tensor(
+                mLSE.iterator, cute.select(mLSE.layout, mode=LSE_layout_transpose)
+            )
         if const_expr(self.pack_gqa):
             nheads_kv = mK.shape[2]
             mQ = pack_gqa_layout(mQ, self.qhead_per_kvhead, nheads_kv, head_idx=2)
@@ -707,8 +717,12 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         )
         tile_sched_params = TileScheduler.to_underlying_arguments(tile_sched_args)
         grid_dim = TileScheduler.get_grid_shape(tile_sched_params)
-        softmax_scale_log2, softmax_scale = utils.compute_softmax_scale_log2(softmax_scale, self.score_mod)
-        fastdiv_mods = utils.compute_fastdiv_mods(mQ, mK, self.qhead_per_kvhead, self.pack_gqa, aux_data.tensors)
+        softmax_scale_log2, softmax_scale = utils.compute_softmax_scale_log2(
+            softmax_scale, self.score_mod
+        )
+        fastdiv_mods = utils.compute_fastdiv_mods(
+            mQ, mK, self.qhead_per_kvhead, self.pack_gqa, aux_data.tensors
+        )
 
         self.kernel(
             mQ,
@@ -961,9 +975,13 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         # Start async loads of the last mn-tile, where we take care of the mn residue
         gmem_thr_copy_Q = gmem_tiled_copy_Q.get_slice(tidx)
         if const_expr(not self.pack_gqa):
-            self.load_Q(gmem_thr_copy_Q, gQ, sQ, m_block, seqlen=seqlen.seqlen_q, headdim=mQ.shape[1])
+            self.load_Q(
+                gmem_thr_copy_Q, gQ, sQ, m_block, seqlen=seqlen.seqlen_q, headdim=mQ.shape[1]
+            )
         else:
-            pack_gqa = PackGQA(self.tile_m, self.tile_hdim, self.check_hdim_oob, self.qhead_per_kvhead)
+            pack_gqa = PackGQA(
+                self.tile_m, self.tile_hdim, self.check_hdim_oob, self.qhead_per_kvhead
+            )
             pack_gqa.load_Q(mQ_cur, sQ, gmem_tiled_copy_Q, tidx, m_block, seqlen.seqlen_q)
         cute.arch.cp_async_commit_group()
 
@@ -1055,9 +1073,12 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         # The remaining iterations have no masking
         for n_tile in cutlass.range(n_block, unroll=1):
             compute_one_n_block(
-                n_block - n_tile - 1, smem_pipe_read, smem_pipe_write,
-                seqlen=seqlen, is_first_n_block=False,
-                mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False)
+                n_block - n_tile - 1,
+                smem_pipe_read,
+                smem_pipe_write,
+                seqlen=seqlen,
+                is_first_n_block=False,
+                mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False),
             )
             smem_pipe_read = self.advance_pipeline(smem_pipe_read)
             smem_pipe_write = self.advance_pipeline(smem_pipe_write)
@@ -1199,6 +1220,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         )
         # if const_expr(self.num_stages > 1):
         #     load_K_next()
+
     @cute.jit
     def apply_score_mod(
         self,
@@ -1239,5 +1261,6 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
 def __getattr__(name):
     if name == "FlashAttentionForwardSm90":
         from flash_sparse_attn.ops.cute.flash_fwd_sm90 import FlashAttentionForwardSm90
+
         return FlashAttentionForwardSm90
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
