@@ -466,6 +466,9 @@ if is_git_remote_spec "$UPSTREAM_REPO"; then
     if [[ ! -d "$CACHE_REPO/.git" ]]; then
         echo "Cloning upstream repo into cache at $CACHE_DIR ..."
         invoke_git clone --origin origin "$UPSTREAM_REPO" "$CACHE_REPO"
+        echo "Running ruff check/format on upstream $UPSTREAM_PREFIX ..."
+        python -m ruff check "$CACHE_REPO/$UPSTREAM_PREFIX" --fix
+        python -m ruff format "$CACHE_REPO/$UPSTREAM_PREFIX"
     fi
     UPSTREAM_REPO_FOR_SPLIT="$CACHE_REPO"
     CURRENT_ORIGIN="$(git_output -C "$UPSTREAM_REPO_FOR_SPLIT" remote get-url origin)"
