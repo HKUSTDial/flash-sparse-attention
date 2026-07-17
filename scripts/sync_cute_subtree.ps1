@@ -585,6 +585,13 @@ if (Test-GitRemoteSpec -Value $UpstreamRepo) {
     if (-not (Test-Path $cacheRepo)) {
         Write-Host "Cloning upstream repo into cache at $CacheDir ..."
         Invoke-Git -Arguments @("clone", "--origin", "origin", $UpstreamRepo, $cacheRepo)
+        Write-Host "Running ruff check/format on upstream $UpstreamPrefix ..."
+        $upstreamTarget = Join-Path $cacheRepo $UpstreamPrefix
+        & python -m ruff check $upstreamTarget --fix
+        & python -m ruff format $upstreamTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "ruff format failed on upstream $UpstreamPrefix with exit code $LASTEXITCODE"
+        }
     }
 
     $upstreamRepoForSplit = (Resolve-Path $cacheRepo).Path
