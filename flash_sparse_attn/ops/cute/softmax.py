@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Boolean
+from cutlass import Float32, Int32, Boolean
 
 from quack import layout_utils
 import flash_sparse_attn.ops.cute.utils as utils
@@ -188,6 +188,42 @@ class Softmax(ParamsBase):
             acc_S_mn[r, None].store(acc_S_row_exp)
 
         return row_scale
+
+    @cute.jit
+    def skip(
+        self,
+        acc_S: cute.Tensor,
+        softmax_threshold_log2: cute.Tensor,
+        sSkip: cute.Tensor,
+        num_warps: cutlass.Constexpr[int],
+        is_first: cutlass.Constexpr[bool] = False,
+    ) -> Boolean:
+        """Determine whether to skip the softmax computation for this S."""
+        if cutlass.const_expr(is_first):
+            cute.arch.barrier()
+            return Boolean(False)
+
+        acc_S_mn = layout_utils.reshape_acc_to_mn(acc_S)
+        row_sum_reduced = utils.warp_reduce(self.row_sum.load(), operator.add, width=4)
+        warp_skip = Boolean(True)
+        for r in cutlass.range(cute.size(self.row_max), unroll_full=True):
+            acc_S_row = acc_S_mn[r, None].load()
+            row_max_cur = self._compute_row_max(acc_S_row)
+            row_max_cur = cute.arch.warp_reduction_max(row_max_cur, threads_in_group=4)
+            row_max_diff_log2 = (row_max_cur - self.row_max[r]) * self.scale_log2 - cute.math.log2(
+                row_sum_reduced[r], fastmath=True
+            )
+            warp_skip = warp_skip and row_max_diff_log2 < softmax_threshold_log2[r]
+
+        cta_skip = utils.cta_reduce(
+            Int32(1) if warp_skip else Int32(0),
+            sSkip,
+            operator.and_,
+            Int32(1),
+            num_warps,
+        )
+        is_skip = Boolean(cta_skip != 0)
+        return is_skip
 
     @cute.jit
     def finalize(

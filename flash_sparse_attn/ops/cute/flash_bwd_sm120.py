@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 # Copyright (c) 2025, Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, Tri Dao.
 # SM120 (Blackwell GeForce / DGX Spark) backward pass.
 #
@@ -8,7 +9,10 @@
 import cutlass
 import cutlass.utils as utils_basic
 
-from flash_sparse_attn.ops.cute.flash_bwd import FlashAttentionBackwardSm80
+from flash_sparse_attn.ops.cute.flash_bwd import (
+    FlashAttentionBackwardSm80,
+    FlashSparseAttentionBackwardSm80,
+)
 
 
 class FlashAttentionBackwardSm120(FlashAttentionBackwardSm80):
@@ -39,6 +43,46 @@ class FlashAttentionBackwardSm120(FlashAttentionBackwardSm80):
         # Shared memory usage: Q tile + dO tile + K tile + V tile
         smem_usage_Q = m_block_size * head_dim * num_stages_Q * 2
         smem_usage_dO = m_block_size * head_dim * num_stages_dO * 2
+        smem_usage_K = n_block_size * head_dim * 2
+        smem_usage_V = n_block_size * head_dim * 2
+        smem_usage_QV = (
+            (smem_usage_Q + smem_usage_V) if not V_in_regs else max(smem_usage_Q, smem_usage_V)
+        )
+        smem_usage = smem_usage_QV + smem_usage_dO + smem_usage_K
+        # SM120 has 99 KB shared memory (vs 163 KB on SM80)
+        smem_capacity = utils_basic.get_smem_capacity_in_bytes("sm_120")
+        if smem_usage > smem_capacity:
+            return False
+        return True
+
+
+class FlashSparseAttentionBackwardSm120(FlashSparseAttentionBackwardSm80):
+    @staticmethod
+    def can_implement(
+        dtype,
+        head_dim,
+        m_block_size,
+        n_block_size,
+        num_stages_Q,
+        num_threads,
+        is_causal,
+        V_in_regs=False,
+    ) -> bool:
+        """Check if the kernel can be implemented on SM120.
+
+        Same logic as SM80 but uses SM120's shared memory capacity (99 KB).
+        """
+        if dtype not in [cutlass.Float16, cutlass.BFloat16]:
+            return False
+        if head_dim % 8 != 0:
+            return False
+        if n_block_size % 16 != 0:
+            return False
+        if num_threads % 32 != 0:
+            return False
+        # Shared memory usage: Q tile + dO tile + K tile + V tile
+        smem_usage_Q = m_block_size * head_dim * num_stages_Q * 2
+        smem_usage_dO = m_block_size * head_dim * 2
         smem_usage_K = n_block_size * head_dim * 2
         smem_usage_V = n_block_size * head_dim * 2
         smem_usage_QV = (

@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 # Copyright (c) 2025, Tri Dao.
 from typing import Type, Callable, Optional
 
@@ -42,6 +43,7 @@ def gemm(
     smem_thr_copy_A: cute.TiledCopy,
     smem_thr_copy_B: cute.TiledCopy,
     hook_fn: Optional[Callable] = None,
+    hook_args: tuple = (),
     A_in_regs: cutlass.Constexpr[bool] = False,
     B_in_regs: cutlass.Constexpr[bool] = False,
     swap_AB: cutlass.Constexpr[bool] = False,
@@ -57,6 +59,7 @@ def gemm(
             smem_thr_copy_B,
             smem_thr_copy_A,
             hook_fn,
+            hook_args=hook_args,
             A_in_regs=B_in_regs,
             B_in_regs=A_in_regs,
             swap_AB=False,
@@ -80,7 +83,7 @@ def gemm(
                     )
             cute.gemm(tiled_mma, acc, tCrA[None, None, k], tCrB[None, None, k], acc)
             if cutlass.const_expr(k == 0 and hook_fn is not None):
-                hook_fn()
+                hook_fn(*hook_args)
 
 
 @cute.jit

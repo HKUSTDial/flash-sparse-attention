@@ -3,9 +3,9 @@ from dataclasses import dataclass
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Int32, const_expr
+from cutlass import Float32, Int32, const_expr
 
-from quack import copy_utils
+from quack import copy_utils, layout_utils
 
 """
 This consolidates all the info related to sequence length. This is so that we can do all
@@ -215,6 +215,33 @@ class SeqlenInfoQK:
             return copy_utils.offset_ragged_tensor(
                 mK, offset_k, self.seqlen_k, ragged_dim=0, ptr_shift=True
             )
+
+    def get_softmax_threshold(
+        self,
+        softmax_threshold: Float32,
+        m_block: Int32,
+        row_fragment: cute.Tensor,
+        thr_mma: cute.ThrMma,
+        tile_m: cutlass.Constexpr[int],
+        tile_n: cutlass.Constexpr[int],
+        is_causal: cutlass.Constexpr[bool],
+        qhead_per_kvhead_packgqa: cutlass.Constexpr[int] = 1,
+    ):
+        softmax_threshold_log2 = cute.make_fragment_like(row_fragment, Float32)
+        cS = cute.make_identity_tensor((tile_m, tile_n))
+        tScS_mn = layout_utils.reshape_acc_to_mn(thr_mma.partition_C(cS))
+        for r in range(cute.size(softmax_threshold_log2)):
+            q_idx = m_block * tile_m + tScS_mn[r, 0][0]
+            if const_expr(qhead_per_kvhead_packgqa > 1):
+                q_idx = q_idx // qhead_per_kvhead_packgqa
+            visible_len = (
+                cutlass.max(q_idx + self.seqlen_k - self.seqlen_q + 1, 1)
+                if const_expr(is_causal)
+                else cutlass.max(self.seqlen_k, 1)
+            )
+            threshold = cutlass.max(cutlass.min(softmax_threshold / Float32(visible_len), 1.0), 0.0)
+            softmax_threshold_log2[r] = cute.math.log2(threshold, fastmath=True)
+        return softmax_threshold_log2
 
 
 @dataclass(frozen=True)
