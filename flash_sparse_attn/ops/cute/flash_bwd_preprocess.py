@@ -1,4 +1,7 @@
+# Copyright (c) 2026, Jingze Shi.
 # Copyright (c) 2025, Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, Tri Dao.
+# A reimplementation of ttps://github.com/HKUSTDial/flash-sparse-attention/blob/main/flash_sparse_attn/ops/triton/flash_bwd_preprocess.py
+# from Triton to Cute-DSL.
 # A reimplementation of https://github.com/Dao-AILab/flash-attention/blob/main/hopper/flash_bwd_preprocess_kernel.h
 # from Cutlass C++ to Cute-DSL.
 #
@@ -41,11 +44,9 @@ class FlashAttentionBackwardPreprocess:
         self,
         dtype: Type[cutlass.Numeric],
         head_dim: int,
-        head_dim_v: int,
         tile_m: int = 128,
         num_threads: int = 256,
         use_padded_offsets: bool = True,
-        nheads_major: bool = False,
         pack_gqa: bool = False,
         qhead_per_kvhead: int = 1,
         nheads_kv: int = 1,
@@ -67,11 +68,9 @@ class FlashAttentionBackwardPreprocess:
         # padding head_dim to a multiple of 32 as k_block_size
         hdim_multiple_of = 32
         self.head_dim_padded = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
-        self.head_dim_v_padded = int(math.ceil(head_dim_v / hdim_multiple_of) * hdim_multiple_of)
-        self.check_hdim_v_oob = head_dim_v != self.head_dim_v_padded
+        self.check_hdim_oob = head_dim != self.head_dim_padded
         self.num_threads = num_threads
         self.use_padded_offsets = use_padded_offsets
-        self.nheads_major = nheads_major
         self.pack_gqa = pack_gqa
         self.qhead_per_kvhead = qhead_per_kvhead
         self.nheads_kv = nheads_kv
@@ -111,11 +110,11 @@ class FlashAttentionBackwardPreprocess:
         # it's just between threads in the same warp
         gmem_k_block_size = (
             128
-            if self.head_dim_v_padded % 128 == 0
+            if self.head_dim_padded % 128 == 0
             else (
                 64
-                if self.head_dim_v_padded % 64 == 0
-                else (32 if self.head_dim_v_padded % 32 == 0 else 16)
+                if self.head_dim_padded % 64 == 0
+                else (32 if self.head_dim_padded % 32 == 0 else 16)
             )
         )
         num_copy_elems = 128 // self.dtype.width
@@ -135,19 +134,16 @@ class FlashAttentionBackwardPreprocess:
     @cute.jit
     def __call__(
         self,
-        mO: cute.Tensor,  # (batch, seqlen, nheads, head_dim_v) or (total_q, nheads, head_dim_v)
+        mO: cute.Tensor,  # (batch, seqlen, nheads, head_dim) or (total_q, nheads, head_dim)
         mdO: cute.Tensor,  # same shape as mO
         mPdPsum: cute.Tensor,  # (batch, nheads, seqlen_padded) or (nheads, total_q_padded)
         mLSE: Optional[cute.Tensor],  # (batch, nheads, seqlen) or (nheads, total_q)
         mLSElog2: Optional[cute.Tensor],  # same shape as mPdPsum
-        # (batch, nheads, seqlen_padded * head_dim_v) or (nheads, total_q_padded * head_dim_v)
+        # (batch, nheads, seqlen_padded * head_dim) or (nheads, total_q_padded * head_dim)
         mdQaccum: Optional[cute.Tensor],
         mCuSeqlensQ: Optional[cute.Tensor],  # (batch + 1,)
         mSeqUsedQ: Optional[cute.Tensor],  # (batch,)
         mdLSE: Optional[cute.Tensor],  # (batch, nheads, seqlen) or (nheads, total_q)
-        mRowMax: Optional[cute.Tensor],  # (b, s, n, h) or (t, n, h)
-        mScaleP: Optional[cute.Tensor],  # == mRowMax
-        softmax_scale: Float32,
         # Always keep stream as the last parameter (EnvStream: obtained implicitly via TVM FFI).
         stream: cuda.CUstream = None,
     ):
@@ -159,7 +155,6 @@ class FlashAttentionBackwardPreprocess:
         if const_expr(mPdPsum.element_type not in [Float32]):
             raise TypeError("PdPsum tensor must be Float32")
         if const_expr(mdQaccum is not None):
-            assert self.nheads_major is False
             assert self.pack_gqa is False
             assert self.use_padded_offsets is True
             if const_expr(mdQaccum.element_type not in [Float32]):
@@ -173,15 +168,6 @@ class FlashAttentionBackwardPreprocess:
         if const_expr(mdLSE is not None):
             if const_expr(mdLSE.element_type not in [Float32]):
                 raise TypeError("dLSE tensor must be Float32")
-        if const_expr(mScaleP is not None):
-            assert self.nheads_major is True
-            assert self.pack_gqa is True
-            assert mRowMax is not None
-            if const_expr(mScaleP.element_type not in [Float32]):
-                raise TypeError("ScaleP tensor must be Float32")
-            if const_expr(mRowMax.element_type not in [Float32]):
-                raise TypeError("RowMax tensor must be Float32")
-
         self._setup_attributes()
 
         # (b, s, h, d)  -> (s, d, h, b)  or
@@ -192,34 +178,19 @@ class FlashAttentionBackwardPreprocess:
             for mX in (mO, mdO)
         ]
 
-        if const_expr(not self.nheads_major):
-            # (batch, nheads, seqlen) -> (seqlen, nheads, batch) or
-            # (nheads, total_q) -> (total_q, nheads)
-            transpose = [2, 1, 0] if const_expr(mCuSeqlensQ is None) else [1, 0]
-        else:
-            # (batch, seqlen, nheads) -> (seqlen, nheads, batch) or
-            # (total_q, nheads) -> (total_q, nheads)
-            transpose = [1, 2, 0] if const_expr(mCuSeqlensQ is None) else [0, 1]
+        # (batch, nheads, seqlen) -> (seqlen, nheads, batch) or
+        # (nheads, total_q) -> (total_q, nheads)
+        transpose = [2, 1, 0] if const_expr(mCuSeqlensQ is None) else [1, 0]
         mPdPsum, mLSE, mLSElog2, mdLSE, mdQaccum = [
             layout_utils.select(mX, transpose) if mX is not None else None
             for mX in (mPdPsum, mLSE, mLSElog2, mdLSE, mdQaccum)
         ]
 
-        # (b, s, n, h) => (s, n, h, b) or
-        # (total, n, h) == (total, n, h)
-        rowmax_layout_transpose = [1, 2, 3, 0] if const_expr(mCuSeqlensQ is None) else [0, 1, 2]
-        if const_expr(mRowMax is not None):
-            mRowMax = layout_utils.select(mRowMax, rowmax_layout_transpose)
-        if const_expr(mScaleP is not None):
-            mScaleP = layout_utils.select(mScaleP, rowmax_layout_transpose)
-
         # pack gqa
         if const_expr(self.pack_gqa):
-            mO, mdO, mRowMax, mScaleP = [
+            mO, mdO = [
                 pack_gqa_layout(mX, self.qhead_per_kvhead, self.nheads_kv, head_idx=2)
-                if mX is not None
-                else None
-                for mX in (mO, mdO, mRowMax, mScaleP)
+                for mX in (mO, mdO)
             ]
             mPdPsum, mLSE, mLSElog2, mdLSE = [
                 pack_gqa_layout(mX, self.qhead_per_kvhead, self.nheads_kv, head_idx=1)
@@ -244,8 +215,7 @@ class FlashAttentionBackwardPreprocess:
             num_batch=num_batch,
             num_splits=1,
             seqlen_k=0,
-            headdim=0,
-            headdim_v=mO.shape[1],
+            headdim=mO.shape[1],
             total_q=cute.size(mO.shape[0])
             if const_expr(mCuSeqlensQ is not None)
             else cute.size(mO.shape[0]) * cute.size(mO.shape[3]),
@@ -258,9 +228,6 @@ class FlashAttentionBackwardPreprocess:
         tile_sched_params = TileScheduler.to_underlying_arguments(tile_sched_args)
         grid_dim = TileScheduler.get_grid_shape(tile_sched_params)
 
-        LOG2_E = math.log2(math.e)
-        softmax_scale_log2 = softmax_scale * LOG2_E
-
         self.kernel(
             mO,
             mdO,
@@ -271,9 +238,6 @@ class FlashAttentionBackwardPreprocess:
             mCuSeqlensQ,
             mSeqUsedQ,
             mdLSE,
-            mRowMax,
-            mScaleP,
-            softmax_scale_log2,
             self.gmem_tiled_copy_O,
             self.gmem_tiled_copy_dQaccum,
             tile_sched_params,
@@ -297,9 +261,6 @@ class FlashAttentionBackwardPreprocess:
         mCuSeqlensQ: Optional[cute.Tensor],
         mSeqUsedQ: Optional[cute.Tensor],
         mdLSE: Optional[cute.Tensor],
-        mRowMax: Optional[cute.Tensor],
-        mScaleP: Optional[cute.Tensor],
-        softmax_scale_log2: Float32,
         gmem_tiled_copy_O: cute.TiledCopy,
         gmem_tiled_copy_dQaccum: cute.TiledCopy,
         tile_sched_params: ParamsBase,
@@ -335,7 +296,7 @@ class FlashAttentionBackwardPreprocess:
             mPdPsum_cur = seqlen.offset_batch(
                 mPdPsum, batch_idx, dim=2, padded=self.use_padded_offsets
             )[None, head_idx]
-            headdim_v = mO_cur.shape[1]
+            headdim = mO_cur.shape[1]
             seqlen_q = (
                 seqlen.seqlen
                 if const_expr(not self.pack_gqa)
@@ -352,7 +313,7 @@ class FlashAttentionBackwardPreprocess:
                 if tidx < seqlen_limit:
                     lse = gLSE[tidx]
 
-            blk_shape = (self.tile_m, self.head_dim_v_padded)
+            blk_shape = (self.tile_m, self.head_dim_padded)
             gO = cute.local_tile(mO_cur, blk_shape, (m_block, 0))
             gdO = cute.local_tile(mdO_cur, blk_shape, (m_block, 0))
             gmem_thr_copy_O = gmem_tiled_copy_O.get_slice(tidx)
@@ -363,14 +324,14 @@ class FlashAttentionBackwardPreprocess:
             tOcO = gmem_thr_copy_O.partition_S(cO)
             t0OcO = gmem_thr_copy_O.get_slice(0).partition_S(cO)
             tOpO = None
-            if const_expr(self.check_hdim_v_oob):
-                tOpO = copy_utils.predicate_k(tOcO, limit=headdim_v)
+            if const_expr(self.check_hdim_oob):
+                tOpO = copy_utils.predicate_k(tOcO, limit=headdim)
             # Each copy will use the same predicate
             copy = partial(copy_utils.copy, pred=tOpO)
 
             tOrO = cute.make_rmem_tensor_like(tOgO)
             tOrdO = cute.make_rmem_tensor_like(tOgdO)
-            if const_expr(self.check_hdim_v_oob):
+            if const_expr(self.check_hdim_oob):
                 tOrO.fill(0.0)
                 tOrdO.fill(0.0)
             assert tOgO.shape == tOgdO.shape
@@ -440,26 +401,3 @@ class FlashAttentionBackwardPreprocess:
                 LOG2_E = math.log2(math.e)
                 if tidx < seqlen_q_rounded - m_block * self.tile_m:
                     gLSElog2[tidx] = lse_log2
-
-            if const_expr(mRowMax is not None):
-                assert mLSE is not None
-                # (s, n)
-                mRowMax_cur, mScaleP_cur = [
-                    seqlen.offset_batch(mX, batch_idx, dim=3)[None, None, head_idx]
-                    for mX in (mRowMax, mScaleP)
-                ]
-                # (tile_m, n)
-                gRowMax, gScaleP = [
-                    cute.local_tile(mX, (self.tile_m,), (m_block, None))
-                    for mX in (mRowMax_cur, mScaleP_cur)
-                ]
-
-                assert self.tile_m <= self.num_threads
-                if const_expr(self.tile_m == self.num_threads) or tidx < self.tile_m:
-                    for n in cutlass.range(gRowMax.shape[1], unroll=4):
-                        row_max = gRowMax[tidx, n]
-                        scale = 0.0
-                        if row_max != -Float32.inf and lse != -Float32.inf:
-                            scale = softmax_scale_log2 * row_max - lse_log2
-                            scale = cute.math.exp2(scale, fastmath=True)
-                        gScaleP[tidx, n] = scale
