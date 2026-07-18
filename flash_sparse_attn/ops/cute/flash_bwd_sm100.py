@@ -52,7 +52,6 @@ class FlashAttentionBackwardSm100:
     def __init__(
         self,
         head_dim: int,
-        head_dim_v: Optional[int] = None,
         is_causal: bool = False,
         is_local: bool = False,
         qhead_per_kvhead: cutlass.Constexpr[int] = 1,
@@ -73,17 +72,12 @@ class FlashAttentionBackwardSm100:
         # padding head_dim to a multiple of 16 as k_block_size
         hdim_multiple_of = 16
         self.tile_hdim = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
-        head_dim_v = head_dim_v if head_dim_v is not None else head_dim
-        self.same_hdim_kv = head_dim == head_dim_v
-        self.tile_hdimv = int(math.ceil(head_dim_v / hdim_multiple_of) * hdim_multiple_of)
         self.check_hdim_oob = head_dim != self.tile_hdim
-        self.check_hdim_v_oob = head_dim_v != self.tile_hdimv
 
         self.tile_m = tile_m
         self.tile_n = tile_n
 
-        assert self.tile_hdim <= 128 or (self.tile_hdim == 192 and self.tile_hdimv == 128)
-        assert self.tile_hdimv <= 128
+        assert self.tile_hdim <= 128
 
         self.use_2cta_instrs = bool(use_2cta_instrs and cluster_size == 2)
         self.cta_group_size = 2 if self.use_2cta_instrs else 1
@@ -95,9 +89,9 @@ class FlashAttentionBackwardSm100:
         # S = K @ Q.T
         self.mma_tiler_kq = (self.cta_group_size * tile_n, tile_m, self.tile_hdim)
         # dP = V @ dO.T
-        self.mma_tiler_vdo = (self.cta_group_size * tile_n, tile_m, self.tile_hdimv)
+        self.mma_tiler_vdo = (self.cta_group_size * tile_n, tile_m, self.tile_hdim)
         # dV = P.T @ dO
-        self.mma_tiler_pdo = (self.cta_group_size * tile_n, self.tile_hdimv, tile_m)
+        self.mma_tiler_pdo = (self.cta_group_size * tile_n, self.tile_hdim, tile_m)
         # dK = dS.T @ Q
         self.mma_tiler_dsq = (self.cta_group_size * tile_n, self.tile_hdim, tile_m)
         # dQ = dS @ K
@@ -172,35 +166,24 @@ class FlashAttentionBackwardSm100:
         self.tmem_alloc_cols = cute.arch.get_max_tmem_alloc_cols("sm_100")
         # self.tmem_dK_offset = 0
         # self.tmem_dV_offset = self.tmem_dK_offset + self.tile_hdim
-        # self.tmem_dQ_offset = self.tmem_dV_offset + self.tile_hdimv
+        # self.tmem_dQ_offset = self.tmem_dV_offset + self.tile_hdim
         # self.tmem_dP_offset = self.tmem_dQ_offset  # overlap with dQ
         # self.tmem_S_offset = self.tmem_dQ_offset + max(self.tile_m, self.tile_hdim)
         # self.tmem_P_offset = self.tmem_S_offset  # overlap with S
         # self.tmem_total = self.tmem_S_offset + self.tile_n
         # assert self.tmem_total <= self.tmem_alloc_cols
 
-        if self.use_2cta_instrs and self.tile_hdim == 192 and self.tile_hdimv == 128:
-            assert self.tile_m == 128
-            assert self.tile_n == 128
-            self.tmem_dV_offset = 0
-            self.tmem_dK_offset = self.tmem_dV_offset + self.tile_hdimv
-            self.tmem_S_offset = self.tmem_dK_offset + self.tile_hdim
-            self.tmem_P_offset = self.tmem_S_offset  # overlap with S
-            self.tmem_dP_offset = 512 - self.tile_m
-            self.tmem_dS_offset = self.tmem_dP_offset  # overlaps with dP
-            self.tmem_dQ_offset = 512 - self.tile_hdim // 2
-        else:
-            self.tmem_S_offset = 0
-            self.tmem_P_offset = 0  # overlap with S
-            self.tmem_dV_offset = self.tmem_S_offset + self.tile_n
-            self.tmem_dP_offset = self.tmem_dV_offset + self.tile_hdimv
-            self.tmem_dQ_offset = (
-                (self.tmem_S_offset + (self.tile_hdim // 2))
-                if self.use_2cta_instrs
-                else self.tmem_dP_offset
-            )
-            self.tmem_dK_offset = self.tmem_dP_offset + self.tile_m
-            self.tmem_dS_offset = self.tmem_dP_offset  # overlap with dP
+        self.tmem_S_offset = 0
+        self.tmem_P_offset = 0  # overlap with S
+        self.tmem_dV_offset = self.tmem_S_offset + self.tile_n
+        self.tmem_dP_offset = self.tmem_dV_offset + self.tile_hdim
+        self.tmem_dQ_offset = (
+            (self.tmem_S_offset + (self.tile_hdim // 2))
+            if self.use_2cta_instrs
+            else self.tmem_dP_offset
+        )
+        self.tmem_dK_offset = self.tmem_dP_offset + self.tile_m
+        self.tmem_dS_offset = self.tmem_dP_offset  # overlap with dP
 
         if (not is_causal and not is_local) or deterministic:
             self.num_regs_reduce = 136 if self.use_2cta_instrs else 152
@@ -415,13 +398,13 @@ class FlashAttentionBackwardSm100:
         )  # subtiles mma_tiler_dsq[:2] = mma_tiler_pdo[:2]
         self.sdV_epi_tile = (
             self.tile_n,
-            math.gcd(128 // (self.dk_dtype.width // 8), self.tile_hdimv // 2),  # 64 or 32
+            math.gcd(128 // (self.dk_dtype.width // 8), self.tile_hdim // 2),  # 64 or 32
         )  # subtiles mma_tiler_dsq[:2] = mma_tiler_pdo[:2]
         # headdim_64 gets 1 stage
         self.num_epi_stages = max(1, (self.tile_hdim // 2) // self.sdK_epi_tile[1])
-        self.num_epi_stages_v = max(1, (self.tile_hdimv // 2) // self.sdV_epi_tile[1])
+        self.num_epi_stages_v = max(1, (self.tile_hdim // 2) // self.sdV_epi_tile[1])
         self.sdK_flat_epi_tile = self.tile_n * (self.tile_hdim // 2) // self.num_epi_stages
-        self.sdV_flat_epi_tile = self.tile_n * (self.tile_hdimv // 2) // self.num_epi_stages_v
+        self.sdV_flat_epi_tile = self.tile_n * (self.tile_hdim // 2) // self.num_epi_stages_v
         if const_expr(not self.dKV_postprocess):
             self.sdK_layout = sm100_utils_basic.make_smem_layout_epi(
                 self.dk_dtype,
@@ -722,7 +705,6 @@ class FlashAttentionBackwardSm100:
             1,  # num_splits
             cute.size(mQ.shape[0]),  # pass seqlen_q or total_q for seqlen_k
             mQ.shape[1],  # headdim
-            mV.shape[1],  # headdim_v
             total_q=cute.size(mK.shape[0])  # pass total_k for total_q
             if const_expr(mCuSeqlensK is not None)
             else cute.size(mK.shape[0]) * cute.size(mK.shape[3]),
@@ -3450,7 +3432,7 @@ class FlashAttentionBackwardSm100:
                     )
                     gmem_tiled_copy_zero_dV = copy_utils.tiled_copy_2d(
                         self.dv_dtype,
-                        math.gcd(64, self.tile_hdimv),
+                        math.gcd(64, self.tile_hdim),
                         128,  # num_threads
                     )
                     gmem_thr_copy_zero_dK = gmem_tiled_copy_zero_dK.get_slice(dp_idx)
@@ -3461,12 +3443,12 @@ class FlashAttentionBackwardSm100:
                         mdK_cur, (cluster_tile_n, self.tile_hdim), (n_block_for_tile, 0)
                     )
                     gdV = cute.local_tile(
-                        mdV_cur, (cluster_tile_n, self.tile_hdimv), (n_block_for_tile, 0)
+                        mdV_cur, (cluster_tile_n, self.tile_hdim), (n_block_for_tile, 0)
                     )
                     tdKgdK = gmem_thr_copy_zero_dK.partition_D(gdK)
                     tdVgdV = gmem_thr_copy_zero_dV.partition_D(gdV)
                     cdK = cute.make_identity_tensor((cluster_tile_n, self.tile_hdim))
-                    cdV = cute.make_identity_tensor((cluster_tile_n, self.tile_hdimv))
+                    cdV = cute.make_identity_tensor((cluster_tile_n, self.tile_hdim))
                     tdKcdK = gmem_thr_copy_zero_dK.partition_D(cdK)
                     tdVcdV = gmem_thr_copy_zero_dV.partition_D(cdV)
                     assert cute.size(tdKgdK[None, 0, 0]) == cute.size(tdVgdV[None, 0, 0])
@@ -3893,7 +3875,7 @@ class FlashAttentionBackwardSm100:
             dV_vec = tdVrdV_t2r[(None, i, 0, 0)].load()
             tdVrdV_r2s[(None, i, 0, 0)].store(dV_vec.to(self.dv_dtype))
 
-        gdV = cute.local_tile(mdV_cur, (self.mma_tiler_pdo[0], self.tile_hdimv), (None, 0))
+        gdV = cute.local_tile(mdV_cur, (self.mma_tiler_pdo[0], self.tile_hdim), (None, 0))
         gdV_tile = gdV[None, None, n_block // self.cta_group_size]
 
         tdVgdV = thr_mma_dV.partition_C(gdV_tile)
@@ -3984,7 +3966,7 @@ class FlashAttentionBackwardSm100:
         K_or_V: cutlass.Constexpr[str],
     ) -> cutlass.pipeline.PipelineState:
         assert K_or_V in ("K", "V")
-        tile_hdim = self.tile_hdim if const_expr(K_or_V == "K") else self.tile_hdimv
+        tile_hdim = self.tile_hdim if const_expr(K_or_V == "K") else self.tile_hdim
         dtype = self.dk_dtype if const_expr(K_or_V == "K") else self.dv_dtype
         epi_tile = self.sdK_epi_tile if const_expr(K_or_V == "K") else self.sdV_epi_tile
         flat_epi_tile = (
