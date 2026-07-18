@@ -26,7 +26,6 @@ class PagedKVManager(ParamsBase):
     n_block_size: Int32
     num_threads: cutlass.Constexpr[Int32]
     head_dim_padded: cutlass.Constexpr[Int32]
-    head_dim_v_padded: cutlass.Constexpr[Int32]
 
     arch: cutlass.Constexpr[Int32]
     v_gmem_transposed: cutlass.Constexpr[bool]
@@ -55,7 +54,6 @@ class PagedKVManager(ParamsBase):
         leftpad_k: Int32,
         n_block_size: cutlass.Constexpr[Int32],
         head_dim_padded: cutlass.Constexpr[Int32],
-        head_dim_v_padded: cutlass.Constexpr[Int32],
         num_threads: cutlass.Constexpr[Int32],
         dtype: Type[cutlass.Numeric],
         arch: cutlass.Constexpr[int] = 100,
@@ -68,7 +66,6 @@ class PagedKVManager(ParamsBase):
         dtype_bytes = dtype.width // 8
         gmem_k_block_size = math.gcd(
             head_dim_padded,
-            head_dim_v_padded,
             128 // dtype_bytes,
         )
         assert gmem_k_block_size % async_copy_elems == 0
@@ -99,14 +96,7 @@ class PagedKVManager(ParamsBase):
         tKcK = gmem_thr_copy_KV.partition_S(cK)
         tKpK = utils.predicate_k(tKcK, limit=mK_paged.shape[1])
 
-        if const_expr(head_dim_padded == head_dim_v_padded):
-            tVpV = tKpK
-        else:
-            cV = cute.make_identity_tensor((n_block_size, head_dim_v_padded))
-            tVcV = gmem_thr_copy_KV.partition_S(cV)
-            # When V is transposed in gmem, dv is shape[0]; otherwise dv is shape[1] (same as K)
-            V_limit = cute.size(mV_paged.shape[0 if v_gmem_transposed else 1])
-            tVpV = utils.predicate_k(tVcV, limit=V_limit)
+        tVpV = tKpK
 
         return PagedKVManager(
             mPageTable,
@@ -119,7 +109,6 @@ class PagedKVManager(ParamsBase):
             n_block_size,
             num_threads,
             head_dim_padded,
-            head_dim_v_padded,
             arch,
             v_gmem_transposed,
             gmem_threads_per_row,
@@ -220,8 +209,7 @@ class PagedKVManager(ParamsBase):
         else:
             sX_pi = self._flatten_smem_sm100(sX, K_or_V)
 
-        head_dim = self.head_dim_v_padded if const_expr(K_or_V == "V") else self.head_dim_padded
-        cX = cute.make_identity_tensor((self.n_block_size, head_dim))
+        cX = cute.make_identity_tensor((self.n_block_size, self.head_dim_padded))
         tXsX = self.gmem_thr_copy_KV.partition_D(sX_pi)
         tXcX = self.gmem_thr_copy_KV.partition_S(cX)
         tXc0X = self.gmem_thr_copy_KV.get_slice(0).partition_S(cX)
@@ -242,6 +230,6 @@ class PagedKVManager(ParamsBase):
             x_gmem_ptr = cute.make_ptr(
                 self.mK_paged.element_type, x_ptr_i64, cute.AddressSpace.gmem, assumed_align=16
             )
-            mX_paged_cur = cute.make_tensor(x_gmem_ptr, cute.make_layout((head_dim,)))
+            mX_paged_cur = cute.make_tensor(x_gmem_ptr, cute.make_layout((self.head_dim_padded,)))
             mX_paged_cur_copy = cute.tiled_divide(mX_paged_cur, (self.async_copy_elems,))
             self._copy_row_async(tXsX, tXcX, mX_paged_cur_copy, m, should_load)
