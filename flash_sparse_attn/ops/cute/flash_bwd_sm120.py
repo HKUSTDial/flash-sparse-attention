@@ -16,7 +16,6 @@ class FlashAttentionBackwardSm120(FlashAttentionBackwardSm80):
     def can_implement(
         dtype,
         head_dim,
-        head_dim_v,
         m_block_size,
         n_block_size,
         num_stages_Q,
@@ -33,17 +32,15 @@ class FlashAttentionBackwardSm120(FlashAttentionBackwardSm80):
             return False
         if head_dim % 8 != 0:
             return False
-        if head_dim_v % 8 != 0:
-            return False
         if n_block_size % 16 != 0:
             return False
         if num_threads % 32 != 0:
             return False
         # Shared memory usage: Q tile + dO tile + K tile + V tile
         smem_usage_Q = m_block_size * head_dim * num_stages_Q * 2
-        smem_usage_dO = m_block_size * head_dim_v * num_stages_dO * 2
+        smem_usage_dO = m_block_size * head_dim * num_stages_dO * 2
         smem_usage_K = n_block_size * head_dim * 2
-        smem_usage_V = n_block_size * head_dim_v * 2
+        smem_usage_V = n_block_size * head_dim * 2
         smem_usage_QV = (
             (smem_usage_Q + smem_usage_V) if not V_in_regs else max(smem_usage_Q, smem_usage_V)
         )

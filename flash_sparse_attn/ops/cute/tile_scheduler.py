@@ -151,7 +151,6 @@ class TileSchedulerArguments(ParamsBase):
     num_splits: Int32
     seqlen_k: Int32
     headdim: Int32
-    headdim_v: Int32
     total_q: Int32
     tile_shape_mn: cutlass.Constexpr[Tuple[int, int]]
     cluster_shape_mn: cutlass.Constexpr[Tuple[int, int]] = (1, 1)
@@ -424,9 +423,9 @@ class SingleTileLPTScheduler:
                 f"Only STATIC and CLC are supported, got {scheduling_mode!r}"
             )
             # int64: this product overflows int32 once seqlen_k * (headdim +
-            # headdim_v) * element_size > 2**31 (seqlen_k > ~4M for hdim-128 bf16).
+            # headdim) * element_size > 2**31 (seqlen_k > ~4M for hdim-128 bf16).
             size_one_kv_head = (
-                cutlass.Int64(args.seqlen_k) * (args.headdim + args.headdim_v) * args.element_size
+                cutlass.Int64(args.seqlen_k) * (args.headdim + args.headdim) * args.element_size
             )
             size_one_head = size_one_kv_head
             size_l2 = 50 * 1024 * 1024  # 40 MB for K & V
@@ -668,7 +667,7 @@ class SingleTileLPTBwdScheduler:
             # int64: these products overflow int32 at large seqlen_k (> ~4M for
             # hdim-128 bf16; the dqaccum *4 term wraps even sooner).
             size_one_qdo_head = (
-                cutlass.Int64(args.seqlen_k) * (args.headdim + args.headdim_v) * args.element_size
+                cutlass.Int64(args.seqlen_k) * (args.headdim + args.headdim) * args.element_size
             )
             size_one_dqaccum_head = cutlass.Int64(args.seqlen_k) * (args.headdim) * 4
             # size_one_dqaccum_head = 0
@@ -818,9 +817,7 @@ class SingleTileVarlenScheduler:
             )
             size_l2 = 50 * 1024 * 1024  # 50 MB for K & V
             # if backward, this is qdo block size
-            kv_block_size = (
-                (args.headdim + args.headdim_v) * args.element_size * args.tile_shape_mn[1]
-            )
+            kv_block_size = args.headdim + args.headdim * args.element_size * args.tile_shape_mn[1]
             # if backward, add dqaccum block size to calculate swizzle
             if args.head_swizzle:
                 kv_block_size += args.headdim * 4 * args.tile_shape_mn[1]

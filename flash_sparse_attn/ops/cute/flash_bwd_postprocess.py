@@ -1,4 +1,7 @@
+# Copyright (c) 2026, Jingze Shi.
 # Copyright (c) 2025, Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, Tri Dao.
+# A reimplementation of ttps://github.com/HKUSTDial/flash-sparse-attention/blob/main/flash_sparse_attn/ops/triton/flash_bwd_postprocess.py
+# from Triton to Cute-DSL.
 # A reimplementation of https://github.com/Dao-AILab/flash-attention/blob/main/hopper/flash_bwd_postprocess_kernel.h
 # from Cutlass C++ to Cute-DSL.
 import math
@@ -253,7 +256,6 @@ class FlashAttentionBackwardPostprocess:
             num_splits=1,
             seqlen_k=0,
             headdim=mdQ.shape[2],
-            headdim_v=0,
             total_q=mdQ.shape[0],
             tile_shape_mn=(self.tile_m, 1),
             mCuSeqlensQ=mCuSeqlensQ,
