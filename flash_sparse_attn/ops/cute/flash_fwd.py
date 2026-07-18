@@ -1,12 +1,12 @@
 # Copyright (c) 2026, Jingze Shi.
 # Copyright (c) 2025, Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, Tri Dao.
 # A reimplementation of
+# https://github.com/HKUSTDial/flash-sparse-attention/blob/main/flash_sparse_attn/ops/triton/flash_sparse_fwd.py
+# from Triton to Cute-DSL.
+# A reimplementation of
 # https://github.com/Dao-AILab/flash-attention/blob/main/hopper/flash_fwd_kernel_sm80.h
 # and https://github.com/Dao-AILab/flash-attention/blob/main/hopper/flash_fwd_kernel_sm90.h
 # from Cutlass C++ to Cute-DSL.
-# A reimplementation of
-# https://github.com/HKUSTDial/flash-sparse-attention/blob/main/flash_sparse_attn/ops/triton/flash_sparse_fwd.py
-# from Triton to Cute-DSL.
 # Built on Cute-DSL example: https://github.com/NVIDIA/cutlass/blob/main/examples/python/CuTeDSL/ampere/flash_attention_v2.py
 
 import math
