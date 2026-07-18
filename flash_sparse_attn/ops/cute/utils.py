@@ -333,6 +333,33 @@ def warp_reduce(
     return val
 
 
+@cute.jit
+def cta_reduce(
+    val: cute.Numeric,
+    sReduce: cute.Tensor,
+    op: Callable,
+    identity: cute.Numeric,
+    num_warps: cutlass.Constexpr[int],
+) -> cute.Numeric:
+    assert num_warps <= cute.arch.WARP_SIZE
+    warp_val = warp_reduce(val, op)
+    tidx = cute.arch.thread_idx()[0]
+    lane_idx = cute.arch.lane_idx()
+    warp_idx = tidx // cute.arch.WARP_SIZE
+    if lane_idx == 0:
+        sReduce[warp_idx] = warp_val
+    cute.arch.barrier()
+    if warp_idx == 0:
+        cta_val = identity
+        if lane_idx < num_warps:
+            cta_val = sReduce[lane_idx]
+        cta_val = warp_reduce(cta_val, op)
+        if lane_idx == 0:
+            sReduce[0] = cta_val
+    cute.arch.barrier()
+    return sReduce[0]
+
+
 @dsl_user_op
 def smid(*, loc=None, ip=None) -> Int32:
     return Int32(
