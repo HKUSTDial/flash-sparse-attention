@@ -188,6 +188,7 @@ class AttentionMask:
         mask_mod: cutlass.Constexpr[Optional[Callable]] = None,
         aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
+        use_r2p: cutlass.Constexpr[bool] = True,
     ) -> None:
         assert not (mask_causal and mask_local), "mask_causal and mask_local cannot be both True"
         acc_S_mn = layout_utils.reshape_acc_to_mn(acc_S, transpose=self.swap_AB)
@@ -210,7 +211,7 @@ class AttentionMask:
         seqlenk_col_limit = self.seqlen_k - n_block * self.tile_n - thr_col_offset
         if const_expr(not mask_causal and not mask_local and mask_mod is None):
             if const_expr(mask_seqlen):
-                r2p = const_expr(not self.swap_AB)
+                r2p = const_expr(use_r2p and not self.swap_AB)
                 if const_expr(not r2p):
                     # traverse column index.
                     for c in cutlass.range(cute.size(tScS_mn.shape[1]), unroll_full=True):
@@ -301,7 +302,9 @@ class AttentionMask:
                     1 + self.seqlen_k - n_block * self.tile_n - self.seqlen_q - thr_col_offset
                 )
                 if const_expr(mask_causal):
-                    r2p = const_expr(not self.swap_AB)  # R2P trick, see apply_mask_sm100
+                    r2p = const_expr(
+                        use_r2p and not self.swap_AB
+                    )  # R2P trick, see apply_mask_sm100
                     for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
                         # get the column index limit based on current row. Only consider the row index, so the column index sets to 0.
                         if const_expr(self.qhead_per_kvhead_packgqa == 1):
@@ -339,7 +342,7 @@ class AttentionMask:
                         if const_expr(self.window_size_left is not None)
                         else None
                     )
-                    r2p_local = const_expr(not self.swap_AB)
+                    r2p_local = const_expr(use_r2p and not self.swap_AB)
                     for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
                         if const_expr(self.qhead_per_kvhead_packgqa == 1):
                             row_idx = tScS_mn[r, 0][0] + m_block * self.tile_m
