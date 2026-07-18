@@ -45,19 +45,3 @@ class NamedBarrierBwdSm100(enum.IntEnum):
     Compute = enum.auto()
     dQaccReduce = enum.auto()
     TmemPtr = enum.auto()
-
-
-class NamedBarrierFwdSm100_MLA2CTA(enum.IntEnum):
-    Epilogue = enum.auto()
-    TmemPtr = enum.auto()
-    Cpasync = enum.auto()
-    Softmax = enum.auto()
-    SoftmaxStatsFull = enum.auto()
-    SoftmaxStatsEmpty = enum.auto()
-
-
-class NamedBarrierBwdSm100_MLA2CTA(enum.IntEnum):
-    Epilogue = enum.auto()
-    TmemPtr = enum.auto()
-    Cpasync = enum.auto()
-    Softmax = enum.auto()
