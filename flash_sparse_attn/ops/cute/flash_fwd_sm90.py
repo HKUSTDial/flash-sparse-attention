@@ -67,7 +67,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
         self.mma_pv_is_rs = mma_pv_is_rs
         self.buffer_align_bytes = 1024
         self.use_tma_KV = not paged_kv_non_tma
-        assert self.use_tma_KV or not (self.check_hdim_oob or self.check_hdim_v_oob), (
+        assert self.use_tma_KV or not self.check_hdim_oob, (
             "Paged KV does not support irregular head dim"
         )
         self.cluster_shape_mn = (1, 1)
@@ -80,9 +80,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
         )
         sK_layout_atom = sQ_layout_atom
         sV_layout_atom = warpgroup.make_smem_layout_atom(
-            sm90_utils_basic.get_smem_layout_atom(
-                LayoutEnum.ROW_MAJOR, self.dtype, self.tile_hdimv
-            ),
+            sm90_utils_basic.get_smem_layout_atom(LayoutEnum.ROW_MAJOR, self.dtype, self.tile_hdim),
             self.dtype,
         )
         sO_layout_atom = sV_layout_atom
@@ -114,7 +112,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
             warpgroup.OperandMajorMode.MN,
             Float32,
             atom_layout_mnk=(self.tile_m // 64, 1, 1),  # Might need (1, 2, 1) for hdim 512
-            tiler_mn=(64, self.tile_hdimv),
+            tiler_mn=(64, self.tile_hdim),
             a_source=warpgroup.OperandSource.RMEM
             if self.mma_pv_is_rs
             else warpgroup.OperandSource.SMEM,
@@ -233,7 +231,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
         # Producer needs more registers when doing cp.async Q or KV loads
         if const_expr(self.num_wg_mma == 2 and (not self.use_tma_Q or not self.use_tma_KV)):
             self.num_mma_regs, self.num_producer_regs = 224, 40
-        self.rescale_O_before_gemm = self.tile_hdimv > 128 and self.intra_wg_overlap
+        self.rescale_O_before_gemm = self.tile_hdim > 128 and self.intra_wg_overlap
         self._setup_attributes()
         # TODO: we prob don't need most of what's in _setup_attributes
         self.sQ_layout, self.sK_layout, self.sV_layout, self.sO_layout = [
@@ -241,8 +239,8 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
             for mX, shape, stage in [
                 (mQ, (self.tile_m, self.tile_hdim), None),
                 (mK, (self.tile_n, self.tile_hdim), self.num_stages),
-                (mV, (self.tile_n, self.tile_hdimv), self.num_stages),
-                (mO, (self.tile_m, self.tile_hdimv), None),
+                (mV, (self.tile_n, self.tile_hdim), self.num_stages),
+                (mO, (self.tile_m, self.tile_hdim), None),
             ]
         ]
         self.sP_layout = None
@@ -300,7 +298,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
                 gmem_tiled_copy_KV,
                 mV,
                 cute.select(self.sV_layout, mode=[0, 1]),
-                (self.tile_n, self.tile_hdimv),
+                (self.tile_n, self.tile_hdim),
                 1,  # No mcast for now
             )
         tma_atom_O, tma_tensor_O = None, None
@@ -314,7 +312,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
                 gmem_tiled_copy_O,
                 mO_tma,
                 self.sO_layout,
-                (self.tile_m, self.tile_hdimv),  # No mcast
+                (self.tile_m, self.tile_hdim),  # No mcast
             )
         if const_expr(mCuSeqlensQ is not None or mSeqUsedQ is not None):
             TileScheduler = SingleTileVarlenScheduler
@@ -335,7 +333,6 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
             if const_expr(mPageTable is None)
             else mK.shape[0] * mPageTable.shape[1],
             mQ.shape[1],
-            mV.shape[1],
             total_q=cute.size(mQ.shape[0])
             if const_expr(mCuSeqlensQ is not None)
             else cute.size(mQ.shape[0]) * cute.size(mQ.shape[3]),
@@ -530,7 +527,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
             sV = storage.sQ.get_tensor(
                 sV_layout.outer, swizzle=sV_layout.inner, dtype=mV.element_type
             )
-        # Transpose view of V to tensor with layout (head_dim_v, tile_n) for tiled mma
+        # Transpose view of V to tensor with layout (head_dim, tile_n) for tiled mma
         sVt = layout_utils.transpose_view(sV)
         sP = None
         if const_expr(sP_layout is not None):
@@ -703,7 +700,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
                         mK_cur = mK[None, None, head_idx_kv, None]
                         mV_cur = mV[None, None, head_idx_kv, None]
                         gK = cute.local_tile(mK_cur, (self.tile_n, self.tile_hdim), (0, 0, None))
-                        gV = cute.local_tile(mV_cur, (self.tile_n, self.tile_hdimv), (0, 0, None))
+                        gV = cute.local_tile(mV_cur, (self.tile_n, self.tile_hdim), (0, 0, None))
                     else:
                         # Non-paged TMA
                         mK_cur = seqlen.offset_batch_K(mK, batch_idx, dim=3)[
@@ -713,7 +710,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
                             None, None, head_idx_kv
                         ]
                         gK = cute.local_tile(mK_cur, (self.tile_n, self.tile_hdim), (None, 0))
-                        gV = cute.local_tile(mV_cur, (self.tile_n, self.tile_hdimv), (None, 0))
+                        gV = cute.local_tile(mV_cur, (self.tile_n, self.tile_hdim), (None, 0))
                     # TODO: mcast
                     tma_load_K_fn, _, _ = copy_utils.tma_get_copy_fn(
                         tma_atom_K, 0, cute.make_layout(1), gK, sK
@@ -737,7 +734,6 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
                         0,  # leftpad_k
                         self.tile_n,
                         self.tile_hdim,
-                        self.tile_hdimv,
                         self.num_threads_per_warp_group,
                         mK.element_type,
                         arch=self.arch.major * 10 + self.arch.minor,
@@ -981,7 +977,7 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
             sm90_utils.gemm_zero_init, tiled_mma_qk, (self.tile_m, self.tile_n), tSrQ, tSrK
         )
         acc_O, tOrP, tOrVt = sm90_utils.partition_fragment_ABC(
-            wg_mma_pv, (self.tile_m, self.tile_hdimv, self.tile_n), sP, sVt
+            wg_mma_pv, (self.tile_m, self.tile_hdim, self.tile_n), sP, sVt
         )
         mma_pv_fn = partial(sm90_utils.gemm_w_idx, tiled_mma_pv, acc_O, tOrP, tOrVt)
 
