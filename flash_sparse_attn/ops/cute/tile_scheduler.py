@@ -101,6 +101,33 @@ class WorkTileInfo(cutlass.utils.WorkTileInfo):
         new_is_valid_tile = cutlass.new_from_mlir_values(self._is_valid_tile, [values[-1]])
         return WorkTileInfo(new_tile_idx, new_is_valid_tile)
 
+    @cute.jit
+    def load_window_sizes(
+        self,
+        mWindowSizes: Optional[cute.Tensor],
+        is_local: cutlass.Constexpr[bool],
+        qhead_per_kvhead: cutlass.Constexpr[int],
+        pack_gqa: cutlass.Constexpr[bool],
+    ) -> Tuple[Int32, Int32, Int32, Int32]:
+        if const_expr(is_local):
+            _, head_idx, _, _ = self.tile_idx
+            head_kv_idx = head_idx if const_expr(pack_gqa) else head_idx // qhead_per_kvhead
+            window_size_sink = mWindowSizes[head_kv_idx, 0]
+            window_size_left = mWindowSizes[head_kv_idx, 1]
+            window_size_right = mWindowSizes[head_kv_idx, 2]
+            window_size_dist = mWindowSizes[head_kv_idx, 3]
+        else:
+            window_size_sink = Int32(0)
+            window_size_left = Int32(0)
+            window_size_right = Int32(0)
+            window_size_dist = Int32(0)
+        return (
+            window_size_sink,
+            window_size_left,
+            window_size_right,
+            window_size_dist,
+        )
+
 
 @runtime_checkable
 class TileSchedulerProtocol(Protocol):

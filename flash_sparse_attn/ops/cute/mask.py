@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 # Copyright (c) 2025, Tri Dao.
 
 from typing import Optional, Callable, TypeAlias, Tuple
@@ -160,8 +161,10 @@ class AttentionMask:
     tile_m: cutlass.Constexpr[int]
     tile_n: cutlass.Constexpr[int]
     seqlen_info: SeqlenInfoQK
+    window_size_sink: Optional[Int32] = None
     window_size_left: Optional[Int32] = None
     window_size_right: Optional[Int32] = None
+    window_size_dist: Optional[Int32] = None
     qhead_per_kvhead_packgqa: cutlass.Constexpr[int] = 1  # only pass in if we're doing PackGQA
     swap_AB: cutlass.Constexpr[bool] = False
 
@@ -185,12 +188,15 @@ class AttentionMask:
         mask_seqlen: cutlass.Constexpr[bool],
         mask_causal: cutlass.Constexpr[bool],
         mask_local: cutlass.Constexpr[bool] = False,
+        mask_sink: cutlass.Constexpr[bool] = False,
         mask_mod: cutlass.Constexpr[Optional[Callable]] = None,
         aux_data: AuxData = AuxData(),
         fastdiv_mods=(None, None),
         use_r2p: cutlass.Constexpr[bool] = True,
     ) -> None:
-        assert not (mask_causal and mask_local), "mask_causal and mask_local cannot be both True"
+        assert not (mask_causal and (mask_local or mask_sink)), (
+            "mask_causal cannot be combined with mask_local or mask_sink"
+        )
         acc_S_mn = layout_utils.reshape_acc_to_mn(acc_S, transpose=self.swap_AB)
         acc_shape = (self.tile_m, self.tile_n)
         cS = cute.make_identity_tensor(acc_shape if not self.swap_AB else acc_shape[::-1])
@@ -209,7 +215,7 @@ class AttentionMask:
         if n_block < 0:
             n_block = 0
         seqlenk_col_limit = self.seqlen_k - n_block * self.tile_n - thr_col_offset
-        if const_expr(not mask_causal and not mask_local and mask_mod is None):
+        if const_expr(not mask_causal and not mask_local and not mask_sink and mask_mod is None):
             if const_expr(mask_seqlen):
                 r2p = const_expr(use_r2p and not self.swap_AB)
                 if const_expr(not r2p):
@@ -223,7 +229,7 @@ class AttentionMask:
                     mask_r2p_lambda(acc_S_mn, lambda s: r2p_bitmask_below(seqlenk_col_limit_r2p, s))
 
         elif const_expr(
-            not mask_causal and not mask_local and mask_mod is not None
+            not mask_causal and not mask_local and not mask_sink and mask_mod is not None
         ):  # FlexAttention mask mod
             nrow = const_expr(cute.size(tScS_mn.shape[0]))
             ncol = const_expr(cute.size(tScS_mn.shape[1]))
@@ -331,17 +337,7 @@ class AttentionMask:
                                 lambda s: r2p_bitmask_below(col_limit_r2p, s),
                                 rank1=True,
                             )
-                else:  # Local
-                    local_row_offset_right = (
-                        causal_row_offset + self.window_size_right
-                        if const_expr(self.window_size_right is not None)
-                        else None
-                    )
-                    local_row_offset_left = (
-                        causal_row_offset - 1 - self.window_size_left
-                        if const_expr(self.window_size_left is not None)
-                        else None
-                    )
+                else:  # Local and/or sink
                     r2p_local = const_expr(use_r2p and not self.swap_AB)
                     for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
                         if const_expr(self.qhead_per_kvhead_packgqa == 1):
@@ -350,31 +346,55 @@ class AttentionMask:
                             row_idx = utils.shuffle_sync(
                                 mma_m_idx, r % threads_per_row, width=threads_per_row
                             )
-                        if const_expr(self.window_size_right is not None):
-                            col_limit_right = row_idx + local_row_offset_right
-                        else:
-                            col_limit_right = self.tile_n
+                        col_limit_right = row_idx + causal_row_offset
                         if const_expr(mask_seqlen):
                             col_limit_right = cutlass.min(col_limit_right, seqlenk_col_limit)
-                        col_limit_left = (
-                            row_idx + local_row_offset_left
-                            if const_expr(self.window_size_left is not None)
-                            else 0
+                        col_limit_dist_left = col_limit_right - self.window_size_dist
+                        col_limit_window_right = col_limit_dist_left - self.window_size_right
+                        col_limit_window_left = col_limit_window_right - self.window_size_left
+                        col_limit_sink_right = cutlass.min(
+                            col_limit_right,
+                            self.window_size_sink - n_block * self.tile_n - thr_col_offset,
                         )
                         if const_expr(not r2p_local):
                             # traverse column index.
                             for c in cutlass.range(cute.size(tScS_mn.shape[1]), unroll_full=True):
                                 col_idx = t0ScS_mn[0, c][1]
-                                if col_idx >= col_limit_right or col_idx < col_limit_left:
+                                allowed = cutlass.Boolean(False)
+                                if const_expr(mask_local):
+                                    allowed = (
+                                        (col_idx >= col_limit_dist_left)
+                                        and (col_idx < col_limit_right)
+                                    ) or (
+                                        (col_idx >= col_limit_window_left)
+                                        and (col_idx < col_limit_window_right)
+                                    )
+                                if const_expr(mask_sink):
+                                    allowed = allowed or (
+                                        (col_idx >= 0) and (col_idx < col_limit_sink_right)
+                                    )
+                                if not allowed:
                                     acc_S_mn[r, c] = -Float32.inf
                         else:
                             col_limit_right_r2p = sm90_col_to_r2p_idx(col_limit_right)
-                            col_limit_left_r2p = sm90_col_to_r2p_idx(col_limit_left)
+                            col_limit_dist_left_r2p = sm90_col_to_r2p_idx(col_limit_dist_left)
+                            col_limit_window_right_r2p = sm90_col_to_r2p_idx(col_limit_window_right)
+                            col_limit_window_left_r2p = sm90_col_to_r2p_idx(col_limit_window_left)
+                            col_limit_sink_right_r2p = sm90_col_to_r2p_idx(col_limit_sink_right)
 
                             def mask_gen_fn(s: int) -> Uint32:
-                                return r2p_bitmask_below(
-                                    col_limit_right_r2p, s
-                                ) & r2p_bitmask_above(col_limit_left_r2p, s)
+                                mask = Uint32(0)
+                                if const_expr(mask_local):
+                                    mask = (
+                                        r2p_bitmask_below(col_limit_right_r2p, s)
+                                        & r2p_bitmask_above(col_limit_dist_left_r2p, s)
+                                    ) | (
+                                        r2p_bitmask_below(col_limit_window_right_r2p, s)
+                                        & r2p_bitmask_above(col_limit_window_left_r2p, s)
+                                    )
+                                if const_expr(mask_sink):
+                                    mask = mask | r2p_bitmask_below(col_limit_sink_right_r2p, s)
+                                return mask
 
                             mask_r2p_lambda(acc_S_mn[r, None], mask_gen_fn, rank1=True)
             else:  # swap_AB
@@ -399,7 +419,7 @@ class AttentionMask:
                                 if t0ScS_mn[r, 0][ROW] < row_limit_top
                                 else acc_S_mn[r, c]
                             )
-                else:
+                else:  # Local and/or sink
                     for c in cutlass.range(cute.size(tScS_mn.shape[1]), unroll_full=True):
                         col0 = t0ScS_mn[0, c][COL]
                         # If col0 is beyond the column limit, we want to mask out the entire
@@ -407,24 +427,28 @@ class AttentionMask:
                         row_limit_top = (
                             self.tile_m
                             if col0 >= seqlenk_col_limit and mask_seqlen
-                            else (
-                                col0 - causal_row_offset - self.window_size_right
-                                if const_expr(self.window_size_right is not None)
-                                else 0
-                            )
+                            else col0 - causal_row_offset
                         )
-                        row_limit_bot = (
-                            col0 - causal_row_offset + self.window_size_left
-                            if const_expr(self.window_size_left is not None)
-                            else self.tile_m
-                        )
+                        row_limit_dist_bot = row_limit_top + self.window_size_dist
+                        row_limit_window_top = row_limit_dist_bot + self.window_size_right
+                        row_limit_window_bot = row_limit_window_top + self.window_size_left
+                        global_k_idx = n_block * self.tile_n + thr_col_offset + col0
                         for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
                             row_idx = t0ScS_mn[r, 0][ROW]
-                            acc_S_mn[r, c] = (
-                                -Float32.inf
-                                if row_idx < row_limit_top or row_idx > row_limit_bot
-                                else acc_S_mn[r, c]
-                            )
+                            allowed = cutlass.Boolean(False)
+                            if const_expr(mask_local):
+                                allowed = (
+                                    (row_idx >= row_limit_top) and (row_idx < row_limit_dist_bot)
+                                ) or (
+                                    (row_idx >= row_limit_window_top)
+                                    and (row_idx < row_limit_window_bot)
+                                )
+                            if const_expr(mask_sink):
+                                allowed = allowed or (
+                                    (global_k_idx < self.window_size_sink)
+                                    and (row_idx >= row_limit_top)
+                                )
+                            acc_S_mn[r, c] = acc_S_mn[r, c] if allowed else -Float32.inf
 
     @cute.jit
     def apply_mask_mod_sm100_scalar(
