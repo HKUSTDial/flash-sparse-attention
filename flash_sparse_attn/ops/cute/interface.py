@@ -35,24 +35,20 @@ from flash_sparse_attn.ops.cute.cute_dsl_utils import (
     to_cute_tensor,
 )
 from flash_sparse_attn.ops.cute.flash_fwd import (
-    FlashAttentionForwardSm80,
     FlashSparseAttentionForwardSm80,
 )
 from flash_sparse_attn.ops.cute.flash_fwd_sm90 import FlashAttentionForwardSm90
 from flash_sparse_attn.ops.cute.flash_fwd_sm100 import FlashAttentionForwardSm100, DescaleTensors
 from flash_sparse_attn.ops.cute.flash_fwd_sm120 import (
-    FlashAttentionForwardSm120,
     FlashSparseAttentionForwardSm120,
 )
 from flash_sparse_attn.ops.cute.flash_bwd_preprocess import FlashAttentionBackwardPreprocess
 from flash_sparse_attn.ops.cute.flash_bwd import (
-    FlashAttentionBackwardSm80,
     FlashSparseAttentionBackwardSm80,
 )
 from flash_sparse_attn.ops.cute.flash_bwd_sm90 import FlashAttentionBackwardSm90
 from flash_sparse_attn.ops.cute.flash_bwd_sm100 import FlashAttentionBackwardSm100
 from flash_sparse_attn.ops.cute.flash_bwd_sm120 import (
-    FlashAttentionBackwardSm120,
     FlashSparseAttentionBackwardSm120,
 )
 from flash_sparse_attn.ops.cute.flash_bwd_postprocess import FlashAttentionBackwardPostprocess
@@ -300,31 +296,51 @@ def num_splits_heuristic(total_mblocks, num_SMs, num_n_blocks, max_splits):
     return min(num_SMs // total_mblocks, max_splits, num_n_blocks)
 
 
-def _resolve_causal_local_window(causal, window_size_left, window_size_right, mask_mod=None):
-    """Resolve causal/local/window settings into canonical form.
-
-    Returns (causal, local, window_size_left, window_size_right).
+@lru_cache(maxsize=4096)
+def window_sizes_heuristic(
+    seqlen_k: int,
+    num_heads_kv: int,
+    device: torch.device,
+    equal_bandwidth: bool = True,
+    window_dist: int = 1024,
+    window_sink: int = 64,
+    num_heads_kv_global: int = 0,
+    tp_rank: int = 0,
+) -> torch.Tensor:
     """
-    if mask_mod is not None:
-        return False, False, window_size_left, window_size_right
-    if causal:
-        window_size_right = 0
-    if (
-        window_size_left is not None
-        and window_size_right is not None
-        and window_size_left + window_size_right < 0
-    ):
-        window_size_left = None
-        window_size_right = None
-    if window_size_left is not None or window_size_right is not None:
-        if window_size_left is None and window_size_right == 0:
-            causal, local = True, False
-            window_size_right = None
-        else:
-            causal, local = False, True
+    Compute token count window sizes that partition non-diagonal causal distances into bands.
+
+    :param seqlen_k: Sequence length of keys.
+    :param num_heads_kv: Number of local KV heads on this rank.
+    :param device: Target device.
+    :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
+    :param window_dist: Near-diagonal token count shared by all KV heads.
+    :param window_sink: Sink token count shared by all KV heads.
+    :param num_heads_kv_global: Total KV heads across all TP ranks.
+    :param tp_rank: Tensor parallel rank of this process.
+
+    :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_dist]. window_sink is the prefix sink token count, window_left is the distant local band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
+    """
+    if num_heads_kv_global <= 0:
+        num_heads_kv_global = num_heads_kv
+    window_dist = min(max(window_dist, 0), seqlen_k)
+    window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
+    head_offset = tp_rank * num_heads_kv
+    head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32) + head_offset
+    distance_span = max(seqlen_k - window_sink - window_dist, 0)
+    if equal_bandwidth:
+        breakpoints = (distance_span * head_kv_idx / num_heads_kv_global).to(torch.int32)
     else:
-        local = False
-    return causal, local, window_size_left, window_size_right
+        breakpoints = (
+            distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global))
+        ).to(torch.int32)
+    window_size_left = breakpoints[1:] - breakpoints[:-1]
+    window_size_right = breakpoints[:-1]
+    window_size_dist = torch.full_like(window_size_left, window_dist)
+    window_size_sink = torch.full_like(window_size_left, window_sink)
+    return torch.stack(
+        [window_size_sink, window_size_left, window_size_right, window_size_dist], dim=1
+    ).to(device)
 
 
 def _flash_attn_fwd(
@@ -343,8 +359,8 @@ def _flash_attn_fwd(
     softmax_threshold: Optional[float] = None,
     causal: bool = False,
     softcap: Optional[float] = None,
-    window_size_left: Optional[int] = None,
-    window_size_right: Optional[int] = None,
+    window_sizes: Optional[torch.Tensor] = None,
+    local: bool = False,
     learnable_sink: Optional[torch.Tensor] = None,
     tile_mn: Optional[Tuple[int, int]] = None,
     mma_pv_is_rs: Optional[bool] = None,
@@ -476,6 +492,10 @@ def _flash_attn_fwd(
             )
         ), "inputs must be on CUDA device"
     arch = _get_device_arch() if _arch is None else _arch
+    # TODO: support 9.x, 10.x, 11.x for FSA
+    assert arch // 10 in [8, 12], (
+        "Unsupported compute capability. Supported: 8.x, 12.x for FlashSparseAttention yet."
+    )
     assert arch // 10 in [8, 9, 10, 11, 12], (
         "Unsupported compute capability. Supported: 8.x, 9.x, 10.x, 11.x, 12.x"
     )
@@ -527,6 +547,16 @@ def _flash_attn_fwd(
             lse.fill_(float("-inf"))
         return out, lse
 
+    if window_sizes is not None:
+        window_sizes = window_sizes.contiguous()
+        _validate_tensor(
+            window_sizes,
+            "window_sizes",
+            (num_head_kv, 4),
+            torch.int32,
+            device,
+        )
+
     if is_fp8:
         for t, name in (
             (q_descale, "q_descale"),
@@ -547,9 +577,9 @@ def _flash_attn_fwd(
         )
     use_block_sparsity = block_sparse_tensors is not None
 
-    causal, local, window_size_left, window_size_right = _resolve_causal_local_window(
-        causal, window_size_left, window_size_right, mask_mod
-    )
+    local = local or window_sizes is not None
+    if mask_mod is not None:
+        causal, local = False, False
 
     requested_use_clc_scheduler = utils._get_use_clc_scheduler_default()
     requested_disable_2cta = utils._get_disable_2cta_default(is_fwd=True)
@@ -589,6 +619,8 @@ def _flash_attn_fwd(
         max_seqlen_k = seqlen_k
     if cu_seqlens_k is None and seqused_k is None:
         min_seqlen_k = seqlen_k
+    if local and window_sizes is None:
+        window_sizes = window_sizes_heuristic(max_seqlen_k, num_head_kv, device)
     seqlen_q_packgqa = max_seqlen_q * qhead_per_kvhead
     if arch // 10 in [10, 11]:
         q_stage = 2 if seqlen_q_packgqa > tile_m else 1
@@ -596,23 +628,9 @@ def _flash_attn_fwd(
         q_stage = 1
 
     m_block_size_effective = q_stage * tile_m
-    seqlen_k_loaded = (
-        max_seqlen_k
-        if not local
-        else max(
-            0,
-            min(
-                max_seqlen_k,
-                (window_size_right or max_seqlen_k)
-                + (window_size_left or max_seqlen_k)
-                + 1
-                + tile_m,
-            ),
-        )
-    )
     num_m_blocks = (seqlen_q_packgqa + m_block_size_effective - 1) // m_block_size_effective
     total_mblocks = batch_size * num_head_kv * num_m_blocks
-    num_n_blocks = (seqlen_k_loaded + tile_n - 1) // tile_n
+    num_n_blocks = (max_seqlen_k + tile_n - 1) // tile_n
     num_SMs = (
         132 if is_fake_mode() else torch.cuda.get_device_properties(device).multi_processor_count
     )
@@ -723,6 +741,7 @@ def _flash_attn_fwd(
         head_dim,
         qhead_per_kvhead,
         causal,
+        window_sizes is not None,
         score_mod_hash,
         mask_mod_hash,
         use_block_sparsity,
@@ -735,8 +754,6 @@ def _flash_attn_fwd(
         seqused_q is None,
         seqused_k is None,
         page_table is not None,
-        window_size_left is not None,
-        window_size_right is not None,
         learnable_sink is not None,
         q_descale is not None,
         k_descale is not None,
@@ -779,6 +796,9 @@ def _flash_attn_fwd(
         q_tensor, k_tensor, v_tensor, o_tensor = [
             to_cute_tensor(t) for t in (q, k, v, out if not is_split_kv else out_partial)
         ]
+        window_sizes_tensor = (
+            to_cute_tensor(window_sizes, assumed_align=4) if window_sizes is not None else None
+        )
         if is_split_kv:
             lse_tensor = to_cute_tensor(lse_partial, assumed_align=4)
         else:
@@ -812,12 +832,7 @@ def _flash_attn_fwd(
         if arch // 10 == 8:
             assert page_table is None, "paged KV not supported on SM 8.0"
             assert not is_split_kv, "SplitKV not supported on SM 8.0"
-            flash_fwd_obj_cls = (
-                FlashAttentionForwardSm80
-                if softmax_threshold is None
-                else FlashSparseAttentionForwardSm80
-            )
-            fa_fwd = flash_fwd_obj_cls(
+            fa_fwd = FlashSparseAttentionForwardSm80(
                 dtype,
                 head_dim,
                 qhead_per_kvhead,
@@ -887,12 +902,7 @@ def _flash_attn_fwd(
             assert not use_block_sparsity, "Block sparsity not supported on SM 12.0"
             assert page_table is None, "Paged KV not supported on SM 12.0 in this PR"
             assert not is_split_kv, "SplitKV not supported on SM 12.0 in this PR"
-            flash_fwd_obj_cls = (
-                FlashAttentionForwardSm120
-                if softmax_threshold is None
-                else FlashSparseAttentionForwardSm120
-            )
-            fa_fwd = flash_fwd_obj_cls(
+            fa_fwd = FlashSparseAttentionForwardSm120(
                 dtype,
                 head_dim,
                 qhead_per_kvhead,
@@ -922,8 +932,14 @@ def _flash_attn_fwd(
             lse_tensor,
             softmax_scale,
         ]
+        if window_sizes is not None:
+            compile_args.append(window_sizes_tensor)
+        else:
+            compile_args.append(None)
         if softmax_threshold is not None:
             compile_args.append(softmax_threshold)
+        else:
+            compile_args.append(0.0)
         compile_args.extend(
             [
                 cu_seqlens_q_tensor,
@@ -931,8 +947,6 @@ def _flash_attn_fwd(
                 seqused_q_tensor,
                 seqused_k_tensor,
                 page_table_tensor,
-                window_size_left,
-                window_size_right,
                 learnable_sink_tensor,
             ]
         )
@@ -967,8 +981,14 @@ def _flash_attn_fwd(
             lse_partial if is_split_kv else lse,
             softmax_scale,
         ]
+        if window_sizes is not None:
+            call_args.append(window_sizes)
+        else:
+            call_args.append(None)
         if softmax_threshold is not None:
             call_args.append(softmax_threshold)
+        else:
+            call_args.append(0.0)
         call_args.extend(
             [
                 cu_seqlens_q,
@@ -976,8 +996,6 @@ def _flash_attn_fwd(
                 seqused_q,
                 seqused_k,
                 page_table,
-                window_size_left,
-                window_size_right,
                 learnable_sink,
             ]
         )
@@ -1309,8 +1327,8 @@ def _flash_attn_bwd(
     softmax_threshold: Optional[float] = None,
     causal: bool = False,
     softcap: float = 0.0,
-    window_size_left: Optional[int] = None,
-    window_size_right: Optional[int] = None,
+    window_sizes: Optional[torch.Tensor] = None,
+    local: bool = False,
     m_block_size: int = 64,
     n_block_size: int = 128,
     num_threads: int = 256,
@@ -1344,6 +1362,10 @@ def _flash_attn_bwd(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     aux_scalars = tuple(aux_scalars) if aux_scalars else None
     arch = _get_device_arch()
+    # TODO: support 9.x, 10.x, 11.x for FSA
+    assert arch // 10 in [8, 12], (
+        "Unsupported compute capability. Supported: 8.x, 12.x for FlashSparseAttention yet."
+    )
     assert arch // 10 in [8, 9, 10, 11, 12], (
         "Unsupported compute capability. Supported: 8.x, 9.x, 10.x, 11.x, 12.x"
     )
@@ -1359,10 +1381,7 @@ def _flash_attn_bwd(
     if arch // 10 in [10, 11] and head_dim == 256:
         raise NotImplementedError("SM100/SM110 backward with head_dim=256 is not supported")
 
-    window_size = [window_size_left, window_size_right]
-    causal, local, window_size_left, window_size_right = _resolve_causal_local_window(
-        causal, window_size_left, window_size_right
-    )
+    local = local or window_sizes is not None
 
     if arch // 10 == 8:
         m_block_size = 64
@@ -1602,6 +1621,19 @@ def _flash_attn_bwd(
     else:
         _validate_tensor(dv, "dv", v.shape, out_torch_dtype, device)
 
+    if window_sizes is not None:
+        window_sizes = window_sizes.contiguous()
+        _validate_tensor(
+            window_sizes,
+            "window_sizes",
+            (num_head_kv, 4),
+            torch.int32,
+            device,
+        )
+
+    if local and window_sizes is None:
+        window_sizes = window_sizes_heuristic(seqlen_k, num_head_kv, device)
+
     head_dim_rounded = (head_dim + 32 - 1) // 32 * 32
 
     if cu_seqlens_q is None:
@@ -1786,10 +1818,9 @@ def _flash_attn_bwd(
             dtype,
             head_dim,
             qhead_per_kvhead,
-            softmax_threshold is not None,
             causal,
-            window_size_left is not None,
-            window_size_right is not None,
+            softmax_threshold is not None,
+            window_sizes is not None,
             m_block_size,
             n_block_size,
             num_threads,
@@ -1833,8 +1864,7 @@ def _flash_attn_bwd(
             head_dim,
             qhead_per_kvhead,
             causal,
-            window_size_left is not None,
-            window_size_right is not None,
+            window_sizes is not None,
             m_block_size,
             n_block_size,
             num_threads,
@@ -1870,6 +1900,9 @@ def _flash_attn_bwd(
         q_tensor, k_tensor, v_tensor, do_tensor, dq_tensor, dk_tensor, dv_tensor = [
             to_cute_tensor(t) for t in (q, k, v, dout, dq, dk, dv)
         ]
+        window_sizes_tensor = (
+            to_cute_tensor(window_sizes, assumed_align=4) if window_sizes is not None else None
+        )
         lse_log2_tensor, dpsum_tensor = [to_cute_tensor(t) for t in (lse_log2, dpsum)]
         dq_accum_tensor = to_cute_tensor(dq_accum) if dq_accum is not None else None
         if dKV_postprocess:
@@ -1887,18 +1920,11 @@ def _flash_attn_bwd(
             for t in (dQ_semaphore, dK_semaphore, dV_semaphore)
         ]
         if arch // 10 in [8, 12]:
-            if arch // 10 == 12:
-                flash_bwd_obj_cls = (
-                    FlashSparseAttentionBackwardSm120
-                    if softmax_threshold is not None
-                    else FlashAttentionBackwardSm120
-                )
-            else:
-                flash_bwd_obj_cls = (
-                    FlashSparseAttentionBackwardSm80
-                    if softmax_threshold is not None
-                    else FlashAttentionBackwardSm80
-                )
+            flash_bwd_obj_cls = (
+                FlashSparseAttentionBackwardSm120
+                if arch // 10 == 12
+                else FlashSparseAttentionBackwardSm80
+            )
             flash_bwd_obj_args = [
                 dtype,
                 head_dim,
@@ -1906,23 +1932,17 @@ def _flash_attn_bwd(
                 m_block_size,
                 n_block_size,
                 num_stages_Q,
+                num_threads,
+                pack_gqa,
+                causal,
+                local,
+                SdP_swapAB,
+                dKV_swapAB,
+                dQ_swapAB,
+                AtomLayoutMSdP,
+                AtomLayoutNdKV,
+                AtomLayoutMdQ,
             ]
-            if softmax_threshold is None:
-                flash_bwd_obj_args.append(num_stages_dO)
-            flash_bwd_obj_args.extend(
-                [
-                    num_threads,
-                    pack_gqa,
-                    causal,
-                    local,
-                    SdP_swapAB,
-                    dKV_swapAB,
-                    dQ_swapAB,
-                    AtomLayoutMSdP,
-                    AtomLayoutNdKV,
-                    AtomLayoutMdQ,
-                ]
-            )
             fa_bwd_obj = flash_bwd_obj_cls(
                 *flash_bwd_obj_args,
                 V_in_regs=V_in_regs,
@@ -1995,16 +2015,20 @@ def _flash_attn_bwd(
             dv_tensor if not dKV_postprocess else dv_accum_tensor,
             softmax_scale,
         ]
+        if window_sizes is not None:
+            compile_args.append(window_sizes_tensor)
+        else:
+            compile_args.append(None)
         if softmax_threshold is not None:
             compile_args.append(softmax_threshold)
+        else:
+            compile_args.append(0.0)
         compile_args.extend(
             [
                 cu_seqlens_q_tensor,
                 cu_seqlens_k_tensor,
                 seqused_q_tensor,
                 seqused_k_tensor,
-                window_size_left,
-                window_size_right,
                 dQ_semaphore_tensor,
                 dK_semaphore_tensor,
                 dV_semaphore_tensor,
@@ -2030,16 +2054,20 @@ def _flash_attn_bwd(
             dv if not dKV_postprocess else dv_accum,
             softmax_scale,
         ]
+        if window_sizes is not None:
+            call_args.append(window_sizes)
+        else:
+            call_args.append(None)
         if softmax_threshold is not None:
             call_args.append(softmax_threshold)
+        else:
+            call_args.append(0.0)
         call_args.extend(
             [
                 cu_seqlens_q,
                 cu_seqlens_k,
                 seqused_q,
                 seqused_k,
-                window_size_left,
-                window_size_right,
                 dQ_semaphore,
                 dK_semaphore,
                 dV_semaphore,
@@ -2136,9 +2164,10 @@ class FlashAttnFunc(torch.autograd.Function):
         k: torch.Tensor,
         v: torch.Tensor,
         softmax_scale: Optional[float] = None,
+        is_causal: bool = False,
+        window_sizes: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
-        causal: bool = False,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_local: bool = False,
         learnable_sink: Optional[torch.Tensor] = None,
         softcap: float = 0.0,
         num_splits: int = 1,
@@ -2160,9 +2189,9 @@ class FlashAttnFunc(torch.autograd.Function):
             v,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
-            causal=causal,
-            window_size_left=window_size[0],
-            window_size_right=window_size[1],
+            causal=is_causal,
+            window_sizes=window_sizes,
+            local=is_local,
             learnable_sink=learnable_sink,
             softcap=softcap,
             num_splits=num_splits,
@@ -2176,9 +2205,10 @@ class FlashAttnFunc(torch.autograd.Function):
         )
         ctx.save_for_backward(q, k, v, out, lse, *(aux_tensors or ()))
         ctx.softmax_scale = softmax_scale
+        ctx.is_causal = is_causal
+        ctx.window_sizes = window_sizes
         ctx.softmax_threshold = softmax_threshold
-        ctx.causal = causal
-        ctx.window_size = window_size
+        ctx.is_local = is_local
         ctx.softcap = softcap
         ctx.deterministic = deterministic
         ctx.return_lse = return_lse
@@ -2207,10 +2237,10 @@ class FlashAttnFunc(torch.autograd.Function):
             lse,
             ctx.softmax_scale,
             ctx.softmax_threshold,
-            ctx.causal,
+            ctx.is_causal,
             ctx.softcap,
-            window_size_left=ctx.window_size[0],
-            window_size_right=ctx.window_size[1],
+            window_sizes=ctx.window_sizes,
+            local=ctx.is_local,
             deterministic=ctx.deterministic,
             score_mod=ctx.score_mod,
             score_mod_bwd=ctx.score_mod_bwd,
@@ -2239,9 +2269,10 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         min_seqlen_k: Optional[int] = None,
         page_table: Optional[torch.Tensor] = None,
         softmax_scale: Optional[float] = None,
+        is_causal: bool = False,
+        window_sizes: Optional[torch.Tensor] = None,
         softmax_threshold: Optional[float] = None,
-        causal: bool = False,
-        window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+        is_local: bool = False,
         learnable_sink: Optional[torch.Tensor] = None,
         softcap: float = 0.0,
         num_splits: int = 1,
@@ -2270,9 +2301,9 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             page_table=page_table,
             softmax_scale=softmax_scale,
             softmax_threshold=softmax_threshold,
-            causal=causal,
-            window_size_left=window_size[0],
-            window_size_right=window_size[1],
+            causal=is_causal,
+            window_sizes=window_sizes,
+            local=is_local,
             learnable_sink=learnable_sink,
             softcap=softcap,
             num_splits=num_splits,
@@ -2297,9 +2328,10 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             *(aux_tensors or ()),
         )
         ctx.softmax_scale = softmax_scale
+        ctx.is_causal = is_causal
+        ctx.window_sizes = window_sizes
         ctx.softmax_threshold = softmax_threshold
-        ctx.causal = causal
-        ctx.window_size = window_size
+        ctx.is_local = is_local
         ctx.softcap = softcap
         ctx.deterministic = deterministic
         ctx.max_seqlen_q = max_seqlen_q
@@ -2341,10 +2373,10 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             lse,
             ctx.softmax_scale,
             ctx.softmax_threshold,
-            ctx.causal,
+            ctx.is_causal,
             ctx.softcap,
-            window_size_left=ctx.window_size[0],
-            window_size_right=ctx.window_size[1],
+            window_sizes=ctx.window_sizes,
+            local=ctx.is_local,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             seqused_q=seqused_q,
@@ -2367,9 +2399,10 @@ def flash_attn_func(
     k: torch.Tensor,
     v: torch.Tensor,
     softmax_scale: Optional[float] = None,
+    is_causal: bool = False,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
-    causal: bool = False,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     learnable_sink: Optional[torch.Tensor] = None,
     softcap: float = 0.0,
     num_splits: int = 1,
@@ -2389,9 +2422,10 @@ def flash_attn_func(
         k,
         v,
         softmax_scale,
+        is_causal,
+        window_sizes,
         softmax_threshold,
-        causal,
-        window_size,
+        is_local,
         learnable_sink,
         softcap,
         num_splits,
@@ -2421,9 +2455,10 @@ def flash_attn_varlen_func(
     seqused_k: Optional[torch.Tensor] = None,
     page_table: Optional[torch.Tensor] = None,
     softmax_scale: Optional[float] = None,
+    is_causal: bool = False,
+    window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
-    causal: bool = False,
-    window_size: Tuple[Optional[int], Optional[int]] = (None, None),
+    is_local: bool = False,
     learnable_sink: Optional[torch.Tensor] = None,
     softcap: float = 0.0,
     num_splits: int = 1,
@@ -2463,9 +2498,10 @@ def flash_attn_varlen_func(
         min_seqlen_k,
         page_table,
         softmax_scale,
+        is_causal,
+        window_sizes,
         softmax_threshold,
-        causal,
-        window_size,
+        is_local,
         learnable_sink,
         softcap,
         num_splits,

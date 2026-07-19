@@ -6,7 +6,6 @@
 # A reimplementation of https://github.com/Dao-AILab/flash-attention/blob/main/hopper/mainloop_bwd_sm80.hpp
 # from Cutlass C++ to Cute-DSL.
 import math
-from types import SimpleNamespace
 from typing import Type, Callable, Optional
 from functools import partial
 
@@ -34,6 +33,11 @@ from flash_sparse_attn.ops.cute.tile_scheduler import (
 )
 from flash_sparse_attn.ops.cute.block_sparsity import BlockSparseTensors
 from flash_sparse_attn.ops.cute.utils import AuxData
+from flash_sparse_attn.ops.cute.namespace import (
+    FlashBwdGmemCopyParamsSm80,
+    FlashBwdMmaParamsSm80,
+    FlashBwdSmemCopyParamsSm80,
+)
 
 
 class FlashAttentionBackwardSm80:
@@ -633,7 +637,7 @@ class FlashAttentionBackwardSm80:
                 window_size_left,
                 window_size_right,
             )
-            m_block_min, m_block_max = block_info.get_m_block_min_max(seqlen, n_block)
+            (m_block_min, m_block_max, _, _, _, _) = block_info.get_m_block_min_max(seqlen, n_block)
             # TODO: return early if m_block_max == 0
 
             # ///////////////////////////////////////////////////////////////////////////////
@@ -845,7 +849,7 @@ class FlashAttentionBackwardSm80:
             tdOpdO = tQpQ
 
             # group parameters for compute_one_m_block
-            mma_params = SimpleNamespace(
+            mma_params = FlashBwdMmaParamsSm80(
                 thr_mma_sdp=thr_mma_sdp,
                 thr_mma_dkv=thr_mma_dkv,
                 thr_mma_dq=thr_mma_dq,
@@ -862,7 +866,7 @@ class FlashAttentionBackwardSm80:
                 acc_dK=acc_dK,
                 acc_dV=acc_dV,
             )
-            smem_copy_params = SimpleNamespace(
+            smem_copy_params = FlashBwdSmemCopyParamsSm80(
                 smem_thr_copy_QdO=smem_thr_copy_QdO,
                 smem_thr_copy_KV=smem_thr_copy_KV,
                 smem_thr_copy_PdSt=smem_thr_copy_PdSt,
@@ -885,7 +889,7 @@ class FlashAttentionBackwardSm80:
                 tdQsdS=tdQsdS,
                 tdQsKt=tdQsKt,
             )
-            gmem_copy_params = SimpleNamespace(
+            gmem_copy_params = FlashBwdGmemCopyParamsSm80(
                 gmem_thr_copy_dQaccum=gmem_thr_copy_dQaccum, tdQgdQaccum=tdQgdQaccum
             )
             load_Q_LSE = partial(
@@ -1041,9 +1045,9 @@ class FlashAttentionBackwardSm80:
         smem_pipe_read_do: cutlass.Int32,
         smem_pipe_write_q: cutlass.Int32,
         smem_pipe_write_do: cutlass.Int32,
-        mma_params: SimpleNamespace,
-        smem_copy_params: SimpleNamespace,
-        gmem_copy_params: SimpleNamespace,
+        mma_params: FlashBwdMmaParamsSm80,
+        smem_copy_params: FlashBwdSmemCopyParamsSm80,
+        gmem_copy_params: FlashBwdGmemCopyParamsSm80,
         load_Q_LSE: Callable,
         load_dO_dPsum: Callable,
         m_block_max: cutlass.Int32,
@@ -2028,13 +2032,12 @@ class FlashSparseAttentionBackwardSm80:
         mdK: cute.Tensor,
         mdV: cute.Tensor,
         softmax_scale: cutlass.Float32,
+        mWindowSizes: Optional[cute.Tensor],
         softmax_threshold: cutlass.Float32,
         mCuSeqlensQ: Optional[cute.Tensor] = None,
         mCuSeqlensK: Optional[cute.Tensor] = None,
         mSeqUsedQ: Optional[cute.Tensor] = None,
         mSeqUsedK: Optional[cute.Tensor] = None,
-        window_size_left: Int32 | int | None = None,
-        window_size_right: Int32 | int | None = None,
         mdQ_semaphore: Optional[cute.Tensor] = None,
         mdK_semaphore: Optional[cute.Tensor] = None,
         mdV_semaphore: Optional[cute.Tensor] = None,
@@ -2046,6 +2049,11 @@ class FlashSparseAttentionBackwardSm80:
         assert mdQ_semaphore is None and mdK_semaphore is None and mdV_semaphore is None, (
             "determinism not supported yet for Sm80"
         )
+        assert not self.is_local or mWindowSizes is not None, (
+            "mWindowSizes must be provided for local attention"
+        )
+        if cutlass.const_expr(mWindowSizes is not None):
+            assert mWindowSizes.element_type == Int32, "mWindowSizes must have dtype Int32"
         # Get the data type and check if it is fp16 or bf16
         self._check_type(
             *(
@@ -2122,8 +2130,7 @@ class FlashSparseAttentionBackwardSm80:
             softmax_scale,
             softmax_scale_log2,
             softmax_threshold,
-            window_size_left,
-            window_size_right,
+            mWindowSizes,
             self.sQ_layout,
             self.sK_layout,
             self.sV_layout,
@@ -2171,8 +2178,7 @@ class FlashSparseAttentionBackwardSm80:
         softmax_scale: cutlass.Float32,
         softmax_scale_log2: cutlass.Float32,
         softmax_threshold: cutlass.Float32,
-        window_size_left: Optional[Int32],
-        window_size_right: Optional[Int32],
+        mWindowSizes: Optional[cute.Tensor],
         sQ_layout: cute.ComposedLayout,
         sK_layout: cute.ComposedLayout,
         sV_layout: cute.ComposedLayout,
@@ -2216,16 +2222,77 @@ class FlashSparseAttentionBackwardSm80:
                 tile_n=self.n_block_size,
             )
 
-            block_info = BlockInfo(
-                self.m_block_size,
-                self.n_block_size,
-                self.is_causal,
-                self.is_local,
-                False,
+            (
+                window_size_sink,
                 window_size_left,
                 window_size_right,
+                window_size_dist,
+            ) = work_tile.load_window_sizes(
+                mWindowSizes,
+                self.is_local,
+                self.qhead_per_kvhead,
+                self.pack_gqa,
             )
-            m_block_min, m_block_max = block_info.get_m_block_min_max(seqlen, n_block)
+            block_info = BlockInfo(
+                tile_m=self.m_block_size,
+                tile_n=self.n_block_size,
+                is_causal=self.is_causal,
+                is_local=self.is_local,
+                is_split_kv=False,
+                window_size_sink=window_size_sink,
+                window_size_left=window_size_left,
+                window_size_right=window_size_right,
+                window_size_dist=window_size_dist,
+            )
+            (
+                m_block_min,
+                m_block_max,
+                m_block_window_min,
+                m_block_window_max,
+                m_block_sink_min,
+                m_block_sink_max,
+            ) = block_info.get_m_block_min_max(seqlen, n_block)
+            m_block_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+                seqlen,
+                n_block,
+                m_block_min,
+            )
+            if cutlass.const_expr(self.is_local):
+                m_block_min_no_mask = m_block_max
+                m_block_window_min = cutlass.max(m_block_window_min, m_block_min_no_mask)
+                m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+                    seqlen,
+                    n_block,
+                    m_block_window_min,
+                )
+                m_block_window_min_no_mask = cutlass.max(
+                    m_block_window_min_no_mask,
+                    m_block_window_min,
+                )
+                m_block_window_max_no_mask = block_info.get_m_block_max_before_local_mask(
+                    seqlen,
+                    n_block,
+                    m_block_window_max,
+                )
+                m_block_window_max_no_mask = cutlass.max(
+                    m_block_window_max_no_mask,
+                    m_block_window_min_no_mask,
+                )
+                m_block_window_min_no_mask = cutlass.max(
+                    cutlass.min(m_block_window_min_no_mask, m_block_window_max),
+                    m_block_window_min,
+                )
+                m_block_window_max_no_mask = cutlass.max(
+                    cutlass.min(m_block_window_max_no_mask, m_block_window_max),
+                    m_block_window_min_no_mask,
+                )
+            else:
+                m_block_window_min = Int32(0)
+                m_block_window_max = Int32(0)
+                m_block_window_min_no_mask = Int32(0)
+                m_block_window_max_no_mask = Int32(0)
+                m_block_sink_min = Int32(0)
+                m_block_sink_max = Int32(0)
             # TODO: return early if m_block_max == 0
 
             # ///////////////////////////////////////////////////////////////////////////////
@@ -2440,7 +2507,7 @@ class FlashSparseAttentionBackwardSm80:
             tdOpdO = tQpQ
 
             # group parameters for compute_one_m_block
-            mma_params = SimpleNamespace(
+            mma_params = FlashBwdMmaParamsSm80(
                 thr_mma_sdp=thr_mma_sdp,
                 thr_mma_dkv=thr_mma_dkv,
                 thr_mma_dq=thr_mma_dq,
@@ -2457,7 +2524,7 @@ class FlashSparseAttentionBackwardSm80:
                 acc_dK=acc_dK,
                 acc_dV=acc_dV,
             )
-            smem_copy_params = SimpleNamespace(
+            smem_copy_params = FlashBwdSmemCopyParamsSm80(
                 smem_thr_copy_QdO=smem_thr_copy_QdO,
                 smem_thr_copy_KV=smem_thr_copy_KV,
                 smem_thr_copy_PdSt=smem_thr_copy_PdSt,
@@ -2480,7 +2547,7 @@ class FlashSparseAttentionBackwardSm80:
                 tdQsdS=tdQsdS,
                 tdQsKt=tdQsKt,
             )
-            gmem_copy_params = SimpleNamespace(
+            gmem_copy_params = FlashBwdGmemCopyParamsSm80(
                 gmem_thr_copy_dQaccum=gmem_thr_copy_dQaccum, tdQgdQaccum=tdQgdQaccum
             )
             load_Q_LSE = partial(
@@ -2533,69 +2600,245 @@ class FlashSparseAttentionBackwardSm80:
                 skip_fn=skip_fn,
             )
 
-            if m_block_min < m_block_max:
-                # ///////////////////////////////////////////////////////////////////////////////
-                # Prologue
-                # ///////////////////////////////////////////////////////////////////////////////
-                # Start async loads of the last mn-tile, where we take care of the mn residue
-                self.load_V(
-                    gmem_thr_copy_VdO, tVgV, tVsV, n_block, seqlen=seqlen.seqlen_k, headdim=d_head
-                )
-                if cutlass.const_expr(self.V_in_regs):
-                    cute.arch.cp_async_commit_group()
-                self.load_K(
-                    gmem_thr_copy_QK, tKgK, tKsK, n_block, seqlen=seqlen.seqlen_k, headdim=d_head
-                )
+            # ///////////////////////////////////////////////////////////////////////////////
+            # Prologue
+            # ///////////////////////////////////////////////////////////////////////////////
+            self.load_V(
+                gmem_thr_copy_VdO, tVgV, tVsV, n_block, seqlen=seqlen.seqlen_k, headdim=d_head
+            )
+            if cutlass.const_expr(self.V_in_regs):
                 cute.arch.cp_async_commit_group()
+            self.load_K(
+                gmem_thr_copy_QK, tKgK, tKsK, n_block, seqlen=seqlen.seqlen_k, headdim=d_head
+            )
+            cute.arch.cp_async_commit_group()
 
-                if cutlass.const_expr(self.V_in_regs):
-                    cute.arch.cp_async_wait_group(1)
-                    cute.arch.barrier()
-                    tdPrV_copy_view = smem_thr_copy_KV.retile(tdPrV)
-                    cute.copy(smem_thr_copy_KV, tdPsV, tdPrV_copy_view)
-                    # Sync to avoid loading Q to smem_q, which overlaps with smem_v
-                    cute.arch.barrier()
+            if cutlass.const_expr(self.V_in_regs):
+                cute.arch.cp_async_wait_group(1)
+                cute.arch.barrier()
+                tdPrV_copy_view = smem_thr_copy_KV.retile(tdPrV)
+                cute.copy(smem_thr_copy_KV, tdPsV, tdPrV_copy_view)
+                # Sync to avoid loading Q to smem_q, which overlaps with smem_v
+                cute.arch.barrier()
 
-                m_block = m_block_min
+            # ///////////////////////////////////////////////////////////////////////////////
+            # Mainloop
+            # ///////////////////////////////////////////////////////////////////////////////
+            mask = AttentionMask(
+                self.m_block_size,
+                self.n_block_size,
+                seqlen,
+                window_size_sink,
+                window_size_left,
+                window_size_right,
+                window_size_dist,
+            )
+            mask_fn = partial(
+                mask.apply_mask,
+                n_block=n_block,
+                thr_mma=thr_mma_sdp,
+                batch_idx=batch_idx,
+                head_idx=head_idx,
+                use_r2p=False,
+            )
+
+            if m_block_min < m_block_max:
                 for stage in cutlass.range_constexpr(self.num_stages_Q):
                     if cutlass.const_expr(self.num_stages_Q == 1 or stage < self.num_stages_Q - 1):
-                        if stage == 0 or m_block + stage < m_block_max:
-                            load_Q_LSE(m_block + stage, smem_pipe_write_q=stage)
+                        if stage == 0 or m_block_min + stage < m_block_max:
+                            load_Q_LSE(m_block_min + stage, smem_pipe_write_q=stage)
                         cute.arch.cp_async_commit_group()
+                smem_pipe_read_q = Int32(0)
+                smem_pipe_write_q = Int32(self.num_stages_Q - 1)
 
-                # ///////////////////////////////////////////////////////////////////////////////
-                # Mainloop
-                # ///////////////////////////////////////////////////////////////////////////////
-                # Start processing of the first n-block.
-                mask = AttentionMask(
-                    self.m_block_size,
-                    self.n_block_size,
-                    seqlen,
-                    window_size_left,
-                    window_size_right,
-                )
-                mask_fn = partial(
-                    mask.apply_mask,
-                    n_block=n_block,
-                    thr_mma=thr_mma_sdp,
-                    batch_idx=batch_idx,
-                    head_idx=head_idx,
-                    mask_seqlen=True,
-                    mask_causal=self.is_causal,
-                    mask_local=self.is_local,
-                    use_r2p=False,
-                )
-                smem_pipe_read_q = cutlass.Int32(0)
-                smem_pipe_write_q = cutlass.Int32(self.num_stages_Q - 1)
-                for m_tile in cutlass.range(m_block_min, m_block_max, unroll=1):
-                    compute_one_m_block(
-                        m_tile,
-                        smem_pipe_read_q,
-                        smem_pipe_write_q,
-                        mask_fn=mask_fn,
-                    )
-                    smem_pipe_read_q = self.advance_pipeline(smem_pipe_read_q, self.num_stages_Q)
-                    smem_pipe_write_q = self.advance_pipeline(smem_pipe_write_q, self.num_stages_Q)
+                # Process m_blocks with causal or local masking
+                if cutlass.const_expr(self.is_causal or self.is_local):
+                    for m_block in cutlass.range(
+                        m_block_min,
+                        m_block_min_no_mask,
+                        unroll=1,
+                    ):
+                        compute_one_m_block(
+                            m_block,
+                            smem_pipe_read_q,
+                            smem_pipe_write_q,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=self.is_causal and not self.is_local,
+                                mask_local=self.is_local,
+                                mask_sink=False,
+                            ),
+                        )
+                        smem_pipe_read_q = self.advance_pipeline(
+                            smem_pipe_read_q, self.num_stages_Q
+                        )
+                        smem_pipe_write_q = self.advance_pipeline(
+                            smem_pipe_write_q, self.num_stages_Q
+                        )
+
+                # Process m_blocks without masking
+                if cutlass.const_expr(not self.is_local):
+                    for m_block in cutlass.range(
+                        m_block_min_no_mask,
+                        m_block_max,
+                        unroll=1,
+                    ):
+                        compute_one_m_block(
+                            m_block,
+                            smem_pipe_read_q,
+                            smem_pipe_write_q,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=False,
+                                mask_causal=False,
+                                mask_local=False,
+                                mask_sink=False,
+                            ),
+                        )
+                        smem_pipe_read_q = self.advance_pipeline(
+                            smem_pipe_read_q, self.num_stages_Q
+                        )
+                        smem_pipe_write_q = self.advance_pipeline(
+                            smem_pipe_write_q, self.num_stages_Q
+                        )
+
+            if cutlass.const_expr(self.is_local):
+                if m_block_window_min < m_block_window_max:
+                    cute.arch.cp_async_wait_group(0)
+                    cute.arch.barrier()
+                    for stage in cutlass.range_constexpr(self.num_stages_Q):
+                        if cutlass.const_expr(
+                            self.num_stages_Q == 1 or stage < self.num_stages_Q - 1
+                        ):
+                            if stage == 0 or m_block_window_min + stage < m_block_window_max:
+                                load_Q_LSE(
+                                    m_block_window_min + stage,
+                                    smem_pipe_write_q=stage,
+                                )
+                            cute.arch.cp_async_commit_group()
+                    smem_pipe_read_q = Int32(0)
+                    smem_pipe_write_q = Int32(self.num_stages_Q - 1)
+
+                    # Process m_blocks with local right masking
+                    for m_block in cutlass.range(
+                        m_block_window_min,
+                        m_block_window_min_no_mask,
+                        unroll=1,
+                    ):
+                        compute_one_m_block(
+                            m_block,
+                            smem_pipe_read_q,
+                            smem_pipe_write_q,
+                            m_block_max=m_block_window_max,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=False,
+                                mask_local=True,
+                                mask_sink=False,
+                            ),
+                        )
+                        smem_pipe_read_q = self.advance_pipeline(
+                            smem_pipe_read_q, self.num_stages_Q
+                        )
+                        smem_pipe_write_q = self.advance_pipeline(
+                            smem_pipe_write_q, self.num_stages_Q
+                        )
+
+                    # Process m_blocks without masking
+                    for m_block in cutlass.range(
+                        m_block_window_min_no_mask,
+                        m_block_window_max_no_mask,
+                        unroll=1,
+                    ):
+                        compute_one_m_block(
+                            m_block,
+                            smem_pipe_read_q,
+                            smem_pipe_write_q,
+                            m_block_max=m_block_window_max,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=False,
+                                mask_causal=False,
+                                mask_local=False,
+                                mask_sink=False,
+                            ),
+                        )
+                        smem_pipe_read_q = self.advance_pipeline(
+                            smem_pipe_read_q, self.num_stages_Q
+                        )
+                        smem_pipe_write_q = self.advance_pipeline(
+                            smem_pipe_write_q, self.num_stages_Q
+                        )
+
+                    # Process m_blocks with local left masking
+                    for m_block in cutlass.range(
+                        m_block_window_max_no_mask,
+                        m_block_window_max,
+                        unroll=1,
+                    ):
+                        compute_one_m_block(
+                            m_block,
+                            smem_pipe_read_q,
+                            smem_pipe_write_q,
+                            m_block_max=m_block_window_max,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=False,
+                                mask_local=True,
+                                mask_sink=False,
+                            ),
+                        )
+                        smem_pipe_read_q = self.advance_pipeline(
+                            smem_pipe_read_q, self.num_stages_Q
+                        )
+                        smem_pipe_write_q = self.advance_pipeline(
+                            smem_pipe_write_q, self.num_stages_Q
+                        )
+
+                if m_block_sink_min < m_block_sink_max:
+                    cute.arch.cp_async_wait_group(0)
+                    cute.arch.barrier()
+                    for stage in cutlass.range_constexpr(self.num_stages_Q):
+                        if cutlass.const_expr(
+                            self.num_stages_Q == 1 or stage < self.num_stages_Q - 1
+                        ):
+                            if stage == 0 or m_block_sink_min + stage < m_block_sink_max:
+                                load_Q_LSE(
+                                    m_block_sink_min + stage,
+                                    smem_pipe_write_q=stage,
+                                )
+                            cute.arch.cp_async_commit_group()
+                    smem_pipe_read_q = Int32(0)
+                    smem_pipe_write_q = Int32(self.num_stages_Q - 1)
+
+                    # Process m_blocks with local sink masking
+                    for m_block in cutlass.range(
+                        m_block_sink_min,
+                        m_block_sink_max,
+                        unroll=1,
+                    ):
+                        compute_one_m_block(
+                            m_block,
+                            smem_pipe_read_q,
+                            smem_pipe_write_q,
+                            m_block_max=m_block_sink_max,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=False,
+                                mask_local=True,
+                                mask_sink=True,
+                            ),
+                        )
+                        smem_pipe_read_q = self.advance_pipeline(
+                            smem_pipe_read_q, self.num_stages_Q
+                        )
+                        smem_pipe_write_q = self.advance_pipeline(
+                            smem_pipe_write_q, self.num_stages_Q
+                        )
 
             # ///////////////////////////////////////////////////////////////////////////////
             # Epilogue
@@ -2630,9 +2873,9 @@ class FlashSparseAttentionBackwardSm80:
         m_block: cutlass.Int32,
         smem_pipe_read_q: cutlass.Int32,
         smem_pipe_write_q: cutlass.Int32,
-        mma_params: SimpleNamespace,
-        smem_copy_params: SimpleNamespace,
-        gmem_copy_params: SimpleNamespace,
+        mma_params: FlashBwdMmaParamsSm80,
+        smem_copy_params: FlashBwdSmemCopyParamsSm80,
+        gmem_copy_params: FlashBwdGmemCopyParamsSm80,
         load_Q_LSE: Callable,
         load_dO_dPsum: Callable,
         m_block_max: cutlass.Int32,
