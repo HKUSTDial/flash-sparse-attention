@@ -2224,12 +2224,12 @@ class FlashSparseAttentionBackwardSm90:
         mdK: cute.Tensor,
         mdV: cute.Tensor,
         softmax_scale: Float32,
+        mWindowSizes: Optional[cute.Tensor],
+        softmax_threshold: Float32,
         mCuSeqlensQ: Optional[cute.Tensor] = None,
         mCuSeqlensK: Optional[cute.Tensor] = None,
         mSeqUsedQ: Optional[cute.Tensor] = None,
         mSeqUsedK: Optional[cute.Tensor] = None,
-        window_size_left: Int32 | int | None = None,
-        window_size_right: Int32 | int | None = None,
         mdQ_semaphore: Optional[cute.Tensor] = None,
         mdK_semaphore: Optional[cute.Tensor] = None,
         mdV_semaphore: Optional[cute.Tensor] = None,
@@ -2238,6 +2238,15 @@ class FlashSparseAttentionBackwardSm90:
         # Always keep stream as the last parameter (EnvStream: obtained implicitly via TVM FFI).
         stream: cuda.CUstream = None,
     ):
+        assert not self.is_local or mWindowSizes is not None, (
+            "mWindowSizes must be provided for local attention"
+        )
+        if const_expr(mWindowSizes is not None):
+            assert mWindowSizes.element_type == Int32, "mWindowSizes must have dtype Int32"
+        if const_expr(blocksparse_tensors is not None):
+            assert not self.is_local, (
+                "block sparsity and window sizes cannot be enabled at the same time"
+            )
         # For GQA (qhead_per_kvhead > 1), multiple Q heads accumulate into the same dK/dV,
         # so we need the float32 accum path + postprocess.
         # For varlen_k with qhead_per_kvhead == 1, we use ragged TMA tensors.
@@ -2438,11 +2447,6 @@ class FlashSparseAttentionBackwardSm90:
 
         self.use_block_sparsity = cutlass.const_expr(blocksparse_tensors is not None)
 
-        if const_expr(window_size_left is not None):
-            window_size_left = Int32(window_size_left)
-        if const_expr(window_size_right is not None):
-            window_size_right = Int32(window_size_right)
-
         self.kernel(
             tma_tensor_Q,
             tma_tensor_K,
@@ -2486,8 +2490,7 @@ class FlashSparseAttentionBackwardSm90:
             mdQ_semaphore,
             mdK_semaphore,
             mdV_semaphore,
-            window_size_left,
-            window_size_right,
+            mWindowSizes,
         ).launch(
             grid=grid_dim,
             block=[self.num_threads, 1, 1],
@@ -2541,8 +2544,7 @@ class FlashSparseAttentionBackwardSm90:
         mdQ_semaphore: Optional[cute.Tensor] = None,
         mdK_semaphore: Optional[cute.Tensor] = None,
         mdV_semaphore: Optional[cute.Tensor] = None,
-        window_size_left: Optional[Int32] = None,
-        window_size_right: Optional[Int32] = None,
+        mWindowSizes: Optional[cute.Tensor] = None,
     ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
 
@@ -2598,14 +2600,30 @@ class FlashSparseAttentionBackwardSm90:
         )
         sdQaccum = storage.sdQaccum.get_tensor(sdQaccum_layout)
 
+        TileSchedulerCls = partial(TileScheduler.create, tile_sched_params)
+        tile_scheduler = TileSchedulerCls()
+        work_tile = tile_scheduler.initial_work_tile_info()
+        (
+            window_size_sink,
+            window_size_left,
+            window_size_right,
+            window_size_dist,
+        ) = work_tile.load_window_sizes(
+            mWindowSizes,
+            self.is_local,
+            self.qhead_per_kvhead,
+            False,  # pack_gqa
+        )
         block_info = BlockInfo(
             self.tile_m,
             self.tile_n,
             self.is_causal,
             self.is_local,
             False,  # is_split_kv
+            window_size_sink,
             window_size_left,
             window_size_right,
+            window_size_dist,
             qhead_per_kvhead_packgqa=1,
         )
         SeqlenInfoCls = partial(
@@ -2623,11 +2641,12 @@ class FlashSparseAttentionBackwardSm90:
             AttentionMask,
             self.tile_m,
             self.tile_n,
+            window_size_sink=window_size_sink,
             window_size_left=window_size_left,
             window_size_right=window_size_right,
+            window_size_dist=window_size_dist,
             swap_AB=self.SdP_swapAB,
         )
-        TileSchedulerCls = partial(TileScheduler.create, tile_sched_params)
 
         if warp_idx < 4:
             cute.arch.setmaxregister_decrease(self.num_producer_regs)
@@ -2803,14 +2822,24 @@ class FlashSparseAttentionBackwardSm90:
                 load_dPsum = copy_utils.cpasync_bulk_get_copy_fn(gdPsum, sdPsum)
                 load_dPsum = copy_utils.tma_producer_copy_fn(load_dPsum, pipeline_dO)
 
-                m_block_min, m_block_max = block_info.get_m_block_min_max(seqlen, n_block)
-
+                (
+                    m_block_min,
+                    m_block_max,
+                    m_block_window_min,
+                    m_block_window_max,
+                    m_block_sink_min,
+                    m_block_sink_max,
+                ) = block_info.get_m_block_min_max(seqlen, n_block)
                 if const_expr(not self.use_block_sparsity):
-                    total_m_block_cnt = m_block_max - m_block_min
-                    process_tile = (
-                        const_expr(not self.is_local and not self.is_varlen_q)
-                        or m_block_min < m_block_max
+                    total_m_block_cnt = (
+                        m_block_max
+                        - m_block_min
+                        + (m_block_window_max - m_block_window_min)
+                        + (m_block_sink_max - m_block_sink_min)
                     )
+                    process_tile = const_expr(
+                        not self.is_local and not self.is_varlen_q
+                    ) or total_m_block_cnt > Int32(0)
                 else:
                     total_m_block_cnt = get_total_q_block_count_bwd(
                         blocksparse_tensors,
@@ -2825,6 +2854,14 @@ class FlashSparseAttentionBackwardSm90:
                 if process_tile:
                     if const_expr(not self.use_block_sparsity):
                         first_m_block = m_block_min
+                        if const_expr(self.is_local):
+                            if m_block_min == m_block_max:
+                                if m_block_window_min < m_block_window_max:
+                                    first_m_block = m_block_window_min
+                                    m_block_window_min += 1
+                                else:
+                                    first_m_block = m_block_sink_min
+                                    m_block_sink_min += 1
                         pipeline_Q.producer_acquire(
                             producer_state_Q, extra_tx_count=self.tma_copy_bytes["K"]
                         )
@@ -2861,6 +2898,41 @@ class FlashSparseAttentionBackwardSm90:
                             load_dPsum(m_block, producer_state=producer_state_dO_cur)
                             producer_state_Q.advance()
                             producer_state_dO.advance()
+
+                        if const_expr(self.is_local):
+                            for m_block in cutlass.range(
+                                m_block_window_min, m_block_window_max, unroll=1
+                            ):
+                                pipeline_Q.producer_acquire(producer_state_Q)
+                                load_Q(m_block, producer_state=producer_state_Q)
+                                load_LSE(m_block, producer_state=producer_state_Q)
+                                producer_state_dO_cur = (
+                                    producer_state_dO
+                                    if const_expr(self.Q_stage != self.dO_stage)
+                                    else producer_state_Q
+                                )
+                                pipeline_dO.producer_acquire(producer_state_dO_cur)
+                                load_dO(m_block, producer_state=producer_state_dO_cur)
+                                load_dPsum(m_block, producer_state=producer_state_dO_cur)
+                                producer_state_Q.advance()
+                                producer_state_dO.advance()
+
+                            for m_block in cutlass.range(
+                                m_block_sink_min, m_block_sink_max, unroll=1
+                            ):
+                                pipeline_Q.producer_acquire(producer_state_Q)
+                                load_Q(m_block, producer_state=producer_state_Q)
+                                load_LSE(m_block, producer_state=producer_state_Q)
+                                producer_state_dO_cur = (
+                                    producer_state_dO
+                                    if const_expr(self.Q_stage != self.dO_stage)
+                                    else producer_state_Q
+                                )
+                                pipeline_dO.producer_acquire(producer_state_dO_cur)
+                                load_dO(m_block, producer_state=producer_state_dO_cur)
+                                load_dPsum(m_block, producer_state=producer_state_dO_cur)
+                                producer_state_Q.advance()
+                                producer_state_dO.advance()
                     else:
                         producer_state_Q, producer_state_dO = produce_block_sparse_q_loads_bwd_sm90(
                             blocksparse_tensors,
@@ -3196,13 +3268,23 @@ class FlashSparseAttentionBackwardSm90:
                 n_block=n_block,
                 seqlen_info=seqlen,
             )
-            m_block_min, m_block_max = block_info.get_m_block_min_max(seqlen, n_block)
-
+            (
+                m_block_min,
+                m_block_max,
+                m_block_window_min,
+                m_block_window_max,
+                m_block_sink_min,
+                m_block_sink_max,
+            ) = block_info.get_m_block_min_max(seqlen, n_block)
+            total_m_block_cnt = (
+                (m_block_max - m_block_min)
+                + (m_block_window_max - m_block_window_min)
+                + (m_block_sink_max - m_block_sink_min)
+            )
             if const_expr(not self.use_block_sparsity):
-                process_tile = (
-                    const_expr(not self.is_local and not self.is_varlen_q)
-                    or m_block_min < m_block_max
-                )
+                process_tile = const_expr(
+                    not self.is_local and not self.is_varlen_q
+                ) or total_m_block_cnt > Int32(0)
             else:
                 total_m_block_cnt = get_total_q_block_count_bwd(
                     blocksparse_tensors,
@@ -3222,9 +3304,6 @@ class FlashSparseAttentionBackwardSm90:
                         head_idx=head_idx,
                         n_block=n_block,
                         thr_mma=thr_mma_SdP,
-                        mask_seqlen=True,
-                        mask_causal=self.is_causal,
-                        mask_local=self.is_local,
                         mask_mod=self.mask_mod,
                         aux_data=aux_data,
                         fastdiv_mods=fastdiv_mods,
@@ -3235,7 +3314,47 @@ class FlashSparseAttentionBackwardSm90:
                             m_block,
                             consumer_state_Q,
                             consumer_state_dO,
-                            mask_fn=mask_fn,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=self.is_causal and not self.is_local,
+                                mask_local=self.is_local,
+                                mask_sink=False,
+                            ),
+                            score_mod_fn=score_mod_fn_cur,
+                            score_mod_bwd_fn=score_mod_bwd_fn_cur,
+                            dKV_accumulate=dKV_accumulate,
+                        )
+                        dKV_accumulate = True
+                    for m_block in cutlass.range(m_block_window_min, m_block_window_max, unroll=1):
+                        consumer_state_Q, consumer_state_dO = mma_one_m_block_all(
+                            m_block,
+                            consumer_state_Q,
+                            consumer_state_dO,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=False,
+                                mask_local=True,
+                                mask_sink=False,
+                            ),
+                            score_mod_fn=score_mod_fn_cur,
+                            score_mod_bwd_fn=score_mod_bwd_fn_cur,
+                            dKV_accumulate=dKV_accumulate,
+                        )
+                        dKV_accumulate = True
+                    for m_block in cutlass.range(m_block_sink_min, m_block_sink_max, unroll=1):
+                        consumer_state_Q, consumer_state_dO = mma_one_m_block_all(
+                            m_block,
+                            consumer_state_Q,
+                            consumer_state_dO,
+                            mask_fn=partial(
+                                mask_fn,
+                                mask_seqlen=True,
+                                mask_causal=False,
+                                mask_local=True,
+                                mask_sink=True,
+                            ),
                             score_mod_fn=score_mod_fn_cur,
                             score_mod_bwd_fn=score_mod_bwd_fn_cur,
                             dKV_accumulate=dKV_accumulate,
@@ -3687,13 +3806,24 @@ class FlashSparseAttentionBackwardSm90:
                 # mdQ_semaphore is (num_m_blocks, cluster_size, num_head, batch) after transpose
                 mdQ_semaphore_cur = mdQ_semaphore[None, None, head_idx, batch_idx]
 
-            m_block_min, m_block_max = block_info.get_m_block_min_max(seqlen, n_block)
+            (
+                m_block_min,
+                m_block_max,
+                m_block_window_min,
+                m_block_window_max,
+                m_block_sink_min,
+                m_block_sink_max,
+            ) = block_info.get_m_block_min_max(seqlen, n_block)
             if const_expr(not self.use_block_sparsity):
+                loop_count = (
+                    m_block_max
+                    - m_block_min
+                    + (m_block_window_max - m_block_window_min)
+                    + (m_block_sink_max - m_block_sink_min)
+                )
                 process_tile = (
                     const_expr(not self.is_local and not self.is_varlen_q)
-                    or m_block_min < m_block_max
-                )
-                loop_count = m_block_max - m_block_min
+                ) or loop_count > Int32(0)
             else:
                 total_block_cnt = get_total_q_block_count_bwd(
                     blocksparse_tensors,
@@ -3709,6 +3839,17 @@ class FlashSparseAttentionBackwardSm90:
                 if const_expr(not self.use_block_sparsity):
                     for iter_idx in cutlass.range(loop_count, unroll=1):
                         m_block = m_block_min + iter_idx
+                        if iter_idx >= (m_block_max - m_block_min):
+                            m_block = m_block_window_min + iter_idx - (m_block_max - m_block_min)
+                        if iter_idx >= (m_block_max - m_block_min) + (
+                            m_block_window_max - m_block_window_min
+                        ):
+                            m_block = (
+                                m_block_sink_min
+                                + iter_idx
+                                - (m_block_max - m_block_min)
+                                - (m_block_window_max - m_block_window_min)
+                            )
                         m_block_safe = m_block
 
                         num_dQ_chunks = self.num_wg_dQ
@@ -3727,10 +3868,41 @@ class FlashSparseAttentionBackwardSm90:
                         # Semaphore acquire: wait for prior n_blocks to finish writing this m_block
                         if const_expr(self.deterministic):
                             if const_expr(self.spt):
-                                _, n_block_max_for_m_block = block_info.get_n_block_min_max(
-                                    seqlen, m_block_safe
+                                (
+                                    n_block_min_for_m_block,
+                                    n_block_max_for_m_block,
+                                    n_block_window_min_for_m_block,
+                                    n_block_window_max_for_m_block,
+                                    n_block_sink_min_for_m_block,
+                                    n_block_sink_max_for_m_block,
+                                ) = block_info.get_n_block_min_max(seqlen, m_block_safe)
+                                if const_expr(self.is_local):
+                                    n_block_window_max_for_m_block = cutlass.min(
+                                        n_block_window_max_for_m_block,
+                                        n_block_min_for_m_block,
+                                    )
+                                else:
+                                    n_block_window_min_for_m_block = Int32(0)
+                                    n_block_window_max_for_m_block = Int32(0)
+                                    n_block_sink_min_for_m_block = Int32(0)
+                                    n_block_sink_max_for_m_block = Int32(0)
+                                lock_value = (
+                                    cutlass.max(
+                                        n_block_max_for_m_block
+                                        - cutlass.max(n_block + 1, n_block_min_for_m_block),
+                                        0,
+                                    )
+                                    + cutlass.max(
+                                        n_block_window_max_for_m_block
+                                        - cutlass.max(n_block + 1, n_block_window_min_for_m_block),
+                                        0,
+                                    )
+                                    + cutlass.max(
+                                        n_block_sink_max_for_m_block
+                                        - cutlass.max(n_block + 1, n_block_sink_min_for_m_block),
+                                        0,
+                                    )
                                 )
-                                lock_value = n_block_max_for_m_block - 1 - n_block
                             else:
                                 lock_value = n_block
                             barrier.wait_eq(
@@ -3783,9 +3955,7 @@ class FlashSparseAttentionBackwardSm90:
 
             # For local masking + deterministic (non-spt): signal remaining m_blocks
             # that this n_block won't visit, so they don't deadlock waiting.
-            if const_expr(
-                self.deterministic and not self.spt and block_info.window_size_left is not None
-            ):
+            if const_expr(self.deterministic and not self.spt and self.is_local):
                 m_block_global_max = cute.ceil_div(seqlen.seqlen_q, self.tile_m)
                 for m_block in cutlass.range(m_block_max, m_block_global_max, unroll=1):
                     barrier.arrive_inc(
