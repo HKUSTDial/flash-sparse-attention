@@ -56,6 +56,7 @@ from flash_sparse_attn.ops.cute.flash_fwd import (
 from flash_sparse_attn.ops.cute.utils import AuxData
 
 
+# NOTE: only for sync
 class FlashAttentionForwardSm90(FlashAttentionForwardBase):
     def __init__(
         self,
