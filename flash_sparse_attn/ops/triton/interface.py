@@ -125,7 +125,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
         ctx.is_split_qo = is_split_qo
         ctx.num_splits = num_splits
         ctx.is_autotune = is_autotune
-        ctx.tile_mn = tile_mn
+        ctx.tile_mn = (tile_mn[1], tile_mn[0]) if tile_mn is not None else None
         ctx.skip_checks = skip_checks
 
         if return_lse:
@@ -265,7 +265,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
         ctx.is_split_qo = is_split_qo
         ctx.num_splits = num_splits
         ctx.is_autotune = is_autotune
-        ctx.tile_mn = tile_mn
+        ctx.tile_mn = (tile_mn[1], tile_mn[0]) if tile_mn is not None else None
         ctx.skip_checks = skip_checks
 
         if return_lse:
@@ -404,7 +404,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         ctx.is_split_qo = is_split_qo
         ctx.num_splits = num_splits
         ctx.is_autotune = is_autotune
-        ctx.tile_mn = tile_mn
+        ctx.tile_mn = (tile_mn[1], tile_mn[0]) if tile_mn is not None else None
         ctx.skip_checks = skip_checks
 
         if return_lse:
@@ -548,7 +548,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
         ctx.is_split_qo = is_split_qo
         ctx.num_splits = num_splits
         ctx.is_autotune = is_autotune
-        ctx.tile_mn = tile_mn
+        ctx.tile_mn = (tile_mn[1], tile_mn[0]) if tile_mn is not None else None
         ctx.skip_checks = skip_checks
 
         if return_lse:
@@ -707,7 +707,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         ctx.is_split_qo = is_split_qo
         ctx.num_splits = num_splits
         ctx.is_autotune = is_autotune
-        ctx.tile_mn = tile_mn
+        ctx.tile_mn = (tile_mn[1], tile_mn[0]) if tile_mn is not None else None
         ctx.skip_checks = skip_checks
 
         if return_lse:
@@ -881,7 +881,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
         ctx.is_split_qo = is_split_qo
         ctx.num_splits = num_splits
         ctx.is_autotune = is_autotune
-        ctx.tile_mn = tile_mn
+        ctx.tile_mn = (tile_mn[1], tile_mn[0]) if tile_mn is not None else None
         ctx.skip_checks = skip_checks
 
         if return_lse:
