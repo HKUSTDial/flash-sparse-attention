@@ -6,6 +6,7 @@
 # A reimplementation of https://github.com/Dao-AILab/flash-attention/blob/main/hopper/mainloop_bwd_sm80.hpp
 # from Cutlass C++ to Cute-DSL.
 import math
+from types import SimpleNamespace
 from typing import Type, Callable, Optional
 from functools import partial
 
@@ -40,6 +41,7 @@ from flash_sparse_attn.ops.cute.namespace import (
 )
 
 
+# NOTE: only for sync
 class FlashAttentionBackwardSm80:
     def __init__(
         self,
@@ -637,7 +639,7 @@ class FlashAttentionBackwardSm80:
                 window_size_left,
                 window_size_right,
             )
-            (m_block_min, m_block_max, _, _, _, _) = block_info.get_m_block_min_max(seqlen, n_block)
+            m_block_min, m_block_max = block_info.get_m_block_min_max(seqlen, n_block)
             # TODO: return early if m_block_max == 0
 
             # ///////////////////////////////////////////////////////////////////////////////
@@ -849,7 +851,7 @@ class FlashAttentionBackwardSm80:
             tdOpdO = tQpQ
 
             # group parameters for compute_one_m_block
-            mma_params = FlashBwdMmaParamsSm80(
+            mma_params = SimpleNamespace(
                 thr_mma_sdp=thr_mma_sdp,
                 thr_mma_dkv=thr_mma_dkv,
                 thr_mma_dq=thr_mma_dq,
@@ -866,7 +868,7 @@ class FlashAttentionBackwardSm80:
                 acc_dK=acc_dK,
                 acc_dV=acc_dV,
             )
-            smem_copy_params = FlashBwdSmemCopyParamsSm80(
+            smem_copy_params = SimpleNamespace(
                 smem_thr_copy_QdO=smem_thr_copy_QdO,
                 smem_thr_copy_KV=smem_thr_copy_KV,
                 smem_thr_copy_PdSt=smem_thr_copy_PdSt,
@@ -889,7 +891,7 @@ class FlashAttentionBackwardSm80:
                 tdQsdS=tdQsdS,
                 tdQsKt=tdQsKt,
             )
-            gmem_copy_params = FlashBwdGmemCopyParamsSm80(
+            gmem_copy_params = SimpleNamespace(
                 gmem_thr_copy_dQaccum=gmem_thr_copy_dQaccum, tdQgdQaccum=tdQgdQaccum
             )
             load_Q_LSE = partial(
@@ -1045,9 +1047,9 @@ class FlashAttentionBackwardSm80:
         smem_pipe_read_do: cutlass.Int32,
         smem_pipe_write_q: cutlass.Int32,
         smem_pipe_write_do: cutlass.Int32,
-        mma_params: FlashBwdMmaParamsSm80,
-        smem_copy_params: FlashBwdSmemCopyParamsSm80,
-        gmem_copy_params: FlashBwdGmemCopyParamsSm80,
+        mma_params: SimpleNamespace,
+        smem_copy_params: SimpleNamespace,
+        gmem_copy_params: SimpleNamespace,
         load_Q_LSE: Callable,
         load_dO_dPsum: Callable,
         m_block_max: cutlass.Int32,
