@@ -331,9 +331,7 @@ def window_sizes_heuristic(
     if equal_bandwidth:
         breakpoints = distance_span * head_kv_idx / num_heads_kv_global
     else:
-        breakpoints = distance_span * (
-            1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global)
-        )
+        breakpoints = distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global))
     window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
     window_size_dist = torch.full_like(window_size_left, window_dist, dtype=torch.int32)
