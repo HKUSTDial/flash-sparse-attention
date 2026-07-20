@@ -1321,8 +1321,11 @@ class FlashAttentionForwardSm90(FlashAttentionForwardBase):
 
         # For RescaleOBeforeGemm: initialize acc_O
         if const_expr(self.rescale_O_before_gemm):
-            acc_O.fill(0.0)
+            if const_expr(is_first_block):
+                acc_O.fill(0.0)
             scores_scale.store(row_scale.load())
+        elif const_expr(not is_first_block):
+            softmax.rescale_O(acc_O, row_scale)
 
         return kv_consumer_state
 
@@ -1661,13 +1664,13 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
         mO: cute.Tensor,  # (b, s_q, h, dv) or (total_q, h, dv) if there is cu_seqlens_q
         mLSE: Optional[cute.Tensor],
         softmax_scale: Float32,
+        mWindowSizes: Optional[cute.Tensor],
+        softmax_threshold: Float32,
         mCuSeqlensQ: Optional[cute.Tensor] = None,
         mCuSeqlensK: Optional[cute.Tensor] = None,
         mSeqUsedQ: Optional[cute.Tensor] = None,
         mSeqUsedK: Optional[cute.Tensor] = None,
         mPageTable: Optional[cute.Tensor] = None,  # (b_k, max_num_pages_per_seq)
-        window_size_left: Int32 | int | None = None,
-        window_size_right: Int32 | int | None = None,
         learnable_sink: Optional[cute.Tensor] = None,
         blocksparse_tensors: Optional[BlockSparseTensors] = None,
         aux_data: AuxData = AuxData(),
@@ -1679,6 +1682,16 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
         mQ/mK/mV/mO has same data types(supports fp16 and bf16) and same layout:
         (batch_size, seqlen_q, num_head, head_dim):(_, _, _, 1)
         """
+
+        assert not self.is_local or mWindowSizes is not None, (
+            "mWindowSizes must be provided for local attention"
+        )
+        if const_expr(mWindowSizes is not None):
+            assert mWindowSizes.element_type == Int32, "mWindowSizes must have dtype Int32"
+        if const_expr(blocksparse_tensors is not None):
+            assert not self.is_local, (
+                "block sparsity and window sizes cannot be enabled at the same time"
+            )
 
         self._check_type(
             *(
@@ -1845,8 +1858,6 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
         softmax_scale_log2, softmax_scale = utils.compute_softmax_scale_log2(
             softmax_scale, self.score_mod
         )
-        window_size_left = Int32(window_size_left) if window_size_left is not None else None
-        window_size_right = Int32(window_size_right) if window_size_right is not None else None
         fastdiv_mods = utils.compute_fastdiv_mods(
             mQ, mK, self.qhead_per_kvhead, self.pack_gqa, aux_data.tensors, mPageTable
         )
@@ -1868,8 +1879,7 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
             tma_atom_O,
             softmax_scale_log2,
             softmax_scale,
-            window_size_left,
-            window_size_right,
+            mWindowSizes,
             learnable_sink,
             blocksparse_tensors,
             self.sQ_layout,
@@ -1914,8 +1924,7 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
         tma_atom_O: Optional[cute.CopyAtom],
         softmax_scale_log2: Float32,
         softmax_scale: Optional[Float32],
-        window_size_left: Optional[Int32],
-        window_size_right: Optional[Int32],
+        mWindowSizes: Optional[cute.Tensor],
         learnable_sink: Optional[cute.Tensor],
         blocksparse_tensors: Optional[BlockSparseTensors],
         sQ_layout: cute.ComposedLayout,
@@ -2031,14 +2040,30 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
         # reuse sQ's data iterator
         sO = storage.sQ.get_tensor(sO_layout.outer, swizzle=sO_layout.inner, dtype=self.dtype)
 
+        TileSchedulerCls = partial(TileScheduler.create, tile_sched_params)
+        tile_scheduler = TileSchedulerCls()
+        work_tile = tile_scheduler.initial_work_tile_info()
+        (
+            window_size_sink,
+            window_size_left,
+            window_size_right,
+            window_size_dist,
+        ) = work_tile.load_window_sizes(
+            mWindowSizes,
+            self.is_local,
+            self.qhead_per_kvhead,
+            self.pack_gqa,
+        )
         block_info = BlockInfo(
             self.tile_m,
             self.tile_n,
             self.is_causal,
             self.is_local,
             False,  # is_split_kv
+            window_size_sink,
             window_size_left,
             window_size_right,
+            window_size_dist,
             qhead_per_kvhead_packgqa=self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
         )
         SeqlenInfoCls = partial(
@@ -2065,11 +2090,12 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
             AttentionMask,
             self.tile_m,
             self.tile_n,
+            window_size_sink=window_size_sink,
             window_size_left=window_size_left,
             window_size_right=window_size_right,
+            window_size_dist=window_size_dist,
             qhead_per_kvhead_packgqa=self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
         )
-        TileSchedulerCls = partial(TileScheduler.create, tile_sched_params)
 
         # Cluster wait before starting
         pipeline_init_wait(cluster_shape_mn=self.cluster_shape_mn)
@@ -2259,7 +2285,14 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
                     )
 
                 if const_expr(not self.use_block_sparsity):
-                    n_block_min, n_block_max = block_info.get_n_block_min_max(seqlen, m_block)
+                    (
+                        n_block_min,
+                        n_block_max,
+                        n_block_window_min,
+                        n_block_window_max,
+                        n_block_sink_min,
+                        n_block_sink_max,
+                    ) = block_info.get_n_block_min_max(seqlen, m_block)
                     # if cute.arch.thread_idx()[0] == 0:
                     #     cute.printf("m_block = %d, n_block_min: %d, n_block_max: %d", m_block, n_block_min, n_block_max)
                     # Clamp n_block to 0 when n_block_max == 0 (can happen with causal
@@ -2326,6 +2359,55 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
                                     page_idx=page_idx,
                                 )
                                 kv_producer_state.advance()
+                            if const_expr(self.is_local):
+                                for i in cutlass.range(
+                                    n_block_window_max - n_block_window_min, unroll=1
+                                ):
+                                    n_block = n_block_window_max - i - 1
+                                    page_idx = (
+                                        mPageTable[batch_idx, n_block]
+                                        if const_expr(mPageTable is not None and self.use_tma_KV)
+                                        else None
+                                    )
+                                    if const_expr(not self.use_tma_KV):
+                                        paged_kv_manager.load_page_table(n_block)
+                                    pipeline_k.producer_acquire(kv_producer_state)
+                                    load_K(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    pipeline_v.producer_acquire(kv_producer_state)
+                                    load_V(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    kv_producer_state.advance()
+                                for i in cutlass.range(
+                                    n_block_sink_max - n_block_sink_min, unroll=1
+                                ):
+                                    n_block = n_block_sink_max - i - 1
+                                    page_idx = (
+                                        mPageTable[batch_idx, n_block]
+                                        if const_expr(mPageTable is not None and self.use_tma_KV)
+                                        else None
+                                    )
+                                    if const_expr(not self.use_tma_KV):
+                                        paged_kv_manager.load_page_table(n_block)
+                                    pipeline_k.producer_acquire(kv_producer_state)
+                                    load_K(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    pipeline_v.producer_acquire(kv_producer_state)
+                                    load_V(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    kv_producer_state.advance()
                         else:
                             for i in cutlass.range(n_block_max - 1 - n_block_min, unroll=1):
                                 n_block_prev = n_block_max - i - 1
@@ -2365,6 +2447,119 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
                                 block=n_block, producer_state=kv_producer_state, page_idx=page_idx
                             )
                             kv_producer_state.advance()
+                            if const_expr(self.is_local):
+                                if n_block_window_max > n_block_window_min:
+                                    n_block = n_block_window_max - 1
+                                    page_idx = (
+                                        mPageTable[batch_idx, n_block]
+                                        if const_expr(mPageTable is not None)
+                                        else None
+                                    )
+                                    pipeline_k.producer_acquire(kv_producer_state)
+                                    load_K(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    for i in cutlass.range(
+                                        n_block_window_max - 1 - n_block_window_min,
+                                        unroll=1,
+                                    ):
+                                        n_block_prev = n_block_window_max - i - 1
+                                        n_block = n_block_prev - 1
+                                        page_idx = (
+                                            mPageTable[batch_idx, n_block]
+                                            if const_expr(mPageTable is not None)
+                                            else None
+                                        )
+                                        page_idx_prev = (
+                                            mPageTable[batch_idx, n_block_prev]
+                                            if const_expr(mPageTable is not None)
+                                            else None
+                                        )
+                                        kv_producer_state_prev = kv_producer_state.clone()
+                                        kv_producer_state.advance()
+                                        pipeline_k.producer_acquire(kv_producer_state)
+                                        load_K(
+                                            block=n_block,
+                                            producer_state=kv_producer_state,
+                                            page_idx=page_idx,
+                                        )
+                                        pipeline_v.producer_acquire(kv_producer_state_prev)
+                                        load_V(
+                                            block=n_block_prev,
+                                            producer_state=kv_producer_state_prev,
+                                            page_idx=page_idx_prev,
+                                        )
+                                    n_block = n_block_window_min
+                                    page_idx = (
+                                        mPageTable[batch_idx, n_block]
+                                        if const_expr(mPageTable is not None)
+                                        else None
+                                    )
+                                    pipeline_v.producer_acquire(kv_producer_state)
+                                    load_V(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    kv_producer_state.advance()
+                                if n_block_sink_max > n_block_sink_min:
+                                    n_block = n_block_sink_max - 1
+                                    page_idx = (
+                                        mPageTable[batch_idx, n_block]
+                                        if const_expr(mPageTable is not None)
+                                        else None
+                                    )
+                                    pipeline_k.producer_acquire(kv_producer_state)
+                                    load_K(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    for i in cutlass.range(
+                                        n_block_sink_max - 1 - n_block_sink_min,
+                                        unroll=1,
+                                    ):
+                                        n_block_prev = n_block_sink_max - i - 1
+                                        n_block = n_block_prev - 1
+                                        page_idx = (
+                                            mPageTable[batch_idx, n_block]
+                                            if const_expr(mPageTable is not None)
+                                            else None
+                                        )
+                                        page_idx_prev = (
+                                            mPageTable[batch_idx, n_block_prev]
+                                            if const_expr(mPageTable is not None)
+                                            else None
+                                        )
+                                        kv_producer_state_prev = kv_producer_state.clone()
+                                        kv_producer_state.advance()
+                                        pipeline_k.producer_acquire(kv_producer_state)
+                                        load_K(
+                                            block=n_block,
+                                            producer_state=kv_producer_state,
+                                            page_idx=page_idx,
+                                        )
+                                        pipeline_v.producer_acquire(kv_producer_state_prev)
+                                        load_V(
+                                            block=n_block_prev,
+                                            producer_state=kv_producer_state_prev,
+                                            page_idx=page_idx_prev,
+                                        )
+                                    n_block = n_block_sink_min
+                                    page_idx = (
+                                        mPageTable[batch_idx, n_block]
+                                        if const_expr(mPageTable is not None)
+                                        else None
+                                    )
+                                    pipeline_v.producer_acquire(kv_producer_state)
+                                    load_V(
+                                        block=n_block,
+                                        producer_state=kv_producer_state,
+                                        page_idx=page_idx,
+                                    )
+                                    kv_producer_state.advance()
                 else:
                     # Block sparsity: use TMA closures directly (not paged)
                     # Load Q on pipeline_q, separate from K/V pipeline
@@ -2591,7 +2786,40 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
             mma_one_n_block = partial(
                 mma_one_n_block_all, seqlen=seqlen, softmax=softmax, score_mod_fn=score_mod_fn
             )
-            n_block_min, n_block_max = block_info.get_n_block_min_max(seqlen, m_block)
+            (
+                n_block_min,
+                n_block_max,
+                n_block_window_min,
+                n_block_window_max,
+                n_block_sink_min,
+                n_block_sink_max,
+            ) = block_info.get_n_block_min_max(seqlen, m_block)
+            n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+                seqlen,
+                m_block,
+                n_block_min,
+                is_local=False,
+            )
+            if const_expr(self.is_local):
+                n_block_max_no_mask = n_block_min
+                n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+                    seqlen,
+                    m_block,
+                    n_block_window_min,
+                )
+                n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
+                    seqlen,
+                    m_block,
+                    n_block_window_min,
+                )
+                n_block_window_max_no_mask = cutlass.max(
+                    cutlass.min(n_block_window_max_no_mask, n_block_window_max),
+                    n_block_window_min,
+                )
+                n_block_window_min_no_mask = cutlass.max(
+                    cutlass.min(n_block_window_min_no_mask, n_block_window_max_no_mask),
+                    n_block_window_min,
+                )
             pipeline_q.consumer_wait_w_index_phase(0, q_consumer_phase)
             # For performance reason, we separate out two kinds of iterations:
             # those that need masking on S, and those that don't.
@@ -2613,7 +2841,13 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
                         n_block=n_block_max - 1,
                         seqlen=seqlen,
                         kv_consumer_state=kv_consumer_state,
-                        mask_fn=partial(mask_fn, mask_mod=self.mask_mod),
+                        mask_fn=partial(
+                            mask_fn,
+                            mask_mod=self.mask_mod,
+                            mask_seqlen=True,
+                            mask_causal=self.is_causal and not self.is_local,
+                            mask_local=self.is_local,
+                        ),
                         score_mod_fn=score_mod_fn,
                         is_first_block=True,
                     )
@@ -2625,65 +2859,182 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
                         seqlen=seqlen,
                         mma_pv_fn=partial(mma_pv_fn, zero_init=True),
                         is_first_n_block=True,
-                        mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=True),
+                        mask_fn=partial(
+                            mask_fn,
+                            mask_mod=self.mask_mod,
+                            mask_seqlen=True,
+                            mask_causal=self.is_causal and not self.is_local,
+                            mask_local=self.is_local,
+                        ),
                     )
                     O_should_accumulate = True
                 # if cute.arch.thread_idx()[0] == 128: cute.printf("m_block = {}, n_block_max = {}, n_block_min = {}", m_block, n_block_max, n_block_min)
                 n_block_max -= 1
+                n_block_max_no_mask = cutlass.min(n_block_max_no_mask, n_block_max)
                 # Next couple of iterations with causal masking
-                if const_expr(self.is_causal or self.is_local):
-                    n_block_min_causal_local_mask = block_info.get_n_block_min_causal_local_mask(
-                        seqlen, m_block, n_block_min
-                    )
-                    # if cute.arch.thread_idx()[0] == 128: cute.printf("n_block_min_causal_local_mask = {}", n_block_min_causal_local_mask)
-                    for n_tile in cutlass.range(
-                        n_block_max - n_block_min_causal_local_mask, unroll=1
-                    ):
-                        kv_consumer_state = mma_one_n_block(
-                            kv_consumer_state,
-                            n_block=n_block_max - 1 - n_tile,
-                            seqlen=seqlen,
-                            mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
-                            mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False),
-                        )
-                        O_should_accumulate = True
-                    n_block_max = cutlass.min(n_block_max, n_block_min_causal_local_mask)
-                # The remaining iterations have no masking
-                n_block_min_before_local_mask = block_info.get_n_block_min_before_local_mask(
-                    seqlen, m_block, n_block_min
-                )
-                # if cute.arch.thread_idx()[0] == 128: cute.printf("n_block_min_before_local_mask = {}, n_block_min = {}", n_block_min_before_local_mask, n_block_min)
-                for n_tile in cutlass.range(n_block_max - n_block_min_before_local_mask, unroll=1):
+                for n_tile in cutlass.range(n_block_max - n_block_max_no_mask, unroll=1):
                     kv_consumer_state = mma_one_n_block(
                         kv_consumer_state,
                         n_block=n_block_max - 1 - n_tile,
                         seqlen=seqlen,
                         mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
-                        mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False),
+                        mask_fn=partial(
+                            mask_fn,
+                            mask_mod=self.mask_mod,
+                            mask_seqlen=True,
+                            mask_causal=self.is_causal and not self.is_local,
+                            mask_local=self.is_local,
+                        ),
                     )
                     O_should_accumulate = True
-                # Separate iterations with local masking on the left
-                if const_expr(self.is_local and block_info.window_size_left is not None):
-                    n_block_max = cutlass.min(n_block_max, n_block_min_before_local_mask)
-                    for n_tile in cutlass.range(n_block_max - n_block_min, unroll=1):
-                        kv_consumer_state = mma_one_n_block(
-                            kv_consumer_state,
-                            n_block=n_block_max - 1 - n_tile,
-                            seqlen=seqlen,
-                            mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
-                            mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False),
-                        )
-                        O_should_accumulate = True
-                # Release Q pipeline so the producer can load the next tile's Q
-                pipeline_q.consumer_release_w_index(0)
-                # Last "half" iteration
+                # The remaining iterations have no masking
+                for n_tile in cutlass.range(n_block_max_no_mask - n_block_min, unroll=1):
+                    kv_consumer_state = mma_one_n_block(
+                        kv_consumer_state,
+                        n_block=n_block_max_no_mask - 1 - n_tile,
+                        seqlen=seqlen,
+                        mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
+                        mask_fn=partial(
+                            mask_fn,
+                            mask_mod=self.mask_mod,
+                            mask_seqlen=False,
+                            mask_causal=False,
+                            mask_local=False,
+                        ),
+                    )
+                    O_should_accumulate = True
                 if const_expr(self.intra_wg_overlap):
                     kv_consumer_state = process_last_half_block(
                         kv_consumer_state=kv_consumer_state,
                         zero_init=not O_should_accumulate,
                     )
                     O_should_accumulate = True
-                else:
+                # Separate iterations with local masking
+                if const_expr(self.is_local):
+                    if n_block_window_max > n_block_window_min:
+                        if const_expr(self.intra_wg_overlap):
+                            kv_consumer_state = process_first_half_block(
+                                n_block=n_block_window_max - 1,
+                                seqlen=seqlen,
+                                kv_consumer_state=kv_consumer_state,
+                                mask_fn=partial(
+                                    mask_fn,
+                                    mask_mod=self.mask_mod,
+                                    mask_seqlen=False,
+                                    mask_causal=False,
+                                    mask_local=True,
+                                ),
+                                score_mod_fn=score_mod_fn,
+                                is_first_block=False,
+                            )
+                            n_block_window_max -= 1
+                            n_block_window_max_no_mask = cutlass.min(
+                                n_block_window_max_no_mask, n_block_window_max
+                            )
+                            n_block_window_min_no_mask = cutlass.min(
+                                n_block_window_min_no_mask, n_block_window_max_no_mask
+                            )
+                        for n_tile in cutlass.range(
+                            n_block_window_max - n_block_window_max_no_mask, unroll=1
+                        ):
+                            kv_consumer_state = mma_one_n_block(
+                                kv_consumer_state,
+                                n_block=n_block_window_max - 1 - n_tile,
+                                seqlen=seqlen,
+                                mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
+                                mask_fn=partial(
+                                    mask_fn,
+                                    mask_mod=self.mask_mod,
+                                    mask_seqlen=False,
+                                    mask_causal=False,
+                                    mask_local=True,
+                                ),
+                            )
+                            O_should_accumulate = True
+                        for n_tile in cutlass.range(
+                            n_block_window_max_no_mask - n_block_window_min_no_mask, unroll=1
+                        ):
+                            kv_consumer_state = mma_one_n_block(
+                                kv_consumer_state,
+                                n_block=n_block_window_max_no_mask - 1 - n_tile,
+                                seqlen=seqlen,
+                                mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
+                                mask_fn=partial(
+                                    mask_fn,
+                                    mask_mod=self.mask_mod,
+                                    mask_seqlen=False,
+                                    mask_causal=False,
+                                    mask_local=False,
+                                ),
+                            )
+                            O_should_accumulate = True
+                        for n_tile in cutlass.range(
+                            n_block_window_min_no_mask - n_block_window_min, unroll=1
+                        ):
+                            kv_consumer_state = mma_one_n_block(
+                                kv_consumer_state,
+                                n_block=n_block_window_min_no_mask - 1 - n_tile,
+                                seqlen=seqlen,
+                                mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
+                                mask_fn=partial(
+                                    mask_fn,
+                                    mask_mod=self.mask_mod,
+                                    mask_seqlen=False,
+                                    mask_causal=False,
+                                    mask_local=True,
+                                ),
+                            )
+                            O_should_accumulate = True
+                        if const_expr(self.intra_wg_overlap):
+                            kv_consumer_state = process_last_half_block(
+                                kv_consumer_state=kv_consumer_state,
+                                zero_init=not O_should_accumulate,
+                            )
+                            O_should_accumulate = True
+                    # Separate iterations with local sink masking
+                    if n_block_sink_max > n_block_sink_min:
+                        if const_expr(self.intra_wg_overlap):
+                            kv_consumer_state = process_first_half_block(
+                                n_block=n_block_sink_max - 1,
+                                seqlen=seqlen,
+                                kv_consumer_state=kv_consumer_state,
+                                mask_fn=partial(
+                                    mask_fn,
+                                    mask_mod=self.mask_mod,
+                                    mask_seqlen=True,
+                                    mask_causal=False,
+                                    mask_local=True,
+                                    mask_sink=True,
+                                ),
+                                score_mod_fn=score_mod_fn,
+                                is_first_block=False,
+                            )
+                            n_block_sink_max -= 1
+                        for n_tile in cutlass.range(n_block_sink_max - n_block_sink_min, unroll=1):
+                            kv_consumer_state = mma_one_n_block(
+                                kv_consumer_state,
+                                n_block=n_block_sink_max - 1 - n_tile,
+                                seqlen=seqlen,
+                                mma_pv_fn=partial(mma_pv_fn, zero_init=not O_should_accumulate),
+                                mask_fn=partial(
+                                    mask_fn,
+                                    mask_mod=self.mask_mod,
+                                    mask_seqlen=True,
+                                    mask_causal=False,
+                                    mask_local=True,
+                                    mask_sink=True,
+                                ),
+                            )
+                            O_should_accumulate = True
+                        if const_expr(self.intra_wg_overlap):
+                            kv_consumer_state = process_last_half_block(
+                                kv_consumer_state=kv_consumer_state,
+                                zero_init=not O_should_accumulate,
+                            )
+                            O_should_accumulate = True
+                # Release Q pipeline so the producer can load the next tile's Q
+                pipeline_q.consumer_release_w_index(0)
+                if const_expr(not self.intra_wg_overlap):
                     self.warp_scheduler_barrier_arrive()
 
             else:
@@ -2813,8 +3164,11 @@ class FlashSparseAttentionForwardSm90(FlashSparseAttentionForwardBase):
 
         # For RescaleOBeforeGemm: initialize acc_O
         if const_expr(self.rescale_O_before_gemm):
-            acc_O.fill(0.0)
+            if const_expr(is_first_block):
+                acc_O.fill(0.0)
             scores_scale.store(row_scale.load())
+        elif const_expr(not is_first_block):
+            softmax.rescale_O(acc_O, row_scale)
 
         return kv_consumer_state
 
