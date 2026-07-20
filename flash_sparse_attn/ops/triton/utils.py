@@ -1,6 +1,7 @@
 import functools
 import torch
 import triton
+from typing import Optional
 
 
 def get_device():
@@ -51,33 +52,40 @@ def window_sizes_heuristic(
     equal_bandwidth: bool = True,
     window_dist: int = 1024,
     window_sink: int = 64,
+    num_heads_kv_global: Optional[int] = None,
+    tp_rank: Optional[int] = None,
 ) -> torch.Tensor:
     """
     Compute token count window sizes that partition non-diagonal causal distances into bands.
 
     :param seqlen_k: Sequence length of keys.
-    :param num_heads_kv: Number of KV heads.
+    :param num_heads_kv: Number of local KV heads on this rank.
     :param device: Target device.
     :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
     :param window_dist: Near-diagonal token count shared by all KV heads.
     :param window_sink: Sink token count shared by all KV heads.
+    :param num_heads_kv_global: Total KV heads across all TP ranks.
+    :param tp_rank: Tensor parallel rank of this process.
 
     :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_dist]. window_sink is the prefix sink token count, window_left is the distant local band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
     """
+    if num_heads_kv_global is None:
+        num_heads_kv_global = num_heads_kv
+    head_offset = (tp_rank or 0) * num_heads_kv
+    head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32) + head_offset
     window_dist = min(max(window_dist, 0), seqlen_k)
     window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
-    head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32)
     distance_span = max(seqlen_k - window_sink - window_dist, 0)
     if equal_bandwidth:
-        breakpoints = (distance_span * head_kv_idx / num_heads_kv).to(torch.int32)
+        breakpoints = distance_span * head_kv_idx / num_heads_kv_global
     else:
-        breakpoints = (
-            distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv))
-        ).to(torch.int32)
+        breakpoints = distance_span * (
+            1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global)
+        )
     window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
-    window_size_dist = torch.full_like(window_size_left, window_dist)
-    window_size_sink = torch.full_like(window_size_left, window_sink)
+    window_size_dist = torch.full_like(window_size_left, window_dist, dtype=torch.int32)
+    window_size_sink = torch.full_like(window_size_left, window_sink, dtype=torch.int32)
     return torch.stack(
         [window_size_sink, window_size_left, window_size_right, window_size_dist], dim=1
     ).to(device)
