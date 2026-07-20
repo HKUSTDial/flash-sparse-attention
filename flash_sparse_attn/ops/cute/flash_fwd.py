@@ -1862,6 +1862,10 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
         )
         if const_expr(mWindowSizes is not None):
             assert mWindowSizes.element_type == Int32, "mWindowSizes must have dtype Int32"
+        if const_expr(blocksparse_tensors is not None):
+            assert not self.is_local, (
+                "block sparsity and window sizes cannot be enabled at the same time"
+            )
         self._check_type(
             *(
                 t.element_type if t is not None else None
@@ -2061,7 +2065,6 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
         )
         if const_expr(self.is_local):
             n_block_max_no_mask = n_block_min
-            n_block_window_max = cutlass.min(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen,
                 m_block,
@@ -2081,8 +2084,6 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
                 n_block_window_min,
             )
         else:
-            n_block_window_min = Int32(0)
-            n_block_window_max = Int32(0)
             n_block_window_min_no_mask = Int32(0)
             n_block_window_max_no_mask = Int32(0)
         # For varlen, wasted grid tiles (where batch_idx >= num_batch) will have
