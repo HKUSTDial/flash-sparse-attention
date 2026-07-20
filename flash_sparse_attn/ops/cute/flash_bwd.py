@@ -2056,6 +2056,10 @@ class FlashSparseAttentionBackwardSm80:
         )
         if cutlass.const_expr(mWindowSizes is not None):
             assert mWindowSizes.element_type == Int32, "mWindowSizes must have dtype Int32"
+        if cutlass.const_expr(blocksparse_tensors is not None):
+            assert not self.is_local, (
+                "block sparsity and window sizes cannot be enabled at the same time"
+            )
         # Get the data type and check if it is fp16 or bf16
         self._check_type(
             *(
@@ -2261,7 +2265,6 @@ class FlashSparseAttentionBackwardSm80:
             )
             if cutlass.const_expr(self.is_local):
                 m_block_min_no_mask = m_block_max
-                m_block_window_min = cutlass.max(m_block_window_min, m_block_min_no_mask)
                 m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
                     seqlen,
                     n_block,
