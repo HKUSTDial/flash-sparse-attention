@@ -226,10 +226,11 @@ class SeqlenInfoQK:
         tile_n: cutlass.Constexpr[int],
         is_causal: cutlass.Constexpr[bool],
         qhead_per_kvhead_packgqa: cutlass.Constexpr[int] = 1,
+        transpose: cutlass.Constexpr[bool] = False,
     ):
         softmax_threshold_log2 = cute.make_fragment_like(row_fragment, Float32)
-        cS = cute.make_identity_tensor((tile_m, tile_n))
-        tScS_mn = layout_utils.reshape_acc_to_mn(thr_mma.partition_C(cS))
+        cS = cute.make_identity_tensor((tile_n, tile_m) if transpose else (tile_m, tile_n))
+        tScS_mn = layout_utils.reshape_acc_to_mn(thr_mma.partition_C(cS), transpose=transpose)
         for r in range(cute.size(softmax_threshold_log2)):
             q_idx = m_block * tile_m + tScS_mn[r, 0][0]
             if const_expr(qhead_per_kvhead_packgqa > 1):
