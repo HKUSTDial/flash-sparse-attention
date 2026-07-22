@@ -301,6 +301,31 @@ class PipelineCpAsync(_PipelineIndexPhaseMixin, PipelineCpAsyncOg):
 class PipelineTmaAsync(_PipelineIndexPhaseMixin, PipelineTmaAsyncOg):
     """Override producer_acquire to take in extra_tx_count parameter."""
 
+    _sSkip: Optional[cute.Tensor] = None
+    _barrier_full_id: int = 0
+    _barrier_empty_id: int = 0
+    _skip_num_threads: int = 0
+    _producer_skip_idx: int = 0
+
+    @staticmethod
+    def create(
+        *args,
+        sSkip: Optional[cute.Tensor] = None,
+        barrier_full_id: int = 0,
+        barrier_empty_id: int = 0,
+        skip_num_threads: int = 0,
+        producer_skip_idx: int = 0,
+        **kwargs,
+    ):
+        obj = PipelineTmaAsyncOg.create(*args, **kwargs)
+        object.__setattr__(obj, "__class__", PipelineTmaAsync)
+        object.__setattr__(obj, "_sSkip", sSkip)
+        object.__setattr__(obj, "_barrier_full_id", barrier_full_id)
+        object.__setattr__(obj, "_barrier_empty_id", barrier_empty_id)
+        object.__setattr__(obj, "_skip_num_threads", skip_num_threads)
+        object.__setattr__(obj, "_producer_skip_idx", producer_skip_idx)
+        return obj
+
     @dsl_user_op
     def producer_acquire(
         self,
@@ -314,6 +339,21 @@ class PipelineTmaAsync(_PipelineIndexPhaseMixin, PipelineTmaAsyncOg):
         """
         TMA producer commit conditionally waits on buffer empty and sets the transaction barrier for leader threadblocks.
         """
+        if const_expr(self._sSkip is not None):
+            cute.arch.barrier(
+                barrier_id=self._barrier_full_id,
+                number_of_threads=self._skip_num_threads,
+            )
+            is_skip = Boolean(self._sSkip[0] != 0)
+            with cute.arch.elect_one():
+                self._sSkip[self._producer_skip_idx] = Int32(is_skip)
+            cute.arch.sync_warp()
+            cute.arch.barrier(
+                barrier_id=self._barrier_empty_id,
+                number_of_threads=self._skip_num_threads,
+            )
+        else:
+            is_skip = Boolean(False)
         if_generate(
             try_acquire_token is None or try_acquire_token == 0,
             lambda: self.sync_object_empty.wait(state.index, state.phase, loc=loc, ip=ip),
@@ -321,13 +361,41 @@ class PipelineTmaAsync(_PipelineIndexPhaseMixin, PipelineTmaAsyncOg):
             ip=ip,
         )
         if const_expr(extra_tx_count == 0):
-            self.sync_object_full.arrive(state.index, self.producer_mask, loc=loc, ip=ip)
+            if_generate(
+                is_skip,
+                lambda: self.producer_arrive_no_tma(state, loc=loc, ip=ip),
+                lambda: self.sync_object_full.arrive(
+                    state.index, self.producer_mask, loc=loc, ip=ip
+                ),
+                loc=loc,
+                ip=ip,
+            )
         else:
             tx_count = self.sync_object_full.tx_count + extra_tx_count
-            self.sync_object_full.arrive_and_expect_tx(state.index, tx_count, loc=loc, ip=ip)
+            if_generate(
+                is_skip,
+                lambda: self.producer_arrive_no_tma(state, loc=loc, ip=ip),
+                lambda: self.sync_object_full.arrive_and_expect_tx(
+                    state.index, tx_count, loc=loc, ip=ip
+                ),
+                loc=loc,
+                ip=ip,
+            )
 
+    @dsl_user_op
+    def producer_arrive_no_tma(self, state: PipelineState, *, loc=None, ip=None):
+        with cute.arch.elect_one(loc=loc, ip=ip):
+            cute.arch.mbarrier_arrive(
+                self.sync_object_full.get_barrier(state.index, loc=loc, ip=ip),
+                loc=loc,
+                ip=ip,
+            )
 
-PipelineTmaAsync.create = _override_create(PipelineTmaAsyncOg, PipelineTmaAsync)
+    @dsl_user_op
+    def producer_tail(self, state: PipelineState, *, loc=None, ip=None):
+        for _ in range(self.num_stages - 1):
+            state.advance(loc=loc, ip=ip)
+        PipelineTmaAsyncOg.producer_acquire(self, state, loc=loc, ip=ip)
 
 
 # ── PipelineTmaUmma ─────────────────────────────────────────────────────────
