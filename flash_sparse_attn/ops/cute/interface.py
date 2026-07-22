@@ -37,7 +37,7 @@ from flash_sparse_attn.ops.cute.cute_dsl_utils import (
 from flash_sparse_attn.ops.cute.flash_fwd import (
     FlashSparseAttentionForwardSm80,
 )
-from flash_sparse_attn.ops.cute.flash_fwd_sm90 import FlashAttentionForwardSm90
+from flash_sparse_attn.ops.cute.flash_fwd_sm90 import FlashSparseAttentionForwardSm90
 from flash_sparse_attn.ops.cute.flash_fwd_sm100 import FlashAttentionForwardSm100, DescaleTensors
 from flash_sparse_attn.ops.cute.flash_fwd_sm120 import (
     FlashSparseAttentionForwardSm120,
@@ -46,7 +46,7 @@ from flash_sparse_attn.ops.cute.flash_bwd_preprocess import FlashAttentionBackwa
 from flash_sparse_attn.ops.cute.flash_bwd import (
     FlashSparseAttentionBackwardSm80,
 )
-from flash_sparse_attn.ops.cute.flash_bwd_sm90 import FlashAttentionBackwardSm90
+from flash_sparse_attn.ops.cute.flash_bwd_sm90 import FlashSparseAttentionBackwardSm90
 from flash_sparse_attn.ops.cute.flash_bwd_sm100 import FlashAttentionBackwardSm100
 from flash_sparse_attn.ops.cute.flash_bwd_sm120 import (
     FlashSparseAttentionBackwardSm120,
@@ -160,7 +160,6 @@ class BwdConfig:
     m_block_size: int
     n_block_size: int
     num_stages_Q: int
-    num_stages_dO: int
     num_stages_PdS: int
     SdP_swapAB: bool
     dKV_swapAB: bool
@@ -184,7 +183,6 @@ def _tile_size_bwd_sm90(head_dim, causal, local, sparse_block_size_q=None):
             m_block_size=128,
             n_block_size=128,
             num_stages_Q=2,
-            num_stages_dO=2,
             num_stages_PdS=2,
             SdP_swapAB=True,
             dKV_swapAB=False,
@@ -199,7 +197,6 @@ def _tile_size_bwd_sm90(head_dim, causal, local, sparse_block_size_q=None):
             m_block_size=64,
             n_block_size=128,
             num_stages_Q=2,
-            num_stages_dO=2,
             num_stages_PdS=2,
             SdP_swapAB=True,
             dKV_swapAB=False,
@@ -219,7 +216,6 @@ def _tile_size_bwd_sm90(head_dim, causal, local, sparse_block_size_q=None):
             m_block_size=m_block_size,
             n_block_size=128,
             num_stages_Q=2,
-            num_stages_dO=2,
             num_stages_PdS=2,
             SdP_swapAB=True,
             dKV_swapAB=False,
@@ -233,7 +229,6 @@ def _tile_size_bwd_sm90(head_dim, causal, local, sparse_block_size_q=None):
             m_block_size=64,
             n_block_size=96,
             num_stages_Q=2,
-            num_stages_dO=1,
             num_stages_PdS=1,
             SdP_swapAB=False,
             dKV_swapAB=True,
@@ -249,7 +244,6 @@ def _tile_size_bwd_sm90(head_dim, causal, local, sparse_block_size_q=None):
             m_block_size=64,
             n_block_size=64,
             num_stages_Q=1,
-            num_stages_dO=1,
             num_stages_PdS=1,
             SdP_swapAB=False,
             dKV_swapAB=False,
@@ -329,15 +323,15 @@ def window_sizes_heuristic(
     window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
     distance_span = max(seqlen_k - window_sink - window_dist, 0)
     if equal_bandwidth:
-        breakpoints = distance_span * head_kv_idx / num_heads_kv_global
+        breakpoints = (distance_span * head_kv_idx / num_heads_kv_global).to(torch.int32)
     else:
-        breakpoints = distance_span * (
-            1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global)
-        )
+        breakpoints = (
+            distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global))
+        ).to(torch.int32)
     window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
-    window_size_dist = torch.full_like(window_size_left, window_dist, dtype=torch.int32)
-    window_size_sink = torch.full_like(window_size_left, window_sink, dtype=torch.int32)
+    window_size_dist = torch.full_like(window_size_left, window_dist)
+    window_size_sink = torch.full_like(window_size_left, window_sink)
     return torch.stack(
         [window_size_sink, window_size_left, window_size_right, window_size_dist], dim=1
     ).to(device)
@@ -492,9 +486,9 @@ def _flash_attn_fwd(
             )
         ), "inputs must be on CUDA device"
     arch = _get_device_arch() if _arch is None else _arch
-    # TODO: support 9.x, 10.x, 11.x for FSA
-    assert arch // 10 in [8, 12], (
-        "Unsupported compute capability. Supported: 8.x, 12.x for FlashSparseAttention yet."
+    # TODO: support 10.x, 11.x for FSA
+    assert arch // 10 in [8, 9, 12], (
+        "Unsupported compute capability. Supported: 8.x, 9.x, 12.x for FlashSparseAttention yet."
     )
     assert arch // 10 in [8, 9, 10, 11, 12], (
         "Unsupported compute capability. Supported: 8.x, 9.x, 10.x, 11.x, 12.x"
@@ -850,7 +844,7 @@ def _flash_attn_fwd(
             )
         elif arch // 10 == 9:
             assert not is_split_kv, "SplitKV not supported on SM 9.0"
-            fa_fwd = FlashAttentionForwardSm90(
+            fa_fwd = FlashSparseAttentionForwardSm90(
                 dtype,
                 head_dim,
                 qhead_per_kvhead,
@@ -1362,13 +1356,20 @@ def _flash_attn_bwd(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     aux_scalars = tuple(aux_scalars) if aux_scalars else None
     arch = _get_device_arch()
-    # TODO: support 9.x, 10.x, 11.x for FSA
-    assert arch // 10 in [8, 12], (
-        "Unsupported compute capability. Supported: 8.x, 12.x for FlashSparseAttention yet."
+    # TODO: support 10.x and 11.x for FSA
+    assert arch // 10 in [8, 9, 12], (
+        "Unsupported compute capability. Supported: 8.x, 9.x, 12.x for FlashSparseAttention yet."
     )
     assert arch // 10 in [8, 9, 10, 11, 12], (
         "Unsupported compute capability. Supported: 8.x, 9.x, 10.x, 11.x, 12.x"
     )
+    if block_sparse_tensors is not None:
+        assert window_sizes is None, (
+            "block sparsity and window sizes cannot be enabled at the same time"
+        )
+        assert softmax_threshold is None, (
+            "block sparsity and softmax threshold cannot be enabled at the same time"
+        )
     sparse_q = None
     kv_subtile_factor = 1
     if block_sparse_tensors is not None:
@@ -1441,7 +1442,6 @@ def _flash_attn_bwd(
         m_block_size = cfg.m_block_size
         n_block_size = cfg.n_block_size
         num_stages_Q = cfg.num_stages_Q
-        num_stages_dO = cfg.num_stages_dO
         num_stages_PdS = cfg.num_stages_PdS
         SdP_swapAB = cfg.SdP_swapAB
         dKV_swapAB = cfg.dKV_swapAB
@@ -1826,7 +1826,7 @@ def _flash_attn_bwd(
             num_threads,
             pack_gqa,
             num_stages_Q,
-            None if softmax_threshold is not None else num_stages_dO,
+            None,  # num_stages_dO
             SdP_swapAB,
             dKV_swapAB,
             dQ_swapAB,
@@ -1950,7 +1950,7 @@ def _flash_attn_bwd(
                 score_mod_bwd=score_mod_bwd,
             )
         elif arch // 10 == 9:
-            fa_bwd_obj = FlashAttentionBackwardSm90(
+            fa_bwd_obj = FlashSparseAttentionBackwardSm90(
                 dtype,
                 head_dim,
                 qhead_per_kvhead,
@@ -1960,7 +1960,6 @@ def _flash_attn_bwd(
                 tile_m=m_block_size,
                 tile_n=n_block_size,
                 Q_stage=num_stages_Q,
-                dO_stage=num_stages_dO,
                 PdS_stage=num_stages_PdS,
                 SdP_swapAB=SdP_swapAB,
                 dKV_swapAB=dKV_swapAB,

@@ -10,6 +10,7 @@
 # Built on Cute-DSL example: https://github.com/NVIDIA/cutlass/blob/main/examples/python/CuTeDSL/ampere/flash_attention_v2.py
 
 import math
+from types import SimpleNamespace
 from typing import Type, Callable, Optional
 from functools import partial
 
@@ -48,6 +49,7 @@ from flash_sparse_attn.ops.cute.namespace import (
 )
 
 
+# NOTE: only for sync
 class FlashAttentionForwardBase:
     def __init__(
         self,
@@ -1108,6 +1110,7 @@ class FlashSparseAttentionForwardBase:
             )
 
 
+# NOTE: only for sync
 class FlashAttentionForwardSm80(FlashAttentionForwardBase):
     def _get_smem_layout_atom(self):
         sQ_layout_atom = sm80_utils.get_smem_layout_atom(self.dtype, self.tile_hdim)
@@ -1346,7 +1349,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             mSeqUsedQ=mSeqUsedQ,
             mSeqUsedK=mSeqUsedK,
         )
-        (n_block_min, n_block_max, _, _, _, _) = block_info.get_n_block_min_max(seqlen, m_block)
+        n_block_min, n_block_max = block_info.get_n_block_min_max(seqlen, m_block)
         # For varlen, wasted grid tiles (where batch_idx >= num_batch) will have
         # seqlen_q=seqlen_k=0 and n_block_max=0.  Clamp to 0 so we don't use a
         # negative block index for K/V loads; the load/store predicates already
@@ -1449,7 +1452,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         softmax.reset()
 
         # group parameters for compute_one_n_block
-        mma_params = FlashFwdMmaParamsSm80(
+        mma_params = SimpleNamespace(
             thr_mma_qk=thr_mma_qk,
             thr_mma_pv=thr_mma_pv,
             tSrQ=tSrQ,
@@ -1457,7 +1460,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             tOrVt=tOrVt,
             acc_O=acc_O,
         )
-        smem_copy_params = FlashFwdSmemCopyParamsSm80(
+        smem_copy_params = SimpleNamespace(
             smem_thr_copy_Q=smem_thr_copy_Q,
             smem_thr_copy_K=smem_thr_copy_K,
             smem_thr_copy_V=smem_thr_copy_V,
@@ -1633,8 +1636,8 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         n_block: Int32,
         smem_pipe_read: Int32,
         smem_pipe_write: Int32,
-        mma_params: FlashFwdMmaParamsSm80,
-        smem_copy_params: FlashFwdSmemCopyParamsSm80,
+        mma_params: SimpleNamespace,
+        smem_copy_params: SimpleNamespace,
         softmax: Softmax,
         load_K: Callable,
         load_V: Callable,
@@ -1859,6 +1862,10 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
         )
         if const_expr(mWindowSizes is not None):
             assert mWindowSizes.element_type == Int32, "mWindowSizes must have dtype Int32"
+        if const_expr(blocksparse_tensors is not None):
+            assert not self.is_local, (
+                "block sparsity and window sizes cannot be enabled at the same time"
+            )
         self._check_type(
             *(
                 t.element_type if t is not None else None
@@ -2058,7 +2065,6 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
         )
         if const_expr(self.is_local):
             n_block_max_no_mask = n_block_min
-            n_block_window_max = cutlass.min(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen,
                 m_block,
@@ -2078,8 +2084,6 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
                 n_block_window_min,
             )
         else:
-            n_block_window_min = Int32(0)
-            n_block_window_max = Int32(0)
             n_block_window_min_no_mask = Int32(0)
             n_block_window_max_no_mask = Int32(0)
         # For varlen, wasted grid tiles (where batch_idx >= num_batch) will have

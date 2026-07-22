@@ -116,6 +116,16 @@ class BlockInfo:
                 n_block_max = cutlass.min(n_block_min_new + n_block_count, n_block_max)
                 n_block_min = n_block_min_new
                 n_block_sink_max = n_block_sink_max if split_idx == 0 else Int32(0)
+        n_block_min = cutlass.min(n_block_min, n_block_max)
+        if const_expr(self.is_local):
+            n_block_window_max = cutlass.max(
+                cutlass.min(n_block_window_max, n_block_min),
+                n_block_window_min,
+            )
+            n_block_sink_max = cutlass.max(n_block_sink_max, n_block_sink_min)
+        else:
+            n_block_window_min = Int32(0)
+            n_block_window_max = Int32(0)
         return (
             n_block_min,
             n_block_max,
@@ -169,6 +179,16 @@ class BlockInfo:
             m_block_max = Int32(0) if is_sink_block else m_block_max
             m_block_window_min = Int32(0) if is_sink_block else m_block_window_min
             m_block_window_max = Int32(0) if is_sink_block else m_block_window_max
+        m_block_min = cutlass.min(m_block_min, m_block_max)
+        if const_expr(self.is_local):
+            m_block_window_min = cutlass.min(
+                cutlass.max(m_block_window_min, m_block_max),
+                m_block_window_max,
+            )
+            m_block_sink_min = cutlass.min(m_block_sink_min, m_block_sink_max)
+        else:
+            m_block_window_min = Int32(0)
+            m_block_window_max = Int32(0)
         return (
             m_block_min,
             m_block_max,

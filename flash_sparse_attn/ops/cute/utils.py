@@ -340,15 +340,20 @@ def cta_reduce(
     op: Callable,
     identity: cute.Numeric,
     num_warps: cutlass.Constexpr[int],
+    tidx_offset: cutlass.Constexpr[int] = 0,
+    barrier_id: cutlass.Constexpr[int] = 0,
 ) -> cute.Numeric:
     assert num_warps <= cute.arch.WARP_SIZE
     warp_val = warp_reduce(val, op)
     tidx = cute.arch.thread_idx()[0]
     lane_idx = cute.arch.lane_idx()
-    warp_idx = tidx // cute.arch.WARP_SIZE
+    warp_idx = (tidx - tidx_offset) // cute.arch.WARP_SIZE
     if lane_idx == 0:
         sReduce[warp_idx] = warp_val
-    cute.arch.barrier()
+    cute.arch.barrier(
+        barrier_id=barrier_id,
+        number_of_threads=num_warps * cute.arch.WARP_SIZE,
+    )
     if warp_idx == 0:
         cta_val = identity
         if lane_idx < num_warps:
@@ -356,7 +361,10 @@ def cta_reduce(
         cta_val = warp_reduce(cta_val, op)
         if lane_idx == 0:
             sReduce[0] = cta_val
-    cute.arch.barrier()
+    cute.arch.barrier(
+        barrier_id=barrier_id,
+        number_of_threads=num_warps * cute.arch.WARP_SIZE,
+    )
     return sReduce[0]
 
 

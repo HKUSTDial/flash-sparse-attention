@@ -187,6 +187,12 @@ def load_block_list(
         Updated kv_producer_state after processing the block list.
 
     """
+    separate_kv_state = const_expr(isinstance(kv_producer_state, tuple))
+    if const_expr(separate_kv_state):
+        k_producer_state, v_producer_state = kv_producer_state
+    else:
+        k_producer_state = kv_producer_state
+        v_producer_state = kv_producer_state
     if block_count > 0:
         total_blocks = block_count * kv_subtile_factor
         if const_expr(not intra_wg_overlap):
@@ -196,11 +202,13 @@ def load_block_list(
                     total_blocks - 1 - offset,
                     kv_subtile_factor,
                 )
-                pipeline_k.producer_acquire(kv_producer_state)
-                load_K(src_idx=n_block, producer_state=kv_producer_state)
-                pipeline_v.producer_acquire(kv_producer_state)
-                load_V(src_idx=n_block, producer_state=kv_producer_state)
-                kv_producer_state.advance()
+                pipeline_k.producer_acquire(k_producer_state)
+                load_K(src_idx=n_block, producer_state=k_producer_state)
+                pipeline_v.producer_acquire(v_producer_state)
+                load_V(src_idx=n_block, producer_state=v_producer_state)
+                k_producer_state.advance()
+                if const_expr(separate_kv_state):
+                    v_producer_state.advance()
         else:
             n_block_first = sparse_physical_n_block_forward(
                 block_indices,
@@ -208,8 +216,8 @@ def load_block_list(
                 kv_subtile_factor,
             )
             if const_expr(not first_block_preloaded):
-                pipeline_k.producer_acquire(kv_producer_state)
-                load_K(src_idx=n_block_first, producer_state=kv_producer_state)
+                pipeline_k.producer_acquire(k_producer_state)
+                load_K(src_idx=n_block_first, producer_state=k_producer_state)
 
             for idx in cutlass.range(total_blocks - 1, unroll=1):
                 n_block_prev = sparse_physical_n_block_forward(
@@ -222,14 +230,24 @@ def load_block_list(
                     total_blocks - 1 - (idx + 1),
                     kv_subtile_factor,
                 )
-                kv_producer_state_prev = kv_producer_state.clone()
-                kv_producer_state.advance()
-                pipeline_k.producer_acquire(kv_producer_state)
-                load_K(src_idx=n_block, producer_state=kv_producer_state)
-                pipeline_v.producer_acquire(kv_producer_state_prev)
-                load_V(src_idx=n_block_prev, producer_state=kv_producer_state_prev)
+                if const_expr(separate_kv_state):
+                    k_producer_state.advance()
+                    pipeline_k.producer_acquire(k_producer_state)
+                    load_K(src_idx=n_block, producer_state=k_producer_state)
+                    pipeline_v.producer_acquire(v_producer_state)
+                    load_V(src_idx=n_block_prev, producer_state=v_producer_state)
+                    v_producer_state.advance()
+                else:
+                    kv_producer_state_prev = k_producer_state.clone()
+                    k_producer_state.advance()
+                    pipeline_k.producer_acquire(k_producer_state)
+                    load_K(src_idx=n_block, producer_state=k_producer_state)
+                    pipeline_v.producer_acquire(kv_producer_state_prev)
+                    load_V(src_idx=n_block_prev, producer_state=kv_producer_state_prev)
 
-    return kv_producer_state
+    return (
+        (k_producer_state, v_producer_state) if const_expr(separate_kv_state) else k_producer_state
+    )
 
 
 @cute.jit
@@ -242,13 +260,23 @@ def finish_overlap_v_load(
     kv_subtile_factor: cutlass.Constexpr[int] = 1,
 ):
     """Load the final V block after overlapped K/V loads."""
+    separate_kv_state = const_expr(isinstance(kv_producer_state, tuple))
+    if const_expr(separate_kv_state):
+        k_producer_state, v_producer_state = kv_producer_state
+    else:
+        k_producer_state = kv_producer_state
+        v_producer_state = kv_producer_state
     if block_count > 0:
         n_block_last = block_indices[0] * kv_subtile_factor
-        pipeline_v.producer_acquire(kv_producer_state)
-        load_V(src_idx=n_block_last, producer_state=kv_producer_state)
-        kv_producer_state.advance()
+        pipeline_v.producer_acquire(v_producer_state)
+        load_V(src_idx=n_block_last, producer_state=v_producer_state)
+        v_producer_state.advance()
+        if const_expr(separate_kv_state):
+            k_producer_state.advance()
 
-    return kv_producer_state
+    return (
+        (k_producer_state, v_producer_state) if const_expr(separate_kv_state) else k_producer_state
+    )
 
 
 @cute.jit
@@ -303,6 +331,7 @@ def produce_block_sparse_loads(
     assert kv_subtile_factor == 1, (
         "Coarse KV blocks (kv_subtile_factor > 1) are not supported on the SM90 forward path yet."
     )
+    separate_kv_state = const_expr(isinstance(kv_producer_state, tuple))
     m_block_sparse = sparse_tensor_m_block(m_block, qhead_per_kvhead, q_subtile_factor)
 
     (
@@ -381,12 +410,22 @@ def produce_block_sparse_loads(
                     curr_full_block_cnt * kv_subtile_factor - 1,
                     kv_subtile_factor,
                 )
-                kv_producer_state_prev = kv_producer_state.clone()
-                kv_producer_state.advance()
-                pipeline_k.producer_acquire(kv_producer_state)
-                load_K(src_idx=n_block_full_first, producer_state=kv_producer_state)
-                pipeline_v.producer_acquire(kv_producer_state_prev)
-                load_V(src_idx=n_block_mask_last, producer_state=kv_producer_state_prev)
+                if const_expr(separate_kv_state):
+                    k_producer_state, v_producer_state = kv_producer_state
+                    k_producer_state.advance()
+                    pipeline_k.producer_acquire(k_producer_state)
+                    load_K(src_idx=n_block_full_first, producer_state=k_producer_state)
+                    pipeline_v.producer_acquire(v_producer_state)
+                    load_V(src_idx=n_block_mask_last, producer_state=v_producer_state)
+                    v_producer_state.advance()
+                    kv_producer_state = k_producer_state, v_producer_state
+                else:
+                    kv_producer_state_prev = kv_producer_state.clone()
+                    kv_producer_state.advance()
+                    pipeline_k.producer_acquire(kv_producer_state)
+                    load_K(src_idx=n_block_full_first, producer_state=kv_producer_state)
+                    pipeline_v.producer_acquire(kv_producer_state_prev)
+                    load_V(src_idx=n_block_mask_last, producer_state=kv_producer_state_prev)
 
                 kv_producer_state = load_block_list(
                     curr_full_block_idx,
@@ -1824,7 +1863,7 @@ def consume_block_sparse_mma_bwd_sm90(
         m_block = curr_q_idx[sparse_idx] * q_subtile_factor + subtile_offset
 
         if m_block < m_block_max:
-            consumer_state_Q, consumer_state_dO = mma_one_m_block_fn(
+            consumer_state_Q, consumer_state_dO, _ = mma_one_m_block_fn(
                 m_block,
                 consumer_state_Q,
                 consumer_state_dO,
@@ -1842,7 +1881,7 @@ def consume_block_sparse_mma_bwd_sm90(
             m_block = curr_full_idx[sparse_idx] * q_subtile_factor + subtile_offset
 
             if m_block < m_block_max:
-                consumer_state_Q, consumer_state_dO = mma_one_m_block_fn(
+                consumer_state_Q, consumer_state_dO, _ = mma_one_m_block_fn(
                     m_block,
                     consumer_state_Q,
                     consumer_state_dO,

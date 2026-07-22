@@ -197,32 +197,55 @@ class Softmax(ParamsBase):
         sSkip: cute.Tensor,
         num_warps: cutlass.Constexpr[int],
         is_first: cutlass.Constexpr[bool] = False,
+        tidx_offset: cutlass.Constexpr[int] = 0,
+        barrier_reduce_id: cutlass.Constexpr[int] = 0,
+        barrier_full_id: cutlass.Constexpr[int] = 0,
+        barrier_empty_id: cutlass.Constexpr[int] = 0,
     ) -> Boolean:
         """Determine whether to skip the softmax computation for this S."""
+        num_threads = num_warps * cute.arch.WARP_SIZE
         if cutlass.const_expr(is_first):
-            cute.arch.barrier()
-            return Boolean(False)
+            if cute.arch.thread_idx()[0] == tidx_offset:
+                sSkip[0] = Int32(0)
+            is_skip = Boolean(False)
+        else:
+            acc_S_mn = layout_utils.reshape_acc_to_mn(acc_S)
+            row_sum_reduced = utils.warp_reduce(self.row_sum.load(), operator.add, width=4)
+            warp_skip = Boolean(True)
+            for r in cutlass.range(cute.size(self.row_max), unroll_full=True):
+                acc_S_row = acc_S_mn[r, None].load()
+                row_max_cur = self._compute_row_max(acc_S_row)
+                row_max_cur = cute.arch.warp_reduction_max(row_max_cur, threads_in_group=4)
+                row_max_diff_log2 = (
+                    row_max_cur - self.row_max[r]
+                ) * self.scale_log2 - cute.math.log2(row_sum_reduced[r], fastmath=True)
+                warp_skip = warp_skip and row_max_diff_log2 < softmax_threshold_log2[r]
 
-        acc_S_mn = layout_utils.reshape_acc_to_mn(acc_S)
-        row_sum_reduced = utils.warp_reduce(self.row_sum.load(), operator.add, width=4)
-        warp_skip = Boolean(True)
-        for r in cutlass.range(cute.size(self.row_max), unroll_full=True):
-            acc_S_row = acc_S_mn[r, None].load()
-            row_max_cur = self._compute_row_max(acc_S_row)
-            row_max_cur = cute.arch.warp_reduction_max(row_max_cur, threads_in_group=4)
-            row_max_diff_log2 = (row_max_cur - self.row_max[r]) * self.scale_log2 - cute.math.log2(
-                row_sum_reduced[r], fastmath=True
+            cta_skip = utils.cta_reduce(
+                Int32(1) if warp_skip else Int32(0),
+                sSkip,
+                operator.and_,
+                Int32(1),
+                num_warps,
+                tidx_offset,
+                barrier_reduce_id,
             )
-            warp_skip = warp_skip and row_max_diff_log2 < softmax_threshold_log2[r]
-
-        cta_skip = utils.cta_reduce(
-            Int32(1) if warp_skip else Int32(0),
-            sSkip,
-            operator.and_,
-            Int32(1),
-            num_warps,
-        )
-        is_skip = Boolean(cta_skip != 0)
+            is_skip = Boolean(cta_skip != 0)
+        if cutlass.const_expr(barrier_full_id != 0):
+            feedback_num_threads = num_threads + cute.arch.WARP_SIZE
+            cute.arch.barrier(
+                barrier_id=barrier_full_id,
+                number_of_threads=feedback_num_threads,
+            )
+            cute.arch.barrier(
+                barrier_id=barrier_empty_id,
+                number_of_threads=feedback_num_threads,
+            )
+        elif cutlass.const_expr(is_first):
+            cute.arch.barrier(
+                barrier_id=barrier_reduce_id,
+                number_of_threads=num_threads,
+            )
         return is_skip
 
     @cute.jit
