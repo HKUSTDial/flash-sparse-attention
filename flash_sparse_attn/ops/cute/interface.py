@@ -300,6 +300,7 @@ def window_sizes_heuristic(
     window_sink: int = 64,
     num_heads_kv_global: Optional[int] = None,
     tp_rank: Optional[int] = None,
+    tp_size: Optional[int] = None,
 ) -> torch.Tensor:
     """
     Compute token count window sizes that partition non-diagonal causal distances into bands.
@@ -312,12 +313,22 @@ def window_sizes_heuristic(
     :param window_sink: Sink token count shared by all KV heads.
     :param num_heads_kv_global: Total KV heads across all TP ranks.
     :param tp_rank: Tensor parallel rank of this process.
+    :param tp_size: Tensor parallel world size.
 
     :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_dist]. window_sink is the prefix sink token count, window_left is the distant local band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
     """
     if num_heads_kv_global is None:
         num_heads_kv_global = num_heads_kv
-    head_offset = (tp_rank or 0) * num_heads_kv
+
+    if tp_size is not None and tp_size > num_heads_kv_global:
+        # Calculate how many ranks share each KV head
+        ranks_per_kv_group = tp_size // num_heads_kv_global
+        # Map tp_rank to the logical KV head group index
+        logical_kv_head_group = (tp_rank or 0) // ranks_per_kv_group
+        head_offset = logical_kv_head_group * num_heads_kv
+    else:
+        head_offset = (tp_rank or 0) * num_heads_kv
+
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32) + head_offset
     window_dist = min(max(window_dist, 0), seqlen_k)
     window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
