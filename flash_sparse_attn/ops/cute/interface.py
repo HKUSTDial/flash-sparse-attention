@@ -1364,6 +1364,12 @@ def _flash_attn_bwd(
         "Unsupported compute capability. Supported: 8.x, 9.x, 10.x, 11.x, 12.x"
     )
     if block_sparse_tensors is not None:
+        assert (
+            cu_seqlens_q is None
+            and cu_seqlens_k is None
+            and seqused_q is None
+            and seqused_k is None
+        ), "Varlen backward with block sparsity is not yet supported"
         assert window_sizes is None, (
             "block sparsity and window sizes cannot be enabled at the same time"
         )
@@ -1595,9 +1601,6 @@ def _flash_attn_bwd(
         score_mod_bwd = utils.create_softcap_scoremod_bwd(softcap)
     if score_mod is not None:
         assert score_mod_bwd is not None, "score_mod_bwd is required when score_mod is provided"
-        assert cu_seqlens_q is None and cu_seqlens_k is None, (
-            "varlen + score_mod not supported in bwd yet"
-        )
         if arch // 10 == 8:
             raise NotImplementedError(
                 "Custom user-provided score_mod is not supported on SM8x architectures."
@@ -1753,7 +1756,6 @@ def _flash_attn_bwd(
         dtype,
         head_dim,
         m_block_size,
-        use_padded_offsets=True,
     )
     # num_threads: SM90 derives from BwdConfig.num_wg, SM120 is set to 128 above,
     # SM100/SM110 uses default from function signature (384).
