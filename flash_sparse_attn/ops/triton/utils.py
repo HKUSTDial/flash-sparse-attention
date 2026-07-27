@@ -74,8 +74,6 @@ def window_sizes_heuristic(
     if num_heads_kv_global is None:
         num_heads_kv_global = num_heads_kv
 
-    # When tp_size > num_heads_kv_global, multiple ranks share the same KV head.
-    # We need to map tp_rank to the logical KV head index, not use tp_rank directly.
     if tp_size is not None and tp_size > num_heads_kv_global:
         # Calculate how many ranks share each KV head
         ranks_per_kv_group = tp_size // num_heads_kv_global
@@ -83,7 +81,6 @@ def window_sizes_heuristic(
         logical_kv_head_group = (tp_rank or 0) // ranks_per_kv_group
         head_offset = logical_kv_head_group * num_heads_kv
     else:
-        # Normal case: tp_size <= num_heads_kv_global, each rank has unique KV heads
         head_offset = (tp_rank or 0) * num_heads_kv
 
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32) + head_offset
