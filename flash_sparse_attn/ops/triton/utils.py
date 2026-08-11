@@ -50,7 +50,7 @@ def window_sizes_heuristic(
     num_heads_kv: int,
     device: torch.device,
     equal_bandwidth: bool = True,
-    window_dist: int = 1024,
+    window_near: int = 1024,
     window_sink: int = 64,
     num_heads_kv_global: Optional[int] = None,
     tp_rank: Optional[int] = None,
@@ -63,13 +63,13 @@ def window_sizes_heuristic(
     :param num_heads_kv: Number of local KV heads on this rank.
     :param device: Target device.
     :param equal_bandwidth: If True, use equal-bandwidth partitioning for balanced decode load. If False, use equal-area partitioning for balanced forward and backward load.
-    :param window_dist: Near-diagonal token count shared by all KV heads.
+    :param window_near: Near-diagonal token count shared by all KV heads.
     :param window_sink: Sink token count shared by all KV heads.
     :param num_heads_kv_global: Total KV heads across all TP ranks.
     :param tp_rank: Tensor parallel rank of this process.
     :param tp_size: Tensor parallel world size.
 
-    :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_dist]. window_sink is the prefix sink token count, window_left is the distant local band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_dist is the near-diagonal token count.
+    :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_near]. window_sink is the prefix sink token count, window_left is the distant band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_near is the near-diagonal token count.
     """
     if num_heads_kv_global is None:
         num_heads_kv_global = num_heads_kv
@@ -84,9 +84,9 @@ def window_sizes_heuristic(
         head_offset = (tp_rank or 0) * num_heads_kv
 
     head_kv_idx = torch.arange(num_heads_kv + 1, dtype=torch.float32) + head_offset
-    window_dist = min(max(window_dist, 0), seqlen_k)
-    window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
-    distance_span = max(seqlen_k - window_sink - window_dist, 0)
+    window_near = min(max(window_near, 0), seqlen_k)
+    window_sink = min(max(window_sink, 0), max(seqlen_k - window_near, 0))
+    distance_span = max(seqlen_k - window_sink - window_near, 0)
     if equal_bandwidth:
         breakpoints = (distance_span * head_kv_idx / num_heads_kv_global).to(
             torch.int32
@@ -97,10 +97,10 @@ def window_sizes_heuristic(
         ).to(torch.int32)
     window_size_left = breakpoints[1:] - breakpoints[:-1]
     window_size_right = breakpoints[:-1]
-    window_size_dist = torch.full_like(window_size_left, window_dist)
+    window_size_near = torch.full_like(window_size_left, window_near)
     window_size_sink = torch.full_like(window_size_left, window_sink)
     return torch.stack(
-        [window_size_sink, window_size_left, window_size_right, window_size_dist], dim=1
+        [window_size_sink, window_size_left, window_size_right, window_size_near], dim=1
     ).to(device)
 
 
@@ -113,7 +113,7 @@ def num_splits_heuristic(
     TILE_N: int,
     is_local: bool = False,
     num_heads_kv: int = 1,
-    window_dist: int = 1024,
+    window_near: int = 1024,
     window_sink: int = 64,
 ) -> int:
     """
@@ -129,7 +129,7 @@ def num_splits_heuristic(
     :param TILE_N: Tile size for N dimension.
     :param is_local: Whether local attention is used.
     :param num_heads_kv: Number of KV heads.
-    :param window_dist: Near-diagonal token count shared by all KV heads.
+    :param window_near: Near-diagonal token count shared by all KV heads.
     :param window_sink: Sink token count shared by all KV heads.
 
     :return: Number of splits.
@@ -138,12 +138,12 @@ def num_splits_heuristic(
     num_n_blocks = triton.cdiv(seqlen_k, TILE_N)
     effective_n_blocks = num_n_blocks
     if is_local:
-        window_dist = min(max(window_dist, 0), seqlen_k)
-        window_sink = min(max(window_sink, 0), max(seqlen_k - window_dist, 0))
-        distance_span = max(seqlen_k - window_sink - window_dist, 0)
+        window_near = min(max(window_near, 0), seqlen_k)
+        window_sink = min(max(window_sink, 0), max(seqlen_k - window_near, 0))
+        distance_span = max(seqlen_k - window_sink - window_near, 0)
         max_window_left = triton.cdiv(distance_span, max(num_heads_kv, 1))
         distant_blocks = triton.cdiv(max_window_left, TILE_N)
-        near_blocks = 1 if window_dist > 0 else 0
+        near_blocks = 1 if window_near > 0 else 0
         sink_blocks = triton.cdiv(window_sink, TILE_N)
         max_split_blocks = max(distant_blocks + near_blocks + sink_blocks, 1)
         effective_n_blocks = min(num_n_blocks, max_split_blocks)

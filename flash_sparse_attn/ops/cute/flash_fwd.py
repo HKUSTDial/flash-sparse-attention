@@ -2038,7 +2038,7 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
         ) = work_tile.load_window_sizes(
             mWindowSizes,
             self.is_local,
@@ -2054,7 +2054,7 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
             self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
         )
         (
@@ -2310,7 +2310,7 @@ class FlashSparseAttentionForwardSm80(FlashSparseAttentionForwardBase):
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
             self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
         )
         mask_fn = partial(

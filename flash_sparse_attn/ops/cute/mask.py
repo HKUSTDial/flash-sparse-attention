@@ -164,7 +164,7 @@ class AttentionMask:
     window_size_sink: Optional[Int32] = None
     window_size_left: Optional[Int32] = None
     window_size_right: Optional[Int32] = None
-    window_size_dist: Optional[Int32] = None
+    window_size_near: Optional[Int32] = None
     qhead_per_kvhead_packgqa: cutlass.Constexpr[int] = 1  # only pass in if we're doing PackGQA
     swap_AB: cutlass.Constexpr[bool] = False
 
@@ -349,8 +349,8 @@ class AttentionMask:
                         col_limit_right = row_idx + causal_row_offset
                         if const_expr(mask_seqlen):
                             col_limit_right = cutlass.min(col_limit_right, seqlenk_col_limit)
-                        col_limit_dist_left = col_limit_right - self.window_size_dist
-                        col_limit_window_right = col_limit_dist_left - self.window_size_right
+                        col_limit_near_left = col_limit_right - self.window_size_near
+                        col_limit_window_right = col_limit_near_left - self.window_size_right
                         col_limit_window_left = col_limit_window_right - self.window_size_left
                         col_limit_sink_right = cutlass.min(
                             col_limit_right,
@@ -363,7 +363,7 @@ class AttentionMask:
                                 allowed = cutlass.Boolean(False)
                                 if const_expr(mask_local):
                                     allowed = (
-                                        (col_idx >= col_limit_dist_left)
+                                        (col_idx >= col_limit_near_left)
                                         and (col_idx < col_limit_right)
                                     ) or (
                                         (col_idx >= col_limit_window_left)
@@ -377,7 +377,7 @@ class AttentionMask:
                                     acc_S_mn[r, c] = -Float32.inf
                         else:
                             col_limit_right_r2p = sm90_col_to_r2p_idx(col_limit_right)
-                            col_limit_dist_left_r2p = sm90_col_to_r2p_idx(col_limit_dist_left)
+                            col_limit_near_left_r2p = sm90_col_to_r2p_idx(col_limit_near_left)
                             col_limit_window_right_r2p = sm90_col_to_r2p_idx(col_limit_window_right)
                             col_limit_window_left_r2p = sm90_col_to_r2p_idx(col_limit_window_left)
                             col_limit_sink_right_r2p = sm90_col_to_r2p_idx(col_limit_sink_right)
@@ -387,7 +387,7 @@ class AttentionMask:
                                 if const_expr(mask_local):
                                     mask = (
                                         r2p_bitmask_below(col_limit_right_r2p, s)
-                                        & r2p_bitmask_above(col_limit_dist_left_r2p, s)
+                                        & r2p_bitmask_above(col_limit_near_left_r2p, s)
                                     ) | (
                                         r2p_bitmask_below(col_limit_window_right_r2p, s)
                                         & r2p_bitmask_above(col_limit_window_left_r2p, s)
@@ -429,8 +429,8 @@ class AttentionMask:
                             if col0 >= seqlenk_col_limit and mask_seqlen
                             else col0 - causal_row_offset
                         )
-                        row_limit_dist_bot = row_limit_top + self.window_size_dist
-                        row_limit_window_top = row_limit_dist_bot + self.window_size_right
+                        row_limit_near_bot = row_limit_top + self.window_size_near
+                        row_limit_window_top = row_limit_near_bot + self.window_size_right
                         row_limit_window_bot = row_limit_window_top + self.window_size_left
                         global_k_idx = n_block * self.tile_n + thr_col_offset + col0
                         for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
@@ -438,7 +438,7 @@ class AttentionMask:
                             allowed = cutlass.Boolean(False)
                             if const_expr(mask_local):
                                 allowed = (
-                                    (row_idx >= row_limit_top) and (row_idx < row_limit_dist_bot)
+                                    (row_idx >= row_limit_top) and (row_idx < row_limit_near_bot)
                                 ) or (
                                     (row_idx >= row_limit_window_top)
                                     and (row_idx < row_limit_window_bot)

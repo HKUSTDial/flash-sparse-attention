@@ -2236,7 +2236,7 @@ class FlashSparseAttentionBackwardSm80:
                 window_size_sink,
                 window_size_left,
                 window_size_right,
-                window_size_dist,
+                window_size_near,
             ) = work_tile.load_window_sizes(
                 mWindowSizes,
                 self.is_local,
@@ -2252,7 +2252,7 @@ class FlashSparseAttentionBackwardSm80:
                 window_size_sink=window_size_sink,
                 window_size_left=window_size_left,
                 window_size_right=window_size_right,
-                window_size_dist=window_size_dist,
+                window_size_near=window_size_near,
             )
             (
                 m_block_min,
@@ -2640,7 +2640,7 @@ class FlashSparseAttentionBackwardSm80:
                 window_size_sink,
                 window_size_left,
                 window_size_right,
-                window_size_dist,
+                window_size_near,
             )
             mask_fn = partial(
                 mask.apply_mask,

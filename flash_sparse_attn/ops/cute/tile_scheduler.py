@@ -163,17 +163,17 @@ class WorkTileInfo(cutlass.utils.WorkTileInfo):
             window_size_sink = mWindowSizes[head_kv_idx, 0]
             window_size_left = mWindowSizes[head_kv_idx, 1]
             window_size_right = mWindowSizes[head_kv_idx, 2]
-            window_size_dist = mWindowSizes[head_kv_idx, 3]
+            window_size_near = mWindowSizes[head_kv_idx, 3]
         else:
             window_size_sink = Int32(0)
             window_size_left = Int32(0)
             window_size_right = Int32(0)
-            window_size_dist = Int32(0)
+            window_size_near = Int32(0)
         return (
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
         )
 
 

@@ -2641,7 +2641,7 @@ class FlashSparseAttentionBackwardSm90:
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
         ) = work_tile.load_window_sizes(
             mWindowSizes,
             self.is_local,
@@ -2657,7 +2657,7 @@ class FlashSparseAttentionBackwardSm90:
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
             qhead_per_kvhead_packgqa=1,
         )
         SeqlenInfoCls = partial(
@@ -2678,7 +2678,7 @@ class FlashSparseAttentionBackwardSm90:
             window_size_sink=window_size_sink,
             window_size_left=window_size_left,
             window_size_right=window_size_right,
-            window_size_dist=window_size_dist,
+            window_size_near=window_size_near,
             swap_AB=self.SdP_swapAB,
         )
 

@@ -58,13 +58,13 @@ class AttnFwdGridIndex:
             window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
+            window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
             window_size_sink = 0
             window_size_left = 0
             window_size_right = 0
-            window_size_dist = 0
-        return window_size_sink, window_size_left, window_size_right, window_size_dist
+            window_size_near = 0
+        return window_size_sink, window_size_left, window_size_right, window_size_near
 
 
 @aggregate
@@ -108,13 +108,13 @@ class AttnBwdGridIndex:
             window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
+            window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
             window_size_sink = 0
             window_size_left = 0
             window_size_right = 0
-            window_size_dist = 0
-        return window_size_sink, window_size_left, window_size_right, window_size_dist
+            window_size_near = 0
+        return window_size_sink, window_size_left, window_size_right, window_size_near
 
 
 @aggregate
@@ -149,13 +149,13 @@ class AttnDecGridIndex:
             window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
-            window_size_dist = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
+            window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
             window_size_sink = 0
             window_size_left = 0
             window_size_right = 0
-            window_size_dist = 0
-        return window_size_sink, window_size_left, window_size_right, window_size_dist
+            window_size_near = 0
+        return window_size_sink, window_size_left, window_size_right, window_size_near
 
 
 @aggregate
@@ -174,7 +174,7 @@ class AttnFwdConfig:
     window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
-    window_size_dist: tl.tensor
+    window_size_near: tl.tensor
     head_dim: tl.tensor
     PACK_GQA: tl.constexpr
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr
@@ -201,7 +201,7 @@ class AttnFwdConfig:
         window_size_sink,
         window_size_left,
         window_size_right,
-        window_size_dist,
+        window_size_near,
         head_dim,
         PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA,
@@ -225,7 +225,7 @@ class AttnFwdConfig:
         self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.window_size_dist = window_size_dist
+        self.window_size_near = window_size_near
         self.head_dim = head_dim
         self.PACK_GQA = tl.constexpr(PACK_GQA)
         self.QHEAD_PER_KVHEAD_PACKGQA = tl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
@@ -249,7 +249,7 @@ class AttnFwdConfig:
         window_size_sink=0,
         window_size_left=0,
         window_size_right=0,
-        window_size_dist=0,
+        window_size_near=0,
         head_dim=0,
         cu_seqlens_q=None,
         cu_seqlens_k=None,
@@ -339,7 +339,7 @@ class AttnFwdConfig:
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
             head_dim,
             PACK_GQA,
             QHEAD_PER_KVHEAD_PACKGQA,
@@ -381,7 +381,7 @@ class AttnBwdConfig:
     window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
-    window_size_dist: tl.tensor
+    window_size_near: tl.tensor
     head_dim: tl.tensor
     QHEAD_PER_KVHEAD: tl.constexpr
     TILE_M: tl.constexpr
@@ -410,7 +410,7 @@ class AttnBwdConfig:
         window_size_sink,
         window_size_left,
         window_size_right,
-        window_size_dist,
+        window_size_near,
         head_dim,
         QHEAD_PER_KVHEAD,
         TILE_M,
@@ -436,7 +436,7 @@ class AttnBwdConfig:
         self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.window_size_dist = window_size_dist
+        self.window_size_near = window_size_near
         self.head_dim = head_dim
         self.QHEAD_PER_KVHEAD = tl.constexpr(QHEAD_PER_KVHEAD)
         self.TILE_M = tl.constexpr(TILE_M)
@@ -460,7 +460,7 @@ class AttnBwdConfig:
         window_size_sink=0,
         window_size_left=0,
         window_size_right=0,
-        window_size_dist=0,
+        window_size_near=0,
         head_dim=0,
         cu_seqlens_q=None,
         cu_seqlens_k=None,
@@ -533,7 +533,7 @@ class AttnBwdConfig:
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
             head_dim,
             QHEAD_PER_KVHEAD,
             TILE_M,
@@ -604,7 +604,7 @@ class AttnDecConfig:
     window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
-    window_size_dist: tl.tensor
+    window_size_near: tl.tensor
     head_dim: tl.tensor
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr
     TILE_M: tl.constexpr
@@ -631,7 +631,7 @@ class AttnDecConfig:
         window_size_sink,
         window_size_left,
         window_size_right,
-        window_size_dist,
+        window_size_near,
         head_dim,
         QHEAD_PER_KVHEAD_PACKGQA,
         TILE_M,
@@ -655,7 +655,7 @@ class AttnDecConfig:
         self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.window_size_dist = window_size_dist
+        self.window_size_near = window_size_near
         self.head_dim = head_dim
         self.QHEAD_PER_KVHEAD_PACKGQA = tl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
         self.TILE_M = tl.constexpr(TILE_M)
@@ -678,7 +678,7 @@ class AttnDecConfig:
         window_size_sink=0,
         window_size_left=0,
         window_size_right=0,
-        window_size_dist=0,
+        window_size_near=0,
         head_dim=0,
         cu_seqlens_q=None,
         cu_seqlens_k=None,
@@ -766,7 +766,7 @@ class AttnDecConfig:
             window_size_sink,
             window_size_left,
             window_size_right,
-            window_size_dist,
+            window_size_near,
             head_dim,
             QHEAD_PER_KVHEAD_PACKGQA,
             TILE_M,
@@ -859,7 +859,7 @@ class AttnFwdBlockScheduler:
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
-            window_size_dist=config.window_size_dist,
+            window_size_near=config.window_size_near,
             NUM_SPLITS=NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
@@ -874,7 +874,7 @@ class AttnFwdBlockScheduler:
             m_block=config.m_block,
             n_block_min=n_block_min,
             window_size_right=0,
-            window_size_dist=0,
+            window_size_near=0,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_LOCAL=False,
@@ -902,7 +902,7 @@ class AttnFwdBlockScheduler:
                 m_block=config.m_block,
                 n_block_min=n_block_window_min,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
@@ -915,7 +915,7 @@ class AttnFwdBlockScheduler:
                 n_block_min=n_block_window_min,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
@@ -1023,7 +1023,7 @@ class AttnBwdBlockScheduler:
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
-            window_size_dist=config.window_size_dist,
+            window_size_near=config.window_size_near,
             NUM_SPLITS=NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
@@ -1037,7 +1037,7 @@ class AttnBwdBlockScheduler:
             n_block=config.n_block,
             m_block_min=m_block_min,
             window_size_right=0,
-            window_size_dist=0,
+            window_size_near=0,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=IS_CAUSAL or IS_LOCAL,
@@ -1058,7 +1058,7 @@ class AttnBwdBlockScheduler:
                 n_block=config.n_block,
                 m_block_min=m_block_window_min,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_CAUSAL=False,
@@ -1074,7 +1074,7 @@ class AttnBwdBlockScheduler:
                 m_block_max=m_block_window_max,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
@@ -1196,7 +1196,7 @@ class AttnDecBlockScheduler:
                 window_size_sink=config.window_size_sink,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 NUM_SPLITS=NUM_SPLITS,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
@@ -1211,7 +1211,7 @@ class AttnDecBlockScheduler:
                 m_block=0,
                 n_block_min=n_block_min,
                 window_size_right=0,
-                window_size_dist=0,
+                window_size_near=0,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=False,
@@ -1235,7 +1235,7 @@ class AttnDecBlockScheduler:
                 m_block=0,
                 n_block_min=n_block_window_min,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
@@ -1248,7 +1248,7 @@ class AttnDecBlockScheduler:
                 n_block_min=n_block_window_min,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
-                window_size_dist=config.window_size_dist,
+                window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
@@ -2658,7 +2658,7 @@ class AttnMaskScheduler:
     window_size_sink: tl.tensor
     window_size_left: tl.tensor
     window_size_right: tl.tensor
-    window_size_dist: tl.tensor
+    window_size_near: tl.tensor
     TILE_M: tl.constexpr
     TILE_N: tl.constexpr
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr
@@ -2673,7 +2673,7 @@ class AttnMaskScheduler:
         window_size_sink,
         window_size_left,
         window_size_right,
-        window_size_dist,
+        window_size_near,
         TILE_M,
         TILE_N,
         QHEAD_PER_KVHEAD_PACKGQA,
@@ -2685,7 +2685,7 @@ class AttnMaskScheduler:
         self.window_size_sink = window_size_sink
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.window_size_dist = window_size_dist
+        self.window_size_near = window_size_near
         self.TILE_M = tl.constexpr(TILE_M)
         self.TILE_N = tl.constexpr(TILE_N)
         self.QHEAD_PER_KVHEAD_PACKGQA = tl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
@@ -2705,7 +2705,7 @@ class AttnMaskScheduler:
                 config.window_size_sink,
                 config.window_size_left,
                 config.window_size_right,
-                config.window_size_dist,
+                config.window_size_near,
                 config.TILE_M,
                 config.TILE_N,
                 config.QHEAD_PER_KVHEAD_PACKGQA,
@@ -2719,7 +2719,7 @@ class AttnMaskScheduler:
                 config.window_size_sink,
                 config.window_size_left,
                 config.window_size_right,
-                config.window_size_dist,
+                config.window_size_near,
                 config.TILE_M,
                 config.TILE_N,
                 1,
@@ -2750,7 +2750,7 @@ class AttnMaskScheduler:
             window_size_sink=self.window_size_sink,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
-            window_size_dist=self.window_size_dist,
+            window_size_near=self.window_size_near,
             MASK_SEQLEN=True,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
