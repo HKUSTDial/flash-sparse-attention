@@ -20,7 +20,7 @@ class BlockInfo:
     window_size_sink: Optional[Int32] = None
     window_size_left: Optional[Int32] = None
     window_size_right: Optional[Int32] = None
-    window_size_dist: Optional[Int32] = None
+    window_size_near: Optional[Int32] = None
     qhead_per_kvhead_packgqa: cutlass.Constexpr[int] = 1
     num_splits: Int32 = 1
     # If True, the scheduler packs num_splits into the top 16 bits of split_idx
@@ -49,7 +49,7 @@ class BlockInfo:
             n_idx = m_idx_max + seqlen_info.seqlen_k - seqlen_info.seqlen_q
             n_block_max = cutlass.min(n_block_max, cute.ceil_div(n_idx, self.tile_n))
             if const_expr(self.is_local):
-                n_idx_right = n_idx - self.window_size_dist - self.window_size_right
+                n_idx_right = n_idx - self.window_size_near - self.window_size_right
                 n_block_window_max = cutlass.min(
                     n_block_window_max,
                     cutlass.max(cute.ceil_div(n_idx_right, self.tile_n), 0),
@@ -64,11 +64,11 @@ class BlockInfo:
             if const_expr(self.qhead_per_kvhead_packgqa > 1):
                 m_idx_min = m_idx_min // self.qhead_per_kvhead_packgqa
             n_idx = m_idx_min + seqlen_info.seqlen_k - seqlen_info.seqlen_q
-            n_idx_dist = n_idx - self.window_size_dist
-            n_block_min = cutlass.max(n_idx_dist // self.tile_n, 0)
+            n_idx_near = n_idx - self.window_size_near
+            n_block_min = cutlass.max(n_idx_near // self.tile_n, 0)
             n_block_min = cutlass.max(n_block_min, n_block_sink_exclude_max)
             n_idx_left = (
-                n_idx - self.window_size_dist - self.window_size_right - self.window_size_left
+                n_idx - self.window_size_near - self.window_size_right - self.window_size_left
             )
             n_block_window_min = cutlass.max(n_idx_left // self.tile_n, 0)
             n_block_window_min = cutlass.max(n_block_window_min, n_block_sink_exclude_max)
@@ -90,7 +90,7 @@ class BlockInfo:
             elif const_expr(self.is_local):
                 n_block_diag_min = (
                     cutlass.max(
-                        cute.ceil_div(cutlass.max(n_idx_dist + 1, 0), self.tile_n),
+                        cute.ceil_div(cutlass.max(n_idx_near + 1, 0), self.tile_n),
                         0,
                     )
                     if seqlen_info.seqlen_q == 1
@@ -170,7 +170,7 @@ class BlockInfo:
             m_idx = n_idx_min + seqlen_info.seqlen_q - seqlen_info.seqlen_k
             m_block_min = cutlass.max(m_block_min, m_idx // self.tile_m)
             if const_expr(self.is_local):
-                m_idx_right = m_idx + self.window_size_dist + self.window_size_right
+                m_idx_right = m_idx + self.window_size_near + self.window_size_right
                 m_block_window_min = cutlass.max(m_block_window_min, m_idx_right // self.tile_m)
         if const_expr(self.is_local):
             n_block_sink_exclude_max = cute.ceil_div(self.window_size_sink, self.tile_n)
@@ -184,10 +184,10 @@ class BlockInfo:
             m_block_sink_min = m_block_sink_min if is_sink_block else Int32(0)
             n_idx_max = (n_block + 1) * self.tile_n
             m_idx = n_idx_max + seqlen_info.seqlen_q - seqlen_info.seqlen_k
-            m_idx_dist = m_idx + self.window_size_dist
-            m_block_max = cutlass.min(m_block_max, cute.ceil_div(m_idx_dist, self.tile_m))
+            m_idx_near = m_idx + self.window_size_near
+            m_block_max = cutlass.min(m_block_max, cute.ceil_div(m_idx_near, self.tile_m))
             m_idx_left = (
-                m_idx + self.window_size_dist + self.window_size_right + self.window_size_left
+                m_idx + self.window_size_near + self.window_size_right + self.window_size_left
             )
             m_block_window_max = cutlass.min(
                 m_block_window_max,
@@ -233,7 +233,7 @@ class BlockInfo:
         n_idx_right = (
             n_idx
             if const_expr(not is_local)
-            else n_idx - self.window_size_dist - self.window_size_right
+            else n_idx - self.window_size_near - self.window_size_right
         )
         return cutlass.max(n_block_min, n_idx_right // self.tile_n)
 
@@ -253,7 +253,7 @@ class BlockInfo:
                 m_idx_max = cute.ceil_div(m_idx_max, self.qhead_per_kvhead_packgqa)
             n_idx = m_idx_max + seqlen_info.seqlen_k - seqlen_info.seqlen_q
             n_idx_left = (
-                n_idx - self.window_size_dist - self.window_size_right - self.window_size_left
+                n_idx - self.window_size_near - self.window_size_right - self.window_size_left
             )
             return cutlass.max(n_block_min, cute.ceil_div(n_idx_left, self.tile_n))
 
@@ -271,7 +271,7 @@ class BlockInfo:
         m_idx_right = (
             m_idx
             if const_expr(not self.is_local)
-            else m_idx + self.window_size_dist + self.window_size_right
+            else m_idx + self.window_size_near + self.window_size_right
         )
         return cutlass.max(m_block_min, cute.ceil_div(m_idx_right, self.tile_m))
 
@@ -286,7 +286,7 @@ class BlockInfo:
             return m_block_max
         n_idx_min = n_block * self.tile_n
         m_idx = n_idx_min + seqlen_info.seqlen_q - seqlen_info.seqlen_k
-        m_idx_left = m_idx + self.window_size_dist + self.window_size_right + self.window_size_left
+        m_idx_left = m_idx + self.window_size_near + self.window_size_right + self.window_size_left
         return cutlass.min(m_block_max, m_idx_left // self.tile_m)
 
     @cute.jit
