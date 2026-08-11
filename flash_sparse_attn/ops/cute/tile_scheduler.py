@@ -368,7 +368,11 @@ class SingleTileScheduler:
         for obj, n_items in zip([self.params, self._blk_coord], self._values_pos):
             obj_list.append(cutlass.new_from_mlir_values(obj, values[:n_items]))
             values = values[n_items:]
-        return SingleTileScheduler(*(tuple(obj_list)), loc=self._loc)
+        scheduler = SingleTileScheduler(*(tuple(obj_list)), loc=self._loc)
+        # Note: _is_first_block is a Python-only attribute omitted from MLIR values,
+        # so it must be restored explicitly after reconstruction.
+        scheduler._is_first_block = self._is_first_block
+        return scheduler
 
 
 class StaticPersistentTileScheduler:
@@ -1139,6 +1143,9 @@ class VarlenDecoder(ParamsBase):
             mh_block = next_tile_idx - group_start_tile
 
             if const_expr(self.lpt or self.head_swizzle):
+                # This is a version of the SingleTileLPTScheduler, complicated by the fact that
+                # the seqlen can vary per batch.
+                # TODO: is there any case where num_m_blocks is 0?
                 if const_expr(not self.is_split_kv) or num_splits == 1:
                     if const_expr(self.num_nheads_in_l2_ptr is not None):
                         if const_expr(self.virtual_batch_idx_ptr is not None):
@@ -1148,6 +1155,7 @@ class VarlenDecoder(ParamsBase):
                         else:
                             nheads_in_l2 = Int32(self.num_nheads_in_l2_ptr[batch_idx])
                     else:
+                        # TODO: by right we should read the seqlen_kv but we're assuming seqlen_q == seqlen_k here
                         num_n_blocks = (
                             num_m_blocks
                             * self.tile_shape_mn[0]
@@ -1155,6 +1163,7 @@ class VarlenDecoder(ParamsBase):
                             // self.qhead_per_kvhead_packgqa
                             // self.tile_shape_mn[1]
                         )
+                        # Seems faster to have nheads_in_l2 be a power of 2
                         nheads_in_l2 = (
                             16
                             if num_n_blocks * 16 <= self.max_kvblock_in_l2
@@ -1208,7 +1217,7 @@ class SingleTileVarlenScheduler:
     class Params(ParamsBase):
         total_q: Int32
         scheduling_mode: cutlass.Constexpr[SchedulingMode]
-        decoder: "VarlenDecoder"
+        decoder: VarlenDecoder
 
         @staticmethod
         @cute.jit
@@ -1406,7 +1415,10 @@ class SingleTileVarlenScheduler:
         for obj, n_items in zip(objs, self._values_pos):
             obj_list.append(cutlass.new_from_mlir_values(obj, values[:n_items]))
             values = values[n_items:]
-        return self.__class__(*obj_list, loc=self._loc)
+        scheduler = self.__class__(*obj_list, loc=self._loc)
+        # See the note on Python-only attributes in SingleTileScheduler.
+        scheduler._is_first_block = self._is_first_block
+        return scheduler
 
 
 class DynamicPersistentVarlenScheduler:
@@ -1848,9 +1860,12 @@ class Sm100FmhaStaticTileScheduler:
         )
         new_blk_coord = new_from_mlir_values(self._blk_coord, values[4:7])
         new_grid_shape = new_from_mlir_values(self._grid_shape, values[7:])
-        return Sm100FmhaStaticTileScheduler(
+        scheduler = Sm100FmhaStaticTileScheduler(
             new_params, new_current_work_linear_idx, new_blk_coord, new_grid_shape
         )
+        # See the note on Python-only attributes in SingleTileScheduler.
+        scheduler._is_first_block = self._is_first_block
+        return scheduler
 
 
 def compute_sm100_fmha_grid(
