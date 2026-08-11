@@ -12,7 +12,7 @@ def apply_mask(
     window_size_sink,
     window_size_left,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     MASK_SEQLEN: tl.constexpr,
     MASK_CAUSAL: tl.constexpr,
     MASK_LOCAL: tl.constexpr,
@@ -33,7 +33,7 @@ def apply_mask(
     :param window_size_sink: Prefix sink token count.
     :param window_size_left: Distant local band token count.
     :param window_size_right: Gap token count after the near-diagonal window before the distant band.
-    :param window_size_dist: Near-diagonal local token count.
+    :param window_size_near: Near-diagonal local token count.
     :param MASK_SEQLEN: Boolean flag indicating if seqlen masking should be applied.
     :param MASK_CAUSAL: Boolean flag indicating if causal masking should be applied.
     :param MASK_LOCAL: Boolean flag indicating if local masking should be applied.
@@ -69,18 +69,18 @@ def apply_mask(
 
     if MASK_CAUSAL or MASK_LOCAL or MASK_SINK:
         causal_offset = seqlen_k - seqlen_q
-        dist = q_idx + causal_offset - k_idx
+        near = q_idx + causal_offset - k_idx
 
         if MASK_LOCAL or MASK_SINK:
-            allowed = (dist >= 0) & (dist < 0)
+            allowed = (near >= 0) & (near < 0)
             if MASK_LOCAL:
-                allowed = allowed | ((dist >= 0) & (dist < window_size_dist))
+                allowed = allowed | ((near >= 0) & (near < window_size_near))
                 allowed = allowed | (
-                    (dist >= window_size_dist + window_size_right)
-                    & (dist < window_size_dist + window_size_right + window_size_left)
+                    (near >= window_size_near + window_size_right)
+                    & (near < window_size_near + window_size_right + window_size_left)
                 )
             if MASK_SINK:
-                allowed = allowed | ((k_idx < window_size_sink) & (dist >= 0))
+                allowed = allowed | ((k_idx < window_size_sink) & (near >= 0))
             acc_s = tl.where(
                 allowed,
                 acc_s,
@@ -88,16 +88,16 @@ def apply_mask(
             )
         elif MASK_CAUSAL:
             acc_s = tl.where(
-                dist >= 0,
+                near >= 0,
                 acc_s,
                 float("-inf"),
             )
         else:
             acc_s = tl.where(
-                ((dist >= 0) & (dist < window_size_dist))
+                ((near >= 0) & (near < window_size_near))
                 | (
-                    (dist >= window_size_dist + window_size_right)
-                    & (dist < window_size_dist + window_size_right + window_size_left)
+                    (near >= window_size_near + window_size_right)
+                    & (near < window_size_near + window_size_right + window_size_left)
                 ),
                 acc_s,
                 float("-inf"),
