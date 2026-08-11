@@ -170,7 +170,7 @@ def _dec_sparse_kernel(
         window_size_sink,
         window_size_left,
         window_size_right,
-        window_size_dist,
+        window_size_near,
     ) = grid_idx.load_window_sizes(
         window_sizes=window_sizes,
         stride_wh=stride_wh,
@@ -188,7 +188,7 @@ def _dec_sparse_kernel(
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
-        window_size_dist=window_size_dist,
+        window_size_near=window_size_near,
         head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
