@@ -11,7 +11,7 @@ def get_n_block_min_max(
     window_size_sink,
     window_size_left,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     NUM_SPLITS: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
@@ -34,7 +34,7 @@ def get_n_block_min_max(
         n_idx = m_idx_max + seqlen_k - seqlen_q
         n_block_max = tl.minimum(n_block_max, tl.cdiv(n_idx, TILE_N))
         if IS_LOCAL:
-            n_idx_right = n_idx - window_size_dist - window_size_right
+            n_idx_right = n_idx - window_size_near - window_size_right
             n_block_window_max = tl.minimum(
                 n_block_window_max, tl.maximum(tl.cdiv(n_idx_right, TILE_N), 0)
             )
@@ -48,17 +48,17 @@ def get_n_block_min_max(
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
         n_idx = m_idx_min + seqlen_k - seqlen_q
-        n_idx_dist = n_idx - window_size_dist
-        n_block_min = tl.maximum(n_idx_dist // TILE_N, 0)
+        n_idx_near = n_idx - window_size_near
+        n_block_min = tl.maximum(n_idx_near // TILE_N, 0)
         n_block_min = tl.maximum(n_block_min, n_block_sink_exclude_max)
-        n_idx_left = n_idx - window_size_dist - window_size_right - window_size_left
+        n_idx_left = n_idx - window_size_near - window_size_right - window_size_left
         n_block_window_min = tl.maximum(n_idx_left // TILE_N, 0)
         n_block_window_min = tl.maximum(n_block_window_min, n_block_sink_exclude_max)
     if IS_SPLIT_KV:
         if IS_LOCAL:
             n_block_diag_min = tl.where(
                 seqlen_q == 1,
-                tl.maximum(tl.cdiv(tl.maximum(n_idx_dist + 1, 0), TILE_N), 0),
+                tl.maximum(tl.cdiv(tl.maximum(n_idx_near + 1, 0), TILE_N), 0),
                 n_block_min,
             )
             n_block_diag_min = tl.maximum(n_block_diag_min, n_block_sink_exclude_max)
@@ -121,7 +121,7 @@ def get_m_block_min_max(
     window_size_sink,
     window_size_left,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     NUM_SPLITS: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
@@ -140,7 +140,7 @@ def get_m_block_min_max(
         m_idx = n_idx_min + seqlen_q - seqlen_k
         m_block_min = tl.maximum(m_block_min, m_idx // TILE_M)
         if IS_LOCAL:
-            m_idx_right = m_idx + window_size_dist + window_size_right
+            m_idx_right = m_idx + window_size_near + window_size_right
             m_block_window_min = tl.maximum(m_block_window_min, m_idx_right // TILE_M)
     if IS_LOCAL:
         n_block_sink_exclude_max = tl.cdiv(window_size_sink, TILE_N)
@@ -152,9 +152,9 @@ def get_m_block_min_max(
         m_block_sink_min = tl.where(is_sink_block, m_block_sink_min, 0)
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
-        m_idx_dist = m_idx + window_size_dist
-        m_block_max = tl.minimum(m_block_max, tl.cdiv(m_idx_dist, TILE_M))
-        m_idx_left = m_idx + window_size_dist + window_size_right + window_size_left
+        m_idx_near = m_idx + window_size_near
+        m_block_max = tl.minimum(m_block_max, tl.cdiv(m_idx_near, TILE_M))
+        m_idx_left = m_idx + window_size_near + window_size_right + window_size_left
         m_block_window_max = tl.minimum(m_block_window_max, tl.cdiv(m_idx_left, TILE_M))
         m_block_min = tl.where(is_sink_block, 0, m_block_min)
         m_block_max = tl.where(is_sink_block, 0, m_block_max)
@@ -212,7 +212,7 @@ def get_n_block_min_causal_local_mask(
     m_block,
     n_block_min,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_LOCAL: tl.constexpr,
@@ -223,7 +223,7 @@ def get_n_block_min_causal_local_mask(
         m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
     n_idx = m_idx_min + seqlen_k - seqlen_q
     n_idx_right = (
-        n_idx if not IS_LOCAL else n_idx - window_size_dist - window_size_right
+        n_idx if not IS_LOCAL else n_idx - window_size_near - window_size_right
     )
     return tl.maximum(n_block_min, n_idx_right // TILE_N)
 
@@ -236,7 +236,7 @@ def get_n_block_min_before_local_mask(
     n_block_min,
     window_size_left,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_LOCAL: tl.constexpr,
@@ -250,7 +250,7 @@ def get_n_block_min_before_local_mask(
             m_idx_max = tl.cdiv(m_idx_max, QHEAD_PER_KVHEAD_PACKGQA)
         m_idx_max = tl.minimum(m_idx_max, seqlen_q)
         n_idx = m_idx_max + seqlen_k - seqlen_q
-        n_idx_left = n_idx - window_size_dist - window_size_right - window_size_left
+        n_idx_left = n_idx - window_size_near - window_size_right - window_size_left
         return tl.maximum(n_block_min, tl.cdiv(n_idx_left, TILE_N))
 
 
@@ -261,7 +261,7 @@ def get_m_block_min_causal_local_mask(
     n_block,
     m_block_min,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
@@ -273,7 +273,7 @@ def get_m_block_min_causal_local_mask(
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
         if IS_LOCAL:
-            m_idx_right = m_idx + window_size_dist + window_size_right
+            m_idx_right = m_idx + window_size_near + window_size_right
         else:
             m_idx_right = m_idx
         return tl.maximum(m_block_min, tl.cdiv(m_idx_right, TILE_M))
@@ -287,7 +287,7 @@ def get_m_block_max_before_local_mask(
     m_block_max,
     window_size_left,
     window_size_right,
-    window_size_dist,
+    window_size_near,
     TILE_N: tl.constexpr,
     TILE_M: tl.constexpr,
     IS_LOCAL: tl.constexpr,
@@ -297,7 +297,7 @@ def get_m_block_max_before_local_mask(
     else:
         n_idx_min = n_block * TILE_N
         m_idx = n_idx_min + seqlen_q - seqlen_k
-        m_idx_left = m_idx + window_size_dist + window_size_right + window_size_left
+        m_idx_left = m_idx + window_size_near + window_size_right + window_size_left
         return tl.minimum(m_block_max, m_idx_left // TILE_M)
 
 
