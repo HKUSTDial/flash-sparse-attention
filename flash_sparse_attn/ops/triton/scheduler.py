@@ -895,7 +895,6 @@ class AttnFwdBlockScheduler:
                 )
             else:
                 n_block_max_no_mask = n_block_min
-            n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -921,20 +920,15 @@ class AttnFwdBlockScheduler:
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-            n_block_window_min_no_mask = tl.minimum(
-                n_block_window_min_no_mask, n_block_window_max_no_mask
-            )
-
             # Clamp window no-mask boundaries to the window's range
-            if IS_SPLIT_KV:
-                n_block_window_max_no_mask = tl.maximum(
-                    tl.minimum(n_block_window_max_no_mask, n_block_window_max),
-                    n_block_window_min,
-                )
-                n_block_window_min_no_mask = tl.maximum(
-                    tl.minimum(n_block_window_min_no_mask, n_block_window_max),
-                    n_block_window_min,
-                )
+            n_block_window_max_no_mask = tl.maximum(
+                tl.minimum(n_block_window_max_no_mask, n_block_window_max),
+                n_block_window_min,
+            )
+            n_block_window_min_no_mask = tl.maximum(
+                tl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
+                n_block_window_min,
+            )
         else:
             n_block_window_min = 0
             n_block_window_max = 0
@@ -1051,7 +1045,6 @@ class AttnBwdBlockScheduler:
         if IS_LOCAL:
             # Compute local m_block range for this n_block
             m_block_min_no_mask = m_block_max
-            m_block_window_min = tl.maximum(m_block_window_min, m_block_min_no_mask)
             m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -1079,6 +1072,7 @@ class AttnBwdBlockScheduler:
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
             )
+            # Clamp window no-mask boundaries to the window's range
             m_block_window_max_no_mask = tl.maximum(
                 m_block_window_max_no_mask, m_block_window_min_no_mask
             )
@@ -1228,7 +1222,6 @@ class AttnDecBlockScheduler:
                 n_block_min,
                 n_block_max_no_mask,
             )
-            n_block_window_max = tl.minimum(n_block_window_max, n_block_max_no_mask)
             n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
                 seqlen_q=1,
                 seqlen_k=config.actual_seqlen_k,
@@ -1254,17 +1247,13 @@ class AttnDecBlockScheduler:
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-            n_block_window_min_no_mask = tl.minimum(
-                n_block_window_min_no_mask, n_block_window_max_no_mask
-            )
-
             # Clamp window no-mask boundaries to the window's range
             n_block_window_max_no_mask = tl.maximum(
                 tl.minimum(n_block_window_max_no_mask, n_block_window_max),
                 n_block_window_min,
             )
             n_block_window_min_no_mask = tl.maximum(
-                tl.minimum(n_block_window_min_no_mask, n_block_window_max),
+                tl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
                 n_block_window_min,
             )
         elif not IS_GATHER_KV:
