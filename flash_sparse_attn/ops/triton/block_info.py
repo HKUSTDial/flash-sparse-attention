@@ -102,6 +102,16 @@ def get_n_block_min_max(
             n_block_max = tl.minimum(n_block_min_new + n_block_count, n_block_max)
             n_block_min = n_block_min_new
             n_block_sink_max = tl.where(split_idx == 0, n_block_sink_max, 0)
+    n_block_min = tl.minimum(n_block_min, n_block_max)
+    if IS_LOCAL:
+        n_block_window_max = tl.maximum(
+            tl.minimum(n_block_window_max, n_block_min),
+            n_block_window_min,
+        )
+        n_block_sink_max = tl.maximum(n_block_sink_max, n_block_sink_min)
+    else:
+        n_block_window_min = 0
+        n_block_window_max = 0
     return (
         n_block_min,
         n_block_max,
@@ -195,6 +205,16 @@ def get_m_block_min_max(
             m_block_count = tl.where(split_idx < extra, base + 1, base)
             m_block_max = tl.minimum(m_block_min_new + m_block_count, m_block_max)
             m_block_min = m_block_min_new
+    m_block_min = tl.minimum(m_block_min, m_block_max)
+    if IS_LOCAL:
+        m_block_window_min = tl.minimum(
+            tl.maximum(m_block_window_min, m_block_max),
+            m_block_window_max,
+        )
+        m_block_sink_min = tl.minimum(m_block_sink_min, m_block_sink_max)
+    else:
+        m_block_window_min = 0
+        m_block_window_max = 0
     return (
         m_block_min,
         m_block_max,
