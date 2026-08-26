@@ -2956,12 +2956,12 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         return dq, dk, dv, None, *((None,) * 12), dsink, *((None,) * 14)
 
 
-def flash_attn_func(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    softmax_scale: Optional[float] = None,
+def flash_sparse_attn_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
     is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
     window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     is_local: bool = False,
@@ -2980,9 +2980,9 @@ def flash_attn_func(
     return_lse: bool = False,
 ):
     return FlashAttnFunc.apply(
-        q,
-        k,
-        v,
+        query,
+        key,
+        value,
         softmax_scale,
         is_causal,
         window_sizes,
@@ -3004,10 +3004,10 @@ def flash_attn_func(
     )
 
 
-def flash_attn_varlen_func(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
+def flash_sparse_attn_varlen_func(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
@@ -3016,8 +3016,8 @@ def flash_attn_varlen_func(
     seqused_q: Optional[torch.Tensor] = None,
     seqused_k: Optional[torch.Tensor] = None,
     page_table: Optional[torch.Tensor] = None,
-    softmax_scale: Optional[float] = None,
     is_causal: bool = False,
+    softmax_scale: Optional[float] = None,
     window_sizes: Optional[torch.Tensor] = None,
     softmax_threshold: Optional[float] = None,
     is_local: bool = False,
@@ -3039,9 +3039,9 @@ def flash_attn_varlen_func(
 ):
     """
     Tensor arguments:
-        q:  (total_q, nheads,   hdim)   or (batch, seqlen_q, nheads,   hdim)
-        k:  (total_k, nheads_k, hdim)   or (batch, seqlen_k, nheads_k, hdim)
-        v:  (total_k, nheads_k, hdim) or (batch, seqlen_k, nheads_k, hdim)
+        query:  (total_q, nheads,   hdim)   or (batch, seqlen_q, nheads,   hdim)
+        key:  (total_k, nheads_k, hdim)   or (batch, seqlen_k, nheads_k, hdim)
+        value:  (total_k, nheads_k, hdim) or (batch, seqlen_k, nheads_k, hdim)
         cu_seqlens_q: (batch + 1)       or seqused_q: (batch)
         cu_seqlens_k: (batch + 1)       or seqused_k: (batch)
         page_table: (batch, max_num_pages_per_seq)
@@ -3051,9 +3051,9 @@ def flash_attn_varlen_func(
        lse: (nheads, total_q) or (batch, nheads, seqlen_q)
     """
     return FlashAttnVarlenFunc.apply(
-        q,
-        k,
-        v,
+        query,
+        key,
+        value,
         cu_seqlens_q,
         cu_seqlens_k,
         seqused_q,
