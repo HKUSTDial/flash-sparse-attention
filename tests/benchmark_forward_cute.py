@@ -10,7 +10,7 @@ from tqdm import tqdm
 from triton.testing import do_bench
 
 from flash_sparse_attn.ops.cute.interface import (
-    flash_attn_func,
+    flash_sparse_attn_func,
     window_sizes_heuristic,
 )
 from test_utils import (
@@ -94,7 +94,7 @@ def benchmark_cute_base_forward(
     try:
 
         def fn():
-            flash_attn_func(
+            flash_sparse_attn_func(
                 q,
                 k,
                 v,
@@ -122,7 +122,7 @@ def benchmark_cute_causal_forward(
     try:
 
         def fn():
-            flash_attn_func(
+            flash_sparse_attn_func(
                 q,
                 k,
                 v,
@@ -152,7 +152,7 @@ def benchmark_cute_window_forward(
     try:
 
         def fn():
-            flash_attn_func(
+            flash_sparse_attn_func(
                 q,
                 k,
                 v,
@@ -181,7 +181,7 @@ def benchmark_cute_threshold_forward(
     try:
 
         def fn():
-            flash_attn_func(
+            flash_sparse_attn_func(
                 q,
                 k,
                 v,
@@ -210,7 +210,7 @@ def benchmark_cute_split_forward(
     try:
 
         def fn():
-            flash_attn_func(
+            flash_sparse_attn_func(
                 q,
                 k,
                 v,
@@ -241,7 +241,7 @@ def benchmark_cute_all_forward(
     try:
 
         def fn():
-            flash_attn_func(
+            flash_sparse_attn_func(
                 q,
                 k,
                 v,

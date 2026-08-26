@@ -10,7 +10,7 @@ from tqdm import tqdm
 from triton.testing import do_bench
 
 from flash_sparse_attn.ops.cute.interface import (
-    flash_attn_func,
+    flash_sparse_attn_func,
     window_sizes_heuristic,
 )
 from test_utils import (
@@ -94,6 +94,7 @@ def benchmark_cudnn_backward(
 
         return do_bench(fn, warmup=20, rep=100)
     except Exception:
+        print(f"cuDNN backward failed for config {cfg}: {traceback.format_exc()}")
         return None
 
 
@@ -112,7 +113,7 @@ def benchmark_cute_base_backward(
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
     try:
-        out, _ = flash_attn_func(
+        out, _ = flash_sparse_attn_func(
             q,
             k,
             v,
@@ -148,7 +149,7 @@ def benchmark_cute_causal_backward(
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
     try:
-        out, _ = flash_attn_func(
+        out, _ = flash_sparse_attn_func(
             q,
             k,
             v,
@@ -186,7 +187,7 @@ def benchmark_cute_window_backward(
     num_kv_heads = v.shape[-2]
     ws = window_sizes_heuristic(cfg.seqlen_k, num_kv_heads, device=torch.device(device))
     try:
-        out, _ = flash_attn_func(
+        out, _ = flash_sparse_attn_func(
             q,
             k,
             v,
@@ -223,7 +224,7 @@ def benchmark_cute_threshold_backward(
     v = v.requires_grad_(True)
     softmax_scale = cfg.head_dim**-0.5
     try:
-        out, _ = flash_attn_func(
+        out, _ = flash_sparse_attn_func(
             q,
             k,
             v,
@@ -262,7 +263,7 @@ def benchmark_cute_all_backward(
     num_kv_heads = v.shape[-2]
     ws = window_sizes_heuristic(cfg.seqlen_k, num_kv_heads, device=torch.device(device))
     try:
-        out, _ = flash_attn_func(
+        out, _ = flash_sparse_attn_func(
             q,
             k,
             v,
