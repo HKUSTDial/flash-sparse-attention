@@ -31,7 +31,7 @@ Issues = "https://github.com/HKUSTDial/flash-sparse-attention/issues"
 
 [project.optional-dependencies]
 cute = [
-  "nvidia-cutlass-dsl>=4.6.0",
+  "nvidia-cutlass-dsl>=4.6.2",
   "einops",
   "typing_extensions",
   "apache-tvm-ffi>=0.1.12,<0.2",
@@ -75,4 +75,13 @@ explicit = true
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu130", marker = "extra == 'cu13'" },
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E731",  # do not assign a lambda expression, use a def
+    "E741",  # Do not use variables named 'I', 'O', or 'l'
+    "F841",  # local variable is assigned to but never used
+    "D102",  # Missing docstring in public methods
 ]
