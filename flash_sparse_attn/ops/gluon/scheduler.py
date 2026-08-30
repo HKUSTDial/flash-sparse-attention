@@ -1,0 +1,2511 @@
+import triton
+import triton.language as tl
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
+from triton.language.core import _aggregate as aggregate
+from triton.runtime.jit import constexpr_function
+
+from flash_sparse_attn.ops.gluon import (
+    seqlen_info,
+    block_info,
+    mask,
+    activations,
+)
+
+
+@aggregate
+class AttnFwdGridIndex:
+    m_block: gl.tensor
+    batch_idx: gl.tensor
+    head_idx: gl.tensor
+    head_kv_idx: gl.tensor
+    split_idx: gl.tensor
+
+    @gluon.constexpr_function
+    def __init__(self, m_block, batch_idx, head_idx, head_kv_idx, split_idx):
+        self.m_block = m_block
+        self.batch_idx = batch_idx
+        self.head_idx = head_idx
+        self.head_kv_idx = head_kv_idx
+        self.split_idx = split_idx
+
+    @staticmethod
+    @gluon.jit
+    def create(
+        NUM_SPLITS: gl.constexpr,
+        QHEAD_PER_KVHEAD: gl.constexpr,
+        IS_SPLIT_KV: gl.constexpr,
+        PACK_GQA: gl.constexpr,
+    ):
+        m_block = gl.program_id(0)
+        head_idx = gl.program_id(1)
+        batch_split_idx = gl.program_id(2)
+        if IS_SPLIT_KV:
+            batch_idx = batch_split_idx // NUM_SPLITS
+            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+        else:
+            batch_idx = batch_split_idx
+            split_idx = gl.to_tensor(0)
+        if PACK_GQA:
+            head_kv_idx = head_idx
+        else:
+            head_kv_idx = head_idx // QHEAD_PER_KVHEAD
+        return AttnFwdGridIndex(m_block, batch_idx, head_idx, head_kv_idx, split_idx)
+
+    @gluon.jit
+    def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: gl.constexpr):
+        if IS_LOCAL:
+            window_size_sink = gl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_left = gl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
+            window_size_right = gl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_near = gl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
+        else:
+            window_size_sink = gl.to_tensor(0)
+            window_size_left = gl.to_tensor(0)
+            window_size_right = gl.to_tensor(0)
+            window_size_near = gl.to_tensor(0)
+        return window_size_sink, window_size_left, window_size_right, window_size_near
+
+
+@aggregate
+class AttnBwdGridIndex:
+    n_block: tl.tensor
+    batch_idx: tl.tensor
+    head_idx: tl.tensor
+    head_kv_idx: tl.tensor
+    split_idx: tl.tensor
+
+    @constexpr_function
+    def __init__(self, n_block, batch_idx, head_idx, head_kv_idx, split_idx):
+        self.n_block = n_block
+        self.batch_idx = batch_idx
+        self.head_idx = head_idx
+        self.head_kv_idx = head_kv_idx
+        self.split_idx = split_idx
+
+    @staticmethod
+    @triton.jit
+    def create(
+        NUM_SPLITS: tl.constexpr,
+        QHEAD_PER_KVHEAD: tl.constexpr,
+        IS_SPLIT_QO: tl.constexpr,
+    ):
+        n_block = tl.program_id(0)
+        head_idx = tl.program_id(1)
+        batch_split_idx = tl.program_id(2)
+        if IS_SPLIT_QO:
+            batch_idx = batch_split_idx // NUM_SPLITS
+            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+        else:
+            batch_idx = batch_split_idx
+            split_idx = 0
+        head_kv_idx = head_idx // QHEAD_PER_KVHEAD
+        return AttnBwdGridIndex(n_block, batch_idx, head_idx, head_kv_idx, split_idx)
+
+    @triton.jit
+    def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
+        if IS_LOCAL:
+            window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
+            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
+        else:
+            window_size_sink = 0
+            window_size_left = 0
+            window_size_right = 0
+            window_size_near = 0
+        return window_size_sink, window_size_left, window_size_right, window_size_near
+
+
+@aggregate
+class AttnDecGridIndex:
+    batch_idx: tl.tensor
+    head_idx: tl.tensor
+    head_kv_idx: tl.tensor
+    split_idx: tl.tensor
+
+    @constexpr_function
+    def __init__(self, batch_idx, head_idx, head_kv_idx, split_idx):
+        self.batch_idx = batch_idx
+        self.head_idx = head_idx
+        self.head_kv_idx = head_kv_idx
+        self.split_idx = split_idx
+
+    @staticmethod
+    @triton.jit
+    def create(
+        NUM_SPLITS: tl.constexpr,
+    ):
+        head_idx = tl.program_id(0)
+        batch_split_idx = tl.program_id(1)
+        batch_idx = batch_split_idx // NUM_SPLITS
+        split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+        head_kv_idx = head_idx
+        return AttnDecGridIndex(batch_idx, head_idx, head_kv_idx, split_idx)
+
+    @triton.jit
+    def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
+        if IS_LOCAL:
+            window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
+            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
+            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
+            window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
+        else:
+            window_size_sink = 0
+            window_size_left = 0
+            window_size_right = 0
+            window_size_near = 0
+        return window_size_sink, window_size_left, window_size_right, window_size_near
+
+
+@aggregate
+class AttnFwdConfig:
+    softmax_scale_log2: gl.tensor
+    softmax_threshold_log2: gl.tensor
+    gate_threshold_log2: gl.tensor
+    value_scale: gl.tensor
+    m_block: gl.tensor
+    actual_seqlen_q: gl.tensor
+    actual_seqlen_k: gl.tensor
+    offset_q: gl.tensor
+    offset_k: gl.tensor
+    padded_offset_q: gl.tensor
+    padded_offset_k: gl.tensor
+    window_size_sink: gl.tensor
+    window_size_left: gl.tensor
+    window_size_right: gl.tensor
+    window_size_near: gl.tensor
+    head_dim: gl.tensor
+    PACK_GQA: gl.constexpr
+    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr
+    TILE_M: gl.constexpr
+    TILE_N: gl.constexpr
+    TILE_K: gl.constexpr
+    IS_LOGSIGMOID_GATE: gl.constexpr
+
+    @gluon.constexpr_function
+    def __init__(
+        self,
+        softmax_scale_log2,
+        softmax_threshold_log2,
+        gate_threshold_log2,
+        value_scale,
+        m_block,
+        actual_seqlen_q,
+        actual_seqlen_k,
+        offset_q,
+        offset_k,
+        padded_offset_q,
+        padded_offset_k,
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_near,
+        head_dim,
+        PACK_GQA,
+        QHEAD_PER_KVHEAD_PACKGQA,
+        TILE_M,
+        TILE_N,
+        TILE_K,
+        IS_LOGSIGMOID_GATE,
+    ):
+        self.softmax_scale_log2 = softmax_scale_log2
+        self.softmax_threshold_log2 = softmax_threshold_log2
+        self.gate_threshold_log2 = gate_threshold_log2
+        self.value_scale = value_scale
+        self.m_block = m_block
+        self.actual_seqlen_q = actual_seqlen_q
+        self.actual_seqlen_k = actual_seqlen_k
+        self.offset_q = offset_q
+        self.offset_k = offset_k
+        self.padded_offset_q = padded_offset_q
+        self.padded_offset_k = padded_offset_k
+        self.window_size_sink = window_size_sink
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.window_size_near = window_size_near
+        self.head_dim = head_dim
+        self.PACK_GQA = gl.constexpr(PACK_GQA)
+        self.QHEAD_PER_KVHEAD_PACKGQA = gl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
+        self.TILE_M = gl.constexpr(TILE_M)
+        self.TILE_N = gl.constexpr(TILE_N)
+        self.TILE_K = gl.constexpr(TILE_K)
+        self.IS_LOGSIGMOID_GATE = gl.constexpr(IS_LOGSIGMOID_GATE)
+
+    @staticmethod
+    @gluon.jit
+    def create(
+        softmax_scale=0.0,
+        softmax_threshold=0.0,
+        gate_threshold=0.0,
+        query_scale=None,
+        key_scale=None,
+        value_scale=None,
+        m_block=0,
+        batch_idx=0,
+        window_size_sink=0,
+        window_size_left=0,
+        window_size_right=0,
+        window_size_near=0,
+        head_dim=0,
+        cu_seqlens_q=None,
+        cu_seqlens_k=None,
+        seqused_q=None,
+        seqused_k=None,
+        seqlen_q=0,
+        seqlen_k=0,
+        ROW_LAYOUT: gl.constexpr = None,
+        PACK_GQA: gl.constexpr = False,
+        QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
+        TILE_M: gl.constexpr = 64,
+        TILE_N: gl.constexpr = 64,
+        TILE_K: gl.constexpr = 64,
+        IS_CAUSAL: gl.constexpr = False,
+        IS_QUANT: gl.constexpr = False,
+        IS_LOGSIGMOID_GATE: gl.constexpr = False,
+        IS_ADAPT_GATE: gl.constexpr = False,
+        HAS_CU_SEQLENS_Q: gl.constexpr = False,
+        HAS_CU_SEQLENS_K: gl.constexpr = False,
+        HAS_SEQUSED_Q: gl.constexpr = False,
+        HAS_SEQUSED_K: gl.constexpr = False,
+    ):
+        # Get seqlen info for this batch
+        (
+            offset_q,
+            offset_k,
+            padded_offset_q,
+            padded_offset_k,
+            actual_seqlen_q,
+            actual_seqlen_k,
+        ) = seqlen_info.get_seqlen_info_qk(
+            batch_idx=batch_idx,
+            seqlen_q_static=seqlen_q,
+            seqlen_k_static=seqlen_k,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q=HAS_SEQUSED_Q,
+            HAS_SEQUSED_K=HAS_SEQUSED_K,
+        )
+        if IS_QUANT:
+            q_scale = gl.load(query_scale)
+            k_scale = gl.load(key_scale)
+            v_scale = gl.load(value_scale)
+        else:
+            q_scale = gl.to_tensor(1.0)
+            k_scale = gl.to_tensor(1.0)
+            v_scale = gl.to_tensor(1.0)
+        LOG2E: gl.constexpr = 1.44269504089
+        softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
+        row_offsets = gl.arange(0, TILE_M, ROW_LAYOUT)
+        softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
+            softmax_threshold,
+            m_block,
+            actual_seqlen_q,
+            actual_seqlen_k,
+            row_offsets,
+            IS_CAUSAL,
+            QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        gate_threshold_log2 = seqlen_info.get_gate_threshold(
+            gate_threshold,
+            m_block,
+            actual_seqlen_q,
+            actual_seqlen_k,
+            row_offsets,
+            IS_CAUSAL,
+            QHEAD_PER_KVHEAD_PACKGQA,
+            IS_ADAPT_GATE,
+        )
+        return AttnFwdConfig(
+            gl.to_tensor(softmax_scale_log2),
+            gl.to_tensor(softmax_threshold_log2),
+            gl.to_tensor(gate_threshold_log2),
+            gl.to_tensor(v_scale),
+            gl.to_tensor(m_block),
+            gl.to_tensor(actual_seqlen_q),
+            gl.to_tensor(actual_seqlen_k),
+            gl.to_tensor(offset_q),
+            gl.to_tensor(offset_k),
+            gl.to_tensor(padded_offset_q),
+            gl.to_tensor(padded_offset_k),
+            gl.to_tensor(window_size_sink),
+            gl.to_tensor(window_size_left),
+            gl.to_tensor(window_size_right),
+            gl.to_tensor(window_size_near),
+            gl.to_tensor(head_dim),
+            PACK_GQA,
+            QHEAD_PER_KVHEAD_PACKGQA,
+            TILE_M,
+            TILE_N,
+            TILE_K,
+            IS_LOGSIGMOID_GATE,
+        )
+
+    @gluon.jit
+    def get_offs_m(self, layout: gl.constexpr):
+        return self.m_block * self.TILE_M + gl.arange(0, self.TILE_M, layout)
+
+    @gluon.jit
+    def get_offs_n(self, n_block, layout: gl.constexpr):
+        return n_block * self.TILE_N + gl.arange(0, self.TILE_N, layout)
+
+    @gluon.jit
+    def get_offs_k(self, layout: gl.constexpr):
+        return gl.arange(0, self.TILE_K, layout)
+
+
+@aggregate
+class AttnBwdConfig:
+    softmax_scale_log2: tl.tensor
+    softmax_threshold: tl.tensor
+    gate_threshold: tl.tensor
+    query_scale: tl.tensor
+    key_scale: tl.tensor
+    value_scale: tl.tensor
+    n_block: tl.tensor
+    actual_seqlen_q: tl.tensor
+    actual_seqlen_k: tl.tensor
+    offset_q: tl.tensor
+    offset_k: tl.tensor
+    padded_offset_q: tl.tensor
+    padded_offset_k: tl.tensor
+    window_size_sink: tl.tensor
+    window_size_left: tl.tensor
+    window_size_right: tl.tensor
+    window_size_near: tl.tensor
+    head_dim: tl.tensor
+    QHEAD_PER_KVHEAD: tl.constexpr
+    TILE_M: tl.constexpr
+    TILE_N: tl.constexpr
+    TILE_K: tl.constexpr
+    IS_CAUSAL: tl.constexpr
+    IS_LOGSIGMOID_GATE: tl.constexpr
+    IS_ADAPT_GATE: tl.constexpr
+
+    @constexpr_function
+    def __init__(
+        self,
+        softmax_scale_log2,
+        softmax_threshold,
+        gate_threshold,
+        query_scale,
+        key_scale,
+        value_scale,
+        n_block,
+        actual_seqlen_q,
+        actual_seqlen_k,
+        offset_q,
+        offset_k,
+        padded_offset_q,
+        padded_offset_k,
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_near,
+        head_dim,
+        QHEAD_PER_KVHEAD,
+        TILE_M,
+        TILE_N,
+        TILE_K,
+        IS_CAUSAL,
+        IS_LOGSIGMOID_GATE,
+        IS_ADAPT_GATE,
+    ):
+        self.softmax_scale_log2 = softmax_scale_log2
+        self.softmax_threshold = softmax_threshold
+        self.gate_threshold = gate_threshold
+        self.query_scale = query_scale
+        self.key_scale = key_scale
+        self.value_scale = value_scale
+        self.n_block = n_block
+        self.actual_seqlen_q = actual_seqlen_q
+        self.actual_seqlen_k = actual_seqlen_k
+        self.offset_q = offset_q
+        self.offset_k = offset_k
+        self.padded_offset_q = padded_offset_q
+        self.padded_offset_k = padded_offset_k
+        self.window_size_sink = window_size_sink
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.window_size_near = window_size_near
+        self.head_dim = head_dim
+        self.QHEAD_PER_KVHEAD = tl.constexpr(QHEAD_PER_KVHEAD)
+        self.TILE_M = tl.constexpr(TILE_M)
+        self.TILE_N = tl.constexpr(TILE_N)
+        self.TILE_K = tl.constexpr(TILE_K)
+        self.IS_CAUSAL = tl.constexpr(IS_CAUSAL)
+        self.IS_LOGSIGMOID_GATE = tl.constexpr(IS_LOGSIGMOID_GATE)
+        self.IS_ADAPT_GATE = tl.constexpr(IS_ADAPT_GATE)
+
+    @staticmethod
+    @triton.jit
+    def create(
+        softmax_scale=0.0,
+        softmax_threshold=0.0,
+        gate_threshold=0.0,
+        query_scale=None,
+        key_scale=None,
+        value_scale=None,
+        n_block=0,
+        batch_idx=0,
+        window_size_sink=0,
+        window_size_left=0,
+        window_size_right=0,
+        window_size_near=0,
+        head_dim=0,
+        cu_seqlens_q=None,
+        cu_seqlens_k=None,
+        seqused_q=None,
+        seqused_k=None,
+        seqlen_q=0,
+        seqlen_k=0,
+        QHEAD_PER_KVHEAD: tl.constexpr = 1,
+        TILE_M: tl.constexpr = 64,
+        TILE_N: tl.constexpr = 64,
+        TILE_K: tl.constexpr = 64,
+        IS_CAUSAL: tl.constexpr = False,
+        IS_QUANT: tl.constexpr = False,
+        IS_LOGSIGMOID_GATE: tl.constexpr = False,
+        IS_ADAPT_GATE: tl.constexpr = False,
+        HAS_CU_SEQLENS_Q: tl.constexpr = False,
+        HAS_CU_SEQLENS_K: tl.constexpr = False,
+        HAS_SEQUSED_Q: tl.constexpr = False,
+        HAS_SEQUSED_K: tl.constexpr = False,
+    ):
+        # Get seqlen info for this batch
+        (
+            offset_q,
+            offset_k,
+            padded_offset_q,
+            padded_offset_k,
+            actual_seqlen_q,
+            actual_seqlen_k,
+        ) = seqlen_info.get_seqlen_info_qk(
+            batch_idx=batch_idx,
+            seqlen_q_static=seqlen_q,
+            seqlen_k_static=seqlen_k,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q=HAS_SEQUSED_Q,
+            HAS_SEQUSED_K=HAS_SEQUSED_K,
+        )
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
+        LOG2E: tl.constexpr = 1.44269504089
+        softmax_scale_log2 = softmax_scale * LOG2E
+        softmax_threshold = tl.full((), softmax_threshold, tl.float32)
+        gate_threshold = tl.full((), gate_threshold, tl.float32)
+        return AttnBwdConfig(
+            softmax_scale_log2,
+            softmax_threshold,
+            gate_threshold,
+            q_scale,
+            k_scale,
+            v_scale,
+            n_block,
+            actual_seqlen_q,
+            actual_seqlen_k,
+            offset_q,
+            offset_k,
+            padded_offset_q,
+            padded_offset_k,
+            window_size_sink,
+            window_size_left,
+            window_size_right,
+            window_size_near,
+            head_dim,
+            QHEAD_PER_KVHEAD,
+            TILE_M,
+            TILE_N,
+            TILE_K,
+            IS_CAUSAL,
+            IS_LOGSIGMOID_GATE,
+            IS_ADAPT_GATE,
+        )
+
+    @triton.jit
+    def get_softmax_threshold_log2(
+        self,
+        m_block,
+    ):
+        return seqlen_info.get_softmax_threshold(
+            self.softmax_threshold,
+            m_block,
+            self.actual_seqlen_q,
+            self.actual_seqlen_k,
+            self.IS_CAUSAL,
+            self.TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA=1,
+        )
+
+    @triton.jit
+    def get_gate_threshold_log2(
+        self,
+        m_block,
+    ):
+        return seqlen_info.get_gate_threshold(
+            self.gate_threshold,
+            m_block,
+            self.actual_seqlen_q,
+            self.actual_seqlen_k,
+            self.IS_CAUSAL,
+            self.TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA=1,
+            IS_ADAPT_GATE=self.IS_ADAPT_GATE,
+        )
+
+    @triton.jit
+    def get_offs_m(self, m_block):
+        return m_block * self.TILE_M + tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self):
+        return self.n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def get_offs_k(self):
+        return tl.arange(0, self.TILE_K)
+
+
+@aggregate
+class AttnDecConfig:
+    softmax_scale_log2: tl.tensor
+    softmax_threshold_log2: tl.tensor
+    gate_threshold_log2: tl.tensor
+    value_scale: tl.tensor
+    m_block: tl.tensor
+    actual_seqlen_q: tl.tensor
+    actual_seqlen_k: tl.tensor
+    offset_q: tl.tensor
+    offset_k: tl.tensor
+    padded_offset_q: tl.tensor
+    padded_offset_k: tl.tensor
+    window_size_sink: tl.tensor
+    window_size_left: tl.tensor
+    window_size_right: tl.tensor
+    window_size_near: tl.tensor
+    head_dim: tl.tensor
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr
+    TILE_M: tl.constexpr
+    TILE_N: tl.constexpr
+    TILE_K: tl.constexpr
+    IS_LOGSIGMOID_GATE: tl.constexpr
+
+    @constexpr_function
+    def __init__(
+        self,
+        softmax_scale_log2,
+        softmax_threshold_log2,
+        gate_threshold_log2,
+        value_scale,
+        m_block,
+        actual_seqlen_q,
+        actual_seqlen_k,
+        offset_q,
+        offset_k,
+        padded_offset_q,
+        padded_offset_k,
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_near,
+        head_dim,
+        QHEAD_PER_KVHEAD_PACKGQA,
+        TILE_M,
+        TILE_N,
+        TILE_K,
+        IS_LOGSIGMOID_GATE,
+    ):
+        self.softmax_scale_log2 = softmax_scale_log2
+        self.softmax_threshold_log2 = softmax_threshold_log2
+        self.gate_threshold_log2 = gate_threshold_log2
+        self.value_scale = value_scale
+        self.m_block = m_block
+        self.actual_seqlen_q = actual_seqlen_q
+        self.actual_seqlen_k = actual_seqlen_k
+        self.offset_q = offset_q
+        self.offset_k = offset_k
+        self.padded_offset_q = padded_offset_q
+        self.padded_offset_k = padded_offset_k
+        self.window_size_sink = window_size_sink
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.window_size_near = window_size_near
+        self.head_dim = head_dim
+        self.QHEAD_PER_KVHEAD_PACKGQA = tl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
+        self.TILE_M = tl.constexpr(TILE_M)
+        self.TILE_N = tl.constexpr(TILE_N)
+        self.TILE_K = tl.constexpr(TILE_K)
+        self.IS_LOGSIGMOID_GATE = tl.constexpr(IS_LOGSIGMOID_GATE)
+
+    @staticmethod
+    @triton.jit
+    def create(
+        softmax_scale=0.0,
+        softmax_threshold=0.0,
+        gate_threshold=0.0,
+        query_scale=None,
+        key_scale=None,
+        value_scale=None,
+        batch_idx=0,
+        window_size_sink=0,
+        window_size_left=0,
+        window_size_right=0,
+        window_size_near=0,
+        head_dim=0,
+        cu_seqlens_q=None,
+        cu_seqlens_k=None,
+        seqused_q=None,
+        seqused_k=None,
+        seqlen_q=0,
+        seqlen_k=0,
+        QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr = 1,
+        TILE_M: tl.constexpr = 16,
+        TILE_N: tl.constexpr = 64,
+        TILE_K: tl.constexpr = 64,
+        IS_QUANT: tl.constexpr = False,
+        IS_LOGSIGMOID_GATE: tl.constexpr = False,
+        HAS_CU_SEQLENS_Q: tl.constexpr = False,
+        HAS_CU_SEQLENS_K: tl.constexpr = False,
+        HAS_SEQUSED_Q: tl.constexpr = False,
+        HAS_SEQUSED_K: tl.constexpr = False,
+    ):
+        # Get seqlen info for this batch
+        (
+            offset_q,
+            offset_k,
+            padded_offset_q,
+            padded_offset_k,
+            actual_seqlen_q,
+            actual_seqlen_k,
+        ) = seqlen_info.get_seqlen_info_qk(
+            batch_idx=batch_idx,
+            seqlen_q_static=seqlen_q,
+            seqlen_k_static=seqlen_k,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q=HAS_SEQUSED_Q,
+            HAS_SEQUSED_K=HAS_SEQUSED_K,
+        )
+        if IS_QUANT:
+            q_scale = tl.load(query_scale)
+            k_scale = tl.load(key_scale)
+            v_scale = tl.load(value_scale)
+        else:
+            q_scale = 1.0
+            k_scale = 1.0
+            v_scale = 1.0
+        LOG2E: tl.constexpr = 1.44269504089
+        softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
+        softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
+            softmax_threshold,
+            0,
+            actual_seqlen_q,
+            actual_seqlen_k,
+            False,
+            TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        gate_threshold_log2 = seqlen_info.get_gate_threshold(
+            gate_threshold,
+            0,
+            actual_seqlen_q,
+            actual_seqlen_k,
+            False,
+            TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA,
+            False,
+        )
+        return AttnDecConfig(
+            softmax_scale_log2,
+            softmax_threshold_log2,
+            gate_threshold_log2,
+            v_scale,
+            tl.full((), 0, tl.int32),
+            actual_seqlen_q,
+            actual_seqlen_k,
+            offset_q,
+            offset_k,
+            padded_offset_q,
+            padded_offset_k,
+            window_size_sink,
+            window_size_left,
+            window_size_right,
+            window_size_near,
+            head_dim,
+            QHEAD_PER_KVHEAD_PACKGQA,
+            TILE_M,
+            TILE_N,
+            TILE_K,
+            IS_LOGSIGMOID_GATE,
+        )
+
+    @triton.jit
+    def get_offs_m(self):
+        return tl.arange(0, self.TILE_M)
+
+    @triton.jit
+    def get_offs_n(self, n_block):
+        return n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def get_offs_k(self):
+        return tl.arange(0, self.TILE_K)
+
+
+@aggregate
+class AttnFwdBlockScheduler:
+    n_block_min: gl.tensor
+    n_block_max: gl.tensor
+    n_block_max_no_mask: gl.tensor
+    n_block_window_min: gl.tensor
+    n_block_window_max: gl.tensor
+    n_block_window_min_no_mask: gl.tensor
+    n_block_window_max_no_mask: gl.tensor
+    n_block_sink_min: gl.tensor
+    n_block_sink_max: gl.tensor
+
+    @gluon.constexpr_function
+    def __init__(
+        self,
+        n_block_min,
+        n_block_max,
+        n_block_max_no_mask,
+        n_block_window_min,
+        n_block_window_max,
+        n_block_window_min_no_mask,
+        n_block_window_max_no_mask,
+        n_block_sink_min,
+        n_block_sink_max,
+    ):
+        self.n_block_min = n_block_min
+        self.n_block_max = n_block_max
+        self.n_block_max_no_mask = n_block_max_no_mask
+        self.n_block_window_min = n_block_window_min
+        self.n_block_window_max = n_block_window_max
+        self.n_block_window_min_no_mask = n_block_window_min_no_mask
+        self.n_block_window_max_no_mask = n_block_window_max_no_mask
+        self.n_block_sink_min = n_block_sink_min
+        self.n_block_sink_max = n_block_sink_max
+
+    @gluon.jit
+    def is_empty(self):
+        return (
+            (self.n_block_max <= self.n_block_min)
+            & (self.n_block_window_max <= self.n_block_window_min)
+            & (self.n_block_sink_max <= self.n_block_sink_min)
+        )
+
+    @staticmethod
+    @gluon.jit
+    def create(
+        config: AttnFwdConfig,
+        split_idx,
+        NUM_SPLITS: gl.constexpr,
+        IS_CAUSAL: gl.constexpr,
+        IS_LOCAL: gl.constexpr,
+        IS_SPLIT_KV: gl.constexpr,
+    ):
+        # Compute causal n_block range for this m_block
+        (
+            n_block_min,
+            n_block_max,
+            n_block_window_min,
+            n_block_window_max,
+            n_block_sink_min,
+            n_block_sink_max,
+        ) = block_info.get_n_block_min_max(
+            seqlen_q=config.actual_seqlen_q,
+            seqlen_k=config.actual_seqlen_k,
+            m_block=config.m_block,
+            split_idx=split_idx,
+            window_size_sink=config.window_size_sink,
+            window_size_left=config.window_size_left,
+            window_size_right=config.window_size_right,
+            window_size_near=config.window_size_near,
+            NUM_SPLITS=NUM_SPLITS,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=IS_CAUSAL,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_KV=IS_SPLIT_KV,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+            seqlen_q=config.actual_seqlen_q,
+            seqlen_k=config.actual_seqlen_k,
+            m_block=config.m_block,
+            n_block_min=n_block_min,
+            window_size_right=0,
+            window_size_near=0,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_LOCAL=False,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+        )
+
+        # Clamp to split's range so the no-mask loop stays within bounds
+        if IS_SPLIT_KV:
+            n_block_max_no_mask = gl.minimum(n_block_max_no_mask, n_block_max)
+
+        if IS_LOCAL:
+            # Compute local n_block range for this m_block
+            if IS_SPLIT_KV:
+                n_block_max_no_mask = gl.where(
+                    split_idx >= NUM_SPLITS - 1,
+                    n_block_min,
+                    n_block_max_no_mask,
+                )
+            else:
+                n_block_max_no_mask = n_block_min
+            n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+                seqlen_q=config.actual_seqlen_q,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=config.m_block,
+                n_block_min=n_block_window_min,
+                window_size_right=config.window_size_right,
+                window_size_near=config.window_size_near,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=True,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+            n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
+                seqlen_q=config.actual_seqlen_q,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=config.m_block,
+                n_block_min=n_block_window_min,
+                window_size_left=config.window_size_left,
+                window_size_right=config.window_size_right,
+                window_size_near=config.window_size_near,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=True,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+            # Clamp window no-mask boundaries to the window's range
+            n_block_window_max_no_mask = gl.maximum(
+                gl.minimum(n_block_window_max_no_mask, n_block_window_max),
+                n_block_window_min,
+            )
+            n_block_window_min_no_mask = gl.maximum(
+                gl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
+                n_block_window_min,
+            )
+        else:
+            n_block_window_min = gl.to_tensor(0)
+            n_block_window_max = gl.to_tensor(0)
+            n_block_window_min_no_mask = gl.to_tensor(0)
+            n_block_window_max_no_mask = gl.to_tensor(0)
+
+        return AttnFwdBlockScheduler(
+            n_block_min,
+            n_block_max,
+            n_block_max_no_mask,
+            n_block_window_min,
+            n_block_window_max,
+            n_block_window_min_no_mask,
+            n_block_window_max_no_mask,
+            n_block_sink_min,
+            n_block_sink_max,
+        )
+
+
+@aggregate
+class AttnBwdBlockScheduler:
+    m_block_min: tl.tensor
+    m_block_max: tl.tensor
+    m_block_min_no_mask: tl.tensor
+    m_block_window_min: tl.tensor
+    m_block_window_max: tl.tensor
+    m_block_window_min_no_mask: tl.tensor
+    m_block_window_max_no_mask: tl.tensor
+    m_block_sink_min: tl.tensor
+    m_block_sink_max: tl.tensor
+
+    @constexpr_function
+    def __init__(
+        self,
+        m_block_min,
+        m_block_max,
+        m_block_min_no_mask,
+        m_block_window_min,
+        m_block_window_max,
+        m_block_window_min_no_mask,
+        m_block_window_max_no_mask,
+        m_block_sink_min,
+        m_block_sink_max,
+    ):
+        self.m_block_min = m_block_min
+        self.m_block_max = m_block_max
+        self.m_block_min_no_mask = m_block_min_no_mask
+        self.m_block_window_min = m_block_window_min
+        self.m_block_window_max = m_block_window_max
+        self.m_block_window_min_no_mask = m_block_window_min_no_mask
+        self.m_block_window_max_no_mask = m_block_window_max_no_mask
+        self.m_block_sink_min = m_block_sink_min
+        self.m_block_sink_max = m_block_sink_max
+
+    @triton.jit
+    def is_empty(self):
+        return (
+            (self.m_block_max <= self.m_block_min)
+            & (self.m_block_window_max <= self.m_block_window_min)
+            & (self.m_block_sink_max <= self.m_block_sink_min)
+        )
+
+    @staticmethod
+    @triton.jit
+    def create(
+        config: AttnBwdConfig,
+        split_idx,
+        NUM_SPLITS: tl.constexpr,
+        IS_CAUSAL: tl.constexpr,
+        IS_LOCAL: tl.constexpr,
+        IS_SPLIT_QO: tl.constexpr,
+    ):
+        # Compute causal m_block range for this n_block
+        (
+            m_block_min,
+            m_block_max,
+            m_block_window_min,
+            m_block_window_max,
+            m_block_sink_min,
+            m_block_sink_max,
+        ) = block_info.get_m_block_min_max(
+            seqlen_q=config.actual_seqlen_q,
+            seqlen_k=config.actual_seqlen_k,
+            n_block=config.n_block,
+            split_idx=split_idx,
+            window_size_sink=config.window_size_sink,
+            window_size_left=config.window_size_left,
+            window_size_right=config.window_size_right,
+            window_size_near=config.window_size_near,
+            NUM_SPLITS=NUM_SPLITS,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=IS_CAUSAL,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_QO=IS_SPLIT_QO,
+        )
+        m_block_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+            seqlen_q=config.actual_seqlen_q,
+            seqlen_k=config.actual_seqlen_k,
+            n_block=config.n_block,
+            m_block_min=m_block_min,
+            window_size_right=0,
+            window_size_near=0,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=IS_CAUSAL or IS_LOCAL,
+            IS_LOCAL=False,
+        )
+
+        # Clamp to split's range so the no-mask loop stays within bounds
+        if IS_SPLIT_QO:
+            m_block_min_no_mask = tl.minimum(m_block_min_no_mask, m_block_max)
+
+        if IS_LOCAL:
+            # Compute local m_block range for this n_block
+            m_block_min_no_mask = m_block_max
+            m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+                seqlen_q=config.actual_seqlen_q,
+                seqlen_k=config.actual_seqlen_k,
+                n_block=config.n_block,
+                m_block_min=m_block_window_min,
+                window_size_right=config.window_size_right,
+                window_size_near=config.window_size_near,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_CAUSAL=False,
+                IS_LOCAL=True,
+            )
+            m_block_window_min_no_mask = tl.maximum(
+                m_block_window_min_no_mask, m_block_window_min
+            )
+            m_block_window_max_no_mask = block_info.get_m_block_max_before_local_mask(
+                seqlen_q=config.actual_seqlen_q,
+                seqlen_k=config.actual_seqlen_k,
+                n_block=config.n_block,
+                m_block_max=m_block_window_max,
+                window_size_left=config.window_size_left,
+                window_size_right=config.window_size_right,
+                window_size_near=config.window_size_near,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=True,
+            )
+            # Clamp window no-mask boundaries to the window's range
+            m_block_window_max_no_mask = tl.maximum(
+                m_block_window_max_no_mask, m_block_window_min_no_mask
+            )
+            m_block_window_min_no_mask = tl.maximum(
+                tl.minimum(m_block_window_min_no_mask, m_block_window_max),
+                m_block_window_min,
+            )
+            m_block_window_max_no_mask = tl.maximum(
+                tl.minimum(m_block_window_max_no_mask, m_block_window_max),
+                m_block_window_min_no_mask,
+            )
+        else:
+            m_block_window_min_no_mask = 0
+            m_block_window_max_no_mask = 0
+            m_block_sink_min = 0
+            m_block_sink_max = 0
+
+        return AttnBwdBlockScheduler(
+            m_block_min,
+            m_block_max,
+            m_block_min_no_mask,
+            m_block_window_min,
+            m_block_window_max,
+            m_block_window_min_no_mask,
+            m_block_window_max_no_mask,
+            m_block_sink_min,
+            m_block_sink_max,
+        )
+
+
+@aggregate
+class AttnDecBlockScheduler:
+    n_block_min: tl.tensor
+    n_block_max: tl.tensor
+    n_block_max_no_mask: tl.tensor
+    n_block_window_min: tl.tensor
+    n_block_window_max: tl.tensor
+    n_block_window_min_no_mask: tl.tensor
+    n_block_window_max_no_mask: tl.tensor
+    n_block_sink_min: tl.tensor
+    n_block_sink_max: tl.tensor
+
+    @constexpr_function
+    def __init__(
+        self,
+        n_block_min,
+        n_block_max,
+        n_block_max_no_mask,
+        n_block_window_min,
+        n_block_window_max,
+        n_block_window_min_no_mask,
+        n_block_window_max_no_mask,
+        n_block_sink_min,
+        n_block_sink_max,
+    ):
+        self.n_block_min = n_block_min
+        self.n_block_max = n_block_max
+        self.n_block_max_no_mask = n_block_max_no_mask
+        self.n_block_window_min = n_block_window_min
+        self.n_block_window_max = n_block_window_max
+        self.n_block_window_min_no_mask = n_block_window_min_no_mask
+        self.n_block_window_max_no_mask = n_block_window_max_no_mask
+        self.n_block_sink_min = n_block_sink_min
+        self.n_block_sink_max = n_block_sink_max
+
+    @triton.jit
+    def is_empty(self):
+        return (
+            (self.n_block_max <= self.n_block_min)
+            & (self.n_block_window_max <= self.n_block_window_min)
+            & (self.n_block_sink_max <= self.n_block_sink_min)
+        )
+
+    @staticmethod
+    @triton.jit
+    def create(
+        config: AttnDecConfig,
+        split_idx,
+        NUM_SPLITS: tl.constexpr,
+        TOPK_SEQLEN_K: tl.constexpr,
+        IS_LOCAL: tl.constexpr,
+    ):
+        # Compute non-causal n_block range for this m_block
+        (
+            n_block_min,
+            n_block_max,
+            n_block_window_min,
+            n_block_window_max,
+            n_block_sink_min,
+            n_block_sink_max,
+        ) = block_info.get_n_block_min_max(
+            seqlen_q=1,
+            seqlen_k=config.actual_seqlen_k,
+            m_block=0,
+            split_idx=split_idx,
+            window_size_sink=config.window_size_sink,
+            window_size_left=config.window_size_left,
+            window_size_right=config.window_size_right,
+            window_size_near=config.window_size_near,
+            NUM_SPLITS=NUM_SPLITS,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_CAUSAL=False,
+            IS_LOCAL=IS_LOCAL,
+            IS_SPLIT_KV=True,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+        )
+        n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+            seqlen_q=1,
+            seqlen_k=config.actual_seqlen_k,
+            m_block=0,
+            n_block_min=n_block_min,
+            window_size_right=0,
+            window_size_near=0,
+            TILE_N=config.TILE_N,
+            TILE_M=config.TILE_M,
+            IS_LOCAL=False,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+        )
+
+        # Clamp to split's range so the no-mask loop stays within bounds
+        n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
+
+        if IS_LOCAL:
+            # Compute local n_block range for this m_block
+            n_block_max_no_mask = tl.where(
+                split_idx >= NUM_SPLITS - 1,
+                n_block_min,
+                n_block_max_no_mask,
+            )
+            n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+                seqlen_q=1,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=0,
+                n_block_min=n_block_window_min,
+                window_size_right=config.window_size_right,
+                window_size_near=config.window_size_near,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=True,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+            n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
+                seqlen_q=1,
+                seqlen_k=config.actual_seqlen_k,
+                m_block=0,
+                n_block_min=n_block_window_min,
+                window_size_left=config.window_size_left,
+                window_size_right=config.window_size_right,
+                window_size_near=config.window_size_near,
+                TILE_N=config.TILE_N,
+                TILE_M=config.TILE_M,
+                IS_LOCAL=True,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+
+            # Clamp window no-mask boundaries to the window's range
+            n_block_window_max_no_mask = tl.maximum(
+                tl.minimum(n_block_window_max_no_mask, n_block_window_max),
+                n_block_window_min,
+            )
+            n_block_window_min_no_mask = tl.maximum(
+                tl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
+                n_block_window_min,
+            )
+        else:
+            n_block_window_min = 0
+            n_block_window_max = 0
+            n_block_window_min_no_mask = 0
+            n_block_window_max_no_mask = 0
+
+        return AttnDecBlockScheduler(
+            n_block_min,
+            n_block_max,
+            n_block_max_no_mask,
+            n_block_window_min,
+            n_block_window_max,
+            n_block_window_min_no_mask,
+            n_block_window_max_no_mask,
+            n_block_sink_min,
+            n_block_sink_max,
+        )
+
+
+@aggregate
+class AttnFwdPointerScheduler:
+    q_base: gl.tensor
+    k_base: gl.tensor
+    v_base: gl.tensor
+    out_base: gl.tensor
+    lse_base: gl.tensor
+    head_idx: gl.tensor
+    stride_qh: gl.tensor
+    stride_qm: gl.tensor
+    stride_kb: gl.tensor
+    stride_kn: gl.tensor
+    stride_vb: gl.tensor
+    stride_vn: gl.tensor
+    stride_oh: gl.tensor
+    stride_om: gl.tensor
+    stride_lh: gl.tensor
+
+    @gluon.constexpr_function
+    def __init__(
+        self,
+        q_base,
+        k_base,
+        v_base,
+        out_base,
+        lse_base,
+        head_idx,
+        stride_qh,
+        stride_qm,
+        stride_kb,
+        stride_kn,
+        stride_vb,
+        stride_vn,
+        stride_oh,
+        stride_om,
+        stride_lh,
+    ):
+        self.q_base = q_base
+        self.k_base = k_base
+        self.v_base = v_base
+        self.out_base = out_base
+        self.lse_base = lse_base
+        self.head_idx = head_idx
+        self.stride_qh = stride_qh
+        self.stride_qm = stride_qm
+        self.stride_kb = stride_kb
+        self.stride_kn = stride_kn
+        self.stride_vb = stride_vb
+        self.stride_vn = stride_vn
+        self.stride_oh = stride_oh
+        self.stride_om = stride_om
+        self.stride_lh = stride_lh
+
+    @staticmethod
+    @gluon.jit
+    def create(
+        config: AttnFwdConfig,
+        Q=None,
+        K=None,
+        V=None,
+        Out=None,
+        Lse=None,
+        batch_idx=0,
+        head_idx=0,
+        head_kv_idx=0,
+        split_idx=0,
+        stride_qb=0,
+        stride_qh=0,
+        stride_qm=0,
+        stride_kb=0,
+        stride_kh=0,
+        stride_kn=0,
+        stride_vb=0,
+        stride_vh=0,
+        stride_vn=0,
+        stride_ob=0,
+        stride_oh=0,
+        stride_om=0,
+        stride_os=0,
+        stride_lb=0,
+        stride_lh=0,
+        stride_ls=0,
+        IS_SPLIT_KV: gl.constexpr = False,
+        HAS_CU_SEQLENS_Q: gl.constexpr = False,
+        HAS_CU_SEQLENS_K: gl.constexpr = False,
+    ):
+        batch_idx = gl.to_tensor(batch_idx)
+        head_idx = gl.to_tensor(head_idx)
+        head_kv_idx = gl.to_tensor(head_kv_idx)
+        split_idx = gl.to_tensor(split_idx)
+        # Initialize base pointers
+        q_base = seqlen_info.offset_batch_Q(
+            Q + head_idx * stride_qh if not config.PACK_GQA else Q,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_qb,
+            stride_qm,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+        k_base = seqlen_info.offset_batch_K(
+            K + head_kv_idx * stride_kh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_kb,
+            stride_kn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        v_base = seqlen_info.offset_batch_K(
+            V + head_kv_idx * stride_vh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_vb,
+            stride_vn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        out_base = seqlen_info.offset_batch_Q(
+            Out + head_idx * stride_oh if not config.PACK_GQA else Out,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_ob,
+            stride_om,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+        lse_base = seqlen_info.offset_batch_Q(
+            Lse + head_idx * stride_lh if not config.PACK_GQA else Lse,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_lb,
+            1,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+
+        # For split KV, offset output and LSE base pointers by split_idx
+        if IS_SPLIT_KV:
+            out_base += split_idx * stride_os
+            lse_base += split_idx * stride_ls
+
+        return AttnFwdPointerScheduler(
+            q_base,
+            k_base,
+            v_base,
+            out_base,
+            lse_base,
+            head_idx,
+            gl.to_tensor(stride_qh),
+            gl.to_tensor(stride_qm),
+            gl.to_tensor(stride_kb),
+            gl.to_tensor(stride_kn),
+            gl.to_tensor(stride_vb),
+            gl.to_tensor(stride_vn),
+            gl.to_tensor(stride_oh),
+            gl.to_tensor(stride_om),
+            gl.to_tensor(stride_lh),
+        )
+
+    @gluon.jit
+    def make_q_ptrs(self, config: AttnFwdConfig, offs_m, offs_k):
+        if config.PACK_GQA:
+            return seqlen_info.make_pack_gqa_ptrs(
+                self.q_base,
+                config.m_block,
+                self.head_idx,
+                self.stride_qh,
+                self.stride_qm,
+                offs_m,
+                offs_k,
+                TILE_K=config.TILE_K,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+        return seqlen_info.make_ptrs(
+            self.q_base,
+            config.m_block,
+            self.stride_qm,
+            offs_m,
+            offs_k,
+            TILE_K=config.TILE_K,
+            SWAP_AB=False,
+        )
+
+    @gluon.jit
+    def make_k_ptrs(self, config: AttnFwdConfig, n_block, offs_n, offs_k):
+        return seqlen_info.make_ptrs(
+            self.k_base,
+            n_block,
+            self.stride_kn,
+            offs_n,
+            offs_k,
+            TILE_K=config.TILE_K,
+            SWAP_AB=False,
+        )
+
+    @gluon.jit
+    def make_v_ptrs(self, config: AttnFwdConfig, n_block, offs_n, offs_k):
+        return seqlen_info.make_ptrs(
+            self.v_base,
+            n_block,
+            self.stride_vn,
+            offs_n,
+            offs_k,
+            TILE_K=config.TILE_K,
+            SWAP_AB=False,
+        )
+
+    @gluon.jit
+    def make_out_ptrs(self, config: AttnFwdConfig, offs_m, offs_k):
+        if config.PACK_GQA:
+            return seqlen_info.make_pack_gqa_ptrs(
+                self.out_base,
+                config.m_block,
+                self.head_idx,
+                self.stride_oh,
+                self.stride_om,
+                offs_m,
+                offs_k,
+                TILE_K=config.TILE_K,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+        return seqlen_info.make_ptrs(
+            self.out_base,
+            config.m_block,
+            self.stride_om,
+            offs_m,
+            offs_k,
+            TILE_K=config.TILE_K,
+            SWAP_AB=False,
+        )
+
+    @gluon.jit
+    def make_lse_ptrs(self, config: AttnFwdConfig, offs_m):
+        if config.PACK_GQA:
+            return seqlen_info.make_pack_gqa_ptrs(
+                self.lse_base,
+                config.m_block,
+                self.head_idx,
+                self.stride_lh,
+                1,
+                offs_m,
+                offs_m,
+                TILE_K=1,
+                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
+            )
+        return self.lse_base + config.m_block * config.TILE_M + offs_m
+
+
+@aggregate
+class AttnBwdPointerScheduler:
+    q_base: tl.tensor
+    k_base: tl.tensor
+    v_base: tl.tensor
+    a_base: tl.tensor
+    d_base: tl.tensor
+    do_base: tl.tensor
+    lse_base: tl.tensor
+    dpsum_base: tl.tensor
+    dq_accum_base: tl.tensor
+    dk_base: tl.tensor
+    dv_base: tl.tensor
+    da_base: tl.tensor
+    dd_base: tl.tensor
+    stride_qm: tl.tensor
+    stride_kn: tl.tensor
+    stride_vn: tl.tensor
+    stride_dom: tl.tensor
+    stride_dqam: tl.tensor
+    stride_dkn: tl.tensor
+    stride_dvn: tl.tensor
+
+    @constexpr_function
+    def __init__(
+        self,
+        q_base,
+        k_base,
+        v_base,
+        a_base,
+        d_base,
+        do_base,
+        lse_base,
+        dpsum_base,
+        dq_accum_base,
+        dk_base,
+        dv_base,
+        da_base,
+        dd_base,
+        stride_qm,
+        stride_kn,
+        stride_vn,
+        stride_dom,
+        stride_dqam,
+        stride_dkn,
+        stride_dvn,
+    ):
+        self.q_base = q_base
+        self.k_base = k_base
+        self.v_base = v_base
+        self.a_base = a_base
+        self.d_base = d_base
+        self.do_base = do_base
+        self.lse_base = lse_base
+        self.dpsum_base = dpsum_base
+        self.dq_accum_base = dq_accum_base
+        self.dk_base = dk_base
+        self.dv_base = dv_base
+        self.da_base = da_base
+        self.dd_base = dd_base
+        self.stride_qm = stride_qm
+        self.stride_kn = stride_kn
+        self.stride_vn = stride_vn
+        self.stride_dom = stride_dom
+        self.stride_dqam = stride_dqam
+        self.stride_dkn = stride_dkn
+        self.stride_dvn = stride_dvn
+
+    @staticmethod
+    @triton.jit
+    def create(
+        config: AttnBwdConfig,
+        Q=None,
+        K=None,
+        V=None,
+        A=None,
+        D=None,
+        dO=None,
+        LSELog2=None,
+        dPsum=None,
+        dQaccum=None,
+        dK=None,
+        dV=None,
+        dA=None,
+        dD=None,
+        batch_idx=0,
+        head_idx=0,
+        head_kv_idx=0,
+        split_idx=0,
+        stride_qb=0,
+        stride_qh=0,
+        stride_qm=0,
+        stride_kb=0,
+        stride_kh=0,
+        stride_kn=0,
+        stride_vb=0,
+        stride_vh=0,
+        stride_vn=0,
+        stride_ab=0,
+        stride_ah=0,
+        stride_db=0,
+        stride_dh=0,
+        stride_dob=0,
+        stride_doh=0,
+        stride_dom=0,
+        stride_lb=0,
+        stride_lh=0,
+        stride_pb=0,
+        stride_ph=0,
+        stride_dqab=0,
+        stride_dqah=0,
+        stride_dqam=0,
+        stride_dkb=0,
+        stride_dkh=0,
+        stride_dkn=0,
+        stride_dks=0,
+        stride_dvb=0,
+        stride_dvh=0,
+        stride_dvn=0,
+        stride_dvs=0,
+        stride_dab=0,
+        stride_dah=0,
+        stride_ddb=0,
+        stride_ddh=0,
+        stride_dds=0,
+        IS_SPLIT_QO: tl.constexpr = False,
+        IS_GATED: tl.constexpr = False,
+        HAS_CU_SEQLENS_Q: tl.constexpr = False,
+        HAS_CU_SEQLENS_K: tl.constexpr = False,
+    ):
+        # Initialize base pointers
+        q_base = seqlen_info.offset_batch_Q(
+            Q + head_idx * stride_qh,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_qb,
+            stride_qm,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+        k_base = seqlen_info.offset_batch_K(
+            K + head_kv_idx * stride_kh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_kb,
+            stride_kn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        v_base = seqlen_info.offset_batch_K(
+            V + head_kv_idx * stride_vh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_vb,
+            stride_vn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        do_base = seqlen_info.offset_batch_Q(
+            dO + head_idx * stride_doh,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_dob,
+            stride_dom,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+        lse_base = seqlen_info.offset_batch_Q(
+            LSELog2 + head_idx * stride_lh,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_lb,
+            1,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=True,
+        )
+        dpsum_base = seqlen_info.offset_batch_Q(
+            dPsum + head_idx * stride_ph,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_pb,
+            1,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=True,
+        )
+        dq_accum_base = seqlen_info.offset_batch_Q(
+            dQaccum + head_idx * stride_dqah,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_dqab,
+            stride_dqam,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=True,
+        )
+        dk_base = seqlen_info.offset_batch_K(
+            dK + head_kv_idx * stride_dkh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_dkb,
+            stride_dkn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        dv_base = seqlen_info.offset_batch_K(
+            dV + head_kv_idx * stride_dvh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_dvb,
+            stride_dvn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+
+        if IS_GATED:
+            a_base = seqlen_info.offset_batch_Q(
+                A + head_idx * stride_ah,
+                batch_idx,
+                config.offset_q,
+                config.padded_offset_q,
+                stride_ab,
+                1,
+                HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            d_base = seqlen_info.offset_batch_K(
+                D + head_kv_idx * stride_dh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_db,
+                1,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            da_base = seqlen_info.offset_batch_Q(
+                dA + head_idx * stride_dah,
+                batch_idx,
+                config.offset_q,
+                config.padded_offset_q,
+                stride_dab,
+                1,
+                HAS_CU_SEQLENS_Q,
+                USE_PADDED=True,
+            )
+            dd_base = seqlen_info.offset_batch_K(
+                dD + head_kv_idx * stride_ddh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_ddb,
+                1,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+        else:
+            a_base = tl.full((), 0, tl.int64)
+            d_base = tl.full((), 0, tl.int64)
+            da_base = tl.full((), 0, tl.int64)
+            dd_base = tl.full((), 0, tl.int64)
+
+        # For split QO, offset key and value gradients base pointers by split_idx
+        if IS_SPLIT_QO:
+            dk_base += split_idx * stride_dks
+            dv_base += split_idx * stride_dvs
+            if IS_GATED:
+                dd_base += split_idx * stride_dds
+
+        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
+        return AttnBwdPointerScheduler(
+            q_base,
+            k_base,
+            v_base,
+            a_base,
+            d_base,
+            do_base,
+            lse_base,
+            dpsum_base,
+            dq_accum_base,
+            dk_base,
+            dv_base,
+            da_base,
+            dd_base,
+            stride_qm + tl.full((), 0, tl.int64),
+            stride_kn + tl.full((), 0, tl.int64),
+            stride_vn + tl.full((), 0, tl.int64),
+            stride_dom + tl.full((), 0, tl.int64),
+            stride_dqam + tl.full((), 0, tl.int64),
+            stride_dkn + tl.full((), 0, tl.int64),
+            stride_dvn + tl.full((), 0, tl.int64),
+        )
+
+    @triton.jit
+    def make_q_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.q_base,
+            shape=[config.actual_seqlen_q, config.head_dim],
+            strides=[self.stride_qm, 1],
+            block_shape=[config.TILE_M, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_k_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.k_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_kn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_v_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.v_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_vn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_a_ptrs(self, config: AttnBwdConfig):
+        return self.a_base
+
+    @triton.jit
+    def make_d_ptrs(self, config: AttnBwdConfig):
+        return self.d_base + config.get_offs_n()
+
+    @triton.jit
+    def make_do_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.do_base,
+            shape=[config.actual_seqlen_q, config.head_dim],
+            strides=[self.stride_dom, 1],
+            block_shape=[config.TILE_M, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_lse_ptrs(self, config: AttnBwdConfig):
+        return self.lse_base
+
+    @triton.jit
+    def make_dpsum_ptrs(self, config: AttnBwdConfig):
+        return self.dpsum_base
+
+    @triton.jit
+    def make_dq_accum_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.dq_accum_base,
+            shape=[config.actual_seqlen_q, config.head_dim],
+            strides=[self.stride_dqam, 1],
+            block_shape=[config.TILE_M, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_dk_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.dk_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_dkn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_dv_ptrs(self, config: AttnBwdConfig):
+        return tl.make_tensor_descriptor(
+            self.dv_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_dvn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_da_ptrs(self, config: AttnBwdConfig):
+        return self.da_base
+
+    @triton.jit
+    def make_dd_ptrs(self, config: AttnBwdConfig):
+        return self.dd_base + config.get_offs_n()
+
+    @triton.jit
+    def load_q(self, config: AttnBwdConfig, q_ptrs, m_block):
+        return (q_ptrs.load([m_block * config.TILE_M, 0]) * config.query_scale).to(
+            self.do_base.dtype.element_ty
+        )
+
+    @triton.jit
+    def load_k(self, config: AttnBwdConfig, k_ptrs):
+        return (k_ptrs.load([config.n_block * config.TILE_N, 0]) * config.key_scale).to(
+            self.do_base.dtype.element_ty
+        )
+
+    @triton.jit
+    def load_v(self, config: AttnBwdConfig, v_ptrs):
+        return (
+            v_ptrs.load([config.n_block * config.TILE_N, 0]) * config.value_scale
+        ).to(self.do_base.dtype.element_ty)
+
+    @triton.jit
+    def load_a(self, config: AttnBwdConfig, a_ptrs, m_block):
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            a_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        ).to(tl.float32)
+
+    @triton.jit
+    def load_d(self, config: AttnBwdConfig, d_ptrs):
+        offs_n = config.get_offs_n()
+        return tl.load(
+            d_ptrs,
+            mask=offs_n < config.actual_seqlen_k,
+            other=0.0,
+        ).to(tl.float32)
+
+    @triton.jit
+    def load_do(self, config: AttnBwdConfig, do_ptrs, m_block):
+        return do_ptrs.load([m_block * config.TILE_M, 0])
+
+    @triton.jit
+    def load_lse(self, config: AttnBwdConfig, lse_ptrs, m_block):
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            lse_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        )
+
+    @triton.jit
+    def load_dpsum(self, config: AttnBwdConfig, dpsum_ptrs, m_block):
+        offs_m = config.get_offs_m(m_block)
+        return tl.load(
+            dpsum_ptrs + offs_m,
+            mask=offs_m < config.actual_seqlen_q,
+            other=0.0,
+        )
+
+    @triton.jit
+    def store_dq(self, config: AttnBwdConfig, dq_ptrs, m_block, dq_tile):
+        dq_ptrs.atomic_add([m_block * config.TILE_M, 0], dq_tile)
+
+    @triton.jit
+    def store_dk(self, config: AttnBwdConfig, dk_ptrs, dk_tile):
+        if config.QHEAD_PER_KVHEAD > 1:
+            dk_ptrs.atomic_add([config.n_block * config.TILE_N, 0], dk_tile)
+        else:
+            dk_ptrs.store([config.n_block * config.TILE_N, 0], dk_tile)
+
+    @triton.jit
+    def store_dv(self, config: AttnBwdConfig, dv_ptrs, dv_tile):
+        if config.QHEAD_PER_KVHEAD > 1:
+            dv_ptrs.atomic_add([config.n_block * config.TILE_N, 0], dv_tile)
+        else:
+            dv_ptrs.store([config.n_block * config.TILE_N, 0], dv_tile)
+
+    @triton.jit
+    def store_da(self, config: AttnBwdConfig, da_ptrs, m_block, da_tile):
+        offs_m = config.get_offs_m(m_block)
+        tl.atomic_add(
+            da_ptrs + offs_m,
+            da_tile,
+            mask=offs_m < config.actual_seqlen_q,
+        )
+
+    @triton.jit
+    def store_dd(self, config: AttnBwdConfig, dd_ptrs, dd_tile):
+        offs_n = config.get_offs_n()
+        if config.QHEAD_PER_KVHEAD > 1:
+            tl.atomic_add(
+                dd_ptrs,
+                dd_tile,
+                mask=offs_n < config.actual_seqlen_k,
+            )
+        else:
+            tl.store(
+                dd_ptrs,
+                dd_tile,
+                mask=offs_n < config.actual_seqlen_k,
+            )
+
+
+@aggregate
+class AttnDecPointerScheduler:
+    q_base: tl.tensor
+    k_base: tl.tensor
+    v_base: tl.tensor
+    a_base: tl.tensor
+    d_base: tl.tensor
+    out_base: tl.tensor
+    lse_base: tl.tensor
+    stride_qh: tl.tensor
+    stride_kb: tl.tensor
+    stride_kn: tl.tensor
+    stride_vb: tl.tensor
+    stride_vn: tl.tensor
+    stride_db: tl.tensor
+    stride_oh: tl.tensor
+    stride_gn: tl.tensor
+
+    @constexpr_function
+    def __init__(
+        self,
+        q_base,
+        k_base,
+        v_base,
+        a_base,
+        d_base,
+        out_base,
+        lse_base,
+        stride_qh,
+        stride_kb,
+        stride_kn,
+        stride_vb,
+        stride_vn,
+        stride_db,
+        stride_oh,
+        stride_gn,
+    ):
+        self.q_base = q_base
+        self.k_base = k_base
+        self.v_base = v_base
+        self.a_base = a_base
+        self.d_base = d_base
+        self.out_base = out_base
+        self.lse_base = lse_base
+        self.stride_qh = stride_qh
+        self.stride_kb = stride_kb
+        self.stride_kn = stride_kn
+        self.stride_vb = stride_vb
+        self.stride_vn = stride_vn
+        self.stride_db = stride_db
+        self.stride_oh = stride_oh
+        self.stride_gn = stride_gn
+
+    @staticmethod
+    @triton.jit
+    def create(
+        config: AttnDecConfig,
+        Q=None,
+        K=None,
+        V=None,
+        A=None,
+        D=None,
+        Out=None,
+        Lse=None,
+        batch_idx=0,
+        head_idx=0,
+        head_kv_idx=0,
+        split_idx=0,
+        stride_qb=0,
+        stride_qh=0,
+        stride_qm=0,
+        stride_kb=0,
+        stride_kh=0,
+        stride_kn=0,
+        stride_vb=0,
+        stride_vh=0,
+        stride_vn=0,
+        stride_ab=0,
+        stride_ah=0,
+        stride_db=0,
+        stride_dh=0,
+        stride_ob=0,
+        stride_oh=0,
+        stride_om=0,
+        stride_os=0,
+        stride_lb=0,
+        stride_lh=0,
+        stride_lm=0,
+        stride_ls=0,
+        stride_pb=0,
+        stride_gb=0,
+        stride_gn=0,
+        IS_GATED: tl.constexpr = False,
+        HAS_CU_SEQLENS_Q: tl.constexpr = False,
+        HAS_CU_SEQLENS_K: tl.constexpr = False,
+    ):
+        # Initialize base pointers
+        q_base = seqlen_info.offset_batch_Q(
+            Q + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_qh,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_qb,
+            stride_qm,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+        k_base = seqlen_info.offset_batch_K(
+            K + head_kv_idx * stride_kh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_kb,
+            stride_kn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        v_base = seqlen_info.offset_batch_K(
+            V + head_kv_idx * stride_vh,
+            batch_idx,
+            config.offset_k,
+            config.padded_offset_k,
+            stride_vb,
+            stride_vn,
+            HAS_CU_SEQLENS_K,
+            USE_PADDED=False,
+        )
+        out_base = seqlen_info.offset_batch_Q(
+            Out + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_oh,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_ob,
+            stride_om,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+        lse_base = seqlen_info.offset_batch_Q(
+            Lse + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_lh,
+            batch_idx,
+            config.offset_q,
+            config.padded_offset_q,
+            stride_lb,
+            stride_lm,
+            HAS_CU_SEQLENS_Q,
+            USE_PADDED=False,
+        )
+
+        if IS_GATED:
+            a_base = seqlen_info.offset_batch_Q(
+                A + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_ah,
+                batch_idx,
+                config.offset_q,
+                config.padded_offset_q,
+                stride_ab,
+                1,
+                HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            d_base = seqlen_info.offset_batch_K(
+                D + head_kv_idx * stride_dh,
+                batch_idx,
+                config.offset_k,
+                config.padded_offset_k,
+                stride_db,
+                1,
+                HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+        else:
+            a_base = tl.full((), 0, tl.int64)
+            d_base = tl.full((), 0, tl.int64)
+
+        # For split KV, offset output and LSE base pointers by split_idx
+        out_base += split_idx * stride_os
+        lse_base += split_idx * stride_ls
+
+        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
+        return AttnDecPointerScheduler(
+            q_base,
+            k_base,
+            v_base,
+            a_base,
+            d_base,
+            out_base,
+            lse_base,
+            stride_qh + tl.full((), 0, tl.int64),
+            stride_kb + tl.full((), 0, tl.int64),
+            stride_kn + tl.full((), 0, tl.int64),
+            stride_vb + tl.full((), 0, tl.int64),
+            stride_vn + tl.full((), 0, tl.int64),
+            stride_db + tl.full((), 0, tl.int64),
+            stride_oh + tl.full((), 0, tl.int64),
+            stride_gn + tl.full((), 0, tl.int64),
+        )
+
+    @triton.jit
+    def make_q_ptrs(self, config: AttnDecConfig):
+        return tl.make_tensor_descriptor(
+            self.q_base,
+            shape=[config.QHEAD_PER_KVHEAD_PACKGQA, config.head_dim],
+            strides=[self.stride_qh, 1],
+            block_shape=[config.TILE_M, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_k_ptrs(self, config: AttnDecConfig):
+        return tl.make_tensor_descriptor(
+            self.k_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_kn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_v_ptrs(self, config: AttnDecConfig):
+        return tl.make_tensor_descriptor(
+            self.v_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_vn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_a_ptrs(self, config: AttnDecConfig):
+        return self.a_base + config.get_offs_m()
+
+    @triton.jit
+    def make_d_ptrs(self, config: AttnDecConfig):
+        return self.d_base
+
+    @triton.jit
+    def make_out_ptrs(self, config: AttnDecConfig):
+        return tl.make_tensor_descriptor(
+            self.out_base,
+            shape=[config.QHEAD_PER_KVHEAD_PACKGQA, config.head_dim],
+            strides=[self.stride_oh, 1],
+            block_shape=[config.TILE_M, config.TILE_K],
+        )
+
+    @triton.jit
+    def make_lse_ptrs(self, config: AttnDecConfig):
+        return self.lse_base + config.get_offs_m()
+
+    @triton.jit
+    def load_q(self, config: AttnDecConfig, q_ptrs):
+        return q_ptrs.load([0, 0])
+
+    @triton.jit
+    def load_k(self, config: AttnDecConfig, k_ptrs, n_block, topk_indices=None):
+        return k_ptrs.load([n_block * config.TILE_N, 0])
+
+    @triton.jit
+    def load_v(self, config: AttnDecConfig, v_ptrs, n_block, topk_indices=None):
+        return v_ptrs.load([n_block * config.TILE_N, 0])
+
+    @triton.jit
+    def load_a(self, config: AttnDecConfig, a_ptrs):
+        offs_m = config.get_offs_m()
+        return tl.load(
+            a_ptrs,
+            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
+            other=0.0,
+        ).to(tl.float32)
+
+    @triton.jit
+    def load_d(self, config: AttnDecConfig, d_ptrs, n_block, topk_indices=None):
+        offs_n = config.get_offs_n(n_block)
+        return tl.load(
+            d_ptrs + offs_n,
+            mask=offs_n < config.actual_seqlen_k,
+            other=0.0,
+        ).to(tl.float32)
+
+    @triton.jit
+    def store_out(self, config: AttnDecConfig, out_ptrs, o_tile):
+        out_ptrs.store([0, 0], o_tile)
+
+    @triton.jit
+    def store_lse(self, config: AttnDecConfig, lse_ptrs, lse_tile):
+        offs_m = config.get_offs_m()
+        tl.store(
+            lse_ptrs,
+            lse_tile,
+            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
+            cache_modifier=".wb",
+        )
+
+    @triton.jit
+    def store_empty(self, config: AttnDecConfig, out_ptrs, lse_ptrs, Out):
+        lse_tile = tl.full((config.TILE_M,), float("-inf"), dtype=tl.float32)
+        self.store_lse(config, lse_ptrs, lse_tile)
+        o_tile = tl.zeros((config.TILE_M, config.TILE_K), dtype=Out.dtype.element_ty)
+        self.store_out(config, out_ptrs, o_tile)
+
+
+@aggregate
+class AttnMaskScheduler:
+    fixed_block: gl.tensor
+    actual_seqlen_q: gl.tensor
+    actual_seqlen_k: gl.tensor
+    window_size_sink: gl.tensor
+    window_size_left: gl.tensor
+    window_size_right: gl.tensor
+    window_size_near: gl.tensor
+    TILE_M: gl.constexpr
+    TILE_N: gl.constexpr
+    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr
+    SWAP_AB: gl.constexpr
+
+    @gluon.constexpr_function
+    def __init__(
+        self,
+        fixed_block,
+        actual_seqlen_q,
+        actual_seqlen_k,
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_near,
+        TILE_M,
+        TILE_N,
+        QHEAD_PER_KVHEAD_PACKGQA,
+        SWAP_AB,
+    ):
+        self.fixed_block = fixed_block
+        self.actual_seqlen_q = actual_seqlen_q
+        self.actual_seqlen_k = actual_seqlen_k
+        self.window_size_sink = window_size_sink
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.window_size_near = window_size_near
+        self.TILE_M = gl.constexpr(TILE_M)
+        self.TILE_N = gl.constexpr(TILE_N)
+        self.QHEAD_PER_KVHEAD_PACKGQA = gl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
+        self.SWAP_AB = gl.constexpr(SWAP_AB)
+
+    @staticmethod
+    @gluon.jit
+    def create(
+        config,
+        SWAP_AB: gl.constexpr = False,
+    ):
+        if not SWAP_AB:
+            return AttnMaskScheduler(
+                config.m_block,
+                config.actual_seqlen_q,
+                config.actual_seqlen_k,
+                config.window_size_sink,
+                config.window_size_left,
+                config.window_size_right,
+                config.window_size_near,
+                config.TILE_M,
+                config.TILE_N,
+                config.QHEAD_PER_KVHEAD_PACKGQA,
+                False,
+            )
+        else:
+            return AttnMaskScheduler(
+                config.n_block,
+                config.actual_seqlen_q,
+                config.actual_seqlen_k,
+                config.window_size_sink,
+                config.window_size_left,
+                config.window_size_right,
+                config.window_size_near,
+                config.TILE_M,
+                config.TILE_N,
+                1,
+                True,
+            )
+
+    @gluon.jit
+    def apply_mask(
+        self,
+        acc_s,
+        iter_block,
+        offs_m,
+        offs_n,
+        MASK_SEQLEN: gl.constexpr = True,
+        MASK_CAUSAL: gl.constexpr = False,
+        MASK_LOCAL: gl.constexpr = False,
+        MASK_SINK: gl.constexpr = False,
+    ):
+        if not self.SWAP_AB:
+            m_block = self.fixed_block
+            n_block = iter_block
+        else:
+            m_block = iter_block
+            n_block = self.fixed_block
+        return mask.apply_mask(
+            acc_s=acc_s,
+            m_block=m_block,
+            n_block=n_block,
+            offs_m=offs_m,
+            offs_n=offs_n,
+            seqlen_q=self.actual_seqlen_q,
+            seqlen_k=self.actual_seqlen_k,
+            window_size_sink=self.window_size_sink,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            window_size_near=self.window_size_near,
+            MASK_SEQLEN=MASK_SEQLEN,
+            MASK_CAUSAL=MASK_CAUSAL,
+            MASK_LOCAL=MASK_LOCAL,
+            MASK_SINK=MASK_SINK,
+            TILE_M=self.TILE_M,
+            TILE_N=self.TILE_N,
+            QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
+            SWAP_AB=self.SWAP_AB,
+        )
+
+
+@aggregate
+class SoftmaxScheduler:
+    """Native Gluon scheduler for dense, sparse, and gated softmax flows."""
+
+    softmax_scale_log2: gl.tensor
+    value_scale: gl.tensor
+
+    @gluon.constexpr_function
+    def __init__(self, softmax_scale_log2, value_scale):
+        self.softmax_scale_log2 = softmax_scale_log2
+        self.value_scale = value_scale
+
+    @staticmethod
+    @gluon.jit
+    def create(config):
+        return SoftmaxScheduler(
+            gl.to_tensor(config.softmax_scale_log2),
+            gl.to_tensor(config.value_scale),
+        )
+
+    @gluon.jit
+    def online_softmax(
+        self,
+        acc_s,
+        row_max,
+        row_sum,
+        CHECK_INF: gl.constexpr = False,
+    ):
+        return activations.online_softmax(
+            acc_s,
+            row_max,
+            row_sum,
+            self.softmax_scale_log2,
+            CHECK_INF=CHECK_INF,
+        )
+
+    @gluon.jit
+    def online_sparse_softmax(
+        self,
+        acc_s,
+        row_max,
+        row_sum,
+        softmax_threshold_log2,
+        CHECK_INF: gl.constexpr = False,
+    ):
+        return activations.online_sparse_softmax(
+            acc_s,
+            row_max,
+            row_sum,
+            self.softmax_scale_log2,
+            softmax_threshold_log2,
+            CHECK_INF=CHECK_INF,
+        )
+
+    @gluon.jit
+    def rescale_o(
+        self,
+        acc_o,
+        row_scale,
+    ):
+        return activations.rescale_o(
+            acc_o=acc_o,
+            row_scale=row_scale,
+        )
+
+    @gluon.jit
+    def finalize(
+        self,
+        row_max,
+        row_sum,
+        IS_LOG2: gl.constexpr = False,
+        CHECK_NAN: gl.constexpr = True,
+    ):
+        return activations.finalize(
+            row_max=row_max,
+            row_sum=row_sum,
+            scale_log2=self.softmax_scale_log2,
+            final_scale=self.value_scale,
+            IS_LOG2=IS_LOG2,
+            CHECK_NAN=CHECK_NAN,
+        )
+
+    @gluon.jit
+    def log_sigmoid(
+        self,
+        acc_s,
+        FASTMATH: gl.constexpr = False,
+    ):
+        return activations.log_sigmoid(x=acc_s, FASTMATH=FASTMATH)
+
+    @gluon.jit
+    def online_gate(
+        self,
+        a_max,
+        a_min,
+        d_max,
+        d_min,
+        gate_max,
+        gate_threshold_log2,
+    ):
+        return activations.online_gate(
+            a_max=a_max,
+            a_min=a_min,
+            d_max=d_max,
+            d_min=d_min,
+            gate_max=gate_max,
+            scale_log2=self.softmax_scale_log2,
+            gate_threshold_log2=gate_threshold_log2,
+        )
