@@ -3,13 +3,10 @@ from triton.experimental.gluon import language as gl
 
 
 @gluon.jit
-def sequence_mask(offsets, seqlen):
-    return offsets < seqlen
-
-
-@gluon.jit
 def apply_mask(
     acc_s,
+    m_block,
+    n_block,
     offs_m,
     offs_n,
     seqlen_q,
@@ -22,6 +19,8 @@ def apply_mask(
     MASK_CAUSAL: gl.constexpr,
     MASK_LOCAL: gl.constexpr,
     MASK_SINK: gl.constexpr,
+    TILE_M: gl.constexpr,
+    TILE_N: gl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
     SWAP_AB: gl.constexpr,
 ):
@@ -29,8 +28,10 @@ def apply_mask(
     Apply seqlen, causal, and local masks to the attention scores.
 
     :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-    :param offs_m: Offsets for the M dimension.
-    :param offs_n: Offsets for the N dimension.
+    :param m_block: Current block index along the M dimension.
+    :param n_block: Current block index along the N dimension.
+    :param offs_m: Lane offsets for the M dimension.
+    :param offs_n: Lane offsets for the N dimension.
     :param seqlen_q: The sequence length of the query.
     :param seqlen_k: The sequence length of the key.
     :param window_size_sink: Prefix sink token count.
@@ -52,10 +53,13 @@ def apply_mask(
         gl.static_assert(
             QHEAD_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PackGQA > 1 is not supported"
         )
-        score_layout: gl.constexpr = acc_s.type.layout
-        q_idx = gl.convert_layout(offs_m, gl.SliceLayout(0, score_layout))[None, :]
-        k_idx = gl.convert_layout(offs_n, gl.SliceLayout(1, score_layout))[:, None]
+        offs_m = m_block * TILE_M + offs_m
+        offs_n = n_block * TILE_N + offs_n
+        q_idx = offs_m[None, :]
+        k_idx = offs_n[:, None]
     else:
+        offs_m = m_block * TILE_M + offs_m
+        offs_n = n_block * TILE_N + offs_n
         q_idx = offs_m[:, None]
         k_idx = offs_n[None, :]
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
