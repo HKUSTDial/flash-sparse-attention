@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 from typing import Optional
 
 import torch

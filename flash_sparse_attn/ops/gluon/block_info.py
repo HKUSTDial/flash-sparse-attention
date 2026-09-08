@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 
