@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 from typing import Optional, Tuple
 
 import torch
@@ -16,9 +17,9 @@ from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
 
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
 from flash_sparse_attn.ops.gluon.scheduler import (
-    AttnFwdBlockScheduler,
-    AttnFwdConfig,
     AttnFwdGridIndex,
+    AttnFwdConfig,
+    AttnFwdBlockScheduler,
     AttnFwdPointerScheduler,
     AttnMaskScheduler,
     SoftmaxScheduler,
@@ -203,6 +204,15 @@ def _fwd_dense_kernel(
     )
     row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
 
+    # Compute offsets for global memory copy and MMA operations
+    copy_offs_m = gl.arange(0, TILE_M, gl.SliceLayout(1, copy_layout))
+    copy_offs_n = gl.arange(0, TILE_N, gl.SliceLayout(1, copy_layout))
+    copy_offs_k = gl.arange(0, TILE_K, gl.SliceLayout(0, copy_layout))
+    mma_offs_m = gl.arange(0, TILE_M, gl.SliceLayout(1, mma_layout))
+    mma_offs_n = gl.arange(0, TILE_N, gl.SliceLayout(0, mma_layout))
+    mma_offs_k = gl.arange(0, TILE_K, gl.SliceLayout(0, mma_layout))
+    row_offs_m = gl.arange(0, TILE_M, row_layout)
+
     # Create grid index
     grid_idx = AttnFwdGridIndex.create(
         NUM_SPLITS=NUM_SPLITS,
@@ -218,9 +228,13 @@ def _fwd_dense_kernel(
 
     # Create config
     config = AttnFwdConfig.create(
-        softmax_scale=softmax_scale,
-        m_block=grid_idx.m_block,
         batch_idx=grid_idx.batch_idx,
+        head_idx=grid_idx.head_idx,
+        head_kv_idx=grid_idx.head_kv_idx,
+        split_idx=grid_idx.split_idx,
+        m_block=grid_idx.m_block,
+        row_offs_m=row_offs_m,
+        softmax_scale=softmax_scale,
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -232,18 +246,23 @@ def _fwd_dense_kernel(
         seqused_k=mSeqUsedK,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
-        ROW_LAYOUT=row_layout,
         PACK_GQA=PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        NUM_SPLITS=NUM_SPLITS,
         TILE_M=TILE_M,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
+        IS_LOCAL=IS_LOCAL,
+        IS_SPLIT_KV=IS_SPLIT_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
         HAS_SEQUSED_Q=HAS_SEQUSED_Q,
         HAS_SEQUSED_K=HAS_SEQUSED_K,
     )
+
+    # Create block scheduler
+    block_sched = AttnFwdBlockScheduler.create(config=config)
 
     # Create pointer scheduler
     ptrs_sched = AttnFwdPointerScheduler.create(
@@ -253,10 +272,6 @@ def _fwd_dense_kernel(
         V=mV,
         Out=mOut,
         Lse=mLse,
-        batch_idx=grid_idx.batch_idx,
-        head_idx=grid_idx.head_idx,
-        head_kv_idx=grid_idx.head_kv_idx,
-        split_idx=grid_idx.split_idx,
         stride_qb=stride_qb,
         stride_qh=stride_qh,
         stride_qm=stride_qm,
@@ -273,19 +288,8 @@ def _fwd_dense_kernel(
         stride_lb=stride_lb,
         stride_lh=stride_lh,
         stride_ls=stride_ls,
-        IS_SPLIT_KV=IS_SPLIT_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
-    )
-
-    # Create block scheduler
-    block_sched = AttnFwdBlockScheduler.create(
-        config=config,
-        split_idx=grid_idx.split_idx,
-        NUM_SPLITS=NUM_SPLITS,
-        IS_CAUSAL=IS_CAUSAL,
-        IS_LOCAL=IS_LOCAL,
-        IS_SPLIT_KV=IS_SPLIT_KV,
     )
 
     # Create mask scheduler
@@ -293,14 +297,6 @@ def _fwd_dense_kernel(
 
     # Create softmax scheduler
     softmax_sched = SoftmaxScheduler.create(config)
-
-    # Compute offsets for global memory copy and MMA operations
-    copy_offs_m = gl.arange(0, TILE_M, gl.SliceLayout(1, copy_layout))
-    copy_offs_n = gl.arange(0, TILE_N, gl.SliceLayout(1, copy_layout))
-    copy_offs_k = gl.arange(0, TILE_K, gl.SliceLayout(0, copy_layout))
-    mma_offs_m = gl.arange(0, TILE_M, gl.SliceLayout(1, mma_layout))
-    mma_offs_n = gl.arange(0, TILE_N, gl.SliceLayout(0, mma_layout))
-    mma_offs_k = gl.arange(0, TILE_K, gl.SliceLayout(0, mma_layout))
 
     # Compute predicates for global memory copy and MMA operations
     if not EVEN_M:
