@@ -141,43 +141,6 @@ def get_softmax_threshold(
 
 
 @gluon.jit
-def get_gate_threshold(
-    gate_threshold,
-    m_block,
-    seqlen_q,
-    seqlen_k,
-    row_offsets,
-    IS_CAUSAL: gl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
-    IS_ADAPT_GATE: gl.constexpr,
-):
-    """
-    Compute the gate threshold for a given block.
-
-    :param gate_threshold: Threshold value for the gate.
-    :param m_block: Current block index along the M dimension.
-    :param seqlen_q: Sequence length of the query.
-    :param seqlen_k: Sequence length of the key.
-    :param row_offsets: Row offsets for the current block.
-    :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
-    :param TILE_M: Tile size along the M dimension.
-    :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
-    :param IS_ADAPT_GATE: Boolean flag indicating if self-adaptive gate threshold is enabled.
-
-    :return gate_threshold_log2: Lower-bound scalar gate threshold in log2-domain for the given block.
-    """
-    if IS_CAUSAL and IS_ADAPT_GATE:
-        q_idx = m_block * row_offsets.shape[0] + row_offsets
-        if QHEAD_PER_KVHEAD_PACKGQA > 1:
-            q_idx //= QHEAD_PER_KVHEAD_PACKGQA
-        gate_threshold = gl.min(
-            gate_threshold * (q_idx + seqlen_k - seqlen_q + 1.0) / seqlen_k,
-            axis=0,
-        )
-    return gl.log2(gate_threshold)
-
-
-@gluon.jit
 def offset_batch_Q(
     base_ptr,
     batch_idx,
