@@ -70,7 +70,7 @@ def assert_fwd_inputs(
             torch.float8_e4m3fn,
         ], (
             "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
-    )
+        )
     else:
         assert query.dtype in [
             torch.float16,
