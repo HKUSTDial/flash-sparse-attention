@@ -2,12 +2,16 @@
 from typing import Optional
 
 import torch
+from flash_sparse_attn.ops.gluon.cache_utils import get_device_arch
 
 
-def assert_fwd_sm80_inputs(
+def assert_fwd_inputs(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
@@ -21,29 +25,59 @@ def assert_fwd_sm80_inputs(
     """
     Assert the validity of inputs for the forward kernel.
 
-    :param query: Query tensor
-    :param key: Key tensor
-    :param value: Value tensor
+    :param query: query tensor
+    :type query: torch.Tensor
+    :param key: key tensor
+    :type key: torch.Tensor
+    :param value: value tensor
+    :type value: torch.Tensor
+    :param query_scale: Optional query scale tensor for quantized inputs
+    :type query_scale: Optional[torch.Tensor]
+    :param key_scale: Optional key scale tensor for quantized inputs
+    :type key_scale: Optional[torch.Tensor]
+    :param value_scale: Optional value scale tensor for quantized inputs
+    :type value_scale: Optional[torch.Tensor]
     :param window_sizes: Optional window sizes tensor for local attention
-    :param cu_seqlens_q: Cumulative sequence lengths for queries
-    :param cu_seqlens_k: Cumulative sequence lengths for keys
-    :param seqused_q: Sequence used for queries
-    :param seqused_k: Sequence used for keys
-    :param num_heads_q: Number of query heads
-    :param num_heads_kv: Number of key/value heads
-    :param head_dim: Head dimension
-    :param device: Device of the tensors
+    :type window_sizes: Optional[torch.Tensor]
+    :param cu_seqlens_q: Optional cumulative sequence lengths for queries
+    :type cu_seqlens_q: Optional[torch.Tensor]
+    :param cu_seqlens_k: Optional cumulative sequence lengths for keys
+    :type cu_seqlens_k: Optional[torch.Tensor]
+    :param seqused_q: Optional sequence used for queries
+    :type seqused_q: Optional[torch.Tensor]
+    :param seqused_k: Optional sequence used for keys
+    :type seqused_k: Optional[torch.Tensor]
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+    :param num_heads_kv: number of key/value heads
+    :type num_heads_kv: int
+    :param head_dim: head dimension
+    :type head_dim: int
+    :param device: device of the tensors
+    :type device: torch.device
 
     :raises AssertionError: If any of the assertions fail
     """
+    arch = get_device_arch(device)
     assert device == query.device == key.device == value.device, (
         "All inputs must be on the same device"
     )
-    assert query.dtype in [torch.float16, torch.bfloat16], (
-        "Input dtype must be float16 or bfloat16"
+    if arch >= 90:
+        assert query.dtype in [
+            torch.float16,
+            torch.bfloat16,
+            torch.float8_e5m2,
+            torch.float8_e4m3fn,
+        ], (
+            "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
     )
+    else:
+        assert query.dtype in [
+            torch.float16,
+            torch.bfloat16,
+        ], "query tensor dtype must be float16 or bfloat16"
     assert query.dtype == key.dtype == value.dtype, (
-        "All inputs must have the same dtype"
+        "query/key/value tensors must have the same dtype"
     )
     assert num_heads_q % num_heads_kv == 0, (
         "num_heads_q must be divisible by num_heads_kv"
@@ -54,6 +88,18 @@ def assert_fwd_sm80_inputs(
     assert head_dim <= 256, (
         "head_dim must be less than or equal to 256 for efficient memory access"
     )
+    if query_scale is not None and key_scale is not None and value_scale is not None:
+        assert device == query_scale.device == key_scale.device == value_scale.device, (
+            "All inputs must be on the same device"
+        )
+        assert query_scale.dtype in [
+            torch.float16,
+            torch.bfloat16,
+            torch.float32,
+        ], "scale tensors must be float16, bfloat16, or float32"
+        assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
+            "All scale tensors must have the same dtype"
+        )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
             "All inputs must be on the same device"
@@ -86,8 +132,6 @@ def assert_bwd_inputs(
     key_scale: Optional[torch.Tensor] = None,
     value_scale: Optional[torch.Tensor] = None,
     window_sizes: Optional[torch.Tensor] = None,
-    alpha: Optional[torch.Tensor] = None,
-    delta: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
@@ -95,36 +139,51 @@ def assert_bwd_inputs(
     num_heads_q: int = None,
     num_heads_kv: int = None,
     head_dim: int = None,
-    is_quant: bool = False,
     device: torch.device = None,
 ):
     """
     Assert the validity of inputs for the backward base kernel.
 
-    :param query: Query tensor
-    :param key: Key tensor
-    :param value: Value tensor
-    :param out: Output tensor
-    :param dout: Gradient of the output tensor
-    :param lse: Log-sum-exp tensor
+    :param query: query tensor
+    :type query: torch.Tensor
+    :param key: key tensor
+    :type key: torch.Tensor
+    :param value: value tensor
+    :type value: torch.Tensor
+    :param out: output tensor
+    :type out: torch.Tensor
+    :param dout: gradient of the output tensor
+    :type dout: torch.Tensor
+    :param lse: log-sum-exp tensor
+    :type lse: torch.Tensor
     :param query_scale: Optional query scale tensor for quantized inputs
+    :type query_scale: torch.Tensor
     :param key_scale: Optional key scale tensor for quantized inputs
+    :type key_scale: torch.Tensor
     :param value_scale: Optional value scale tensor for quantized inputs
+    :type value_scale: torch.Tensor
     :param window_sizes: Optional window sizes tensor for local attention
-    :param alpha: Alpha tensor for gated attention
-    :param delta: Delta tensor for gated attention
-    :param cu_seqlens_q: Cumulative sequence lengths for queries
-    :param cu_seqlens_k: Cumulative sequence lengths for keys
-    :param seqused_q: Sequence used for queries
-    :param seqused_k: Sequence used for keys
-    :param num_heads_q: Number of query heads
-    :param num_heads_kv: Number of key/value heads
-    :param head_dim: Head dimension
-    :param is_quant: Whether the inputs are quantized
-    :param device: Device of the tensors
+    :type window_sizes: torch.Tensor
+    :param cu_seqlens_q: Optional cumulative sequence lengths for queries
+    :type cu_seqlens_q: torch.Tensor
+    :param cu_seqlens_k: Optional cumulative sequence lengths for keys
+    :type cu_seqlens_k: torch.Tensor
+    :param seqused_q: Optional sequence used for queries
+    :type seqused_q: torch.Tensor
+    :param seqused_k: Optional sequence used for keys
+    :type seqused_k: torch.Tensor
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+    :param num_heads_kv: number of key/value heads
+    :type num_heads_kv: int
+    :param head_dim: head dimension
+    :type head_dim: int
+    :param device: device of the tensors
+    :type device: torch.device
 
     :raises AssertionError: If any of the assertions fail
     """
+    arch = get_device_arch(device)
     assert (
         device
         == query.device
@@ -134,34 +193,24 @@ def assert_bwd_inputs(
         == dout.device
         == lse.device
     ), "All inputs must be on the same device"
-    if is_quant:
-        assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
-            "Input dtype must be float8_e5m2 or float8_e4m3fn"
-        )
-        assert (
-            query_scale is not None
-            and key_scale is not None
-            and value_scale is not None
-        ), "Scale tensors must be provided for quantized inputs"
-        assert query_scale.dtype in [torch.float16, torch.bfloat16, torch.float32], (
-            "Scale tensors must be float16, bfloat16, or float32"
-        )
-        assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
-            "All scale tensors must have the same dtype"
-        )
-        assert query_scale.device == key_scale.device == value_scale.device == device, (
-            "All scale tensors must be on the same device as query/key/value"
-        )
-        assert query.dtype == key.dtype == value.dtype, (
-            "All inputs must have the same dtype"
+    if arch >= 90:
+        assert query.dtype in [
+            torch.float16,
+            torch.bfloat16,
+            torch.float8_e5m2,
+            torch.float8_e4m3fn,
+        ], (
+            "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
         )
     else:
-        assert query.dtype in [torch.float16, torch.bfloat16], (
-            "Input dtype must be float16 or bfloat16"
-        )
-        assert query.dtype == key.dtype == value.dtype == out.dtype == dout.dtype, (
-            "All inputs must have the same dtype"
-        )
+        assert query.dtype in [
+            torch.float16,
+            torch.bfloat16,
+        ], "query tensor dtype must be float16 or bfloat16"
+    assert query.dtype == key.dtype == value.dtype, (
+        "query/key/value tensors must have the same dtype"
+    )
+    assert out.dtype == dout.dtype, "out/dout tensors must have the same dtype"
     assert lse.dtype == torch.float32, (
         "lse must be float32 for numerical stability in backward pass"
     )
@@ -171,12 +220,20 @@ def assert_bwd_inputs(
     assert head_dim % 16 == 0, (
         "head_dim must be a multiple of 16 for efficient memory access"
     )
-    assert head_dim <= 512, (
-        "head_dim must be less than or equal to 512 for efficient memory access"
+    assert head_dim <= 256, (
+        "head_dim must be less than or equal to 256 for efficient memory access"
     )
-    if alpha is not None and delta is not None:
-        assert device == alpha.device == delta.device, (
+    if query_scale is not None and key_scale is not None and value_scale is not None:
+        assert device == query_scale.device == key_scale.device == value_scale.device, (
             "All inputs must be on the same device"
+        )
+        assert query_scale.dtype in [
+            torch.float16,
+            torch.bfloat16,
+            torch.float32,
+        ], "scale tensors must be float16, bfloat16, or float32"
+        assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
+            "All scale tensors must have the same dtype"
         )
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
