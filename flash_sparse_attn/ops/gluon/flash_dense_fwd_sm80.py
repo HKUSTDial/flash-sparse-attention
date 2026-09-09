@@ -7,13 +7,14 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.nvidia.ampere import async_copy
 
-from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_sm80_inputs
+from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_inputs
 from flash_sparse_attn.ops.gluon.utils import (
     window_sizes_heuristic,
     num_splits_heuristic,
 )
 from flash_sparse_attn.ops.gluon.cache_utils import get_device_num_sms
 from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
+from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
 
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
 from flash_sparse_attn.ops.gluon.scheduler import (
@@ -139,7 +140,7 @@ def _fwd_inner_dense_kernel(
         and args["seqlen_k"] % args["TILE_N"] == 0,
     }
 )
-@gluon.jit
+@gluon.jit(repr=fwd_dense_repr)
 def _fwd_dense_kernel(
     mQ,
     mK,
@@ -687,14 +688,11 @@ def _flash_dense_attn_forward(
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
 
     if not skip_checks:
-        assert_fwd_sm80_inputs(
-            query,
-            key,
-            value,
+        assert_fwd_inputs(
+            query=query,
+            key=key,
+            value=value,
             window_sizes=window_sizes,
-            cu_seqlens_q=None,
-            cu_seqlens_k=None,
-            seqused_q=None,
             seqused_k=seqused_k,
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
@@ -850,10 +848,10 @@ def _flash_dense_attn_varlen_forward(
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
 
     if not skip_checks:
-        assert_fwd_sm80_inputs(
-            query,
-            key,
-            value,
+        assert_fwd_inputs(
+            query=query,
+            key=key,
+            value=key,
             window_sizes=window_sizes,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
