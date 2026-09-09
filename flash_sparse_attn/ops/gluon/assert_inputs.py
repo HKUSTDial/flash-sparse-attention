@@ -100,20 +100,18 @@ def assert_fwd_inputs(
         assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
             "All scale tensors must have the same dtype"
         )
-    if cu_seqlens_q is not None and cu_seqlens_k is not None:
-        assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
-            "All inputs must be on the same device"
-        )
-        assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
-            "cu_seqlens_q and cu_seqlens_k must be int32"
-        )
-    if seqused_q is not None and seqused_k is not None:
-        assert device == seqused_q.device == seqused_k.device, (
-            "All inputs must be on the same device"
-        )
-        assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
-            "seqused_q and seqused_k must be int32"
-        )
+    if cu_seqlens_q is not None:
+        assert device == cu_seqlens_q.device, "All inputs must be on the same device"
+        assert cu_seqlens_q.dtype == torch.int32, "cu_seqlens_q must be int32"
+    if cu_seqlens_k is not None:
+        assert device == cu_seqlens_k.device, "All inputs must be on the same device"
+        assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
+    if seqused_q is not None:
+        assert device == seqused_q.device, "All inputs must be on the same device"
+        assert seqused_q.dtype == torch.int32, "seqused_q must be int32"
+    if seqused_k is not None:
+        assert device == seqused_k.device, "All inputs must be on the same device"
+        assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
         assert window_sizes.ndim == 2 and window_sizes.shape[1] == 4, (
@@ -235,20 +233,18 @@ def assert_bwd_inputs(
         assert query_scale.dtype == key_scale.dtype == value_scale.dtype, (
             "All scale tensors must have the same dtype"
         )
-    if cu_seqlens_q is not None and cu_seqlens_k is not None:
-        assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
-            "All inputs must be on the same device"
-        )
-        assert cu_seqlens_q.dtype == cu_seqlens_k.dtype == torch.int32, (
-            "cu_seqlens_q and cu_seqlens_k must be int32"
-        )
-    if seqused_q is not None and seqused_k is not None:
-        assert device == seqused_q.device == seqused_k.device, (
-            "All inputs must be on the same device"
-        )
-        assert seqused_q.dtype == seqused_k.dtype == torch.int32, (
-            "seqused_q and seqused_k must be int32"
-        )
+    if cu_seqlens_q is not None:
+        assert device == cu_seqlens_q.device, "All inputs must be on the same device"
+        assert cu_seqlens_q.dtype == torch.int32, "cu_seqlens_q must be int32"
+    if cu_seqlens_k is not None:
+        assert device == cu_seqlens_k.device, "All inputs must be on the same device"
+        assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
+    if seqused_q is not None:
+        assert device == seqused_q.device, "All inputs must be on the same device"
+        assert seqused_q.dtype == torch.int32, "seqused_q must be int32"
+    if seqused_k is not None:
+        assert device == seqused_k.device, "All inputs must be on the same device"
+        assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
     if window_sizes is not None:
         assert window_sizes.dtype == torch.int32, "window_sizes must be int32"
         assert window_sizes.ndim == 2 and window_sizes.shape[1] == 4, (
