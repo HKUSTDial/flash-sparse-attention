@@ -76,8 +76,8 @@ class FlashAttentionBackwardSm90:
         dQ_single_wg: bool = False,
     ):
         self.dtype = dtype
-        # padding head_dim to a multiple of 16 as k_block_size
-        hdim_multiple_of = 16
+        # Swapped dK/dV accumulators put head_dim on WGMMA's 64-row M axis.
+        hdim_multiple_of = 64 if dKV_swapAB else 16
         self.tile_hdim = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
         # Can save registers (and hence be faster) if we don't have to check hdim predication
         self.check_hdim_oob = head_dim != self.tile_hdim
@@ -1977,8 +1977,8 @@ class FlashSparseAttentionBackwardSm90:
         dQ_single_wg: bool = False,
     ):
         self.dtype = dtype
-        # padding head_dim to a multiple of 16 as k_block_size
-        hdim_multiple_of = 16
+        # Swapped dK/dV accumulators put head_dim on WGMMA's 64-row M axis.
+        hdim_multiple_of = 64 if dKV_swapAB else 16
         self.tile_hdim = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
         # Can save registers (and hence be faster) if we don't have to check hdim predication
         self.check_hdim_oob = head_dim != self.tile_hdim
