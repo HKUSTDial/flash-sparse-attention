@@ -7,7 +7,7 @@ from flash_sparse_attn.ops.gluon import (
     seqlen_info,
     block_info,
     mask,
-    activations,
+    softmax,
 )
 
 
@@ -1564,7 +1564,7 @@ class SoftmaxScheduler:
         row_sum,
         CHECK_INF: gl.constexpr = False,
     ):
-        return activations.online_softmax(
+        return softmax.online_softmax(
             acc_s,
             row_max,
             row_sum,
@@ -1581,7 +1581,7 @@ class SoftmaxScheduler:
         softmax_threshold_log2,
         CHECK_INF: gl.constexpr = False,
     ):
-        return activations.online_sparse_softmax(
+        return softmax.online_sparse_softmax(
             acc_s,
             row_max,
             row_sum,
@@ -1596,7 +1596,7 @@ class SoftmaxScheduler:
         acc_o,
         row_scale,
     ):
-        return activations.rescale_o(
+        return softmax.rescale_o(
             acc_o=acc_o,
             row_scale=row_scale,
         )
@@ -1609,7 +1609,7 @@ class SoftmaxScheduler:
         IS_LOG2: gl.constexpr = False,
         CHECK_NAN: gl.constexpr = True,
     ):
-        return activations.finalize(
+        return softmax.finalize(
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
