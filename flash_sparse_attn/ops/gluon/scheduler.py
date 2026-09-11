@@ -227,7 +227,7 @@ class AttnFwdConfig:
         head_kv_idx,
         split_idx,
         m_block,
-        row_offs_m,
+        row_offsets,
         softmax_scale=0.0,
         softmax_threshold=0.0,
         query_scale=None,
@@ -297,7 +297,7 @@ class AttnFwdConfig:
             m_block,
             actual_seqlen_q,
             actual_seqlen_k,
-            row_offs_m,
+            row_offsets,
             IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA,
         )
@@ -352,7 +352,7 @@ class AttnBwdConfig:
     head_kv_idx: gl.tensor
     split_idx: gl.tensor
     n_block: gl.tensor
-    row_offs_m: gl.tensor
+    row_offsets: gl.tensor
     softmax_scale_log2: gl.tensor
     softmax_threshold: gl.tensor
     query_scale: gl.tensor
@@ -386,7 +386,7 @@ class AttnBwdConfig:
         head_kv_idx,
         split_idx,
         n_block,
-        row_offs_m,
+        row_offsets,
         softmax_scale_log2,
         softmax_threshold,
         query_scale,
@@ -417,7 +417,7 @@ class AttnBwdConfig:
         self.head_kv_idx = head_kv_idx
         self.split_idx = split_idx
         self.n_block = n_block
-        self.row_offs_m = row_offs_m
+        self.row_offsets = row_offsets
         self.softmax_scale_log2 = softmax_scale_log2
         self.softmax_threshold = softmax_threshold
         self.query_scale = query_scale
@@ -451,7 +451,7 @@ class AttnBwdConfig:
         head_kv_idx,
         split_idx,
         n_block,
-        row_offs_m,
+        row_offsets,
         softmax_scale=0.0,
         softmax_threshold=0.0,
         query_scale=None,
@@ -521,7 +521,7 @@ class AttnBwdConfig:
             gl.to_tensor(head_kv_idx),
             gl.to_tensor(split_idx),
             gl.to_tensor(n_block),
-            gl.to_tensor(row_offs_m),
+            gl.to_tensor(row_offsets),
             gl.to_tensor(softmax_scale_log2),
             gl.to_tensor(softmax_threshold),
             gl.to_tensor(q_scale),
@@ -555,7 +555,7 @@ class AttnBwdConfig:
             m_block,
             self.actual_seqlen_q,
             self.actual_seqlen_k,
-            self.row_offs_m,
+            self.row_offsets,
             self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
         )
