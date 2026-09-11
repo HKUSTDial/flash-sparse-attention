@@ -5,17 +5,17 @@ from triton.experimental.gluon import language as gl
 
 @gluon.jit
 def apply_mask(
-    acc_s,
-    m_block,
-    n_block,
-    offs_m,
-    offs_n,
-    seqlen_q,
-    seqlen_k,
-    window_size_sink,
-    window_size_left,
-    window_size_right,
-    window_size_near,
+    acc_s: gl.tensor,
+    m_block: gl.tensor,
+    n_block: gl.tensor,
+    offs_m: gl.tensor,
+    offs_n: gl.tensor,
+    seqlen_q: gl.tensor,
+    seqlen_k: gl.tensor,
+    window_size_sink: gl.tensor,
+    window_size_left: gl.tensor,
+    window_size_right: gl.tensor,
+    window_size_near: gl.tensor,
     MASK_SEQLEN: gl.constexpr,
     MASK_CAUSAL: gl.constexpr,
     MASK_LOCAL: gl.constexpr,
@@ -24,31 +24,50 @@ def apply_mask(
     TILE_N: gl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
     SWAP_AB: gl.constexpr,
-):
+) -> gl.tensor:
     """
     Apply seqlen, causal, and local masks to the attention scores.
 
-    :param acc_s: Attention scores tensor of shape [BLOCK_M, BLOCK_N].
-    :param m_block: Current block index along the M dimension.
-    :param n_block: Current block index along the N dimension.
-    :param offs_m: Lane offsets for the M dimension.
-    :param offs_n: Lane offsets for the N dimension.
-    :param seqlen_q: The sequence length of the query.
-    :param seqlen_k: The sequence length of the key.
-    :param window_size_sink: Prefix sink token count.
-    :param window_size_left: Distant local band token count.
-    :param window_size_right: Gap token count after the near-diagonal window before the distant band.
-    :param window_size_near: Near-diagonal local token count.
-    :param MASK_SEQLEN: Boolean flag indicating if seqlen masking should be applied.
-    :param MASK_CAUSAL: Boolean flag indicating if causal masking should be applied.
-    :param MASK_LOCAL: Boolean flag indicating if local masking should be applied.
-    :param MASK_SINK: Boolean flag indicating if sink masking should be applied.
-    :param TILE_M: Tile size along the M dimension.
-    :param TILE_N: Tile size along the N dimension.
-    :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
-    :param SWAP_AB: Boolean flag indicating if query and key dimensions are swapped.
+    :param acc_s: attention scores tensor of shape [BLOCK_M, BLOCK_N]
+    :type acc_s: tensor
+    :param m_block: current block index along the M dimension
+    :type m_block: tensor
+    :param n_block: current block index along the N dimension
+    :type n_block: tensor
+    :param offs_m: lane offsets for the M dimension
+    :type offs_m: tensor
+    :param offs_n: lane offsets for the N dimension
+    :type offs_n: tensor
+    :param seqlen_q: The sequence length of the query
+    :type seqlen_q: tensor
+    :param seqlen_k: The sequence length of the key
+    :type seqlen_k: tensor
+    :param window_size_sink: prefix sink token count
+    :type window_size_sink: tensor
+    :param window_size_left: distant local band token count
+    :type window_size_left: tensor
+    :param window_size_right: gap token count after the near-diagonal window before the distant band
+    :type window_size_right: tensor
+    :param window_size_near: near-diagonal local token count
+    :type window_size_near: tensor
+    :param MASK_SEQLEN: boolean flag indicating if seqlen masking should be applied
+    :type MASK_SEQLEN: bool
+    :param MASK_CAUSAL: boolean flag indicating if causal masking should be applied
+    :type MASK_CAUSAL: bool
+    :param MASK_LOCAL: boolean flag indicating if local masking should be applied
+    :type MASK_LOCAL: bool
+    :param MASK_SINK: boolean flag indicating if sink masking should be applied
+    :type MASK_SINK: bool
+    :param TILE_M: tile size along the M dimension
+    :type TILE_M: int
+    :param TILE_N: tile size along the N dimension
+    :type TILE_N: int
+    :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
+    :type QHEAD_PER_KVHEAD_PACKGQA: int
+    :param SWAP_AB: boolean flag indicating if query and key dimensions are swapped
+    :type SWAP_AB: bool
 
-    :return acc_s: Masked attention scores tensor of shape [BLOCK_M, BLOCK_N].
+    :return acc_s: masked attention scores tensor of shape [BLOCK_M, BLOCK_N]
     """
     if SWAP_AB:
         gl.static_assert(
