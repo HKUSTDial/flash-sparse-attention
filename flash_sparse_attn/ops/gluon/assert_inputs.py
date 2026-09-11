@@ -31,27 +31,27 @@ def assert_fwd_inputs(
     :type key: torch.Tensor
     :param value: value tensor
     :type value: torch.Tensor
-    :param query_scale: Optional query scale tensor for quantized inputs
+    :param query_scale: query scale tensor for quantized inputs
     :type query_scale: Optional[torch.Tensor]
-    :param key_scale: Optional key scale tensor for quantized inputs
+    :param key_scale: key scale tensor for quantized inputs
     :type key_scale: Optional[torch.Tensor]
-    :param value_scale: Optional value scale tensor for quantized inputs
+    :param value_scale: value scale tensor for quantized inputs
     :type value_scale: Optional[torch.Tensor]
-    :param window_sizes: Optional window sizes tensor for local attention
+    :param window_sizes: window sizes tensor for local attention
     :type window_sizes: Optional[torch.Tensor]
-    :param cu_seqlens_q: Optional cumulative sequence lengths for queries
+    :param cu_seqlens_q: cumulative sequence lengths for queries
     :type cu_seqlens_q: Optional[torch.Tensor]
-    :param cu_seqlens_k: Optional cumulative sequence lengths for keys
+    :param cu_seqlens_k: cumulative sequence lengths for keys
     :type cu_seqlens_k: Optional[torch.Tensor]
-    :param seqused_q: Optional sequence used for queries
+    :param seqused_q: sequence used for queries
     :type seqused_q: Optional[torch.Tensor]
-    :param seqused_k: Optional sequence used for keys
+    :param seqused_k: sequence used for keys
     :type seqused_k: Optional[torch.Tensor]
     :param num_heads_q: number of query heads
     :type num_heads_q: int
     :param num_heads_kv: number of key/value heads
     :type num_heads_kv: int
-    :param head_dim: head dimension
+    :param head_dim: dimension of each head
     :type head_dim: int
     :param device: device of the tensors
     :type device: torch.device
@@ -151,27 +151,27 @@ def assert_bwd_inputs(
     :type dout: torch.Tensor
     :param lse: log-sum-exp tensor
     :type lse: torch.Tensor
-    :param query_scale: Optional query scale tensor for quantized inputs
-    :type query_scale: torch.Tensor
-    :param key_scale: Optional key scale tensor for quantized inputs
-    :type key_scale: torch.Tensor
-    :param value_scale: Optional value scale tensor for quantized inputs
-    :type value_scale: torch.Tensor
-    :param window_sizes: Optional window sizes tensor for local attention
-    :type window_sizes: torch.Tensor
-    :param cu_seqlens_q: Optional cumulative sequence lengths for queries
-    :type cu_seqlens_q: torch.Tensor
-    :param cu_seqlens_k: Optional cumulative sequence lengths for keys
-    :type cu_seqlens_k: torch.Tensor
-    :param seqused_q: Optional sequence used for queries
-    :type seqused_q: torch.Tensor
-    :param seqused_k: Optional sequence used for keys
-    :type seqused_k: torch.Tensor
+    :param query_scale: query scale tensor for quantized inputs
+    :type query_scale: Optional[torch.Tensor]
+    :param key_scale: key scale tensor for quantized inputs
+    :type key_scale: Optional[torch.Tensor]
+    :param value_scale: value scale tensor for quantized inputs
+    :type value_scale: Optional[torch.Tensor]
+    :param window_sizes: window sizes tensor for local attention
+    :type window_sizes: Optional[torch.Tensor]
+    :param cu_seqlens_q: cumulative sequence lengths for queries
+    :type cu_seqlens_q: Optional[torch.Tensor]
+    :param cu_seqlens_k: cumulative sequence lengths for keys
+    :type cu_seqlens_k: Optional[torch.Tensor]
+    :param seqused_q: sequence used for queries
+    :type seqused_q: Optional[torch.Tensor]
+    :param seqused_k: sequence used for keys
+    :type seqused_k: Optional[torch.Tensor]
     :param num_heads_q: number of query heads
     :type num_heads_q: int
     :param num_heads_kv: number of key/value heads
     :type num_heads_kv: int
-    :param head_dim: head dimension
+    :param head_dim: dimension of each head
     :type head_dim: int
     :param device: device of the tensors
     :type device: torch.device

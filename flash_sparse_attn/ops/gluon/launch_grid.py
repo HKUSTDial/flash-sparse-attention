@@ -15,11 +15,17 @@ def get_fwd_grid(
     Get the grid function for the forward kernel.
 
     :param batch_size: Batch size
+    :type batch_size: int
     :param seqlen_q: Sequence length of queries
+    :type seqlen_q: int
     :param num_heads_q: Number of query heads
+    :type num_heads_q: int
     :param num_heads_kv: Number of key/value heads
+    :type num_heads_kv: int
     :param pack_gqa: Whether GQA packing is used
+    :type pack_gqa: bool
     :param num_splits: Number of KV splits
+    :type num_splits: int
 
     :return grid: Grid function
     """
@@ -50,9 +56,13 @@ def get_bwd_grid(
     Get the grid function for the backward kernel.
 
     :param batch_size: Batch size
+    :type batch_size: int
     :param seqlen_k: Sequence length of keys
+    :type seqlen_k: int
     :param num_heads_q: Number of query heads
+    :type num_heads_q: int
     :param num_splits: Number of QO splits
+    :type num_splits: int
 
     :return grid: Grid function
     """
