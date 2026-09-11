@@ -82,11 +82,8 @@ def assert_fwd_inputs(
     assert num_heads_q % num_heads_kv == 0, (
         "num_heads_q must be divisible by num_heads_kv"
     )
-    assert head_dim % 16 == 0, (
-        "head_dim must be a multiple of 16 for efficient memory access"
-    )
-    assert head_dim <= 256, (
-        "head_dim must be less than or equal to 256 for efficient memory access"
+    assert head_dim in [32, 64, 128, 256], (
+        "head_dim must be one of [32, 64, 128, 256] for efficient memory access"
     )
     if query_scale is not None and key_scale is not None and value_scale is not None:
         assert device == query_scale.device == key_scale.device == value_scale.device, (
@@ -215,11 +212,8 @@ def assert_bwd_inputs(
     assert num_heads_q % num_heads_kv == 0, (
         "num_heads_q must be divisible by num_heads_kv"
     )
-    assert head_dim % 16 == 0, (
-        "head_dim must be a multiple of 16 for efficient memory access"
-    )
-    assert head_dim <= 256, (
-        "head_dim must be less than or equal to 256 for efficient memory access"
+    assert head_dim in [32, 64, 128, 256], (
+        "head_dim must be one of [32, 64, 128, 256] for efficient memory access"
     )
     if query_scale is not None and key_scale is not None and value_scale is not None:
         assert device == query_scale.device == key_scale.device == value_scale.device, (
