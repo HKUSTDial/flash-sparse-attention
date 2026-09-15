@@ -14,20 +14,20 @@ def get_fwd_grid(
     """
     Get the grid function for the forward kernel.
 
-    :param batch_size: Batch size
+    :param batch_size: batch size
     :type batch_size: int
-    :param seqlen_q: Sequence length of queries
+    :param seqlen_q: sequence length of queries
     :type seqlen_q: int
-    :param num_heads_q: Number of query heads
+    :param num_heads_q: number of query heads
     :type num_heads_q: int
-    :param num_heads_kv: Number of key/value heads
+    :param num_heads_kv: number of key/value heads
     :type num_heads_kv: int
-    :param pack_gqa: Whether GQA packing is used
+    :param pack_gqa: whether GQA packing is used
     :type pack_gqa: bool
-    :param num_splits: Number of KV splits
+    :param num_splits: number of KV splits
     :type num_splits: int
 
-    :return grid: Grid function
+    :return grid: grid function
     """
 
     def grid(META):
@@ -55,16 +55,16 @@ def get_bwd_grid(
     """
     Get the grid function for the backward kernel.
 
-    :param batch_size: Batch size
+    :param batch_size: batch size
     :type batch_size: int
-    :param seqlen_k: Sequence length of keys
+    :param seqlen_k: sequence length of keys
     :type seqlen_k: int
-    :param num_heads_q: Number of query heads
+    :param num_heads_q: number of query heads
     :type num_heads_q: int
-    :param num_splits: Number of QO splits
+    :param num_splits: number of QO splits
     :type num_splits: int
 
-    :return grid: Grid function
+    :return grid: grid function
     """
 
     def grid(META):
@@ -88,11 +88,14 @@ def get_fwd_combine_grid(
     """
     Get the grid function for the forward combine kernel.
 
-    :param batch_size: Batch size
-    :param seqlen_q: Sequence length of queries
-    :param num_heads_q: Number of query heads
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
 
-    :return grid: Grid function
+    :return grid: grid function
     """
 
     def grid(META):
@@ -115,11 +118,14 @@ def get_bwd_preprocess_grid(
     """
     Get the grid function for the backward preprocess kernel.
 
-    :param batch_size: Batch size
-    :param seqlen_q: Sequence length of queries
-    :param num_heads_q: Number of query heads
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
 
-    :return grid: Grid function
+    :return grid: grid function
     """
 
     def grid(META):
@@ -143,11 +149,14 @@ def get_bwd_postprocess_grid(
     """
     Get the grid function for the backward postprocess kernel.
 
-    :param batch_size: Batch size
-    :param seqlen_q: Sequence length of queries
-    :param num_heads_q: Number of query heads
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
 
-    :return grid: Grid function
+    :return grid: grid function
     """
 
     def grid(META):
