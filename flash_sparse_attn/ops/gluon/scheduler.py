@@ -305,28 +305,28 @@ class AttnFwdConfig:
     @staticmethod
     @gluon.jit
     def create(
-        batch_idx,
-        head_idx,
-        head_kv_idx,
-        split_idx,
-        m_block,
-        row_offsets,
-        softmax_scale=0.0,
-        softmax_threshold=0.0,
-        query_scale=None,
-        key_scale=None,
-        value_scale=None,
-        window_size_sink=0,
-        window_size_left=0,
-        window_size_right=0,
-        window_size_near=0,
-        head_dim=0,
-        cu_seqlens_q=None,
-        cu_seqlens_k=None,
-        seqused_q=None,
-        seqused_k=None,
-        seqlen_q=0,
-        seqlen_k=0,
+        batch_idx: gl.tensor,
+        head_idx: gl.tensor,
+        head_kv_idx: gl.tensor,
+        split_idx: gl.tensor,
+        m_block: gl.tensor,
+        row_offsets: gl.tensor,
+        softmax_scale: gl.tensor = 0.0,
+        softmax_threshold: gl.tensor = 0.0,
+        query_scale: gl.tensor = None,
+        key_scale: gl.tensor = None,
+        value_scale: gl.tensor = None,
+        window_size_sink: gl.tensor = 0,
+        window_size_left: gl.tensor = 0,
+        window_size_right: gl.tensor = 0,
+        window_size_near: gl.tensor = 0,
+        head_dim: gl.tensor = 0,
+        cu_seqlens_q: gl.tensor = None,
+        cu_seqlens_k: gl.tensor = None,
+        seqused_q: gl.tensor = None,
+        seqused_k: gl.tensor = None,
+        seqlen_q: gl.tensor = 0,
+        seqlen_k: gl.tensor = 0,
         PACK_GQA: gl.constexpr = False,
         QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
         NUM_SPLITS: gl.constexpr = 1,
@@ -341,7 +341,85 @@ class AttnFwdConfig:
         HAS_CU_SEQLENS_K: gl.constexpr = False,
         HAS_SEQUSED_Q: gl.constexpr = False,
         HAS_SEQUSED_K: gl.constexpr = False,
-    ):
+    ) -> "AttnFwdConfig":
+        """
+        Build the attention forward configuration for the current program.
+
+        :param batch_idx: current batch index
+        :type batch_idx: tensor
+        :param head_idx: current query/output head index
+        :type head_idx: tensor
+        :param head_kv_idx: current key/value head index
+        :type head_kv_idx: tensor
+        :param split_idx: current KV split index
+        :type split_idx: tensor
+        :param m_block: current block index along the M dimension
+        :type m_block: tensor
+        :param row_offsets: row offsets within the M dimension
+        :type row_offsets: tensor
+        :param softmax_scale: scale applied to attention scores
+        :type softmax_scale: tensor
+        :param softmax_threshold: dimensionless multiple of uniform attention
+        :type softmax_threshold: tensor
+        :param query_scale: pointer to the query quantization scale
+        :type query_scale: tensor
+        :param key_scale: pointer to the key quantization scale
+        :type key_scale: tensor
+        :param value_scale: pointer to the value quantization scale
+        :type value_scale: tensor
+        :param window_size_sink: prefix-sink token count
+        :type window_size_sink: tensor
+        :param window_size_left: distant local band token count
+        :type window_size_left: tensor
+        :param window_size_right: gap token count after the near-diagonal window
+        :type window_size_right: tensor
+        :param window_size_near: near-diagonal local token count
+        :type window_size_near: tensor
+        :param head_dim: attention head dimension
+        :type head_dim: tensor
+        :param cu_seqlens_q: cumulative query sequence lengths
+        :type cu_seqlens_q: tensor
+        :param cu_seqlens_k: cumulative key sequence lengths
+        :type cu_seqlens_k: tensor
+        :param seqused_q: actual query sequence lengths
+        :type seqused_q: tensor
+        :param seqused_k: actual key sequence lengths
+        :type seqused_k: tensor
+        :param seqlen_q: static query sequence length
+        :type seqlen_q: tensor
+        :param seqlen_k: static key sequence length
+        :type seqlen_k: tensor
+        :param PACK_GQA: boolean flag indicating if packed GQA is enabled
+        :type PACK_GQA: bool
+        :param QHEAD_PER_KVHEAD_PACKGQA: packed query heads per KV head
+        :type QHEAD_PER_KVHEAD_PACKGQA: int
+        :param NUM_SPLITS: number of KV splits
+        :type NUM_SPLITS: int
+        :param TILE_M: tile size along the M dimension
+        :type TILE_M: int
+        :param TILE_N: tile size along the N dimension
+        :type TILE_N: int
+        :param TILE_K: tile size along the K dimension
+        :type TILE_K: int
+        :param IS_CAUSAL: boolean flag indicating if the attention is causal
+        :type IS_CAUSAL: bool
+        :param IS_LOCAL: boolean flag indicating if local attention is enabled
+        :type IS_LOCAL: bool
+        :param IS_SPLIT_KV: boolean flag indicating if the KV range is split
+        :type IS_SPLIT_KV: bool
+        :param IS_QUANT: boolean flag indicating if QKV quantization is enabled
+        :type IS_QUANT: bool
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if cu_seqlens_q is provided
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if cu_seqlens_k is provided
+        :type HAS_CU_SEQLENS_K: bool
+        :param HAS_SEQUSED_Q: boolean flag indicating if seqused_q is provided
+        :type HAS_SEQUSED_Q: bool
+        :param HAS_SEQUSED_K: boolean flag indicating if seqused_k is provided
+        :type HAS_SEQUSED_K: bool
+
+        :return: attention forward configuration for the current program
+        """
         # Get seqlen info for this batch
         (
             offset_q,
@@ -414,18 +492,6 @@ class AttnFwdConfig:
             IS_LOCAL,
             IS_SPLIT_KV,
         )
-
-    @gluon.jit
-    def get_offs_m(self, layout: gl.constexpr):
-        return self.m_block * self.TILE_M + gl.arange(0, self.TILE_M, layout)
-
-    @gluon.jit
-    def get_offs_n(self, n_block, layout: gl.constexpr):
-        return n_block * self.TILE_N + gl.arange(0, self.TILE_N, layout)
-
-    @gluon.jit
-    def get_offs_k(self, layout: gl.constexpr):
-        return gl.arange(0, self.TILE_K, layout)
 
 
 @aggregate
@@ -529,28 +595,28 @@ class AttnBwdConfig:
     @staticmethod
     @gluon.jit
     def create(
-        batch_idx,
-        head_idx,
-        head_kv_idx,
-        split_idx,
-        n_block,
-        row_offsets,
-        softmax_scale=0.0,
-        softmax_threshold=0.0,
-        query_scale=None,
-        key_scale=None,
-        value_scale=None,
-        window_size_sink=0,
-        window_size_left=0,
-        window_size_right=0,
-        window_size_near=0,
-        head_dim=0,
-        cu_seqlens_q=None,
-        cu_seqlens_k=None,
-        seqused_q=None,
-        seqused_k=None,
-        seqlen_q=0,
-        seqlen_k=0,
+        batch_idx: gl.tensor,
+        head_idx: gl.tensor,
+        head_kv_idx: gl.tensor,
+        split_idx: gl.tensor,
+        n_block: gl.tensor,
+        row_offsets: gl.tensor,
+        softmax_scale: gl.tensor = 0.0,
+        softmax_threshold: gl.tensor = 0.0,
+        query_scale: gl.tensor = None,
+        key_scale: gl.tensor = None,
+        value_scale: gl.tensor = None,
+        window_size_sink: gl.tensor = 0,
+        window_size_left: gl.tensor = 0,
+        window_size_right: gl.tensor = 0,
+        window_size_near: gl.tensor = 0,
+        head_dim: gl.tensor = 0,
+        cu_seqlens_q: gl.tensor = None,
+        cu_seqlens_k: gl.tensor = None,
+        seqused_q: gl.tensor = None,
+        seqused_k: gl.tensor = None,
+        seqlen_q: gl.tensor = 0,
+        seqlen_k: gl.tensor = 0,
         QHEAD_PER_KVHEAD: gl.constexpr = 1,
         NUM_SPLITS: gl.constexpr = 1,
         TILE_M: gl.constexpr = 64,
@@ -564,7 +630,83 @@ class AttnBwdConfig:
         HAS_CU_SEQLENS_K: gl.constexpr = False,
         HAS_SEQUSED_Q: gl.constexpr = False,
         HAS_SEQUSED_K: gl.constexpr = False,
-    ):
+    ) -> "AttnBwdConfig":
+        """
+        Build the attention backward configuration for the current program.
+
+        :param batch_idx: current batch index
+        :type batch_idx: tensor
+        :param head_idx: current query/output head index
+        :type head_idx: tensor
+        :param head_kv_idx: current key/value head index
+        :type head_kv_idx: tensor
+        :param split_idx: current QO split index
+        :type split_idx: tensor
+        :param n_block: current block index along the N dimension
+        :type n_block: tensor
+        :param row_offsets: row offsets within the M dimension
+        :type row_offsets: tensor
+        :param softmax_scale: scale applied to attention scores
+        :type softmax_scale: tensor
+        :param softmax_threshold: dimensionless multiple of uniform attention
+        :type softmax_threshold: tensor
+        :param query_scale: pointer to the query quantization scale
+        :type query_scale: tensor
+        :param key_scale: pointer to the key quantization scale
+        :type key_scale: tensor
+        :param value_scale: pointer to the value quantization scale
+        :type value_scale: tensor
+        :param window_size_sink: prefix-sink token count
+        :type window_size_sink: tensor
+        :param window_size_left: distant local band token count
+        :type window_size_left: tensor
+        :param window_size_right: gap token count after the near-diagonal window
+        :type window_size_right: tensor
+        :param window_size_near: near-diagonal local token count
+        :type window_size_near: tensor
+        :param head_dim: attention head dimension
+        :type head_dim: tensor
+        :param cu_seqlens_q: cumulative query sequence lengths
+        :type cu_seqlens_q: tensor
+        :param cu_seqlens_k: cumulative key sequence lengths
+        :type cu_seqlens_k: tensor
+        :param seqused_q: actual query sequence lengths
+        :type seqused_q: tensor
+        :param seqused_k: actual key sequence lengths
+        :type seqused_k: tensor
+        :param seqlen_q: static query sequence length
+        :type seqlen_q: tensor
+        :param seqlen_k: static key sequence length
+        :type seqlen_k: tensor
+        :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
+        :type QHEAD_PER_KVHEAD: int
+        :param NUM_SPLITS: number of QO splits
+        :type NUM_SPLITS: int
+        :param TILE_M: tile size along the M dimension
+        :type TILE_M: int
+        :param TILE_N: tile size along the N dimension
+        :type TILE_N: int
+        :param TILE_K: tile size along the K dimension
+        :type TILE_K: int
+        :param IS_CAUSAL: boolean flag indicating if the attention is causal
+        :type IS_CAUSAL: bool
+        :param IS_LOCAL: boolean flag indicating if local attention is enabled
+        :type IS_LOCAL: bool
+        :param IS_SPLIT_QO: boolean flag indicating if the QO range is split
+        :type IS_SPLIT_QO: bool
+        :param IS_QUANT: boolean flag indicating if QKV quantization is enabled
+        :type IS_QUANT: bool
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if cu_seqlens_q is provided
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if cu_seqlens_k is provided
+        :type HAS_CU_SEQLENS_K: bool
+        :param HAS_SEQUSED_Q: boolean flag indicating if seqused_q is provided
+        :type HAS_SEQUSED_Q: bool
+        :param HAS_SEQUSED_K: boolean flag indicating if seqused_k is provided
+        :type HAS_SEQUSED_K: bool
+
+        :return: attention backward configuration for the current program
+        """
         # Get seqlen info for this batch
         (
             offset_q,
@@ -632,7 +774,15 @@ class AttnBwdConfig:
         )
 
     @gluon.jit
-    def get_softmax_threshold_log2(self, m_block):
+    def get_softmax_threshold_log2(self, m_block: gl.tensor) -> gl.tensor:
+        """
+        Compute the log2-domain softmax threshold for an given block.
+
+        :param m_block: current block index along the M dimension
+        :type m_block: tensor
+
+        :return: softmax threshold in log2-domain for the given block
+        """
         return get_softmax_threshold(
             softmax_threshold=self.softmax_threshold,
             m_block=m_block,
@@ -642,18 +792,6 @@ class AttnBwdConfig:
             IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
         )
-
-    @gluon.jit
-    def get_offs_m(self, m_block, layout: gl.constexpr):
-        return m_block * self.TILE_M + gl.arange(0, self.TILE_M, layout)
-
-    @gluon.jit
-    def get_offs_n(self, layout: gl.constexpr):
-        return self.n_block * self.TILE_N + gl.arange(0, self.TILE_N, layout)
-
-    @gluon.jit
-    def get_offs_k(self, layout: gl.constexpr):
-        return gl.arange(0, self.TILE_K, layout)
 
 
 @aggregate
