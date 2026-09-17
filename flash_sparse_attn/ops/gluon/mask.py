@@ -28,7 +28,7 @@ def apply_mask(
     """
     Apply seqlen, causal, and local masks to the attention scores.
 
-    :param acc_s: attention scores tensor of shape [BLOCK_M, BLOCK_N]
+    :param acc_s: attention scores of shape [BLOCK_M, BLOCK_N]
     :type acc_s: tensor
     :param m_block: current block index along the M dimension
     :type m_block: tensor
@@ -67,7 +67,7 @@ def apply_mask(
     :param SWAP_AB: boolean flag indicating if query and key dimensions are swapped
     :type SWAP_AB: bool
 
-    :return acc_s: masked attention scores tensor of shape [BLOCK_M, BLOCK_N]
+    :return acc_s: masked attention scores of shape [BLOCK_M, BLOCK_N]
     """
     if SWAP_AB:
         gl.static_assert(
