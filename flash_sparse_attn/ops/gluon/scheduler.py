@@ -3,11 +3,28 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 from triton.language.core import _aggregate as aggregate
 
-from flash_sparse_attn.ops.gluon import (
-    seqlen_info,
-    block_info,
-    mask,
-    softmax,
+from flash_sparse_attn.ops.gluon.seqlen_info import (
+    get_seqlen_info_qk,
+    get_softmax_threshold,
+    offset_batch_Q,
+    offset_batch_K,
+    make_ptrs,
+    make_pack_gqa_ptrs,
+)
+from flash_sparse_attn.ops.gluon.block_info import (
+    get_n_block_min_max,
+    get_m_block_min_max,
+    get_n_block_max_no_causal_local_mask,
+    get_m_block_min_no_causal_local_mask,
+    get_n_block_min_before_local_mask,
+    get_m_block_max_before_local_mask,
+)
+from flash_sparse_attn.ops.gluon.mask import apply_mask
+from flash_sparse_attn.ops.gluon.softmax import (
+    online_softmax,
+    online_sparse_softmax,
+    rescale_o,
+    finalize,
 )
 
 
@@ -267,7 +284,7 @@ class AttnFwdConfig:
             padded_offset_k,
             actual_seqlen_q,
             actual_seqlen_k,
-        ) = seqlen_info.get_seqlen_info_qk(
+        ) = get_seqlen_info_qk(
             batch_idx=batch_idx,
             seqlen_q_static=seqlen_q,
             seqlen_k_static=seqlen_k,
@@ -292,14 +309,14 @@ class AttnFwdConfig:
             v_scale = gl.to_tensor(1.0)
         LOG2E: gl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
-        softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
-            softmax_threshold,
-            m_block,
-            actual_seqlen_q,
-            actual_seqlen_k,
-            row_offsets,
-            IS_CAUSAL,
-            QHEAD_PER_KVHEAD_PACKGQA,
+        softmax_threshold_log2 = get_softmax_threshold(
+            softmax_threshold=softmax_threshold,
+            m_block=m_block,
+            seqlen_q=actual_seqlen_q,
+            seqlen_k=actual_seqlen_k,
+            row_offsets=row_offsets,
+            IS_CAUSAL=IS_CAUSAL,
+            QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         )
         return AttnFwdConfig(
             gl.to_tensor(batch_idx),
@@ -490,7 +507,7 @@ class AttnBwdConfig:
             padded_offset_k,
             actual_seqlen_q,
             actual_seqlen_k,
-        ) = seqlen_info.get_seqlen_info_qk(
+        ) = get_seqlen_info_qk(
             batch_idx=batch_idx,
             seqlen_q_static=seqlen_q,
             seqlen_k_static=seqlen_k,
@@ -550,13 +567,13 @@ class AttnBwdConfig:
 
     @gluon.jit
     def get_softmax_threshold_log2(self, m_block):
-        return seqlen_info.get_softmax_threshold(
-            self.softmax_threshold,
-            m_block,
-            self.actual_seqlen_q,
-            self.actual_seqlen_k,
-            self.row_offsets,
-            self.IS_CAUSAL,
+        return get_softmax_threshold(
+            softmax_threshold=self.softmax_threshold,
+            m_block=m_block,
+            seqlen_q=self.actual_seqlen_q,
+            seqlen_k=self.actual_seqlen_k,
+            row_offsets=self.row_offsets,
+            IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
         )
 
@@ -627,7 +644,7 @@ class AttnFwdBlockScheduler:
             n_block_window_max,
             n_block_sink_min,
             n_block_sink_max,
-        ) = block_info.get_n_block_min_max(
+        ) = get_n_block_min_max(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
@@ -644,7 +661,7 @@ class AttnFwdBlockScheduler:
             IS_SPLIT_KV=config.IS_SPLIT_KV,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
-        n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+        n_block_max_no_mask = get_n_block_max_no_causal_local_mask(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
@@ -671,7 +688,7 @@ class AttnFwdBlockScheduler:
                 )
             else:
                 n_block_max_no_mask = n_block_min
-            n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+            n_block_window_max_no_mask = get_n_block_max_no_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 m_block=config.m_block,
@@ -683,7 +700,7 @@ class AttnFwdBlockScheduler:
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-            n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
+            n_block_window_min_no_mask = get_n_block_min_before_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 m_block=config.m_block,
@@ -778,7 +795,7 @@ class AttnBwdBlockScheduler:
             m_block_window_max,
             m_block_sink_min,
             m_block_sink_max,
-        ) = block_info.get_m_block_min_max(
+        ) = get_m_block_min_max(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
@@ -794,7 +811,7 @@ class AttnBwdBlockScheduler:
             IS_LOCAL=config.IS_LOCAL,
             IS_SPLIT_QO=config.IS_SPLIT_QO,
         )
-        m_block_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+        m_block_min_no_mask = get_m_block_min_no_causal_local_mask(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
@@ -814,7 +831,7 @@ class AttnBwdBlockScheduler:
         if config.IS_LOCAL:
             # Compute local m_block range for this n_block
             m_block_min_no_mask = m_block_max
-            m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+            m_block_window_min_no_mask = get_m_block_min_no_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 n_block=config.n_block,
@@ -829,7 +846,7 @@ class AttnBwdBlockScheduler:
             m_block_window_min_no_mask = gl.maximum(
                 m_block_window_min_no_mask, m_block_window_min
             )
-            m_block_window_max_no_mask = block_info.get_m_block_max_before_local_mask(
+            m_block_window_max_no_mask = get_m_block_max_before_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 n_block=config.n_block,
@@ -951,54 +968,54 @@ class AttnFwdPointerScheduler:
         HAS_CU_SEQLENS_K: gl.constexpr = False,
     ):
         # Initialize base pointers
-        q_base = seqlen_info.offset_batch_Q(
-            Q + config.head_idx * stride_qh if not config.PACK_GQA else Q,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_qb,
-            stride_qm,
-            HAS_CU_SEQLENS_Q,
+        q_base = offset_batch_Q(
+            base_ptr=Q + config.head_idx * stride_qh if not config.PACK_GQA else Q,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_qb,
+            stride_seq=stride_qm,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
-        k_base = seqlen_info.offset_batch_K(
-            K + config.head_kv_idx * stride_kh,
-            config.batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_kb,
-            stride_kn,
-            HAS_CU_SEQLENS_K,
+        k_base = offset_batch_K(
+            base_ptr=K + config.head_kv_idx * stride_kh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_k,
+            padded_offset=config.padded_offset_k,
+            stride_batch=stride_kb,
+            stride_seq=stride_kn,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
             USE_PADDED=False,
         )
-        v_base = seqlen_info.offset_batch_K(
-            V + config.head_kv_idx * stride_vh,
-            config.batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_vb,
-            stride_vn,
-            HAS_CU_SEQLENS_K,
+        v_base = offset_batch_K(
+            base_ptr=V + config.head_kv_idx * stride_vh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_k,
+            padded_offset=config.padded_offset_k,
+            stride_batch=stride_vb,
+            stride_seq=stride_vn,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
             USE_PADDED=False,
         )
-        out_base = seqlen_info.offset_batch_Q(
-            Out + config.head_idx * stride_oh if not config.PACK_GQA else Out,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_ob,
-            stride_om,
-            HAS_CU_SEQLENS_Q,
+        out_base = offset_batch_Q(
+            base_ptr=Out + config.head_idx * stride_oh if not config.PACK_GQA else Out,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_ob,
+            stride_seq=stride_om,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
-        lse_base = seqlen_info.offset_batch_Q(
-            Lse + config.head_idx * stride_lh if not config.PACK_GQA else Lse,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_lb,
-            1,
-            HAS_CU_SEQLENS_Q,
+        lse_base = offset_batch_Q(
+            base_ptr=Lse + config.head_idx * stride_lh if not config.PACK_GQA else Lse,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_lb,
+            stride_seq=1,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
 
@@ -1027,47 +1044,47 @@ class AttnFwdPointerScheduler:
     @gluon.jit
     def make_q_ptrs(self, config: AttnFwdConfig, offs_m, offs_k):
         if config.PACK_GQA:
-            return seqlen_info.make_pack_gqa_ptrs(
-                self.q_base,
-                config.m_block,
-                config.head_idx,
-                self.stride_qh,
-                self.stride_qm,
-                offs_m,
-                offs_k,
+            return make_pack_gqa_ptrs(
+                base_ptr=self.q_base,
+                m_block=config.m_block,
+                head_idx=config.head_idx,
+                stride_head=self.stride_qh,
+                stride_seq=self.stride_qm,
+                offs_m=offs_m,
+                offs_k=offs_k,
                 TILE_K=config.TILE_K,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-        return seqlen_info.make_ptrs(
-            self.q_base,
-            config.m_block,
-            self.stride_qm,
-            offs_m,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.q_base,
+            mn_block=config.m_block,
+            stride_seq=self.stride_qm,
+            offs_mn=offs_m,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_k_ptrs(self, config: AttnFwdConfig, n_block, offs_n, offs_k):
-        return seqlen_info.make_ptrs(
-            self.k_base,
-            n_block,
-            self.stride_kn,
-            offs_n,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.k_base,
+            mn_block=n_block,
+            stride_seq=self.stride_kn,
+            offs_mn=offs_n,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_v_ptrs(self, config: AttnFwdConfig, n_block, offs_n, offs_k):
-        return seqlen_info.make_ptrs(
-            self.v_base,
-            n_block,
-            self.stride_vn,
-            offs_n,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.v_base,
+            mn_block=n_block,
+            stride_seq=self.stride_vn,
+            offs_mn=offs_n,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
@@ -1075,23 +1092,23 @@ class AttnFwdPointerScheduler:
     @gluon.jit
     def make_out_ptrs(self, config: AttnFwdConfig, offs_m, offs_k):
         if config.PACK_GQA:
-            return seqlen_info.make_pack_gqa_ptrs(
-                self.out_base,
-                config.m_block,
-                config.head_idx,
-                self.stride_oh,
-                self.stride_om,
-                offs_m,
-                offs_k,
+            return make_pack_gqa_ptrs(
+                base_ptr=self.out_base,
+                m_block=config.m_block,
+                head_idx=config.head_idx,
+                stride_head=self.stride_oh,
+                stride_seq=self.stride_om,
+                offs_m=offs_m,
+                offs_k=offs_k,
                 TILE_K=config.TILE_K,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-        return seqlen_info.make_ptrs(
-            self.out_base,
-            config.m_block,
-            self.stride_om,
-            offs_m,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.out_base,
+            mn_block=config.m_block,
+            stride_seq=self.stride_om,
+            offs_mn=offs_m,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
@@ -1099,14 +1116,14 @@ class AttnFwdPointerScheduler:
     @gluon.jit
     def make_lse_ptrs(self, config: AttnFwdConfig, offs_m):
         if config.PACK_GQA:
-            return seqlen_info.make_pack_gqa_ptrs(
-                self.lse_base,
-                config.m_block,
-                config.head_idx,
-                self.stride_lh,
-                1,
-                offs_m,
-                offs_m,
+            return make_pack_gqa_ptrs(
+                base_ptr=self.lse_base,
+                m_block=config.m_block,
+                head_idx=config.head_idx,
+                stride_head=self.stride_lh,
+                stride_seq=1,
+                offs_m=offs_m,
+                offs_k=offs_m,
                 TILE_K=1,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
@@ -1213,94 +1230,94 @@ class AttnBwdPointerScheduler:
         HAS_CU_SEQLENS_K: gl.constexpr = False,
     ):
         # Initialize base pointers
-        q_base = seqlen_info.offset_batch_Q(
-            Q + config.head_idx * stride_qh,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_qb,
-            stride_qm,
-            HAS_CU_SEQLENS_Q,
+        q_base = offset_batch_Q(
+            base_ptr=Q + config.head_idx * stride_qh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_qb,
+            stride_seq=stride_qm,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
-        k_base = seqlen_info.offset_batch_K(
-            K + config.head_kv_idx * stride_kh,
-            config.batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_kb,
-            stride_kn,
-            HAS_CU_SEQLENS_K,
+        k_base = offset_batch_K(
+            base_ptr=K + config.head_kv_idx * stride_kh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_k,
+            padded_offset=config.padded_offset_k,
+            stride_batch=stride_kb,
+            stride_seq=stride_kn,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
             USE_PADDED=False,
         )
-        v_base = seqlen_info.offset_batch_K(
-            V + config.head_kv_idx * stride_vh,
-            config.batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_vb,
-            stride_vn,
-            HAS_CU_SEQLENS_K,
+        v_base = offset_batch_K(
+            base_ptr=V + config.head_kv_idx * stride_vh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_k,
+            padded_offset=config.padded_offset_k,
+            stride_batch=stride_vb,
+            stride_seq=stride_vn,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
             USE_PADDED=False,
         )
-        do_base = seqlen_info.offset_batch_Q(
-            dO + config.head_idx * stride_doh,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_dob,
-            stride_dom,
-            HAS_CU_SEQLENS_Q,
+        do_base = offset_batch_Q(
+            base_ptr=dO + config.head_idx * stride_doh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_dob,
+            stride_seq=stride_dom,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=False,
         )
-        lse_base = seqlen_info.offset_batch_Q(
-            LSELog2 + config.head_idx * stride_lh,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_lb,
-            1,
-            HAS_CU_SEQLENS_Q,
+        lse_base = offset_batch_Q(
+            base_ptr=LSELog2 + config.head_idx * stride_lh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_lb,
+            stride_seq=1,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=True,
         )
-        dpsum_base = seqlen_info.offset_batch_Q(
-            dPsum + config.head_idx * stride_ph,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_pb,
-            1,
-            HAS_CU_SEQLENS_Q,
+        dpsum_base = offset_batch_Q(
+            base_ptr=dPsum + config.head_idx * stride_ph,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_pb,
+            stride_seq=1,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=True,
         )
-        dq_accum_base = seqlen_info.offset_batch_Q(
-            dQaccum + config.head_idx * stride_dqah,
-            config.batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_dqab,
-            stride_dqam,
-            HAS_CU_SEQLENS_Q,
+        dq_accum_base = offset_batch_Q(
+            base_ptr=dQaccum + config.head_idx * stride_dqah,
+            batch_idx=config.batch_idx,
+            offset=config.offset_q,
+            padded_offset=config.padded_offset_q,
+            stride_batch=stride_dqab,
+            stride_seq=stride_dqam,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
             USE_PADDED=True,
         )
-        dk_base = seqlen_info.offset_batch_K(
-            dK + config.head_kv_idx * stride_dkh,
-            config.batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_dkb,
-            stride_dkn,
-            HAS_CU_SEQLENS_K,
+        dk_base = offset_batch_K(
+            base_ptr=dK + config.head_kv_idx * stride_dkh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_k,
+            padded_offset=config.padded_offset_k,
+            stride_batch=stride_dkb,
+            stride_seq=stride_dkn,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
             USE_PADDED=False,
         )
-        dv_base = seqlen_info.offset_batch_K(
-            dV + config.head_kv_idx * stride_dvh,
-            config.batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_dvb,
-            stride_dvn,
-            HAS_CU_SEQLENS_K,
+        dv_base = offset_batch_K(
+            base_ptr=dV + config.head_kv_idx * stride_dvh,
+            batch_idx=config.batch_idx,
+            offset=config.offset_k,
+            padded_offset=config.padded_offset_k,
+            stride_batch=stride_dvb,
+            stride_seq=stride_dvn,
+            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
             USE_PADDED=False,
         )
 
@@ -1330,48 +1347,48 @@ class AttnBwdPointerScheduler:
 
     @gluon.jit
     def make_q_ptrs(self, config: AttnBwdConfig, m_block, offs_m, offs_k):
-        return seqlen_info.make_ptrs(
-            self.q_base,
-            m_block,
-            self.stride_qm,
-            offs_m,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.q_base,
+            mn_block=m_block,
+            stride_seq=self.stride_qm,
+            offs_mn=offs_m,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_k_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
-        return seqlen_info.make_ptrs(
-            self.k_base,
-            config.n_block,
-            self.stride_kn,
-            offs_n,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.k_base,
+            mn_block=config.n_block,
+            stride_seq=self.stride_kn,
+            offs_mn=offs_n,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_v_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
-        return seqlen_info.make_ptrs(
-            self.v_base,
-            config.n_block,
-            self.stride_vn,
-            offs_n,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.v_base,
+            mn_block=config.n_block,
+            stride_seq=self.stride_vn,
+            offs_mn=offs_n,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_do_ptrs(self, config: AttnBwdConfig, m_block, offs_m, offs_k):
-        return seqlen_info.make_ptrs(
-            self.do_base,
-            m_block,
-            self.stride_dom,
-            offs_m,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.do_base,
+            mn_block=m_block,
+            stride_seq=self.stride_dom,
+            offs_mn=offs_m,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
@@ -1386,36 +1403,36 @@ class AttnBwdPointerScheduler:
 
     @gluon.jit
     def make_dq_accum_ptrs(self, config: AttnBwdConfig, m_block, offs_m, offs_k):
-        return seqlen_info.make_ptrs(
-            self.dq_accum_base,
-            m_block,
-            self.stride_dqam,
-            offs_m,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.dq_accum_base,
+            mn_block=m_block,
+            stride_seq=self.stride_dqam,
+            offs_mn=offs_m,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_dk_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
-        return seqlen_info.make_ptrs(
-            self.dk_base,
-            config.n_block,
-            self.stride_dkn,
-            offs_n,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.dk_base,
+            mn_block=config.n_block,
+            stride_seq=self.stride_dkn,
+            offs_mn=offs_n,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
 
     @gluon.jit
     def make_dv_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
-        return seqlen_info.make_ptrs(
-            self.dv_base,
-            config.n_block,
-            self.stride_dvn,
-            offs_n,
-            offs_k,
+        return make_ptrs(
+            base_ptr=self.dv_base,
+            mn_block=config.n_block,
+            stride_seq=self.stride_dvn,
+            offs_mn=offs_n,
+            offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
         )
@@ -1515,7 +1532,7 @@ class AttnMaskScheduler:
         else:
             m_block = iter_block
             n_block = self.fixed_block
-        return mask.apply_mask(
+        return apply_mask(
             acc_s=acc_s,
             m_block=m_block,
             n_block=n_block,
@@ -1564,11 +1581,11 @@ class SoftmaxScheduler:
         row_sum,
         CHECK_INF: gl.constexpr = False,
     ):
-        return softmax.online_softmax(
-            acc_s,
-            row_max,
-            row_sum,
-            self.softmax_scale_log2,
+        return online_softmax(
+            acc_s=acc_s,
+            row_max=row_max,
+            row_sum=row_sum,
+            scale_log2=self.softmax_scale_log2,
             CHECK_INF=CHECK_INF,
         )
 
@@ -1581,12 +1598,12 @@ class SoftmaxScheduler:
         softmax_threshold_log2,
         CHECK_INF: gl.constexpr = False,
     ):
-        return softmax.online_sparse_softmax(
-            acc_s,
-            row_max,
-            row_sum,
-            self.softmax_scale_log2,
-            softmax_threshold_log2,
+        return online_sparse_softmax(
+            acc_s=acc_s,
+            row_max=row_max,
+            row_sum=row_sum,
+            scale_log2=self.softmax_scale_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
             CHECK_INF=CHECK_INF,
         )
 
@@ -1596,7 +1613,7 @@ class SoftmaxScheduler:
         acc_o,
         row_scale,
     ):
-        return softmax.rescale_o(
+        return rescale_o(
             acc_o=acc_o,
             row_scale=row_scale,
         )
@@ -1609,7 +1626,7 @@ class SoftmaxScheduler:
         IS_LOG2: gl.constexpr = False,
         CHECK_NAN: gl.constexpr = True,
     ):
-        return softmax.finalize(
+        return finalize(
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
