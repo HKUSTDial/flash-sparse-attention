@@ -7,16 +7,6 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.nvidia.ampere import async_copy
 
-from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_inputs
-from flash_sparse_attn.ops.gluon.utils import (
-    window_sizes_heuristic,
-    num_splits_heuristic,
-)
-from flash_sparse_attn.ops.gluon.cache_utils import get_device_num_sms
-from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
-from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
-
-from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
 from flash_sparse_attn.ops.gluon.scheduler import (
     AttnFwdGridIndex,
     AttnFwdConfig,
@@ -26,6 +16,15 @@ from flash_sparse_attn.ops.gluon.scheduler import (
     SoftmaxScheduler,
 )
 
+from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_inputs
+from flash_sparse_attn.ops.gluon.utils import (
+    window_sizes_heuristic,
+    num_splits_heuristic,
+)
+from flash_sparse_attn.ops.gluon.cache_utils import get_device_num_sms
+from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
+from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
+from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
 from flash_sparse_attn.ops.gluon.flash_fwd_combine import _flash_attn_fwd_combine
 
 
@@ -189,30 +188,38 @@ def _fwd_dense_kernel(
     HAS_SEQUSED_K: gl.constexpr,
     EVEN_M: gl.constexpr,
     EVEN_N: gl.constexpr,
+    num_warps: gl.constexpr,
 ):
-    num_warps: gl.constexpr = gl.num_warps()
+    warp_size: gl.constexpr = 32
+    element_bits: gl.constexpr = mQ.dtype.element_ty.primitive_bitwidth
+    elements_per_thread: gl.constexpr = 128 // element_bits
+    copy_atom_k: gl.constexpr = min(TILE_K, 1024 // element_bits)
+    threads_per_row: gl.constexpr = copy_atom_k // elements_per_thread
+    rows_per_warp: gl.constexpr = warp_size // threads_per_row
 
     copy_layout: gl.constexpr = gl.BlockedLayout(
-        size_per_thread=[1, 8],
-        threads_per_warp=[8, 4],
+        size_per_thread=[1, elements_per_thread],
+        threads_per_warp=[rows_per_warp, threads_per_row],
         warps_per_cta=[num_warps, 1],
         order=[1, 0],
     )
+    copy_row_layout: gl.constexpr = gl.SliceLayout(1, copy_layout)
+    copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
     mma_layout: gl.constexpr = gl.NVMMADistributedLayout(
         version=[2, 0],
         warps_per_cta=[num_warps, 1],
         instr_shape=[16, 8],
     )
-    row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
+    mma_row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
+    mma_col_layout: gl.constexpr = gl.SliceLayout(0, mma_layout)
 
     # Compute offsets for global memory copy and MMA operations
-    copy_offs_m = gl.arange(0, TILE_M, gl.SliceLayout(1, copy_layout))
-    copy_offs_n = gl.arange(0, TILE_N, gl.SliceLayout(1, copy_layout))
-    copy_offs_k = gl.arange(0, TILE_K, gl.SliceLayout(0, copy_layout))
-    mma_offs_m = gl.arange(0, TILE_M, gl.SliceLayout(1, mma_layout))
-    mma_offs_n = gl.arange(0, TILE_N, gl.SliceLayout(0, mma_layout))
-    mma_offs_k = gl.arange(0, TILE_K, gl.SliceLayout(0, mma_layout))
-    row_offs_m = gl.arange(0, TILE_M, row_layout)
+    copy_offs_m = gl.arange(0, TILE_M, copy_row_layout)
+    copy_offs_n = gl.arange(0, TILE_N, copy_row_layout)
+    copy_offs_k = gl.arange(0, TILE_K, copy_col_layout)
+    mma_offs_m = gl.arange(0, TILE_M, mma_row_layout)
+    mma_offs_n = gl.arange(0, TILE_N, mma_col_layout)
+    mma_offs_k = gl.arange(0, TILE_K, mma_col_layout)
 
     # Create grid index
     grid_idx = AttnFwdGridIndex.create(
@@ -234,7 +241,7 @@ def _fwd_dense_kernel(
         head_kv_idx=grid_idx.head_kv_idx,
         split_idx=grid_idx.split_idx,
         m_block=grid_idx.m_block,
-        row_offs_m=row_offs_m,
+        row_offsets=mma_offs_m,
         softmax_scale=softmax_scale,
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
@@ -323,7 +330,9 @@ def _fwd_dense_kernel(
         gO = ptrs_sched.make_out_ptrs(config, mma_offs_m, mma_offs_k)
         empty_o = empty_o.to(gO.dtype.element_ty)
         gl.store(gO, empty_o, mask=predicate_mma_m[:, None] if not EVEN_M else None)
-        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, row_layout)
+        empty_lse = gl.full(
+            [TILE_M], float("-inf"), mLse.dtype.element_ty, mma_row_layout
+        )
         gLSE = ptrs_sched.make_lse_ptrs(config, mma_offs_m)
         gl.store(gLSE, empty_lse, mask=predicate_mma_m if not EVEN_M else None)
         return
@@ -343,8 +352,8 @@ def _fwd_dense_kernel(
     sV = gl.allocate_shared_memory(mV.dtype.element_ty, [TILE_N, TILE_K], sV_layout)
 
     # Initialize accumulators
-    row_max = gl.full([TILE_M], float("-inf"), gl.float32, row_layout)
-    row_sum = gl.zeros([TILE_M], gl.float32, row_layout)
+    row_max = gl.full([TILE_M], float("-inf"), gl.float32, mma_row_layout)
+    row_sum = gl.zeros([TILE_M], gl.float32, mma_row_layout)
     acc_o = gl.zeros([TILE_M, TILE_K], gl.float32, mma_layout)
 
     # Load Q
@@ -358,7 +367,7 @@ def _fwd_dense_kernel(
     )
     async_copy.commit_group()
 
-    # Load K for near diagonal
+    # Load K for near-diagonal
     gK = ptrs_sched.make_k_ptrs(
         config, block_sched.n_block_max - 1, copy_offs_n, copy_offs_k
     )
@@ -371,7 +380,7 @@ def _fwd_dense_kernel(
     )
     async_copy.commit_group()
 
-    # Load V for near diagonal
+    # Load V for near-diagonal
     gV = ptrs_sched.make_v_ptrs(
         config, block_sched.n_block_max - 1, copy_offs_n, copy_offs_k
     )
@@ -588,7 +597,7 @@ def _fwd_dense_kernel(
                 )
 
         if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
-            # Load K for prefix sink
+            # Load K for prefix-sink
             gK = ptrs_sched.make_k_ptrs(
                 config, block_sched.n_block_sink_max - 1, copy_offs_n, copy_offs_k
             )
@@ -597,7 +606,7 @@ def _fwd_dense_kernel(
             )
             async_copy.commit_group()
 
-            # Load V for prefix sink
+            # Load V for prefix-sink
             gV = ptrs_sched.make_v_ptrs(
                 config, block_sched.n_block_sink_max - 1, copy_offs_n, copy_offs_k
             )
@@ -606,7 +615,7 @@ def _fwd_dense_kernel(
             )
             async_copy.commit_group()
 
-            # Process n_blocks with prefix sink masking
+            # Process n_blocks with prefix-sink masking
             for n_block in range(
                 block_sched.n_block_sink_max - 1,
                 block_sched.n_block_sink_min - 1,
@@ -687,6 +696,7 @@ def _flash_dense_attn_forward(
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
 
+    # Assert the validity of inputs
     if not skip_checks:
         assert_fwd_inputs(
             query=query,
@@ -700,11 +710,11 @@ def _flash_dense_attn_forward(
             device=device,
         )
 
+    # Setup launch configuration
     TILE_M = 128
     TILE_N = 64
-    TILE_K = max(triton.next_power_of_2(head_dim), 16)
+    TILE_K = max(triton.next_power_of_2(head_dim), 32)
     num_warps = 4
-    num_stages = 1
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
             seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
@@ -741,6 +751,7 @@ def _flash_dense_attn_forward(
             device=query.device,
         )
 
+    # Get the grid for the kernel launch
     grid = get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
@@ -750,6 +761,7 @@ def _flash_dense_attn_forward(
         num_splits=num_splits,
     )
 
+    # Launch the kernel
     _fwd_dense_kernel[grid](
         query,
         key,
@@ -797,7 +809,7 @@ def _flash_dense_attn_forward(
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=seqused_k is not None,
         num_warps=num_warps,
-        num_stages=num_stages,
+        num_stages=1,  # only change compiler metadata
     )
 
     if is_split_kv:
@@ -847,6 +859,7 @@ def _flash_dense_attn_varlen_forward(
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
 
+    # Assert the validity of inputs
     if not skip_checks:
         assert_fwd_inputs(
             query=query,
@@ -863,11 +876,11 @@ def _flash_dense_attn_varlen_forward(
             device=device,
         )
 
+    # Setup launch configuration
     TILE_M = 128
     TILE_N = 64
-    TILE_K = max(triton.next_power_of_2(head_dim), 16)
+    TILE_K = max(triton.next_power_of_2(head_dim), 32)
     num_warps = 4
-    num_stages = 1
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
             seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
@@ -904,6 +917,7 @@ def _flash_dense_attn_varlen_forward(
             device=query.device,
         )
 
+    # Get the grid for the kernel launch
     grid = get_fwd_grid(
         batch_size=batch_size,
         seqlen_q=seqlen_q,
@@ -913,6 +927,7 @@ def _flash_dense_attn_varlen_forward(
         num_splits=num_splits,
     )
 
+    # Launch the kernel
     _fwd_dense_kernel[grid](
         query,
         key,
@@ -960,7 +975,7 @@ def _flash_dense_attn_varlen_forward(
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
         num_warps=num_warps,
-        num_stages=num_stages,
+        num_stages=1,  # only change compiler metadata
     )
 
     if is_split_kv:
