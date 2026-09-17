@@ -2199,7 +2199,17 @@ class SoftmaxScheduler:
 
     @staticmethod
     @gluon.jit
-    def create(config):
+    def create(
+        config: "AttnFwdConfig | AttnBwdConfig",
+    ) -> "SoftmaxScheduler":
+        """
+        Build a softmax scheduler from an attention configuration.
+
+        :param config: forward or backward configuration
+        :type config: AttnFwdConfig or AttnBwdConfig
+
+        :return: softmax scheduler carrying score and value scales
+        """
         return SoftmaxScheduler(
             config.softmax_scale_log2,
             config.value_scale,
@@ -2208,11 +2218,28 @@ class SoftmaxScheduler:
     @gluon.jit
     def online_softmax(
         self,
-        acc_s,
-        row_max,
-        row_sum,
+        acc_s: gl.tensor,
+        row_max: gl.tensor,
+        row_sum: gl.tensor,
         CHECK_INF: gl.constexpr = False,
-    ):
+    ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+        """
+        Apply online softmax and update its running row statistics.
+
+        :param acc_s: attention scores
+        :type acc_s: tensor
+        :param row_max: running maximum values per row
+        :type row_max: tensor
+        :param row_sum: running sum values per row
+        :type row_sum: tensor
+        :param CHECK_INF: boolean flag indicating if negative infinity is clamped
+        :type CHECK_INF: bool
+
+        :return p: online softmax probabilities for the current score
+        :return row_max_new: updated running maximum values per row
+        :return row_sum_new: updated running sum values per row
+        :return row_scale: scaling factors for the previous output accumulator
+        """
         return online_softmax(
             acc_s=acc_s,
             row_max=row_max,
@@ -2224,12 +2251,32 @@ class SoftmaxScheduler:
     @gluon.jit
     def online_sparse_softmax(
         self,
-        acc_s,
-        row_max,
-        row_sum,
-        softmax_threshold_log2,
+        acc_s: gl.tensor,
+        row_max: gl.tensor,
+        row_sum: gl.tensor,
+        softmax_threshold_log2: gl.tensor,
         CHECK_INF: gl.constexpr = False,
-    ):
+    ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+        """
+        Apply online sparse softmax and update its running row statistics.
+
+        :param acc_s: attention scores tensor
+        :type acc_s: tensor
+        :param row_max: running maximum values per row
+        :type row_max: tensor
+        :param row_sum: running sum values per row
+        :type row_sum: tensor
+        :param softmax_threshold_log2: softmax threshold in log2-domain
+        :type softmax_threshold_log2: tensor
+        :param CHECK_INF: boolean flag indicating if negative infinity is clamped
+        :type CHECK_INF: bool
+
+        :return p: online softmax probabilities for the current score
+        :return row_max_new: updated running maximum values per row
+        :return row_sum_new: updated running sum values per row
+        :return row_scale: scaling factors for the previous output accumulator
+        :return skip_softmax: boolean tensor indicating whether the block was skipped
+        """
         return online_sparse_softmax(
             acc_s=acc_s,
             row_max=row_max,
@@ -2242,9 +2289,19 @@ class SoftmaxScheduler:
     @gluon.jit
     def rescale_o(
         self,
-        acc_o,
-        row_scale,
-    ):
+        acc_o: gl.tensor,
+        row_scale: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Rescale an output accumulator after an online softmax update.
+
+        :param acc_o: output accumulator tensor
+        :type acc_o: tensor
+        :param row_scale: scaling factors for each query row
+        :type row_scale: tensor
+
+        :return: rescaled output accumulator
+        """
         return rescale_o(
             acc_o=acc_o,
             row_scale=row_scale,
@@ -2253,11 +2310,26 @@ class SoftmaxScheduler:
     @gluon.jit
     def finalize(
         self,
-        row_max,
-        row_sum,
+        row_max: gl.tensor,
+        row_sum: gl.tensor,
         IS_LOG2: gl.constexpr = False,
         CHECK_NAN: gl.constexpr = True,
-    ):
+    ) -> tuple[gl.tensor, gl.tensor]:
+        """
+        Finalize the online softmax output scale and logsumexp.
+
+        :param row_max: final maximum values per row
+        :type row_max: tensor
+        :param row_sum: final sum values per row
+        :type row_sum: tensor
+        :param IS_LOG2: boolean flag indicating if logsumexp remains in log2-space
+        :type IS_LOG2: bool
+        :param CHECK_NAN: boolean flag indicating if invalid row sums are sanitized
+        :type CHECK_NAN: bool
+
+        :return row_scale: final scaling factors for the output accumulator
+        :return lse: final logsumexp values per row
+        """
         return finalize(
             row_max=row_max,
             row_sum=row_sum,
