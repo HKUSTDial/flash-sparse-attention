@@ -62,9 +62,9 @@ def online_softmax(
 
     :param acc_s: attention scores tensor of shape [TILE_M, TILE_N]
     :type acc_s: tensor
-    :param row_max: current maximum values per row of shape [TILE_M], init to -inf
+    :param row_max: running maximum values per row of shape [TILE_M], init to -inf
     :type row_max: tensor
-    :param row_sum: current sum values per row of shape [TILE_M], init to 0
+    :param row_sum: running sum values per row of shape [TILE_M], init to 0
     :type row_sum: tensor
     :param scale_log2: log2 of the scaling factor to be applied to acc_s
     :type scale_log2: tensor
@@ -72,8 +72,8 @@ def online_softmax(
     :type CHECK_INF: bool
 
     :return p: online softmax probabilities tensor of shape [TILE_M, TILE_N]
-    :return row_max_new: updated maximum values per row of shape [TILE_M]
-    :return row_sum_new: updated sum values per row of shape [TILE_M]
+    :return row_max_new: updated running maximum values per row of shape [TILE_M]
+    :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]
     """
     # Compute current row max
@@ -115,9 +115,9 @@ def online_sparse_softmax(
 
     :param acc_s: attention scores tensor of shape [TILE_M, TILE_N]
     :type acc_s: tensor
-    :param row_max: current maximum values per row of shape [TILE_M], init to -inf
+    :param row_max: running maximum values per row of shape [TILE_M], init to -inf
     :type row_max: tensor
-    :param row_sum: current sum values per row of shape [TILE_M], init to 0
+    :param row_sum: running sum values per row of shape [TILE_M], init to 0
     :type row_sum: tensor
     :param scale_log2: log2 of the scaling factor to be applied to acc_s
     :type scale_log2: tensor
@@ -127,8 +127,8 @@ def online_sparse_softmax(
     :type CHECK_INF: bool
 
     :return p: online softmax probabilities tensor of shape [TILE_M, TILE_N]
-    :return row_max_new: updated maximum values per row of shape [TILE_M]
-    :return row_sum_new: updated sum values per row of shape [TILE_M]
+    :return row_max_new: updated running maximum values per row of shape [TILE_M]
+    :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]
     :return skip_softmax: boolean indicating whether this block was skipped
     """
