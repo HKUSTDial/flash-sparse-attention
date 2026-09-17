@@ -1,0 +1,172 @@
+import triton
+
+from flash_sparse_attn.ops.gluon import cache_utils
+
+
+def get_fwd_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    pack_gqa: bool,
+    num_splits: int,
+):
+    """
+    Get the grid function for the forward kernel.
+
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+    :param num_heads_kv: number of key/value heads
+    :type num_heads_kv: int
+    :param pack_gqa: whether GQA packing is used
+    :type pack_gqa: bool
+    :param num_splits: number of KV splits
+    :type num_splits: int
+
+    :return grid: grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(
+                seqlen_q * (num_heads_q // num_heads_kv) if pack_gqa else seqlen_q,
+                META["TILE_M"],
+            ),
+            num_heads_kv if pack_gqa else num_heads_q,
+            batch_size * num_splits,
+        )
+
+    return grid
+
+
+get_fwd_grid = cache_utils.cache_launch_grid(get_fwd_grid)
+
+
+def get_bwd_grid(
+    batch_size: int,
+    seqlen_k: int,
+    num_heads_q: int,
+    num_splits: int = 1,
+):
+    """
+    Get the grid function for the backward kernel.
+
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_k: sequence length of keys
+    :type seqlen_k: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+    :param num_splits: number of QO splits
+    :type num_splits: int
+
+    :return grid: grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_k, META["TILE_N"]),
+            num_heads_q,
+            batch_size * num_splits,
+        )
+
+    return grid
+
+
+get_bwd_grid = cache_utils.cache_launch_grid(get_bwd_grid)
+
+
+def get_fwd_combine_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the forward combine kernel.
+
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+
+    :return grid: grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            batch_size * num_heads_q,
+        )
+
+    return grid
+
+
+get_fwd_combine_grid = cache_utils.cache_launch_grid(get_fwd_combine_grid)
+
+
+def get_bwd_preprocess_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the backward preprocess kernel.
+
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+
+    :return grid: grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            num_heads_q,
+            batch_size,
+        )
+
+    return grid
+
+
+get_bwd_preprocess_grid = cache_utils.cache_launch_grid(get_bwd_preprocess_grid)
+
+
+def get_bwd_postprocess_grid(
+    batch_size: int,
+    seqlen_q: int,
+    num_heads_q: int,
+):
+    """
+    Get the grid function for the backward postprocess kernel.
+
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_q: sequence length of queries
+    :type seqlen_q: int
+    :param num_heads_q: number of query heads
+    :type num_heads_q: int
+
+    :return grid: grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_q, META["TILE_M"]),
+            num_heads_q,
+            batch_size,
+        )
+
+    return grid
+
+
+get_bwd_postprocess_grid = cache_utils.cache_launch_grid(get_bwd_postprocess_grid)

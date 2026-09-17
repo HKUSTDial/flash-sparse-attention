@@ -175,6 +175,7 @@ def get_gate_threshold(
     :param TILE_M: Tile size along the M dimension.
     :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
     :param IS_ADAPT_GATE: Boolean flag indicating if self-adaptive gate threshold is enabled.
+
     :return gate_threshold_log2: Lower-bound scalar gate threshold in log2-domain for the given block.
     """
     if IS_CAUSAL and IS_ADAPT_GATE:

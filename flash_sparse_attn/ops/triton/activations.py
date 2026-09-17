@@ -95,8 +95,7 @@ def online_softmax(
     p = exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
 
     # Update row sum
-    row_sum_cur = tl.sum(p, axis=1)
-    row_sum_new = row_sum * row_scale + row_sum_cur
+    row_sum_new = row_sum * row_scale + tl.sum(p, axis=1)
 
     return p, row_max_new, row_sum_new, row_scale
 
@@ -138,8 +137,8 @@ def online_sparse_softmax(
     # Update skip condition based on threshold
     skip_softmax = tl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
 
-    # Return zero attention weights
     if skip_softmax:
+        # Return zero attention weights
         p = acc_s * 0.0
         row_max_new = row_max
         row_sum_new = row_sum
@@ -162,8 +161,7 @@ def online_sparse_softmax(
         p = exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
 
         # Update row sum
-        row_sum_cur = tl.sum(p, axis=1)
-        row_sum_new = row_sum * row_scale + row_sum_cur
+        row_sum_new = row_sum * row_scale + tl.sum(p, axis=1)
 
     return p, row_max_new, row_sum_new, row_scale, skip_softmax
 
