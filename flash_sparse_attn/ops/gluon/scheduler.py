@@ -2082,9 +2082,19 @@ class AttnMaskScheduler:
     @staticmethod
     @gluon.jit
     def create(
-        config,
+        config: "AttnFwdConfig | AttnBwdConfig",
         SWAP_AB: gl.constexpr = False,
-    ):
+    ) -> "AttnMaskScheduler":
+        """
+        Build a mask scheduler from an attention configuration.
+
+        :param config: forward or backward configuration
+        :type config: AttnFwdConfig or AttnBwdConfig
+        :param SWAP_AB: boolean flag indicating if M and N are swapped for backward
+        :type SWAP_AB: bool
+
+        :return: mask scheduler bound to the fixed block and sequence metadata
+        """
         if not SWAP_AB:
             return AttnMaskScheduler(
                 config.m_block,
@@ -2117,15 +2127,37 @@ class AttnMaskScheduler:
     @gluon.jit
     def apply_mask(
         self,
-        acc_s,
-        iter_block,
-        offs_m,
-        offs_n,
+        acc_s: gl.tensor,
+        iter_block: gl.tensor,
+        offs_m: gl.tensor,
+        offs_n: gl.tensor,
         MASK_SEQLEN: gl.constexpr = True,
         MASK_CAUSAL: gl.constexpr = False,
         MASK_LOCAL: gl.constexpr = False,
         MASK_SINK: gl.constexpr = False,
-    ):
+    ) -> gl.tensor:
+        """
+        Apply the selected seqlen, causal, local, and sink masks to the attention scores.
+
+        :param acc_s: attention scores
+        :type acc_s: tensor
+        :param iter_block: block index of the iterated dimension
+        :type iter_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param MASK_SEQLEN: boolean flag indicating if seqlen masking is required
+        :type MASK_SEQLEN: bool
+        :param MASK_CAUSAL: boolean flag indicating if causal masking is required
+        :type MASK_CAUSAL: bool
+        :param MASK_LOCAL: boolean flag indicating if local masking is required
+        :type MASK_LOCAL: bool
+        :param MASK_SINK: boolean flag indicating if sink masking is required
+        :type MASK_SINK: bool
+
+        :return: masked attention scores
+        """
         if not self.SWAP_AB:
             m_block = self.fixed_block
             n_block = iter_block
