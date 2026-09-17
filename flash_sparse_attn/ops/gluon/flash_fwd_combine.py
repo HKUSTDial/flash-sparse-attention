@@ -19,6 +19,7 @@ from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_combine_grid
 @triton.heuristics(
     {
         "EVEN_M": lambda args: not args["HAS_CU_SEQLENS_Q"]
+        and not args["HAS_SEQUSED_Q"]
         and args["seqlen_q"] % args["TILE_M"] == 0,
     }
 )
