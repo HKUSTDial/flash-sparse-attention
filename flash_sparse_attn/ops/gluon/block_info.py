@@ -32,7 +32,7 @@ def get_n_block_min_max(
     :type m_block: tensor
     :param split_idx: index of the current KV split
     :type split_idx: tensor
-    :param window_size_sink: prefix sink token count
+    :param window_size_sink: prefix-sink token count
     :type window_size_sink: tensor
     :param window_size_left: distant local band token count
     :type window_size_left: tensor
@@ -192,7 +192,7 @@ def get_m_block_min_max(
     :type n_block: tensor
     :param split_idx: index of the current QO split
     :type split_idx: tensor
-    :param window_size_sink: prefix sink token count
+    :param window_size_sink: prefix-sink token count
     :type window_size_sink: tensor
     :param window_size_left: distant local band token count
     :type window_size_left: tensor
