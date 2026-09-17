@@ -137,7 +137,7 @@ def assert_bwd_inputs(
     device: torch.device = None,
 ):
     """
-    Assert the validity of inputs for the backward base kernel.
+    Assert the validity of inputs for the backward kernel.
 
     :param query: query tensor
     :type query: torch.Tensor
@@ -244,3 +244,48 @@ def assert_bwd_inputs(
         assert window_sizes.ndim == 2 and window_sizes.shape[1] == 4, (
             "window_sizes must have shape [num_kv_heads, 4] with columns [window_sink, window_left, window_right, window_near]"
         )
+
+
+def assert_fwd_combine_inputs(
+    out_partial: torch.Tensor,
+    lse_partial: torch.Tensor,
+    out: torch.Tensor,
+    lse: torch.Tensor,
+    num_splits: int,
+    cu_seqlens_q: Optional[torch.Tensor] = None,
+    seqused_q: Optional[torch.Tensor] = None,
+):
+    """
+    Assert the validity of inputs for the forward combine kernel.
+
+    :param out_partial: partial output tensor
+    :type out_partial: torch.Tensor
+    :param lse_partial: partial logsumexp tensor
+    :type lse_partial: torch.Tensor
+    :param out: output tensor
+    :type out: torch.Tensor
+    :param lse: logsumexp tensor
+    :type lse: torch.Tensor
+    :param cu_seqlens_q: cumulative sequence lengths for queries
+    :type cu_seqlens_q: Optional[torch.Tensor]
+    :param seqused_q: sequence used for queries
+    :type seqused_q: Optional[torch.Tensor]
+
+    :raises AssertionError: If any of the assertions fail
+    """
+
+    assert out_partial.device == lse_partial.device == out.device == lse.device, (
+        "All inputs must be on the same device"
+    )
+    assert out_partial.dtype == lse_partial.dtype == lse.dtype == torch.float32, (
+        "out_partial/lse_partial/lse tensors must be float32 for numerical stability"
+    )
+    assert out.dtype in [
+        torch.float16,
+        torch.bfloat16,
+    ], "out tensor must be float16 or bfloat16"
+    assert num_splits > 1, "num_splits must be greater than 1"
+    if cu_seqlens_q is not None:
+        assert cu_seqlens_q.dtype == torch.int32, "cu_seqlens_q must be int32"
+    if seqused_q is not None:
+        assert seqused_q.dtype == torch.int32, "seqused_q must be int32"
