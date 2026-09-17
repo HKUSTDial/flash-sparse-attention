@@ -246,7 +246,7 @@ def offset_batch_K(
 
 @gluon.jit
 def make_ptrs(
-    base_ptrs: gl.tensor,
+    base_ptr: gl.tensor,
     mn_block: gl.tensor,
     stride_seq: gl.tensor,
     offs_mn: gl.tensor,
@@ -257,8 +257,8 @@ def make_ptrs(
     """
     Construct pointers for a sequence tile.
 
-    :param base_ptrs: base pointer for the selected batch and head
-    :type base_ptrs: tensor
+    :param base_ptr: base pointer for the selected batch and head
+    :type base_ptr: tensor
     :param mn_block: current block index along the sequence dimension
     :type mn_block: tensor
     :param stride_seq: stride between sequence positions
@@ -276,17 +276,17 @@ def make_ptrs(
     """
     offs_mn = mn_block * offs_mn.shape[0] + offs_mn
     if TILE_K == 1:
-        return base_ptrs + offs_mn * stride_seq
+        return base_ptr + offs_mn * stride_seq
     else:
         if SWAP_AB:
-            return base_ptrs + offs_mn[None, :] * stride_seq + offs_k[:, None]
+            return base_ptr + offs_mn[None, :] * stride_seq + offs_k[:, None]
         else:
-            return base_ptrs + offs_mn[:, None] * stride_seq + offs_k[None, :]
+            return base_ptr + offs_mn[:, None] * stride_seq + offs_k[None, :]
 
 
 @gluon.jit
 def make_pack_gqa_ptrs(
-    base_ptrs: gl.tensor,
+    base_ptr: gl.tensor,
     m_block: gl.tensor,
     head_idx: gl.tensor,
     stride_head: gl.tensor,
@@ -299,8 +299,8 @@ def make_pack_gqa_ptrs(
     """
     Construct pointers for a packed-GQA tile.
 
-    :param base_ptrs: base pointer for the selected batch
-    :type base_ptrs: tensor
+    :param base_ptr: base pointer for the selected batch
+    :type base_ptr: tensor
     :param m_block: current block index along the packed M dimension
     :type m_block: tensor
     :param head_idx: index of the current KV head
@@ -326,10 +326,10 @@ def make_pack_gqa_ptrs(
         head_idx * QHEAD_PER_KVHEAD_PACKGQA + offs_m - m_idx * QHEAD_PER_KVHEAD_PACKGQA
     )
     if TILE_K == 1:
-        return base_ptrs + m_idx * stride_seq + q_head * stride_head
+        return base_ptr + m_idx * stride_seq + q_head * stride_head
     else:
         return (
-            base_ptrs
+            base_ptr
             + m_idx[:, None] * stride_seq
             + q_head[:, None] * stride_head
             + offs_k[None, :]
