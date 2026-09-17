@@ -42,7 +42,7 @@ def apply_mask(
     :type seqlen_q: tensor
     :param seqlen_k: The sequence length of the key
     :type seqlen_k: tensor
-    :param window_size_sink: prefix sink token count
+    :param window_size_sink: prefix-sink token count
     :type window_size_sink: tensor
     :param window_size_left: distant local band token count
     :type window_size_left: tensor
