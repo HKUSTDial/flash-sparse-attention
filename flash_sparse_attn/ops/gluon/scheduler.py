@@ -1173,30 +1173,84 @@ class AttnFwdPointerScheduler:
     @gluon.jit
     def create(
         config: AttnFwdConfig,
-        Q=None,
-        K=None,
-        V=None,
-        Out=None,
-        Lse=None,
-        stride_qb=0,
-        stride_qh=0,
-        stride_qm=0,
-        stride_kb=0,
-        stride_kh=0,
-        stride_kn=0,
-        stride_vb=0,
-        stride_vh=0,
-        stride_vn=0,
-        stride_ob=0,
-        stride_oh=0,
-        stride_om=0,
-        stride_os=0,
-        stride_lb=0,
-        stride_lh=0,
-        stride_ls=0,
+        Q: gl.tensor = None,
+        K: gl.tensor = None,
+        V: gl.tensor = None,
+        Out: gl.tensor = None,
+        Lse: gl.tensor = None,
+        stride_qb: gl.tensor = 0,
+        stride_qh: gl.tensor = 0,
+        stride_qm: gl.tensor = 0,
+        stride_kb: gl.tensor = 0,
+        stride_kh: gl.tensor = 0,
+        stride_kn: gl.tensor = 0,
+        stride_vb: gl.tensor = 0,
+        stride_vh: gl.tensor = 0,
+        stride_vn: gl.tensor = 0,
+        stride_ob: gl.tensor = 0,
+        stride_oh: gl.tensor = 0,
+        stride_om: gl.tensor = 0,
+        stride_os: gl.tensor = 0,
+        stride_lb: gl.tensor = 0,
+        stride_lh: gl.tensor = 0,
+        stride_ls: gl.tensor = 0,
         HAS_CU_SEQLENS_Q: gl.constexpr = False,
         HAS_CU_SEQLENS_K: gl.constexpr = False,
-    ):
+    ) -> "AttnFwdPointerScheduler":
+        """
+        Build forward base pointers.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param Q: query tensor base pointer
+        :type Q: tensor
+        :param K: key tensor base pointer
+        :type K: tensor
+        :param V: value tensor base pointer
+        :type V: tensor
+        :param Out: output tensor base pointer
+        :type Out: tensor
+        :param Lse: logsumexp tensor base pointer
+        :type Lse: tensor
+        :param stride_qb: query batch stride
+        :type stride_qb: tensor
+        :param stride_qh: query head stride
+        :type stride_qh: tensor
+        :param stride_qm: query sequence stride
+        :type stride_qm: tensor
+        :param stride_kb: key batch stride
+        :type stride_kb: tensor
+        :param stride_kh: key head stride
+        :type stride_kh: tensor
+        :param stride_kn: key sequence stride
+        :type stride_kn: tensor
+        :param stride_vb: value batch stride
+        :type stride_vb: tensor
+        :param stride_vh: value head stride
+        :type stride_vh: tensor
+        :param stride_vn: value sequence stride
+        :type stride_vn: tensor
+        :param stride_ob: output batch stride
+        :type stride_ob: tensor
+        :param stride_oh: output head stride
+        :type stride_oh: tensor
+        :param stride_om: output sequence stride
+        :type stride_om: tensor
+        :param stride_os: output split stride
+        :type stride_os: tensor
+        :param stride_lb: logsumexp batch stride
+        :type stride_lb: tensor
+        :param stride_lh: logsumexp head stride
+        :type stride_lh: tensor
+        :param stride_ls: logsumexp split stride
+        :type stride_ls: tensor
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if packed query sequences are used
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if packed key sequences are used
+        :type HAS_CU_SEQLENS_K: bool
+
+        :return: forward pointer scheduler for the selected batch, head, and split
+        """
         # Initialize base pointers
         q_base = offset_batch_Q(
             base_ptr=Q + config.head_idx * stride_qh if not config.PACK_GQA else Q,
@@ -1272,7 +1326,24 @@ class AttnFwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_q_ptrs(self, config: AttnFwdConfig, offs_m, offs_k):
+    def make_q_ptrs(
+        self,
+        config: AttnFwdConfig,
+        offs_m: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct query pointers for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: query pointers of shape [TILE_M, TILE_K]
+        """
         if config.PACK_GQA:
             return make_pack_gqa_ptrs(
                 base_ptr=self.q_base,
@@ -1296,7 +1367,27 @@ class AttnFwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_k_ptrs(self, config: AttnFwdConfig, n_block, offs_n, offs_k):
+    def make_k_ptrs(
+        self,
+        config: AttnFwdConfig,
+        n_block: gl.tensor,
+        offs_n: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct key pointers for an N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param n_block: block index along the N dimension
+        :type n_block: tensor
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: key pointers of shape [TILE_N, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.k_base,
             mn_block=n_block,
@@ -1308,7 +1399,27 @@ class AttnFwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_v_ptrs(self, config: AttnFwdConfig, n_block, offs_n, offs_k):
+    def make_v_ptrs(
+        self,
+        config: AttnFwdConfig,
+        n_block: gl.tensor,
+        offs_n: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct value pointers for an N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param n_block: block index along the N dimension
+        :type n_block: tensor
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: value pointers of shape [TILE_N, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.v_base,
             mn_block=n_block,
@@ -1320,7 +1431,24 @@ class AttnFwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_out_ptrs(self, config: AttnFwdConfig, offs_m, offs_k):
+    def make_out_ptrs(
+        self,
+        config: AttnFwdConfig,
+        offs_m: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct output pointers for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: output pointers of shape [TILE_M, TILE_K]
+        """
         if config.PACK_GQA:
             return make_pack_gqa_ptrs(
                 base_ptr=self.out_base,
@@ -1344,7 +1472,21 @@ class AttnFwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_lse_ptrs(self, config: AttnFwdConfig, offs_m):
+    def make_lse_ptrs(
+        self,
+        config: AttnFwdConfig,
+        offs_m: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct logsumexp pointers for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+
+        :return: logsumexp pointers of shape [TILE_M]
+        """
         if config.PACK_GQA:
             return make_pack_gqa_ptrs(
                 base_ptr=self.lse_base,
@@ -1420,45 +1562,129 @@ class AttnBwdPointerScheduler:
     @gluon.jit
     def create(
         config: AttnBwdConfig,
-        Q=None,
-        K=None,
-        V=None,
-        dO=None,
-        LSELog2=None,
-        dPsum=None,
-        dQaccum=None,
-        dK=None,
-        dV=None,
-        stride_qb=0,
-        stride_qh=0,
-        stride_qm=0,
-        stride_kb=0,
-        stride_kh=0,
-        stride_kn=0,
-        stride_vb=0,
-        stride_vh=0,
-        stride_vn=0,
-        stride_dob=0,
-        stride_doh=0,
-        stride_dom=0,
-        stride_lb=0,
-        stride_lh=0,
-        stride_pb=0,
-        stride_ph=0,
-        stride_dqab=0,
-        stride_dqah=0,
-        stride_dqam=0,
-        stride_dkb=0,
-        stride_dkh=0,
-        stride_dkn=0,
-        stride_dks=0,
-        stride_dvb=0,
-        stride_dvh=0,
-        stride_dvn=0,
-        stride_dvs=0,
+        Q: gl.tensor = None,
+        K: gl.tensor = None,
+        V: gl.tensor = None,
+        dO: gl.tensor = None,
+        LSELog2: gl.tensor = None,
+        dPsum: gl.tensor = None,
+        dQaccum: gl.tensor = None,
+        dK: gl.tensor = None,
+        dV: gl.tensor = None,
+        stride_qb: gl.tensor = 0,
+        stride_qh: gl.tensor = 0,
+        stride_qm: gl.tensor = 0,
+        stride_kb: gl.tensor = 0,
+        stride_kh: gl.tensor = 0,
+        stride_kn: gl.tensor = 0,
+        stride_vb: gl.tensor = 0,
+        stride_vh: gl.tensor = 0,
+        stride_vn: gl.tensor = 0,
+        stride_dob: gl.tensor = 0,
+        stride_doh: gl.tensor = 0,
+        stride_dom: gl.tensor = 0,
+        stride_lb: gl.tensor = 0,
+        stride_lh: gl.tensor = 0,
+        stride_pb: gl.tensor = 0,
+        stride_ph: gl.tensor = 0,
+        stride_dqab: gl.tensor = 0,
+        stride_dqah: gl.tensor = 0,
+        stride_dqam: gl.tensor = 0,
+        stride_dkb: gl.tensor = 0,
+        stride_dkh: gl.tensor = 0,
+        stride_dkn: gl.tensor = 0,
+        stride_dks: gl.tensor = 0,
+        stride_dvb: gl.tensor = 0,
+        stride_dvh: gl.tensor = 0,
+        stride_dvn: gl.tensor = 0,
+        stride_dvs: gl.tensor = 0,
         HAS_CU_SEQLENS_Q: gl.constexpr = False,
         HAS_CU_SEQLENS_K: gl.constexpr = False,
-    ):
+    ) -> "AttnBwdPointerScheduler":
+        """
+        Build backward base pointers.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param Q: query tensor base pointer
+        :type Q: tensor
+        :param K: key tensor base pointer
+        :type K: tensor
+        :param V: value tensor base pointer
+        :type V: tensor
+        :param dO: output gradient tensor base pointer
+        :type dO: tensor
+        :param LSELog2: log2-domain logsumexp tensor base pointer
+        :type LSELog2: tensor
+        :param dPsum: softmax gradient sum tensor base pointer
+        :type dPsum: tensor
+        :param dQaccum: accumulated query gradient tensor base pointer
+        :type dQaccum: tensor
+        :param dK: key gradient tensor base pointer
+        :type dK: tensor
+        :param dV: value gradient tensor base pointer
+        :type dV: tensor
+        :param stride_qb: query batch stride
+        :type stride_qb: tensor
+        :param stride_qh: query head stride
+        :type stride_qh: tensor
+        :param stride_qm: query sequence stride
+        :type stride_qm: tensor
+        :param stride_kb: key batch stride
+        :type stride_kb: tensor
+        :param stride_kh: key head stride
+        :type stride_kh: tensor
+        :param stride_kn: key sequence stride
+        :type stride_kn: tensor
+        :param stride_vb: value batch stride
+        :type stride_vb: tensor
+        :param stride_vh: value head stride
+        :type stride_vh: tensor
+        :param stride_vn: value sequence stride
+        :type stride_vn: tensor
+        :param stride_dob: output gradient batch stride
+        :type stride_dob: tensor
+        :param stride_doh: output gradient head stride
+        :type stride_doh: tensor
+        :param stride_dom: output gradient sequence stride
+        :type stride_dom: tensor
+        :param stride_lb: logsumexp batch stride
+        :type stride_lb: tensor
+        :param stride_lh: logsumexp head stride
+        :type stride_lh: tensor
+        :param stride_pb: softmax gradient sum batch stride
+        :type stride_pb: tensor
+        :param stride_ph: softmax gradient sum head stride
+        :type stride_ph: tensor
+        :param stride_dqab: accumulated query gradient batch stride
+        :type stride_dqab: tensor
+        :param stride_dqah: accumulated query gradient head stride
+        :type stride_dqah: tensor
+        :param stride_dqam: accumulated query gradient sequence stride
+        :type stride_dqam: tensor
+        :param stride_dkb: key gradient batch stride
+        :type stride_dkb: tensor
+        :param stride_dkh: key gradient head stride
+        :type stride_dkh: tensor
+        :param stride_dkn: key gradient sequence stride
+        :type stride_dkn: tensor
+        :param stride_dks: key gradient split stride
+        :type stride_dks: tensor
+        :param stride_dvb: value gradient batch stride
+        :type stride_dvb: tensor
+        :param stride_dvh: value gradient head stride
+        :type stride_dvh: tensor
+        :param stride_dvn: value gradient sequence stride
+        :type stride_dvn: tensor
+        :param stride_dvs: value gradient split stride
+        :type stride_dvs: tensor
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if packed query sequences are used
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if packed key sequences are used
+        :type HAS_CU_SEQLENS_K: bool
+
+        :return: backward pointer scheduler for the selected batch, head, and split
+        """
         # Initialize base pointers
         q_base = offset_batch_Q(
             base_ptr=Q + config.head_idx * stride_qh,
@@ -1576,7 +1802,27 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_q_ptrs(self, config: AttnBwdConfig, m_block, offs_m, offs_k):
+    def make_q_ptrs(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        offs_m: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct query pointers for an M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: block index along the M dimension
+        :type m_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: query pointers of shape [TILE_M, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.q_base,
             mn_block=m_block,
@@ -1588,7 +1834,24 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_k_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
+    def make_k_ptrs(
+        self,
+        config: AttnBwdConfig,
+        offs_n: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct key pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: key pointers of shape [TILE_N, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.k_base,
             mn_block=config.n_block,
@@ -1600,7 +1863,24 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_v_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
+    def make_v_ptrs(
+        self,
+        config: AttnBwdConfig,
+        offs_n: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct value pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: value pointers of shape [TILE_N, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.v_base,
             mn_block=config.n_block,
@@ -1612,7 +1892,27 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_do_ptrs(self, config: AttnBwdConfig, m_block, offs_m, offs_k):
+    def make_do_ptrs(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        offs_m: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct output gradient pointers for an M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: block index along the M dimension
+        :type m_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: output gradient pointers of shape [TILE_M, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.do_base,
             mn_block=m_block,
@@ -1624,15 +1924,51 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_lse_ptrs(self, config: AttnBwdConfig):
+    def make_lse_ptrs(self, config: AttnBwdConfig) -> gl.tensor:
+        """
+        Construct logsumexp pointers for an M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: logsumexp pointers of shape [TILE_M]
+        """
         return self.lse_base
 
     @gluon.jit
-    def make_dpsum_ptrs(self, config: AttnBwdConfig):
+    def make_dpsum_ptrs(self, config: AttnBwdConfig) -> gl.tensor:
+        """
+        Construct softmax gradient sum pointers for an M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: softmax gradient sum pointers of shape [TILE_M]
+        """
         return self.dpsum_base
 
     @gluon.jit
-    def make_dq_accum_ptrs(self, config: AttnBwdConfig, m_block, offs_m, offs_k):
+    def make_dq_accum_ptrs(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        offs_m: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct accumulated query gradient pointers for an M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: block index along the M dimension
+        :type m_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: accumulated query gradient pointers of shape [TILE_M, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.dq_accum_base,
             mn_block=m_block,
@@ -1644,7 +1980,24 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_dk_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
+    def make_dk_ptrs(
+        self,
+        config: AttnBwdConfig,
+        offs_n: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct key gradient pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: key gradient pointers of shape [TILE_N, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.dk_base,
             mn_block=config.n_block,
@@ -1656,7 +2009,24 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_dv_ptrs(self, config: AttnBwdConfig, offs_n, offs_k):
+    def make_dv_ptrs(
+        self,
+        config: AttnBwdConfig,
+        offs_n: gl.tensor,
+        offs_k: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct value gradient pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param offs_k: offsets within the K dimension
+        :type offs_k: tensor
+
+        :return: value gradient pointers of shape [TILE_N, TILE_K]
+        """
         return make_ptrs(
             base_ptr=self.dv_base,
             mn_block=config.n_block,
