@@ -830,7 +830,12 @@ class AttnFwdBlockScheduler:
         self.n_block_sink_max = n_block_sink_max
 
     @gluon.jit
-    def is_empty(self):
+    def is_empty(self) -> gl.tensor:
+        """
+        Check whether all forward key-block ranges are empty.
+
+        :return: boolean tensor indicating whether there are no N blocks to process
+        """
         return (
             (self.n_block_max <= self.n_block_min)
             & (self.n_block_window_max <= self.n_block_window_min)
@@ -839,7 +844,15 @@ class AttnFwdBlockScheduler:
 
     @staticmethod
     @gluon.jit
-    def create(config: AttnFwdConfig):
+    def create(config: AttnFwdConfig) -> "AttnFwdBlockScheduler":
+        """
+        Compute the forward key-block ranges for the current query block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: forward block scheduler containing diagonal, window, and sink ranges
+        """
         # Compute causal n_block range for this m_block
         (
             n_block_min,
@@ -981,7 +994,12 @@ class AttnBwdBlockScheduler:
         self.m_block_sink_max = m_block_sink_max
 
     @gluon.jit
-    def is_empty(self):
+    def is_empty(self) -> gl.tensor:
+        """
+        Check whether all backward query-block ranges are empty.
+
+        :return: boolean tensor indicating whether there are no M blocks to process
+        """
         return (
             (self.m_block_max <= self.m_block_min)
             & (self.m_block_window_max <= self.m_block_window_min)
@@ -990,7 +1008,15 @@ class AttnBwdBlockScheduler:
 
     @staticmethod
     @gluon.jit
-    def create(config: AttnBwdConfig):
+    def create(config: AttnBwdConfig) -> "AttnBwdBlockScheduler":
+        """
+        Compute the backward query-block ranges for the current key block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: backward block scheduler containing diagonal, window, and sink ranges
+        """
         # Compute causal m_block range for this n_block
         (
             m_block_min,
