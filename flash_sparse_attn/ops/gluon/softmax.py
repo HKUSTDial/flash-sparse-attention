@@ -60,7 +60,7 @@ def online_softmax(
     """
     Apply online softmax to acc_s, and update row_max and row_sum.
 
-    :param acc_s: attention scores tensor of shape [TILE_M, TILE_N]
+    :param acc_s: attention scores of shape [TILE_M, TILE_N]
     :type acc_s: tensor
     :param row_max: running maximum values per row of shape [TILE_M], init to -inf
     :type row_max: tensor
@@ -71,7 +71,7 @@ def online_softmax(
     :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
     :type CHECK_INF: bool
 
-    :return p: online softmax probabilities tensor of shape [TILE_M, TILE_N]
+    :return p: online softmax probabilities of shape [TILE_M, TILE_N]
     :return row_max_new: updated running maximum values per row of shape [TILE_M]
     :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]
@@ -113,7 +113,7 @@ def online_sparse_softmax(
     """
     Apply online sparse softmax to acc_s, and update row_max and row_sum.
 
-    :param acc_s: attention scores tensor of shape [TILE_M, TILE_N]
+    :param acc_s: attention scores of shape [TILE_M, TILE_N]
     :type acc_s: tensor
     :param row_max: running maximum values per row of shape [TILE_M], init to -inf
     :type row_max: tensor
@@ -126,7 +126,7 @@ def online_sparse_softmax(
     :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
     :type CHECK_INF: bool
 
-    :return p: online softmax probabilities tensor of shape [TILE_M, TILE_N]
+    :return p: online softmax probabilities of shape [TILE_M, TILE_N]
     :return row_max_new: updated running maximum values per row of shape [TILE_M]
     :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]
