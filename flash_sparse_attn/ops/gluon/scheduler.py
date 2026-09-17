@@ -51,7 +51,21 @@ class AttnFwdGridIndex:
         QHEAD_PER_KVHEAD: gl.constexpr,
         IS_SPLIT_KV: gl.constexpr,
         PACK_GQA: gl.constexpr,
-    ):
+    ) -> "AttnFwdGridIndex":
+        """
+        Decode the forward program IDs into attention grid indices.
+
+        :param NUM_SPLITS: number of KV splits
+        :type NUM_SPLITS: int
+        :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
+        :type QHEAD_PER_KVHEAD: int
+        :param IS_SPLIT_KV: boolean flag indicating if the KV range is split
+        :type IS_SPLIT_KV: bool
+        :param PACK_GQA: boolean flag indicating if packed GQA is enabled
+        :type PACK_GQA: bool
+
+        :return: forward grid indices for the current program
+        """
         m_block = gl.program_id(0)
         head_idx = gl.program_id(1)
         batch_split_idx = gl.program_id(2)
@@ -74,7 +88,27 @@ class AttnFwdGridIndex:
         )
 
     @gluon.jit
-    def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: gl.constexpr):
+    def load_window_sizes(
+        self,
+        window_sizes: gl.tensor,
+        stride_wh: gl.tensor,
+        IS_LOCAL: gl.constexpr,
+    ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+        """
+        Load the local-attention window sizes for the current KV head.
+
+        :param window_sizes: base pointer to per-head window sizes
+        :type window_sizes: tensor
+        :param stride_wh: stride between window-size records for adjacent heads
+        :type stride_wh: tensor
+        :param IS_LOCAL: boolean flag indicating if local attention is enabled
+        :type IS_LOCAL: bool
+
+        :return window_size_sink: prefix-sink token count
+        :return window_size_left: distant local band token count
+        :return window_size_right: gap token count after the near-diagonal window
+        :return window_size_near: near-diagonal local token count
+        """
         if IS_LOCAL:
             window_size_sink = gl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_left = gl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
@@ -110,7 +144,19 @@ class AttnBwdGridIndex:
         NUM_SPLITS: gl.constexpr,
         QHEAD_PER_KVHEAD: gl.constexpr,
         IS_SPLIT_QO: gl.constexpr,
-    ):
+    ) -> "AttnBwdGridIndex":
+        """
+        Decode the backward program IDs into attention grid indices.
+
+        :param NUM_SPLITS: number of QO splits
+        :type NUM_SPLITS: int
+        :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
+        :type QHEAD_PER_KVHEAD: int
+        :param IS_SPLIT_QO: boolean flag indicating if the QO range is split
+        :type IS_SPLIT_QO: bool
+
+        :return: backward grid indices for the current program
+        """
         n_block = gl.program_id(0)
         head_idx = gl.program_id(1)
         batch_split_idx = gl.program_id(2)
@@ -130,7 +176,27 @@ class AttnBwdGridIndex:
         )
 
     @gluon.jit
-    def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: gl.constexpr):
+    def load_window_sizes(
+        self,
+        window_sizes: gl.tensor,
+        stride_wh: gl.tensor,
+        IS_LOCAL: gl.constexpr,
+    ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+        """
+        Load the local-attention window sizes for the current KV head.
+
+        :param window_sizes: base pointer to per-head window sizes
+        :type window_sizes: tensor
+        :param stride_wh: stride between window-size records for adjacent heads
+        :type stride_wh: tensor
+        :param IS_LOCAL: boolean flag indicating if local attention is enabled
+        :type IS_LOCAL: bool
+
+        :return window_size_sink: prefix-sink token count
+        :return window_size_left: distant local band token count
+        :return window_size_right: gap token count after the near-diagonal window
+        :return window_size_near: near-diagonal local token count
+        """
         if IS_LOCAL:
             window_size_sink = gl.load(window_sizes + self.head_kv_idx * stride_wh)
             window_size_left = gl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
