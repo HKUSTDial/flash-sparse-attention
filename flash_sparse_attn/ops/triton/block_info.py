@@ -64,6 +64,7 @@ def get_n_block_min_max(
             n_block_diag_min = tl.maximum(n_block_diag_min, n_block_sink_exclude_max)
             n_block_diag_max = n_block_max
             n_block_window_max = tl.maximum(n_block_window_max, n_block_window_min)
+            n_block_diag_min = tl.maximum(n_block_diag_min, n_block_window_max)
             total_n_blocks = tl.maximum(n_block_window_max - n_block_window_min, 0)
             base = total_n_blocks // NUM_SPLITS
             extra = total_n_blocks % NUM_SPLITS
