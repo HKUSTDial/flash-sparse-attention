@@ -69,7 +69,7 @@ def window_sizes_heuristic(
     :param tp_rank: Tensor parallel rank of this process.
     :param tp_size: Tensor parallel world size.
 
-    :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_near]. window_sink is the prefix sink token count, window_left is the distant band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_near is the near-diagonal token count.
+    :return: int32 tensor with shape [num_heads_kv, 4], columns are [window_sink, window_left, window_right, window_near]. window_sink is the prefix-sink token count, window_left is the distant band token count, window_right is the token count gap after the near-diagonal window before the distant band, and window_near is the near-diagonal token count.
     """
     if num_heads_kv_global is None:
         num_heads_kv_global = num_heads_kv
