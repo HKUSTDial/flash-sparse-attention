@@ -263,7 +263,7 @@ def make_ptrs(
     :type mn_block: tensor
     :param stride_seq: stride between sequence positions
     :type stride_seq: tensor
-    :param offs_mn: lane offsets along the sequence dimension
+    :param offs_mn: lane offsets along the M or N dimension
     :type offs_mn: tensor
     :param offs_k: lane offsets along the K dimension
     :type offs_k: tensor
