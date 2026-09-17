@@ -134,8 +134,10 @@ def _fwd_inner_dense_kernel(
 @triton.heuristics(
     {
         "EVEN_M": lambda args: not args["HAS_CU_SEQLENS_Q"]
+        and not args["HAS_SEQUSED_Q"]
         and args["seqlen_q"] % args["TILE_M"] == 0,
         "EVEN_N": lambda args: not args["HAS_CU_SEQLENS_K"]
+        and not args["HAS_SEQUSED_K"]
         and args["seqlen_k"] % args["TILE_N"] == 0,
     }
 )
@@ -864,7 +866,7 @@ def _flash_dense_attn_varlen_forward(
         assert_fwd_inputs(
             query=query,
             key=key,
-            value=key,
+            value=value,
             window_sizes=window_sizes,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
