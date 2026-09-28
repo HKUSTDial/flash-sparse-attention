@@ -53,18 +53,19 @@ def gemm(
     lhs_layout: gl.constexpr,
     rhs_layout: gl.constexpr,
     hook_fn=None,
+    hook_args=(),
 ):
     MMA_K: gl.constexpr = 16
     TILE_K: gl.constexpr = sA.shape[1]
     rA = sA.slice(0, MMA_K, dim=1).load(lhs_layout)
-    rB = sB.slice(0, MMA_K, dim=1).permute((1, 0)).load(rhs_layout)
+    rB = sB.slice(0, MMA_K, dim=0).load(rhs_layout)
     for k in gl.static_range(0, TILE_K, MMA_K):
         if k + MMA_K < TILE_K:
             rA_next = sA.slice(k + MMA_K, MMA_K, dim=1).load(lhs_layout)
-            rB_next = sB.slice(k + MMA_K, MMA_K, dim=1).permute((1, 0)).load(rhs_layout)
+            rB_next = sB.slice(k + MMA_K, MMA_K, dim=0).load(rhs_layout)
         acc = mma_v2(rA, rB, acc)
         if k == 0 and hook_fn is not None:
-            hook_fn()
+            hook_fn(*hook_args)
         if k + MMA_K < TILE_K:
             rA = rA_next
             rB = rB_next
@@ -79,6 +80,7 @@ def gemm_rs(
     lhs_layout: gl.constexpr,
     rhs_layout: gl.constexpr,
     hook_fn=None,
+    hook_args=(),
 ):
     MMA_K: gl.constexpr = 16
     TILE_K: gl.constexpr = rA.shape[1]
@@ -91,7 +93,7 @@ def gemm_rs(
             rB_next = sB.slice(k + MMA_K, MMA_K, dim=0).load(rhs_layout)
         acc = mma_v2(rA, rB, acc)
         if k == 0 and hook_fn is not None:
-            hook_fn()
+            hook_fn(*hook_args)
         if k + MMA_K < TILE_K:
             rA = rA_next
             rB = rB_next
