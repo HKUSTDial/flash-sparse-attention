@@ -284,8 +284,59 @@ def assert_fwd_combine_inputs(
         torch.float16,
         torch.bfloat16,
     ], "out tensor must be float16 or bfloat16"
-    assert num_splits > 1, "num_splits must be greater than 1"
+    assert num_splits >= 1, "num_splits must be greater than or equal to 1"
     if cu_seqlens_q is not None:
         assert cu_seqlens_q.dtype == torch.int32, "cu_seqlens_q must be int32"
     if seqused_q is not None:
         assert seqused_q.dtype == torch.int32, "seqused_q must be int32"
+
+
+def assert_bwd_combine_inputs(
+    dk_partial: torch.Tensor,
+    dv_partial: torch.Tensor,
+    dk: torch.Tensor,
+    dv: torch.Tensor,
+    num_splits: int,
+    cu_seqlens_k: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+):
+    """
+    Assert the validity of inputs for the backward combine kernel.
+
+    :param dk_partial: partial key gradient tensor
+    :type dk_partial: torch.Tensor
+    :param dv_partial: partial value gradient tensor
+    :type dv_partial: torch.Tensor
+    :param dk: combined key gradient tensor
+    :type dk: torch.Tensor
+    :param dv: combined value gradient tensor
+    :type dv: torch.Tensor
+    :param num_splits: number of partial gradients to combine
+    :type num_splits: int
+    :param cu_seqlens_k: cumulative sequence lengths for keys
+    :type cu_seqlens_k: Optional[torch.Tensor]
+    :param seqused_k: actual sequence lengths for keys
+    :type seqused_k: Optional[torch.Tensor]
+
+    :raises AssertionError: If any of the assertions fail
+    """
+
+    device = dk_partial.device
+    assert device == dv_partial.device == dk.device == dv.device, (
+        "All inputs must be on the same device"
+    )
+    assert dk_partial.dtype == dv_partial.dtype == torch.float32, (
+        "dk_partial/dv_partial tensors must be float32 for numerical stability"
+    )
+    assert dk.dtype == dv.dtype, "dk/dv tensors must have the same dtype"
+    assert dk.dtype in [
+        torch.float16,
+        torch.bfloat16,
+    ], "dk/dv tensors must be float16 or bfloat16"
+    assert num_splits >= 1, "num_splits must be greater than or equal to 1"
+    if cu_seqlens_k is not None:
+        assert device == cu_seqlens_k.device, "All inputs must be on the same device"
+        assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"
+    if seqused_k is not None:
+        assert device == seqused_k.device, "All inputs must be on the same device"
+        assert seqused_k.dtype == torch.int32, "seqused_k must be int32"
