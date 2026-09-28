@@ -62,6 +62,11 @@ def fwd_combine_repr(specialization):
     return f"flash_fwd_combine_M{c['TILE_M']}K{c['TILE_K']}"
 
 
+def bwd_combine_repr(specialization):
+    c = specialization.constants
+    return f"flash_bwd_combine_N{c['TILE_N']}K{c['TILE_K']}"
+
+
 def bwd_preprocess_repr(specialization):
     c = specialization.constants
     return f"flash_bwd_preprocess_M{c['TILE_M']}K{c['TILE_K']}"
