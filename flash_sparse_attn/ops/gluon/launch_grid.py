@@ -110,6 +110,36 @@ def get_fwd_combine_grid(
 get_fwd_combine_grid = cache_utils.cache_launch_grid(get_fwd_combine_grid)
 
 
+def get_bwd_combine_grid(
+    batch_size: int,
+    seqlen_k: int,
+    num_heads_kv: int,
+):
+    """
+    Get the grid function for the backward combine kernel.
+
+    :param batch_size: batch size
+    :type batch_size: int
+    :param seqlen_k: sequence length of keys
+    :type seqlen_k: int
+    :param num_heads_kv: number of key/value heads
+    :type num_heads_kv: int
+
+    :return grid: grid function
+    """
+
+    def grid(META):
+        return (
+            triton.cdiv(seqlen_k, META["TILE_N"]),
+            batch_size * num_heads_kv,
+        )
+
+    return grid
+
+
+get_bwd_combine_grid = cache_utils.cache_launch_grid(get_bwd_combine_grid)
+
+
 def get_bwd_preprocess_grid(
     batch_size: int,
     seqlen_q: int,
@@ -131,8 +161,7 @@ def get_bwd_preprocess_grid(
     def grid(META):
         return (
             triton.cdiv(seqlen_q, META["TILE_M"]),
-            num_heads_q,
-            batch_size,
+            batch_size * num_heads_q,
         )
 
     return grid
@@ -162,8 +191,7 @@ def get_bwd_postprocess_grid(
     def grid(META):
         return (
             triton.cdiv(seqlen_q, META["TILE_M"]),
-            num_heads_q,
-            batch_size,
+            batch_size * num_heads_q,
         )
 
     return grid
