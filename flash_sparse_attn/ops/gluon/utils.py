@@ -23,13 +23,46 @@ def get_device():
         return torch.device("cpu")
 
 
+@functools.lru_cache(maxsize=8)
+def get_device_arch(device: torch.device) -> int:
+    """
+    Get the architecture for a given device.
+
+    :param device: torch device
+    :type device: torch.device
+
+    :return arch: architecture model as a number.
+    """
+    if device.type == "cuda":
+        major, minor = torch.cuda.get_device_capability(device)
+        sm = major * 10 + minor
+        return sm if sm >= 80 else -1
+    if device.type in {"xpu", "mps", "cpu"}:
+        return -1
+    raise ValueError(f"Unsupported device: {device}")
+
+
+@functools.lru_cache(maxsize=8)
+def get_device_num_sms(device: torch.device) -> int:
+    """
+    Get the SM count for a given device.
+
+    :param device: torch device
+    :type device: torch.device
+
+    :return num_sms: number of streaming multiprocessors.
+    """
+    return torch.cuda.get_device_properties(device).multi_processor_count
+
+
 def ensure_contiguous(fn):
     """
     Decorator to ensure that all tensor inputs to the decorated function are contiguous.
 
-    :param fn: Function to be decorated
+    :param fn: function to be decorated
+    :type fn: Callable[..., Any]
 
-    :return wrapper: Wrapped function
+    :return wrapper: wrapped function
     """
 
     @functools.wraps(fn)
@@ -42,6 +75,20 @@ def ensure_contiguous(fn):
         return fn(ctx, *args, **kwargs)
 
     return wrapper
+
+
+def cache_launch_grid(fn, maxsize: int = 512):
+    """
+    Bounded cache for Triton grid-factory closures.
+
+    :param fn: grid-factory function to wrap
+    :type fn: Callable[..., Any]
+    :param maxsize: maximum number of cached entries.
+    :type maxsize: int
+
+    :return wrapper: wrapped function.
+    """
+    return functools.lru_cache(maxsize=maxsize)(fn)
 
 
 @functools.lru_cache(maxsize=4096)
