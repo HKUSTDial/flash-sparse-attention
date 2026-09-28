@@ -730,6 +730,7 @@ def _flash_dense_attn_forward(
     elif not is_split_kv:
         num_splits = 1
 
+    # Allocate outputs
     out = out if out is not None else torch.empty_like(query)
     lse = (
         lse
@@ -740,7 +741,6 @@ def _flash_dense_attn_forward(
             device=query.device,
         )
     )
-
     if is_split_kv:
         out_partial = torch.empty(
             (num_splits, batch_size, seqlen_q, num_heads_q, head_dim),
@@ -814,6 +814,7 @@ def _flash_dense_attn_forward(
         num_stages=1,  # only change compiler metadata
     )
 
+    # Combine partial results if split_kv was used
     if is_split_kv:
         _flash_attn_fwd_combine(
             out_partial,
@@ -896,6 +897,7 @@ def _flash_dense_attn_varlen_forward(
     elif not is_split_kv:
         num_splits = 1
 
+    # Allocate outputs
     out = out if out is not None else torch.empty_like(query)
     lse = (
         lse
@@ -906,7 +908,6 @@ def _flash_dense_attn_varlen_forward(
             device=query.device,
         )
     )
-
     if is_split_kv:
         out_partial = torch.empty(
             (num_splits, total_seqlen_q, num_heads_q, head_dim),
@@ -980,6 +981,7 @@ def _flash_dense_attn_varlen_forward(
         num_stages=1,  # only change compiler metadata
     )
 
+    # Combine partial results if split_kv was used
     if is_split_kv:
         _flash_attn_fwd_combine(
             out_partial,
