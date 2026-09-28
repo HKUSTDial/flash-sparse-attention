@@ -7,20 +7,22 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 
 from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_combine_inputs
+from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_combine_grid
+from flash_sparse_attn.ops.gluon.kernel_repr import fwd_combine_repr
 from flash_sparse_attn.ops.gluon.seqlen_info import (
     get_seqlen_info,
     offset_batch_Q,
     make_ptrs,
 )
-from flash_sparse_attn.ops.gluon.kernel_repr import fwd_combine_repr
-from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_combine_grid
 
 
 @triton.heuristics(
     {
-        "EVEN_M": lambda args: not args["HAS_CU_SEQLENS_Q"]
-        and not args["HAS_SEQUSED_Q"]
-        and args["seqlen_q"] % args["TILE_M"] == 0,
+        "EVEN_M": lambda args: (
+            not args["HAS_CU_SEQLENS_Q"]
+            and not args["HAS_SEQUSED_Q"]
+            and args["seqlen_q"] % args["TILE_M"] == 0
+        ),
     }
 )
 @gluon.jit(repr=fwd_combine_repr)
@@ -46,11 +48,11 @@ def _fwd_combine_kernel(
     num_splits,
     seqlen_q,
     num_heads_q,
-    TILE_M: gl.constexpr,
-    TILE_K: gl.constexpr,
     HAS_CU_SEQLENS_Q: gl.constexpr,
     HAS_SEQUSED_Q: gl.constexpr,
     EVEN_M: gl.constexpr,
+    TILE_M: gl.constexpr,
+    TILE_K: gl.constexpr,
     num_warps: gl.constexpr,
 ):
     warp_size: gl.constexpr = 32
@@ -86,11 +88,6 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
     )
-
-    # Compute predicates for global memory copy
-    if not EVEN_M:
-        copy_m_rows = m_block * TILE_M + copy_offs_m
-        predicate_copy_m = copy_m_rows < actual_seqlen_q
 
     # Initialize base pointers
     out_partial_base = offset_batch_Q(
@@ -177,6 +174,11 @@ def _fwd_combine_kernel(
     e_max = gl.full([TILE_M], float("-inf"), gl.float32, copy_row_layout)
     acc_o = gl.zeros([TILE_M, TILE_K], gl.float32, copy_layout)
 
+    # Compute predicates for global memory copy
+    if not EVEN_M:
+        copy_m_rows = m_block * TILE_M + copy_offs_m
+        predicate_copy_m = copy_m_rows < actual_seqlen_q
+
     # Combine split outputs
     for split_idx in range(num_splits):
         # Load partial LSE
@@ -186,7 +188,7 @@ def _fwd_combine_kernel(
             other=float("-inf") if not EVEN_M else None,
         )
 
-        # Load partial outputs
+        # Load partial O
         partial_o = gl.load(
             out_partial_ptrs + split_idx * stride_ops,
             mask=predicate_copy_m[:, None] if not EVEN_M else None,
@@ -199,7 +201,7 @@ def _fwd_combine_kernel(
         old_scale = gl.where(e_max == float("-inf"), 0.0, gl.exp2(e_max - new_e_max))
         exp_logic = gl.where(lse_s == float("-inf"), 0.0, gl.exp2(lse_s - new_e_max))
 
-        # Compute scaled outputs
+        # Compute scaled O
         acc_o *= old_scale[:, None]
         acc_o += exp_logic[:, None] * partial_o
 
@@ -207,11 +209,11 @@ def _fwd_combine_kernel(
         e_sum = e_sum * old_scale + exp_logic
         e_max = new_e_max
 
-    # Normalize output
+    # Normalize O
     inv_sum = gl.where((e_sum == 0.0) | (e_sum != e_sum), 0.0, 1.0 / e_sum)
     acc_o *= inv_sum[:, None]
 
-    # Store output
+    # Store O
     gl.store(out_ptrs, acc_o, mask=predicate_copy_m[:, None] if not EVEN_M else None)
 
     # Compute LSE
@@ -229,6 +231,9 @@ def _flash_attn_fwd_combine(
     lse: torch.Tensor,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
+    max_seqlen_q: Optional[int] = None,
+    tile_m: Optional[int] = None,
+    num_threads: Optional[int] = None,
     skip_checks: bool = False,
 ):
     is_varlen = cu_seqlens_q is not None
@@ -238,7 +243,7 @@ def _flash_attn_fwd_combine(
     else:
         total_q, num_heads_q, head_dim = out_partial.shape[1:]
         batch_size = cu_seqlens_q.shape[0] - 1
-        seqlen_q = total_q
+        seqlen_q = max_seqlen_q if max_seqlen_q is not None else total_q
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -254,14 +259,24 @@ def _flash_attn_fwd_combine(
 
     # Setup launch configuration
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
-    TILE_M = min(
-        4
-        if TILE_K % 256 == 0
-        else (8 if TILE_K % 128 == 0 else (16 if TILE_K % 64 == 0 else 32)),
-        triton.next_power_of_2(seqlen_q),
+    TILE_M = (
+        tile_m
+        if tile_m is not None
+        else max(
+            min(
+                4
+                if TILE_K % 256 == 0
+                else (8 if TILE_K % 128 == 0 else (16 if TILE_K % 64 == 0 else 32)),
+                triton.next_power_of_2(seqlen_q),
+            ),
+            triton.cdiv(32, TILE_K),
+        )
     )
-    TILE_M = max(TILE_M, triton.cdiv(32, TILE_K))
-    num_warps = min(8, TILE_M, TILE_M * TILE_K // 32)
+    num_warps = (
+        num_threads // 32
+        if num_threads is not None
+        else min(8, TILE_M, TILE_M * TILE_K // 32)
+    )
 
     # Get the grid for the kernel launch
     grid = get_fwd_combine_grid(
@@ -293,9 +308,9 @@ def _flash_attn_fwd_combine(
         num_splits,
         seqlen_q,
         num_heads_q,
-        TILE_M=TILE_M,
-        TILE_K=TILE_K,
         HAS_CU_SEQLENS_Q=is_varlen,
         HAS_SEQUSED_Q=seqused_q is not None,
+        TILE_M=TILE_M,
+        TILE_K=TILE_K,
         num_warps=num_warps,
     )
