@@ -65,8 +65,8 @@ pip install flash-sparse-attn
 如果您希望从源码安装：
 
 ```bash
-git clone https://github.com/flash-algo/flash-sparse-attn.git
-cd flash-sparse-attn
+git clone https://github.com/HKUSTDial/flash-sparse-attention.git
+cd flash-sparse-attention
 pip install .
 ```
 
