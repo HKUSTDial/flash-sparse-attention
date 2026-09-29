@@ -162,7 +162,7 @@ graph.replay()
 ```
 
 
-# 性能
+<!-- # 性能
 
 以下基准测试涵盖前向、后向和解码工作负载, 以FlashAttention作为基线。
 
@@ -211,7 +211,7 @@ graph.replay()
 
 **解码性能**
 
-![Attention decode speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_rtxpro6000.png)
+![Attention decode speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_rtxpro6000.png) -->
 
 
 # 基准测试
@@ -221,19 +221,40 @@ graph.replay()
 ## 前向传播性能
 
 ```bash
+# Triton backend
 python tests/benchmark_forward.py
+
+# CuTe backend
+python tests/benchmark_forward_cute.py
+
+# Gluon backend
+# WIP
 ```
 
 ## 反向传播性能
 
 ```bash
+# Triton backend
 python tests/benchmark_backward.py
+
+# CuTe backend
+python tests/benchmark_backward_cute.py
+
+# Gluon backend
+# WIP
 ```
 
 ## 解码性能
 
 ```bash
+# Triton backend
 python tests/benchmark_decode.py
+
+# CuTe backend
+# WIP
+
+# Gluon backend
+# WIP
 ```
 
 

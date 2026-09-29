@@ -165,7 +165,7 @@ graph.replay()
 ```
 
 
-# Performance
+<!-- # Performance
 
 The following benchmarks cover forward, backward, and decode workloads, using FlashAttention as the baseline.
 
@@ -214,7 +214,7 @@ The following benchmarks cover forward, backward, and decode workloads, using Fl
 
 **Decode Performance**
 
-![Attention decode speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_rtxpro6000.png)
+![Attention decode speed, head dim 128, rtx pro 6000](https://github.com/HKUSTDial/flash-sparse-attention/releases/download/v2.0.5/latency_decode_rtxpro6000.png) -->
 
 
 # Benchmarking
@@ -224,19 +224,40 @@ Benchmark scripts are located under [tests](tests/), covering forward, backward,
 ## Forward Performance
 
 ```bash
+# Triton backend
 python tests/benchmark_forward.py
+
+# CuTe backend
+python tests/benchmark_forward_cute.py
+
+# Gluon backend
+# WIP
 ```
 
 ## Backward Performance
 
 ```bash
+# Triton backend
 python tests/benchmark_backward.py
+
+# CuTe backend
+python tests/benchmark_backward_cute.py
+
+# Gluon backend
+# WIP
 ```
 
 ## Decode Performance
 
 ```bash
+# Triton backend
 python tests/benchmark_decode.py
+
+# CuTe backend
+# WIP
+
+# Gluon backend
+# WIP
 ```
 
 
