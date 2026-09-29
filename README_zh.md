@@ -40,7 +40,7 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 
 - KV-Cache 管理器
 - [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE) 后端支持
-- [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) 后端支持
+- [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) 后端支持 [WIP]
 
 
 # 安装
@@ -62,39 +62,13 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 pip install flash-sparse-attn
 ```
 
-此外，需要安装 `triton_kernels`：
-
-```bash
-pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v3.6.0#subdirectory=python/triton_kernels"
-```
-
-如果您希望从源码安装（自动包含所有依赖）：
+如果您希望从源码安装：
 
 ```bash
 git clone https://github.com/flash-algo/flash-sparse-attn.git
 cd flash-sparse-attn
 pip install .
 ```
-
-
-## 通过 HuggingFace Kernel 使用
-
-也可以直接从 [HuggingFace Kernel](https://github.com/huggingface/kernels) 加载 kernel，无需安装本包：
-
-```python
-from kernels import get_kernel
-
-fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
-
-# 前向
-out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True)
-# 反向
-out.sum().backward()
-# 解码
-out = fsa.flash_sparse_attn_with_kvcache_func(q, k_cache, v_cache)
-```
-
-需要先安装 `pip install kernels`。
 
 
 # 快速开始
@@ -268,14 +242,34 @@ python tests/benchmark_decode.py
 如果您在研究中使用 FSA, 请引用：
 
 ```bibtex
+@misc{shi2026cowindowattentioncausalcoverage,
+      title={CoWindow Attention: Full Causal Coverage Is a Collective Property}, 
+      author={Jingze Shi and Zhangyang Peng and Xianduo Li and Yanlin Qi and Xiaotian Lin and Haoxian Chen and Liangdong Wang and Guang Liu and Yuyu Luo},
+      year={2026},
+      eprint={2609.32704},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2609.32704}, 
+}
+
+@misc{shi2026massallocattentionletattention,
+      title={MassAlloc Attention: Let Attention Allocate Its Own Compute}, 
+      author={Jingze Shi and Zhangyang Peng and Xianduo Li and Yanlin Qi and Xiaotian Lin and Haoxian Chen and Liangdong Wang and Guang Liu and Yuyu Luo},
+      year={2026},
+      eprint={2609.32712},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2609.32712}, 
+}
+
 @misc{shi2025trainabledynamicmasksparse,
-      title={Trainable Dynamic Mask Sparse Attention}, 
+      title={Trainable Dynamic Mask Sparse Attention},
       author={Jingze Shi and Yifan Wu and Bingheng Wu and Yiran Peng and Liangdong Wang and Guang Liu and Yuyu Luo},
       year={2025},
       eprint={2508.02124},
       archivePrefix={arXiv},
       primaryClass={cs.AI},
-      url={https://arxiv.org/abs/2508.02124}, 
+      url={https://arxiv.org/abs/2508.02124},
 }
 ```
 

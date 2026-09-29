@@ -12,6 +12,9 @@
 
 Flash-Sparse-Attention is a high-performance trainable sparse attention implementation that combines Flash Attention's memory efficiency with sparse computation for handling extremely long sequences in Transformer models.
 
+> [!NOTE]
+> The CuTe backend ([`flash_sparse_attn.ops.cute`](./flash_sparse_attn/ops/cute)) currently delivers the best performance. A Gluon backend targeting performance parity with CuTe is still a work in progress.
+
 
 # Key Features
 
@@ -40,7 +43,7 @@ Flash-Sparse-Attention is a high-performance trainable sparse attention implemen
 
 - KV-Cache Manager
 - [TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE) backend support
-- [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) backend support
+- [Gluon](https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon) backend targeting performance parity with CuTe [WIP]
 
 
 # Installation
@@ -62,36 +65,12 @@ Install from PyPI:
 pip install flash-sparse-attn
 ```
 
-Additionally, install `triton_kernels`:
-
-```bash
-pip install "triton_kernels @ git+https://github.com/triton-lang/triton.git@v3.6.0#subdirectory=python/triton_kernels"
-```
-
-To install from source (includes all dependencies automatically):
+To install from source:
 
 ```bash
 git clone https://github.com/flash-algo/flash-sparse-attn.git
 cd flash-sparse-attn
 pip install .
-```
-
-
-## Install via HuggingFace Kernel
-
-You can also load the kernels directly from [HuggingFace Kernel](https://github.com/huggingface/kernels) without installing the package:
-
-```python
-from kernels import get_kernel
-
-fsa = get_kernel("JingzeShi/flash-sparse-attn", version=1, trust_remote_code=True)
-
-# Forward
-out = fsa.flash_sparse_attn_func(q, k, v, is_causal=True)
-# Backward
-out.sum().backward()
-# Decode
-out = fsa.flash_sparse_attn_with_kvcache_func(q, k_cache, v_cache)
 ```
 
 
@@ -266,6 +245,26 @@ python tests/benchmark_decode.py
 If you use FSA in your research, please cite:
 
 ```bibtex
+@misc{shi2026cowindowattentioncausalcoverage,
+      title={CoWindow Attention: Full Causal Coverage Is a Collective Property}, 
+      author={Jingze Shi and Zhangyang Peng and Xianduo Li and Yanlin Qi and Xiaotian Lin and Haoxian Chen and Liangdong Wang and Guang Liu and Yuyu Luo},
+      year={2026},
+      eprint={2609.32704},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2609.32704}, 
+}
+
+@misc{shi2026massallocattentionletattention,
+      title={MassAlloc Attention: Let Attention Allocate Its Own Compute}, 
+      author={Jingze Shi and Zhangyang Peng and Xianduo Li and Yanlin Qi and Xiaotian Lin and Haoxian Chen and Liangdong Wang and Guang Liu and Yuyu Luo},
+      year={2026},
+      eprint={2609.32712},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2609.32712}, 
+}
+
 @misc{shi2025trainabledynamicmasksparse,
       title={Trainable Dynamic Mask Sparse Attention},
       author={Jingze Shi and Yifan Wu and Bingheng Wu and Yiran Peng and Liangdong Wang and Guang Liu and Yuyu Luo},
