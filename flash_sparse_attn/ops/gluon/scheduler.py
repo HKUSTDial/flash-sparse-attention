@@ -1054,10 +1054,6 @@ class AttnBwdBlockScheduler:
             IS_LOCAL=False,
         )
 
-        # Clamp to split's range so the no-mask loop stays within bounds
-        if config.IS_SPLIT_QO:
-            m_block_min_no_mask = gl.minimum(m_block_min_no_mask, m_block_max)
-
         if config.IS_LOCAL:
             # Compute local m_block range for this n_block
             m_block_min_no_mask = m_block_max
@@ -1073,9 +1069,6 @@ class AttnBwdBlockScheduler:
                 IS_CAUSAL=False,
                 IS_LOCAL=True,
             )
-            m_block_window_min_no_mask = gl.maximum(
-                m_block_window_min_no_mask, m_block_window_min
-            )
             m_block_window_max_no_mask = get_m_block_max_before_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -1087,18 +1080,6 @@ class AttnBwdBlockScheduler:
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
-            )
-            # Clamp window no-mask boundaries to the window's range
-            m_block_window_max_no_mask = gl.maximum(
-                m_block_window_max_no_mask, m_block_window_min_no_mask
-            )
-            m_block_window_min_no_mask = gl.maximum(
-                gl.minimum(m_block_window_min_no_mask, m_block_window_max),
-                m_block_window_min,
-            )
-            m_block_window_max_no_mask = gl.maximum(
-                gl.minimum(m_block_window_max_no_mask, m_block_window_max),
-                m_block_window_min_no_mask,
             )
         else:
             m_block_window_min_no_mask = gl.to_tensor(0)
