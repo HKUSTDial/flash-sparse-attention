@@ -98,3 +98,55 @@ def gemm_rs(
             rA = rA_next
             rB = rB_next
     return acc
+
+
+@gluon.jit
+def atomic_add(
+    base_ptr,
+    values,
+    mask,
+    mn_block,
+    stride_seq,
+    offs_mn,
+    offs_k,
+    TILE_MN: gl.constexpr,
+    HAS_MASK: gl.constexpr = True,
+):
+    base_addr = (base_ptr + mn_block * TILE_MN * stride_seq).to(gl.uint64)
+    element_offsets = offs_mn[:, None] * stride_seq + offs_k[None, :]
+    if HAS_MASK:
+        gl.inline_asm_elementwise(
+            """
+            {
+                .reg .u64 addr;
+                .reg .pred p;
+                mul.wide.u32 addr, $2, 4;
+                add.u64 addr, $1, addr;
+                setp.ne.s32 p, $4, 0;
+                @p red.global.add.f32 [addr], $3;
+                mov.u32 $0, 0;
+            }
+            """,
+            "=r,l,r,f,r",
+            [base_addr, element_offsets, values, mask],
+            dtype=gl.int32,
+            is_pure=False,
+            pack=1,
+        )
+    else:
+        gl.inline_asm_elementwise(
+            """
+            {
+                .reg .u64 addr;
+                mul.wide.u32 addr, $2, 4;
+                add.u64 addr, $1, addr;
+                red.global.add.f32 [addr], $3;
+                mov.u32 $0, 0;
+            }
+            """,
+            "=r,l,r,f",
+            [base_addr, element_offsets, values],
+            dtype=gl.int32,
+            is_pure=False,
+            pack=1,
+        )
