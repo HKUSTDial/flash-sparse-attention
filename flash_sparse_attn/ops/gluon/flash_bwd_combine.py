@@ -13,6 +13,7 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
     get_seqlen_info,
     offset_batch_K,
     make_ptrs,
+    make_seqlen_predicate,
 )
 
 
@@ -27,26 +28,26 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
 )
 @gluon.jit(repr=bwd_combine_repr)
 def _bwd_combine_kernel(
-    dK_partial,
-    dV_partial,
-    dK,
-    dV,
-    stride_dkps,
-    stride_dkpb,
-    stride_dkph,
-    stride_dkpn,
-    stride_dvps,
-    stride_dvpb,
-    stride_dvph,
-    stride_dvpn,
+    mdKaccum,
+    mdVaccum,
+    mdK,
+    mdV,
+    mCuSeqlensK,
+    mSeqUsedK,
+    stride_dkas,
+    stride_dkab,
+    stride_dkah,
+    stride_dkan,
+    stride_dvas,
+    stride_dvab,
+    stride_dvah,
+    stride_dvan,
     stride_dkb,
     stride_dkh,
     stride_dkn,
     stride_dvb,
     stride_dvh,
     stride_dvn,
-    cu_seqlens_k,
-    seqused_k,
     num_splits,
     seqlen_k,
     num_heads_kv,
@@ -55,6 +56,7 @@ def _bwd_combine_kernel(
     EVEN_N: gl.constexpr,
     TILE_N: gl.constexpr,
     TILE_K: gl.constexpr,
+    PADDED_TILE_N: gl.constexpr,
     num_warps: gl.constexpr,
 ):
     warp_size: gl.constexpr = 32
@@ -72,8 +74,8 @@ def _bwd_combine_kernel(
     copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
 
     # Compute offsets for global memory copy
-    copy_offs_n = gl.arange(0, TILE_N, copy_row_layout)
-    copy_offs_k = gl.arange(0, TILE_K, copy_col_layout)
+    copy_row_n_offs = gl.arange(0, TILE_N, copy_row_layout)
+    copy_col_k_offs = gl.arange(0, TILE_K, copy_col_layout)
 
     # Create grid index
     n_block = gl.program_id(0)
@@ -82,51 +84,52 @@ def _bwd_combine_kernel(
     head_idx = bh_idx - batch_idx * num_heads_kv
 
     # Get seqlen info for this batch
-    offset_k, actual_seqlen_k = get_seqlen_info(
+    offset_k, padded_offset_k, actual_seqlen_k = get_seqlen_info(
         batch_idx=batch_idx,
         seqlen_static=seqlen_k,
-        cu_seqlens=cu_seqlens_k,
-        seqused=seqused_k,
+        cu_seqlens=mCuSeqlensK,
+        seqused=mSeqUsedK,
+        TILE_MN=PADDED_TILE_N,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
         HAS_SEQUSED=HAS_SEQUSED_K,
     )
 
     # Initialize base pointers
-    dk_partial_base = offset_batch_K(
-        dK_partial + head_idx * stride_dkph,
+    mdKaccum_base_ptr = offset_batch_K(
+        mdKaccum + head_idx * stride_dkah,
         batch_idx,
         offset_k,
-        0,
-        stride_dkpb,
-        stride_dkpn,
+        padded_offset_k,
+        stride_dkab,
+        stride_dkan,
         HAS_CU_SEQLENS_K,
-        USE_PADDED=False,
+        USE_PADDED=True,
     )
-    dv_partial_base = offset_batch_K(
-        dV_partial + head_idx * stride_dvph,
+    mdVaccum_base_ptr = offset_batch_K(
+        mdVaccum + head_idx * stride_dvah,
         batch_idx,
         offset_k,
-        0,
-        stride_dvpb,
-        stride_dvpn,
+        padded_offset_k,
+        stride_dvab,
+        stride_dvan,
         HAS_CU_SEQLENS_K,
-        USE_PADDED=False,
+        USE_PADDED=True,
     )
-    dk_base = offset_batch_K(
-        dK + head_idx * stride_dkh,
+    mdK_base_ptr = offset_batch_K(
+        mdK + head_idx * stride_dkh,
         batch_idx,
         offset_k,
-        0,
+        gl.to_tensor(0),
         stride_dkb,
         stride_dkn,
         HAS_CU_SEQLENS_K,
         USE_PADDED=False,
     )
-    dv_base = offset_batch_K(
-        dV + head_idx * stride_dvh,
+    mdV_base_ptr = offset_batch_K(
+        mdV + head_idx * stride_dvh,
         batch_idx,
         offset_k,
-        0,
+        gl.to_tensor(0),
         stride_dvb,
         stride_dvn,
         HAS_CU_SEQLENS_K,
@@ -134,81 +137,104 @@ def _bwd_combine_kernel(
     )
 
     # Create pointers
-    dk_partial_ptrs = make_ptrs(
-        dk_partial_base,
+    mdKaccum_ptr = make_ptrs(
+        mdKaccum_base_ptr,
         n_block,
-        stride_dkpn,
-        copy_offs_n,
-        copy_offs_k,
+        stride_dkan,
+        copy_row_n_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    dv_partial_ptrs = make_ptrs(
-        dv_partial_base,
+    mdVaccum_ptr = make_ptrs(
+        mdVaccum_base_ptr,
         n_block,
-        stride_dvpn,
-        copy_offs_n,
-        copy_offs_k,
+        stride_dvan,
+        copy_row_n_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    dk_ptrs = make_ptrs(
-        dk_base,
+    mdK_ptr = make_ptrs(
+        mdK_base_ptr,
         n_block,
         stride_dkn,
-        copy_offs_n,
-        copy_offs_k,
+        copy_row_n_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    dv_ptrs = make_ptrs(
-        dv_base,
+    mdV_ptr = make_ptrs(
+        mdV_base_ptr,
         n_block,
         stride_dvn,
-        copy_offs_n,
-        copy_offs_k,
+        copy_row_n_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
 
     # Initialize accumulators
-    acc_dk = gl.zeros([TILE_N, TILE_K], gl.float32, copy_layout)
-    acc_dv = gl.zeros([TILE_N, TILE_K], gl.float32, copy_layout)
-
-    # Compute predicates for global memory copy
-    if not EVEN_N:
-        copy_n_rows = n_block * TILE_N + copy_offs_n
-        predicate_copy_n = copy_n_rows < actual_seqlen_k
+    acc_dK = gl.zeros([TILE_N, TILE_K], gl.float32, copy_layout)
+    acc_dV = gl.zeros([TILE_N, TILE_K], gl.float32, copy_layout)
 
     # Combine split gradients
     for split_idx in range(num_splits):
         # Load partial dKaccum
-        acc_dk_s = gl.load(
-            dk_partial_ptrs + split_idx * stride_dkps,
-            mask=predicate_copy_n[:, None] if not EVEN_N else None,
+        if not EVEN_N:
+            pdKaccum = make_seqlen_predicate(
+                n_block,
+                actual_seqlen_k,
+                copy_row_n_offs[:, None],
+                TILE_MN=TILE_N,
+            )
+        rdKaccum_s = gl.load(
+            mdKaccum_ptr + split_idx * stride_dkas,
+            mask=pdKaccum if not EVEN_N else None,
             other=0.0 if not EVEN_N else None,
             cache_modifier=".cg",
         )
 
-        # Compute dKaccum
-        acc_dk += acc_dk_s
+        # Compute dK
+        acc_dK += rdKaccum_s
 
         # Load partial dVaccum
-        acc_dv_s = gl.load(
-            dv_partial_ptrs + split_idx * stride_dvps,
-            mask=predicate_copy_n[:, None] if not EVEN_N else None,
+        if not EVEN_N:
+            pdVaccum = make_seqlen_predicate(
+                n_block,
+                actual_seqlen_k,
+                copy_row_n_offs[:, None],
+                TILE_MN=TILE_N,
+            )
+        rdVaccum_s = gl.load(
+            mdVaccum_ptr + split_idx * stride_dvas,
+            mask=pdVaccum if not EVEN_N else None,
             other=0.0 if not EVEN_N else None,
             cache_modifier=".cg",
         )
 
-        # Compute dVaccum
-        acc_dv += acc_dv_s
+        # Compute dV
+        acc_dV += rdVaccum_s
 
     # Store dK
-    gl.store(dk_ptrs, acc_dk, mask=predicate_copy_n[:, None] if not EVEN_N else None)
+    if not EVEN_N:
+        pdK = make_seqlen_predicate(
+            n_block,
+            actual_seqlen_k,
+            copy_row_n_offs[:, None],
+            TILE_MN=TILE_N,
+        )
+    gl.store(mdK_ptr, acc_dK, mask=pdK if not EVEN_N else None)
 
     # Store dV
-    gl.store(dv_ptrs, acc_dv, mask=predicate_copy_n[:, None] if not EVEN_N else None)
+    if not EVEN_N:
+        pdV = make_seqlen_predicate(
+            n_block,
+            actual_seqlen_k,
+            copy_row_n_offs[:, None],
+            TILE_MN=TILE_N,
+        )
+    gl.store(mdV_ptr, acc_dV, mask=pdV if not EVEN_N else None)
 
 
 def _flash_attn_bwd_combine(
@@ -220,15 +246,16 @@ def _flash_attn_bwd_combine(
     seqused_k: Optional[torch.Tensor] = None,
     max_seqlen_k: Optional[int] = None,
     tile_n: Optional[int] = None,
+    padded_tile_n: Optional[int] = None,
     num_threads: Optional[int] = None,
     skip_checks: bool = False,
 ) -> None:
     is_varlen = cu_seqlens_k is not None
     num_splits = dk_partial.shape[0]
     if not is_varlen:
-        batch_size, seqlen_k, num_heads_kv, head_dim = dk_partial.shape[1:]
+        batch_size, seqlen_k, num_heads_kv, head_dim = dk.shape
     else:
-        total_k, num_heads_kv, head_dim = dk_partial.shape[1:]
+        total_k, num_heads_kv, head_dim = dk.shape
         batch_size = cu_seqlens_k.shape[0] - 1
         seqlen_k = max_seqlen_k if max_seqlen_k is not None else total_k
 
@@ -259,6 +286,7 @@ def _flash_attn_bwd_combine(
             triton.cdiv(32, TILE_K),
         )
     )
+    PADDED_TILE_N = padded_tile_n if padded_tile_n is not None else TILE_N
     num_warps = (
         num_threads // 32
         if num_threads is not None
@@ -280,12 +308,12 @@ def _flash_attn_bwd_combine(
         dv,
         dk_partial.stride(0),
         dk_partial.stride(1) if not is_varlen else 0,
-        dk_partial.stride(-2),
         dk_partial.stride(-3),
+        dk_partial.stride(-2),
         dv_partial.stride(0),
         dv_partial.stride(1) if not is_varlen else 0,
-        dv_partial.stride(-2),
         dv_partial.stride(-3),
+        dv_partial.stride(-2),
         dk.stride(0) if not is_varlen else 0,
         dk.stride(-2),
         dk.stride(-3),
@@ -301,5 +329,6 @@ def _flash_attn_bwd_combine(
         HAS_SEQUSED_K=seqused_k is not None,
         TILE_N=TILE_N,
         TILE_K=TILE_K,
+        PADDED_TILE_N=PADDED_TILE_N,
         num_warps=num_warps,
     )
