@@ -1,6 +1,6 @@
 import triton
 
-from flash_sparse_attn.ops.gluon import cache_utils
+from flash_sparse_attn.ops.gluon.utils import cache_launch_grid
 
 
 def get_fwd_grid(
@@ -43,7 +43,7 @@ def get_fwd_grid(
     return grid
 
 
-get_fwd_grid = cache_utils.cache_launch_grid(get_fwd_grid)
+get_fwd_grid = cache_launch_grid(get_fwd_grid)
 
 
 def get_bwd_grid(
@@ -77,7 +77,7 @@ def get_bwd_grid(
     return grid
 
 
-get_bwd_grid = cache_utils.cache_launch_grid(get_bwd_grid)
+get_bwd_grid = cache_launch_grid(get_bwd_grid)
 
 
 def get_fwd_combine_grid(
@@ -107,7 +107,7 @@ def get_fwd_combine_grid(
     return grid
 
 
-get_fwd_combine_grid = cache_utils.cache_launch_grid(get_fwd_combine_grid)
+get_fwd_combine_grid = cache_launch_grid(get_fwd_combine_grid)
 
 
 def get_bwd_combine_grid(
@@ -137,7 +137,7 @@ def get_bwd_combine_grid(
     return grid
 
 
-get_bwd_combine_grid = cache_utils.cache_launch_grid(get_bwd_combine_grid)
+get_bwd_combine_grid = cache_launch_grid(get_bwd_combine_grid)
 
 
 def get_bwd_preprocess_grid(
@@ -167,7 +167,7 @@ def get_bwd_preprocess_grid(
     return grid
 
 
-get_bwd_preprocess_grid = cache_utils.cache_launch_grid(get_bwd_preprocess_grid)
+get_bwd_preprocess_grid = cache_launch_grid(get_bwd_preprocess_grid)
 
 
 def get_bwd_postprocess_grid(
@@ -197,4 +197,4 @@ def get_bwd_postprocess_grid(
     return grid
 
 
-get_bwd_postprocess_grid = cache_utils.cache_launch_grid(get_bwd_postprocess_grid)
+get_bwd_postprocess_grid = cache_launch_grid(get_bwd_postprocess_grid)

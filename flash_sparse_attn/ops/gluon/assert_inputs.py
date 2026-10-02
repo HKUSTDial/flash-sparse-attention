@@ -2,7 +2,7 @@
 from typing import Optional
 
 import torch
-from flash_sparse_attn.ops.gluon.cache_utils import get_device_arch
+from flash_sparse_attn.ops.gluon.utils import get_device_arch
 
 
 def assert_fwd_inputs(
@@ -273,7 +273,6 @@ def assert_fwd_combine_inputs(
 
     :raises AssertionError: If any of the assertions fail
     """
-
     assert out_partial.device == lse_partial.device == out.device == lse.device, (
         "All inputs must be on the same device"
     )
@@ -320,7 +319,6 @@ def assert_bwd_combine_inputs(
 
     :raises AssertionError: If any of the assertions fail
     """
-
     device = dk_partial.device
     assert device == dv_partial.device == dk.device == dv.device, (
         "All inputs must be on the same device"
