@@ -1480,7 +1480,15 @@ class AttnFwdPointerScheduler:
                 TILE_K=1,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-        return self.lse_base + config.m_block * config.TILE_M + offs_m
+        return make_ptrs(
+            base_ptr=self.lse_base,
+            mn_block=config.m_block,
+            stride_seq=1,
+            offs_mn=offs_m,
+            offs_k=None,
+            TILE_K=1,
+            SWAP_AB=False,
+        )
 
 
 @aggregate
@@ -1905,28 +1913,62 @@ class AttnBwdPointerScheduler:
         )
 
     @gluon.jit
-    def make_lse_ptrs(self, config: AttnBwdConfig) -> gl.tensor:
+    def make_lse_ptrs(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        offs_m: gl.tensor,
+    ) -> gl.tensor:
         """
         Construct logsumexp pointers for an M block.
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
+        :param m_block: block index along the M dimension
+        :type m_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
 
         :return: logsumexp pointers of shape [TILE_M]
         """
-        return self.lse_base
+        return make_ptrs(
+            base_ptr=self.lse_base,
+            mn_block=m_block,
+            stride_seq=1,
+            offs_mn=offs_m,
+            offs_k=None,
+            TILE_K=1,
+            SWAP_AB=False,
+        )
 
     @gluon.jit
-    def make_dpsum_ptrs(self, config: AttnBwdConfig) -> gl.tensor:
+    def make_dpsum_ptrs(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        offs_m: gl.tensor,
+    ) -> gl.tensor:
         """
         Construct softmax gradient sum pointers for an M block.
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
+        :param m_block: block index along the M dimension
+        :type m_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
 
         :return: softmax gradient sum pointers of shape [TILE_M]
         """
-        return self.dpsum_base
+        return make_ptrs(
+            base_ptr=self.dpsum_base,
+            mn_block=m_block,
+            stride_seq=1,
+            offs_mn=offs_m,
+            offs_k=None,
+            TILE_K=1,
+            SWAP_AB=False,
+        )
 
     @gluon.jit
     def make_dq_accum_ptrs(
