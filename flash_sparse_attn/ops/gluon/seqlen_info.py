@@ -9,9 +9,10 @@ def get_seqlen_info(
     seqlen_static: gl.tensor,
     cu_seqlens: gl.tensor,
     seqused: gl.tensor,
+    TILE_MN: gl.constexpr,
     HAS_CU_SEQLENS: gl.constexpr,
     HAS_SEQUSED: gl.constexpr,
-) -> tuple[gl.tensor, gl.tensor]:
+) -> tuple[gl.tensor, gl.tensor, gl.tensor]:
     """
     Get offset and seqlen for a given batch index.
 
@@ -23,12 +24,15 @@ def get_seqlen_info(
     :type cu_seqlens: tensor
     :param seqused: actual sequence lengths tensor
     :type seqused: tensor
+    :param TILE_MN: tile size along the M or N dimension
+    :type TILE_MN: int
     :param HAS_CU_SEQLENS: boolean flag indicating if cu_seqlens is provided
     :type HAS_CU_SEQLENS: bool
     :param HAS_SEQUSED: boolean flag indicating if seqused is provided
     :type HAS_SEQUSED: bool
 
     :return offset: offset for the given batch index
+    :return padded_offset: offset aligned to TILE_MN for the given batch index
     :return seqlen: sequence length for the given batch index
     """
     if HAS_CU_SEQLENS:
@@ -40,7 +44,12 @@ def get_seqlen_info(
     else:
         offset = gl.to_tensor(0)
         seqlen = gl.load(seqused + batch_idx) if HAS_SEQUSED else seqlen_static
-    return offset, seqlen
+    padded_offset = (
+        (offset + batch_idx * TILE_MN) // TILE_MN * TILE_MN
+        if HAS_CU_SEQLENS
+        else gl.to_tensor(0)
+    )
+    return offset, padded_offset, seqlen
 
 
 @gluon.jit
@@ -96,31 +105,23 @@ def get_seqlen_info_qk(
     :return seqlen_q: sequence length for Q for the given batch index
     :return seqlen_k: sequence length for K for the given batch index
     """
-    offset_q, seqlen_q = get_seqlen_info(
+    offset_q, padded_offset_q, seqlen_q = get_seqlen_info(
         batch_idx,
         seqlen_q_static,
         cu_seqlens_q,
         seqused_q,
+        TILE_MN=TILE_M,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
     )
-    offset_k, seqlen_k = get_seqlen_info(
+    offset_k, padded_offset_k, seqlen_k = get_seqlen_info(
         batch_idx,
         seqlen_k_static,
         cu_seqlens_k,
         seqused_k,
+        TILE_MN=TILE_N,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
         HAS_SEQUSED=HAS_SEQUSED_K,
-    )
-    padded_offset_q = (
-        (offset_q + batch_idx * TILE_M) // TILE_M * TILE_M
-        if HAS_CU_SEQLENS_Q
-        else gl.to_tensor(0)
-    )
-    padded_offset_k = (
-        (offset_k + batch_idx * TILE_N) // TILE_N * TILE_N
-        if HAS_CU_SEQLENS_K
-        else gl.to_tensor(0)
     )
     return offset_q, offset_k, padded_offset_q, padded_offset_k, seqlen_q, seqlen_k
 
@@ -334,3 +335,28 @@ def make_pack_gqa_ptrs(
             + q_head[:, None] * stride_head
             + offs_k[None, :]
         )
+
+
+@gluon.jit
+def make_seqlen_predicate(
+    mn_block: gl.tensor,
+    actual_seqlen: gl.tensor,
+    offs_mn: gl.tensor,
+    TILE_MN: gl.constexpr,
+) -> gl.tensor:
+    """
+    Construct predicate for a sequence tile.
+
+    :param mn_block: current block index along the sequence dimension
+    :type mn_block: tensor
+    :param actual_seqlen: actual sequence length for the batch
+    :type actual_seqlen: tensor
+    :param offs_mn: lane offsets along the M or N dimension
+    :type offs_mn: tensor
+    :param TILE_MN: tile size along the M or N dimension
+    :type TILE_MN: int
+
+    :return: predicate indicating which elements are within the actual sequence length
+    :rtype: tensor
+    """
+    return mn_block * TILE_MN + offs_mn < actual_seqlen
