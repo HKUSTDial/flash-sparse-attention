@@ -416,6 +416,7 @@ def get_m_block_min_no_causal_local_mask(
     seqlen_k: gl.tensor,
     n_block: gl.tensor,
     m_block_min: gl.tensor,
+    m_block_max: gl.tensor,
     window_size_right: gl.tensor,
     window_size_near: gl.tensor,
     TILE_N: gl.constexpr,
@@ -434,6 +435,8 @@ def get_m_block_min_no_causal_local_mask(
     :type n_block: tensor
     :param m_block_min: minimum M block in the current range
     :type m_block_min: tensor
+    :param m_block_max: maximum M block in the current range
+    :type m_block_max: tensor
     :param window_size_right: gap token count after the near-diagonal window
     :type window_size_right: tensor
     :param window_size_near: near-diagonal local token count
@@ -458,7 +461,10 @@ def get_m_block_min_no_causal_local_mask(
             m_idx_right = m_idx + window_size_near + window_size_right
         else:
             m_idx_right = m_idx
-        return gl.maximum(m_block_min, gl.cdiv(m_idx_right, TILE_M))
+        return gl.minimum(
+            gl.maximum(m_block_min, gl.cdiv(m_idx_right, TILE_M)),
+            m_block_max,
+        )
 
 
 @gluon.jit
@@ -466,6 +472,7 @@ def get_m_block_max_before_local_mask(
     seqlen_q: gl.tensor,
     seqlen_k: gl.tensor,
     n_block: gl.tensor,
+    m_block_min: gl.tensor,
     m_block_max: gl.tensor,
     window_size_left: gl.tensor,
     window_size_right: gl.tensor,
@@ -483,6 +490,8 @@ def get_m_block_max_before_local_mask(
     :type seqlen_k: tensor
     :param n_block: current block index along the N dimension
     :type n_block: tensor
+    :param m_block_min: minimum M block in the current local range
+    :type m_block_min: tensor
     :param m_block_max: maximum M block in the current local range
     :type m_block_max: tensor
     :param window_size_left: distant local band token count
@@ -506,4 +515,7 @@ def get_m_block_max_before_local_mask(
         n_idx_min = n_block * TILE_N
         m_idx = n_idx_min + seqlen_q - seqlen_k
         m_idx_left = m_idx + window_size_near + window_size_right + window_size_left
-        return gl.minimum(m_block_max, m_idx_left // TILE_M)
+        return gl.maximum(
+            gl.minimum(m_idx_left // TILE_M, m_block_max),
+            m_block_min,
+        )
