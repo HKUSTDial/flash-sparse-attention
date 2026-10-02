@@ -12,6 +12,7 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
     get_seqlen_info,
     offset_batch_Q,
     make_ptrs,
+    make_seqlen_predicate,
 )
 from flash_sparse_attn.ops.gluon.softmax import check_inf
 
@@ -60,6 +61,7 @@ def _bwd_preprocess_kernel(
     EVEN_M: gl.constexpr,
     TILE_M: gl.constexpr,
     TILE_K: gl.constexpr,
+    PADDED_TILE_M: gl.constexpr,
     num_warps: gl.constexpr,
 ):
     warp_size: gl.constexpr = 32
@@ -79,23 +81,23 @@ def _bwd_preprocess_kernel(
     copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
 
     zero_elements_per_thread: gl.constexpr = 4
-    zero_copy_atom_k: gl.constexpr = min(TILE_K, 128)
-    zero_threads_per_row: gl.constexpr = zero_copy_atom_k // zero_elements_per_thread
+    copy_zero_atom_k: gl.constexpr = min(TILE_K, 128)
+    zero_threads_per_row: gl.constexpr = copy_zero_atom_k // zero_elements_per_thread
     zero_rows_per_warp: gl.constexpr = warp_size // zero_threads_per_row
-    zero_copy_layout: gl.constexpr = gl.BlockedLayout(
+    copy_zero_layout: gl.constexpr = gl.BlockedLayout(
         size_per_thread=[1, zero_elements_per_thread],
         threads_per_warp=[zero_rows_per_warp, zero_threads_per_row],
         warps_per_cta=[num_warps, 1],
         order=[1, 0],
     )
-    zero_copy_row_layout: gl.constexpr = gl.SliceLayout(1, zero_copy_layout)
-    zero_copy_col_layout: gl.constexpr = gl.SliceLayout(0, zero_copy_layout)
+    copy_zero_row_layout: gl.constexpr = gl.SliceLayout(1, copy_zero_layout)
+    copy_zero_col_layout: gl.constexpr = gl.SliceLayout(0, copy_zero_layout)
 
     # Compute offsets for global memory copy
-    copy_offs_m = gl.arange(0, TILE_M, copy_row_layout)
-    copy_offs_k = gl.arange(0, TILE_K, copy_col_layout)
-    zero_copy_offs_m = gl.arange(0, TILE_M, zero_copy_row_layout)
-    zero_copy_offs_k = gl.arange(0, TILE_K, zero_copy_col_layout)
+    copy_raw_m_offs = gl.arange(0, TILE_M, copy_row_layout)
+    copy_col_k_offs = gl.arange(0, TILE_K, copy_col_layout)
+    copy_zero_row_m_offs = gl.arange(0, TILE_M, copy_zero_row_layout)
+    copy_zero_col_k_offs = gl.arange(0, TILE_K, copy_zero_col_layout)
 
     # Create grid index
     m_block = gl.program_id(0)
@@ -104,17 +106,18 @@ def _bwd_preprocess_kernel(
     head_idx = bh_idx - batch_idx * num_heads_q
 
     # Get seqlen info for this batch
-    offset_q, actual_seqlen_q = get_seqlen_info(
+    offset_q, padded_offset_q, actual_seqlen_q = get_seqlen_info(
         batch_idx=batch_idx,
         seqlen_static=seqlen_q,
         cu_seqlens=cu_seqlens_q,
         seqused=seqused_q,
+        TILE_MN=PADDED_TILE_M,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
     )
 
     # Initialize base pointers
-    o_base = offset_batch_Q(
+    mO_base_ptr = offset_batch_Q(
         Out + head_idx * stride_oh,
         batch_idx,
         offset_q,
@@ -124,7 +127,7 @@ def _bwd_preprocess_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    do_base = offset_batch_Q(
+    mdO_base_ptr = offset_batch_Q(
         dO + head_idx * stride_doh,
         batch_idx,
         offset_q,
@@ -134,17 +137,17 @@ def _bwd_preprocess_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    dpsum_base = offset_batch_Q(
+    mdPsum_base_ptr = offset_batch_Q(
         dPsum + head_idx * stride_ph,
         batch_idx,
         offset_q,
-        gl.to_tensor(0),
+        padded_offset_q,
         stride_pb,
         stride_pm,
         HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
+        USE_PADDED=True,
     )
-    lse_base = offset_batch_Q(
+    mLSE_base_ptr = offset_batch_Q(
         LSE + head_idx * stride_lh,
         batch_idx,
         offset_q,
@@ -154,139 +157,165 @@ def _bwd_preprocess_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    lse_log2_base = offset_batch_Q(
+    mLSElog2_base_ptr = offset_batch_Q(
         LSELog2 + head_idx * stride_l2h,
         batch_idx,
         offset_q,
-        gl.to_tensor(0),
+        padded_offset_q,
         stride_l2b,
         stride_l2m,
         HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
+        USE_PADDED=True,
     )
-    dq_accum_base = offset_batch_Q(
+    mdQaccum_base_ptr = offset_batch_Q(
         dQaccum + head_idx * stride_dqah,
         batch_idx,
         offset_q,
-        gl.to_tensor(0),
+        padded_offset_q,
         stride_dqab,
         stride_dqam,
         HAS_CU_SEQLENS_Q,
-        USE_PADDED=False,
+        USE_PADDED=True,
     )
 
     # Create pointers
-    o_ptrs = make_ptrs(
-        o_base,
+    mO_ptr = make_ptrs(
+        mO_base_ptr,
         m_block,
         stride_om,
-        copy_offs_m,
-        copy_offs_k,
+        copy_raw_m_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    do_ptrs = make_ptrs(
-        do_base,
+    mdO_ptr = make_ptrs(
+        mdO_base_ptr,
         m_block,
         stride_dom,
-        copy_offs_m,
-        copy_offs_k,
+        copy_raw_m_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    dpsum_ptrs = make_ptrs(
-        dpsum_base,
+    mdPsum_ptr = make_ptrs(
+        mdPsum_base_ptr,
         m_block,
         stride_pm,
-        copy_offs_m,
-        copy_offs_k,
+        copy_raw_m_offs,
+        copy_col_k_offs,
         TILE_K=1,
         SWAP_AB=False,
     )
-    lse_ptrs = make_ptrs(
-        lse_base,
+    mLSE_ptr = make_ptrs(
+        mLSE_base_ptr,
         m_block,
         stride_lm,
-        copy_offs_m,
-        copy_offs_k,
+        copy_raw_m_offs,
+        copy_col_k_offs,
         TILE_K=1,
         SWAP_AB=False,
     )
-    lse_log2_ptrs = make_ptrs(
-        lse_log2_base,
+    mLSElog2_ptr = make_ptrs(
+        mLSElog2_base_ptr,
         m_block,
         stride_l2m,
-        copy_offs_m,
-        copy_offs_k,
+        copy_raw_m_offs,
+        copy_col_k_offs,
         TILE_K=1,
         SWAP_AB=False,
     )
-    dq_accum_ptrs = make_ptrs(
-        dq_accum_base,
+    mdQaccum_ptr = make_ptrs(
+        mdQaccum_base_ptr,
         m_block,
         stride_dqam,
-        zero_copy_offs_m,
-        zero_copy_offs_k,
+        copy_zero_row_m_offs,
+        copy_zero_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
 
-    # Compute predicates for global memory copy
-    if not EVEN_M:
-        copy_m_rows = m_block * TILE_M + copy_offs_m
-        predicate_copy_m = copy_m_rows < actual_seqlen_q
-        zero_copy_m_rows = m_block * TILE_M + zero_copy_offs_m
-        predicate_zero_copy_m = zero_copy_m_rows < actual_seqlen_q
-
     # Load O
-    o = gl.load(
-        o_ptrs,
-        mask=predicate_copy_m[:, None] if not EVEN_M else None,
+    if not EVEN_M:
+        pO = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_raw_m_offs[:, None],
+            TILE_MN=TILE_M,
+        )
+    rO = gl.load(
+        mO_ptr,
+        mask=pO if not EVEN_M else None,
         other=0.0 if not EVEN_M else None,
     ).to(gl.float32)
 
     # Load dO
-    do = gl.load(
-        do_ptrs,
-        mask=predicate_copy_m[:, None] if not EVEN_M else None,
+    if not EVEN_M:
+        pdO = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_raw_m_offs[:, None],
+            TILE_MN=TILE_M,
+        )
+    rdO = gl.load(
+        mdO_ptr,
+        mask=pdO if not EVEN_M else None,
         other=0.0 if not EVEN_M else None,
     ).to(gl.float32)
 
     # Compute dPsum
-    dpsum = gl.sum(o * do, axis=1)
+    rdPsum = gl.sum(rO * rdO, axis=1)
 
     # Store dPsum
-    gl.store(
-        dpsum_ptrs,
-        dpsum,
-        mask=predicate_copy_m if not EVEN_M else None,
-    )
+    if not EVEN_M:
+        pdPsum = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_raw_m_offs,
+            TILE_MN=TILE_M,
+        )
+    gl.store(mdPsum_ptr, rdPsum, mask=pdPsum if not EVEN_M else None)
 
     # Load LSE
-    lse = gl.load(
-        lse_ptrs,
-        mask=predicate_copy_m if not EVEN_M else None,
+    if not EVEN_M:
+        pLSE = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_raw_m_offs,
+            TILE_MN=TILE_M,
+        )
+    rLSE = gl.load(
+        mLSE_ptr,
+        mask=pLSE if not EVEN_M else None,
         other=0.0 if not EVEN_M else None,
     )
 
     # Compute LSELog2
     log2_e: gl.constexpr = 1.4426950408889634
-    lse_log2 = gl.where(lse == lse, lse * log2_e, 1e6)
-    lse_log2 = check_inf(lse_log2)
+    rLSElog2 = gl.where(rLSE == rLSE, rLSE * log2_e, 1e6)
+    rLSElog2 = check_inf(rLSElog2)
 
     # Store LSELog2
-    gl.store(
-        lse_log2_ptrs,
-        lse_log2,
-        mask=predicate_copy_m if not EVEN_M else None,
-    )
+    if not EVEN_M:
+        pLSElog2 = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_raw_m_offs,
+            TILE_MN=TILE_M,
+        )
+    gl.store(mLSElog2_ptr, rLSElog2, mask=pLSElog2 if not EVEN_M else None)
+
+    # Create zero tensor
+    zero = gl.zeros([TILE_M, TILE_K], gl.float32, copy_zero_layout)
 
     # Store dQaccum
-    gl.store(
-        dq_accum_ptrs,
-        gl.zeros([TILE_M, TILE_K], gl.float32, zero_copy_layout),
-        mask=predicate_zero_copy_m[:, None] if not EVEN_M else None,
-    )
+    if not EVEN_M:
+        pdQaccum = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_zero_row_m_offs[:, None],
+            TILE_MN=TILE_M,
+        )
+    gl.store(mdQaccum_ptr, zero, mask=pdQaccum if not EVEN_M else None)
 
 
 def _flash_attn_bwd_preprocess(
@@ -301,8 +330,9 @@ def _flash_attn_bwd_preprocess(
     seqused_q: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
     tile_m: Optional[int] = None,
+    padded_tile_m: Optional[int] = None,
     num_threads: Optional[int] = None,
-) -> torch.Tensor:
+):
     is_varlen = cu_seqlens_q is not None
     if not is_varlen:
         batch_size, seqlen_q, num_heads_q, _ = out.shape
@@ -314,6 +344,7 @@ def _flash_attn_bwd_preprocess(
     # Setup launch configuration
     TILE_M = tile_m if tile_m is not None else 64
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
+    PADDED_TILE_M = padded_tile_m if padded_tile_m is not None else TILE_M
     num_warps = num_threads // 32 if num_threads is not None else 8
 
     # Get the grid for the kernel launch
@@ -333,21 +364,21 @@ def _flash_attn_bwd_preprocess(
         dq_accum,
         out.stride(0) if not is_varlen else 0,
         out.stride(-2),
-        out.stride(-3) if not is_varlen else out.stride(0),
+        out.stride(-3),
         dout.stride(0) if not is_varlen else 0,
         dout.stride(-2),
-        dout.stride(-3) if not is_varlen else dout.stride(0),
+        dout.stride(-3),
         dpsum.stride(0) if not is_varlen else 0,
-        dpsum.stride(1) if not is_varlen else dpsum.stride(0),
+        dpsum.stride(-2) if not is_varlen else dpsum.stride(0),
         dpsum.stride(-1),
         lse.stride(0) if not is_varlen else 0,
-        lse.stride(1) if not is_varlen else lse.stride(0),
+        lse.stride(-2) if not is_varlen else lse.stride(0),
         lse.stride(-1),
         lse_log2.stride(0) if not is_varlen else 0,
-        lse_log2.stride(1) if not is_varlen else lse_log2.stride(0),
+        lse_log2.stride(-2) if not is_varlen else lse_log2.stride(0),
         lse_log2.stride(-1),
         dq_accum.stride(0) if not is_varlen else 0,
-        dq_accum.stride(1) if not is_varlen else dq_accum.stride(0),
+        dq_accum.stride(-3),
         dq_accum.stride(-2),
         cu_seqlens_q,
         seqused_q,
@@ -357,5 +388,6 @@ def _flash_attn_bwd_preprocess(
         HAS_SEQUSED_Q=seqused_q is not None,
         TILE_M=TILE_M,
         TILE_K=TILE_K,
+        PADDED_TILE_M=PADDED_TILE_M,
         num_warps=num_warps,
     )
