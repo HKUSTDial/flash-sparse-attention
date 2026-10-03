@@ -342,8 +342,8 @@ def _flash_attn_bwd_preprocess(
         seqlen_q = max_seqlen_q if max_seqlen_q is not None else total_q
 
     # Setup launch configuration
-    TILE_M = tile_m if tile_m is not None else 64
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
+    TILE_M = tile_m if tile_m is not None else 64
     PADDED_TILE_M = padded_tile_m if padded_tile_m is not None else TILE_M
     num_warps = num_threads // 32 if num_threads is not None else 8
 
