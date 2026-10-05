@@ -100,7 +100,7 @@ def _bwd_postprocess_kernel(
         mdQ + head_idx * stride_dqh,
         batch_idx,
         offset_q,
-        gl.to_tensor(0),
+        padded_offset_q,
         stride_dqb,
         stride_dqm,
         HAS_CU_SEQLENS_Q,
