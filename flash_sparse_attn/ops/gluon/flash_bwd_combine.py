@@ -28,20 +28,20 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
 )
 @gluon.jit(repr=bwd_combine_repr)
 def _bwd_combine_kernel(
-    mdKaccum,
-    mdVaccum,
+    mdKpartial,
+    mdVpartial,
     mdK,
     mdV,
     mCuSeqlensK,
     mSeqUsedK,
-    stride_dkas,
-    stride_dkab,
-    stride_dkah,
-    stride_dkan,
-    stride_dvas,
-    stride_dvab,
-    stride_dvah,
-    stride_dvan,
+    stride_dkps,
+    stride_dkpb,
+    stride_dkph,
+    stride_dkpn,
+    stride_dvps,
+    stride_dvpb,
+    stride_dvph,
+    stride_dvpn,
     stride_dkb,
     stride_dkh,
     stride_dkn,
@@ -95,23 +95,23 @@ def _bwd_combine_kernel(
     )
 
     # Initialize base pointers
-    mdKaccum_base_ptr = offset_batch_K(
-        mdKaccum + head_idx * stride_dkah,
+    mdKpartial_base_ptr = offset_batch_K(
+        mdKpartial + head_idx * stride_dkph,
         batch_idx,
         offset_k,
         padded_offset_k,
-        stride_dkab,
-        stride_dkan,
+        stride_dkpb,
+        stride_dkpn,
         HAS_CU_SEQLENS_K,
         USE_PADDED=True,
     )
-    mdVaccum_base_ptr = offset_batch_K(
-        mdVaccum + head_idx * stride_dvah,
+    mdVpartial_base_ptr = offset_batch_K(
+        mdVpartial + head_idx * stride_dvph,
         batch_idx,
         offset_k,
         padded_offset_k,
-        stride_dvab,
-        stride_dvan,
+        stride_dvpb,
+        stride_dvpn,
         HAS_CU_SEQLENS_K,
         USE_PADDED=True,
     )
@@ -119,7 +119,7 @@ def _bwd_combine_kernel(
         mdK + head_idx * stride_dkh,
         batch_idx,
         offset_k,
-        gl.to_tensor(0),
+        padded_offset_k,
         stride_dkb,
         stride_dkn,
         HAS_CU_SEQLENS_K,
@@ -129,7 +129,7 @@ def _bwd_combine_kernel(
         mdV + head_idx * stride_dvh,
         batch_idx,
         offset_k,
-        gl.to_tensor(0),
+        padded_offset_k,
         stride_dvb,
         stride_dvn,
         HAS_CU_SEQLENS_K,
@@ -137,19 +137,19 @@ def _bwd_combine_kernel(
     )
 
     # Create pointers
-    mdKaccum_ptr = make_ptrs(
-        mdKaccum_base_ptr,
+    mdKpartial_ptr = make_ptrs(
+        mdKpartial_base_ptr,
         n_block,
-        stride_dkan,
+        stride_dkpn,
         copy_row_n_offs,
         copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    mdVaccum_ptr = make_ptrs(
-        mdVaccum_base_ptr,
+    mdVpartial_ptr = make_ptrs(
+        mdVpartial_base_ptr,
         n_block,
-        stride_dvan,
+        stride_dvpn,
         copy_row_n_offs,
         copy_col_k_offs,
         TILE_K=TILE_K,
@@ -180,41 +180,41 @@ def _bwd_combine_kernel(
 
     # Combine split gradients
     for split_idx in range(num_splits):
-        # Load partial dKaccum
+        # Load partial dK
         if not EVEN_N:
-            pdKaccum = make_seqlen_predicate(
+            pdKpartial = make_seqlen_predicate(
                 n_block,
                 actual_seqlen_k,
                 copy_row_n_offs[:, None],
                 TILE_MN=TILE_N,
             )
-        rdKaccum_s = gl.load(
-            mdKaccum_ptr + split_idx * stride_dkas,
-            mask=pdKaccum if not EVEN_N else None,
+        rdKpartial_s = gl.load(
+            mdKpartial_ptr + split_idx * stride_dkps,
+            mask=pdKpartial if not EVEN_N else None,
             other=0.0 if not EVEN_N else None,
             cache_modifier=".cg",
         )
 
         # Compute dK
-        acc_dK += rdKaccum_s
+        acc_dK += rdKpartial_s
 
-        # Load partial dVaccum
+        # Load partial dV
         if not EVEN_N:
-            pdVaccum = make_seqlen_predicate(
+            pdVpartial = make_seqlen_predicate(
                 n_block,
                 actual_seqlen_k,
                 copy_row_n_offs[:, None],
                 TILE_MN=TILE_N,
             )
-        rdVaccum_s = gl.load(
-            mdVaccum_ptr + split_idx * stride_dvas,
-            mask=pdVaccum if not EVEN_N else None,
+        rdVpartial_s = gl.load(
+            mdVpartial_ptr + split_idx * stride_dvps,
+            mask=pdVpartial if not EVEN_N else None,
             other=0.0 if not EVEN_N else None,
             cache_modifier=".cg",
         )
 
         # Compute dV
-        acc_dV += rdVaccum_s
+        acc_dV += rdVpartial_s
 
     # Store dK
     if not EVEN_N:
@@ -306,6 +306,8 @@ def _flash_attn_bwd_combine(
         dv_partial,
         dk,
         dv,
+        cu_seqlens_k,
+        seqused_k,
         dk_partial.stride(0),
         dk_partial.stride(1) if not is_varlen else 0,
         dk_partial.stride(-3),
@@ -320,8 +322,6 @@ def _flash_attn_bwd_combine(
         dv.stride(0) if not is_varlen else 0,
         dv.stride(-2),
         dv.stride(-3),
-        cu_seqlens_k,
-        seqused_k,
         num_splits,
         seqlen_k,
         num_heads_kv,
