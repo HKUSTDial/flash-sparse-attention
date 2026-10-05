@@ -13,6 +13,7 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
     get_seqlen_info,
     offset_batch_Q,
     make_ptrs,
+    make_seqlen_predicate,
 )
 
 
@@ -27,10 +28,12 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
 )
 @gluon.jit(repr=fwd_combine_repr)
 def _fwd_combine_kernel(
-    Out_partial,
-    Lse_partial,
-    Out,
-    Lse,
+    mOpartial,
+    mLSEpartial,
+    mO,
+    mLSE,
+    mCuSeqlensQ,
+    mSeqUsedQ,
     stride_ops,
     stride_opb,
     stride_oph,
@@ -43,8 +46,6 @@ def _fwd_combine_kernel(
     stride_om,
     stride_lb,
     stride_lh,
-    cu_seqlens_q,
-    seqused_q,
     num_splits,
     seqlen_q,
     num_heads_q,
@@ -70,8 +71,8 @@ def _fwd_combine_kernel(
     copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
 
     # Compute offsets for global memory copy
-    copy_offs_m = gl.arange(0, TILE_M, copy_row_layout)
-    copy_offs_k = gl.arange(0, TILE_K, copy_col_layout)
+    copy_row_m_offs = gl.arange(0, TILE_M, copy_row_layout)
+    copy_col_k_offs = gl.arange(0, TILE_K, copy_col_layout)
 
     # Create grid index
     m_block = gl.program_id(0)
@@ -83,16 +84,16 @@ def _fwd_combine_kernel(
     offset_q, padded_offset_q, actual_seqlen_q = get_seqlen_info(
         batch_idx=batch_idx,
         seqlen_static=seqlen_q,
-        cu_seqlens=cu_seqlens_q,
-        seqused=seqused_q,
+        cu_seqlens=mCuSeqlensQ,
+        seqused=mSeqUsedQ,
         TILE_MN=TILE_M,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
     )
 
     # Initialize base pointers
-    out_partial_base = offset_batch_Q(
-        Out_partial + head_idx * stride_oph,
+    mOpartial_base_ptr = offset_batch_Q(
+        mOpartial + head_idx * stride_oph,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -101,8 +102,8 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    lse_partial_base = offset_batch_Q(
-        Lse_partial + head_idx * stride_lph,
+    mLSEpartial_base_ptr = offset_batch_Q(
+        mLSEpartial + head_idx * stride_lph,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -111,8 +112,8 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    out_base = offset_batch_Q(
-        Out + head_idx * stride_oh,
+    mO_base_ptr = offset_batch_Q(
+        mO + head_idx * stride_oh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -121,8 +122,8 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    lse_base = offset_batch_Q(
-        Lse + head_idx * stride_lh,
+    mLSE_base_ptr = offset_batch_Q(
+        mLSE + head_idx * stride_lh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -133,96 +134,123 @@ def _fwd_combine_kernel(
     )
 
     # Create pointers
-    out_partial_ptrs = make_ptrs(
-        out_partial_base,
+    mOpartial_ptr = make_ptrs(
+        mOpartial_base_ptr,
         m_block,
         stride_opm,
-        copy_offs_m,
-        copy_offs_k,
+        copy_row_m_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    lse_partial_ptrs = make_ptrs(
-        lse_partial_base,
+    mLSEpartial_ptr = make_ptrs(
+        mLSEpartial_base_ptr,
         m_block,
         1,
-        copy_offs_m,
-        copy_offs_k,
+        copy_row_m_offs,
+        copy_col_k_offs,
         TILE_K=1,
         SWAP_AB=False,
     )
-    out_ptrs = make_ptrs(
-        out_base,
+    mO_ptr = make_ptrs(
+        mO_base_ptr,
         m_block,
         stride_om,
-        copy_offs_m,
-        copy_offs_k,
+        copy_row_m_offs,
+        copy_col_k_offs,
         TILE_K=TILE_K,
         SWAP_AB=False,
     )
-    lse_out_ptrs = make_ptrs(
-        lse_base,
+    mLSE_ptr = make_ptrs(
+        mLSE_base_ptr,
         m_block,
         1,
-        copy_offs_m,
-        copy_offs_k,
+        copy_row_m_offs,
+        copy_col_k_offs,
         TILE_K=1,
         SWAP_AB=False,
     )
 
     # Initialize accumulators
-    e_sum = gl.zeros([TILE_M], gl.float32, copy_row_layout)
-    e_max = gl.full([TILE_M], float("-inf"), gl.float32, copy_row_layout)
+    row_max = gl.full([TILE_M], float("-inf"), gl.float32, copy_row_layout)
+    row_sum = gl.zeros([TILE_M], gl.float32, copy_row_layout)
     acc_o = gl.zeros([TILE_M, TILE_K], gl.float32, copy_layout)
-
-    # Compute predicates for global memory copy
-    if not EVEN_M:
-        copy_m_rows = m_block * TILE_M + copy_offs_m
-        predicate_copy_m = copy_m_rows < actual_seqlen_q
 
     # Combine split outputs
     for split_idx in range(num_splits):
         # Load partial LSE
-        lse_s = gl.load(
-            lse_partial_ptrs + split_idx * stride_lps,
-            mask=predicate_copy_m if not EVEN_M else None,
+        if not EVEN_M:
+            pLSEpartial = make_seqlen_predicate(
+                m_block,
+                actual_seqlen_q,
+                copy_row_m_offs,
+                TILE_MN=TILE_M,
+            )
+        rLSEpartial_s = gl.load(
+            mLSEpartial_ptr + split_idx * stride_lps,
+            mask=pLSEpartial if not EVEN_M else None,
             other=float("-inf") if not EVEN_M else None,
         )
 
         # Load partial O
-        partial_o = gl.load(
-            out_partial_ptrs + split_idx * stride_ops,
-            mask=predicate_copy_m[:, None] if not EVEN_M else None,
+        if not EVEN_M:
+            pOpartial = make_seqlen_predicate(
+                m_block,
+                actual_seqlen_q,
+                copy_row_m_offs[:, None],
+                TILE_MN=TILE_M,
+            )
+        rOpartial_s = gl.load(
+            mOpartial_ptr + split_idx * stride_ops,
+            mask=pOpartial if not EVEN_M else None,
             other=0.0 if not EVEN_M else None,
             cache_modifier=".cg",
         )
 
         # Compute normalized exponentials
-        new_e_max = gl.maximum(lse_s, e_max)
-        old_scale = gl.where(e_max == float("-inf"), 0.0, gl.exp2(e_max - new_e_max))
-        exp_logic = gl.where(lse_s == float("-inf"), 0.0, gl.exp2(lse_s - new_e_max))
+        new_row_max = gl.maximum(rLSEpartial_s, row_max)
+        old_scale = gl.where(
+            row_max == float("-inf"), 0.0, gl.exp2(row_max - new_row_max)
+        )
+        exp_logic = gl.where(
+            rLSEpartial_s == float("-inf"), 0.0, gl.exp2(rLSEpartial_s - new_row_max)
+        )
 
         # Compute scaled O
         acc_o *= old_scale[:, None]
-        acc_o += exp_logic[:, None] * partial_o
+        acc_o += exp_logic[:, None] * rOpartial_s
 
-        # Update e_sum and e_max
-        e_sum = e_sum * old_scale + exp_logic
-        e_max = new_e_max
+        # Update row_sum and row_max
+        row_sum = row_sum * old_scale + exp_logic
+        row_max = new_row_max
 
     # Normalize O
-    inv_sum = gl.where((e_sum == 0.0) | (e_sum != e_sum), 0.0, 1.0 / e_sum)
+    inv_sum = gl.where((row_sum == 0.0) | (row_sum != row_sum), 0.0, 1.0 / row_sum)
     acc_o *= inv_sum[:, None]
 
     # Store O
-    gl.store(out_ptrs, acc_o, mask=predicate_copy_m[:, None] if not EVEN_M else None)
+    if not EVEN_M:
+        pO = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_row_m_offs[:, None],
+            TILE_MN=TILE_M,
+        )
+    gl.store(mO_ptr, acc_o, mask=pO if not EVEN_M else None)
 
     # Compute LSE
     ln2: gl.constexpr = 0.6931471805599453
-    final_lse = gl.where(e_sum > 0.0, (e_max + gl.log2(e_sum)) * ln2, float("-inf"))
+    lse = gl.where(row_sum > 0.0, (row_max + gl.log2(row_sum)) * ln2, float("-inf"))
 
     # Store LSE
-    gl.store(lse_out_ptrs, final_lse, mask=predicate_copy_m if not EVEN_M else None)
+    if not EVEN_M:
+        pLSE = make_seqlen_predicate(
+            m_block,
+            actual_seqlen_q,
+            copy_row_m_offs,
+            TILE_MN=TILE_M,
+        )
+    gl.store(mLSE_ptr, lse, mask=pLSE if not EVEN_M else None)
 
 
 def _flash_attn_fwd_combine(
@@ -292,6 +320,8 @@ def _flash_attn_fwd_combine(
         lse_partial,
         out,
         lse,
+        cu_seqlens_q,
+        seqused_q,
         out_partial.stride(0),
         out_partial.stride(1) if not is_varlen else 0,
         out_partial.stride(-3),
@@ -304,8 +334,6 @@ def _flash_attn_fwd_combine(
         out.stride(-3),
         lse.stride(0) if not is_varlen else 0,
         lse.stride(-2),
-        cu_seqlens_q,
-        seqused_q,
         num_splits,
         seqlen_q,
         num_heads_q,
