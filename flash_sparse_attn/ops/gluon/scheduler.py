@@ -883,6 +883,7 @@ class AttnFwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
             n_block_min=n_block_min,
+            n_block_max=n_block_max,
             window_size_right=0,
             window_size_near=0,
             TILE_N=config.TILE_N,
@@ -890,10 +891,6 @@ class AttnFwdBlockScheduler:
             IS_LOCAL=False,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
-
-        # Clamp to split's range so the no-mask loop stays within bounds
-        if config.IS_SPLIT_KV:
-            n_block_max_no_mask = gl.minimum(n_block_max_no_mask, n_block_max)
 
         if config.IS_LOCAL:
             # Compute local n_block range for this m_block
@@ -910,6 +907,7 @@ class AttnFwdBlockScheduler:
                 seqlen_k=config.actual_seqlen_k,
                 m_block=config.m_block,
                 n_block_min=n_block_window_min,
+                n_block_max=n_block_window_max,
                 window_size_right=config.window_size_right,
                 window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
@@ -922,6 +920,7 @@ class AttnFwdBlockScheduler:
                 seqlen_k=config.actual_seqlen_k,
                 m_block=config.m_block,
                 n_block_min=n_block_window_min,
+                n_block_max=n_block_window_max_no_mask,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
                 window_size_near=config.window_size_near,
@@ -929,15 +928,6 @@ class AttnFwdBlockScheduler:
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
-            # Clamp window no-mask boundaries to the window's range
-            n_block_window_max_no_mask = gl.maximum(
-                gl.minimum(n_block_window_max_no_mask, n_block_window_max),
-                n_block_window_min,
-            )
-            n_block_window_min_no_mask = gl.maximum(
-                gl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
-                n_block_window_min,
             )
         else:
             n_block_window_min = gl.to_tensor(0)
