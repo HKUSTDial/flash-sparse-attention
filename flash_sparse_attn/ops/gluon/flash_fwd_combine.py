@@ -80,11 +80,12 @@ def _fwd_combine_kernel(
     head_idx = bh_idx - batch_idx * num_heads_q
 
     # Get seqlen info for this batch
-    offset_q, actual_seqlen_q = get_seqlen_info(
+    offset_q, padded_offset_q, actual_seqlen_q = get_seqlen_info(
         batch_idx=batch_idx,
         seqlen_static=seqlen_q,
         cu_seqlens=cu_seqlens_q,
         seqused=seqused_q,
+        TILE_MN=TILE_M,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
     )
@@ -94,7 +95,7 @@ def _fwd_combine_kernel(
         Out_partial + head_idx * stride_oph,
         batch_idx,
         offset_q,
-        0,
+        padded_offset_q,
         stride_opb,
         stride_opm,
         HAS_CU_SEQLENS_Q,
@@ -104,7 +105,7 @@ def _fwd_combine_kernel(
         Lse_partial + head_idx * stride_lph,
         batch_idx,
         offset_q,
-        0,
+        padded_offset_q,
         stride_lpb,
         1,
         HAS_CU_SEQLENS_Q,
@@ -114,7 +115,7 @@ def _fwd_combine_kernel(
         Out + head_idx * stride_oh,
         batch_idx,
         offset_q,
-        0,
+        padded_offset_q,
         stride_ob,
         stride_om,
         HAS_CU_SEQLENS_Q,
@@ -124,7 +125,7 @@ def _fwd_combine_kernel(
         Lse + head_idx * stride_lh,
         batch_idx,
         offset_q,
-        0,
+        padded_offset_q,
         stride_lb,
         1,
         HAS_CU_SEQLENS_Q,
@@ -239,9 +240,9 @@ def _flash_attn_fwd_combine(
     is_varlen = cu_seqlens_q is not None
     num_splits = out_partial.shape[0]
     if not is_varlen:
-        batch_size, seqlen_q, num_heads_q, head_dim = out_partial.shape[1:]
+        batch_size, seqlen_q, num_heads_q, head_dim = out.shape
     else:
-        total_q, num_heads_q, head_dim = out_partial.shape[1:]
+        total_q, num_heads_q, head_dim = out.shape
         batch_size = cu_seqlens_q.shape[0] - 1
         seqlen_q = max_seqlen_q if max_seqlen_q is not None else total_q
 
@@ -293,8 +294,8 @@ def _flash_attn_fwd_combine(
         lse,
         out_partial.stride(0),
         out_partial.stride(1) if not is_varlen else 0,
-        out_partial.stride(-2),
         out_partial.stride(-3),
+        out_partial.stride(-2),
         lse_partial.stride(0),
         lse_partial.stride(1) if not is_varlen else 0,
         lse_partial.stride(-2),

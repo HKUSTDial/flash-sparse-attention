@@ -313,6 +313,7 @@ def get_n_block_max_no_causal_local_mask(
     seqlen_k: gl.tensor,
     m_block: gl.tensor,
     n_block_min: gl.tensor,
+    n_block_max: gl.tensor,
     window_size_right: gl.tensor,
     window_size_near: gl.tensor,
     TILE_N: gl.constexpr,
@@ -331,6 +332,8 @@ def get_n_block_max_no_causal_local_mask(
     :type m_block: tensor
     :param n_block_min: minimum N block in the current range
     :type n_block_min: tensor
+    :param n_block_max: maximum N block in the current range
+    :type n_block_max: tensor
     :param window_size_right: gap token count after the near-diagonal window
     :type window_size_right: tensor
     :param window_size_near: near-diagonal local token count
@@ -353,7 +356,10 @@ def get_n_block_max_no_causal_local_mask(
     n_idx_right = (
         n_idx if not IS_LOCAL else n_idx - window_size_near - window_size_right
     )
-    return gl.maximum(n_block_min, n_idx_right // TILE_N)
+    return gl.minimum(
+        gl.maximum(n_block_min, n_idx_right // TILE_N),
+        n_block_max,
+    )
 
 
 @gluon.jit
@@ -362,6 +368,7 @@ def get_n_block_min_before_local_mask(
     seqlen_k: gl.tensor,
     m_block: gl.tensor,
     n_block_min: gl.tensor,
+    n_block_max: gl.tensor,
     window_size_left: gl.tensor,
     window_size_right: gl.tensor,
     window_size_near: gl.tensor,
@@ -381,6 +388,8 @@ def get_n_block_min_before_local_mask(
     :type m_block: tensor
     :param n_block_min: minimum N block in the current local range
     :type n_block_min: tensor
+    :param n_block_max: maximum N block in the current local range
+    :type n_block_max: tensor
     :param window_size_left: distant local band token count
     :type window_size_left: tensor
     :param window_size_right: gap token count after the near-diagonal window
@@ -407,7 +416,10 @@ def get_n_block_min_before_local_mask(
         m_idx_max = gl.minimum(m_idx_max, seqlen_q)
         n_idx = m_idx_max + seqlen_k - seqlen_q
         n_idx_left = n_idx - window_size_near - window_size_right - window_size_left
-        return gl.maximum(n_block_min, gl.cdiv(n_idx_left, TILE_N))
+        return gl.minimum(
+            gl.maximum(n_block_min, gl.cdiv(n_idx_left, TILE_N)),
+            n_block_max,
+        )
 
 
 @gluon.jit
