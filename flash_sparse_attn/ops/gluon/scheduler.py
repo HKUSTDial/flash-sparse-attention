@@ -10,6 +10,7 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
     offset_batch_K,
     make_ptrs,
     make_pack_gqa_ptrs,
+    make_seqlen_predicate,
 )
 from flash_sparse_attn.ops.gluon.block_info import (
     get_n_block_min_max,
@@ -959,6 +960,7 @@ class AttnBwdBlockScheduler:
     m_block_window_max_no_mask: gl.tensor
     m_block_sink_min: gl.tensor
     m_block_sink_max: gl.tensor
+    m_block_last: gl.tensor
 
     @gluon.constexpr_function
     def __init__(
@@ -972,6 +974,7 @@ class AttnBwdBlockScheduler:
         m_block_window_max_no_mask,
         m_block_sink_min,
         m_block_sink_max,
+        m_block_last,
     ):
         self.m_block_min = m_block_min
         self.m_block_max = m_block_max
@@ -982,6 +985,7 @@ class AttnBwdBlockScheduler:
         self.m_block_window_max_no_mask = m_block_window_max_no_mask
         self.m_block_sink_min = m_block_sink_min
         self.m_block_sink_max = m_block_sink_max
+        self.m_block_last = m_block_last
 
     @gluon.jit
     def is_empty(self) -> gl.tensor:
@@ -994,6 +998,7 @@ class AttnBwdBlockScheduler:
             (self.m_block_max <= self.m_block_min)
             & (self.m_block_window_max <= self.m_block_window_min)
             & (self.m_block_sink_max <= self.m_block_sink_min)
+            & (self.m_block_last < 0)
         )
 
     @staticmethod
@@ -1015,6 +1020,7 @@ class AttnBwdBlockScheduler:
             m_block_window_max,
             m_block_sink_min,
             m_block_sink_max,
+            m_block_last,
         ) = get_m_block_min_max(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
@@ -1036,6 +1042,7 @@ class AttnBwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
             m_block_min=m_block_min,
+            m_block_max=m_block_max,
             window_size_right=0,
             window_size_near=0,
             TILE_N=config.TILE_N,
@@ -1052,6 +1059,7 @@ class AttnBwdBlockScheduler:
                 seqlen_k=config.actual_seqlen_k,
                 n_block=config.n_block,
                 m_block_min=m_block_window_min,
+                m_block_max=m_block_window_max,
                 window_size_right=config.window_size_right,
                 window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
@@ -1063,6 +1071,7 @@ class AttnBwdBlockScheduler:
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 n_block=config.n_block,
+                m_block_min=m_block_window_min_no_mask,
                 m_block_max=m_block_window_max,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
@@ -1087,6 +1096,7 @@ class AttnBwdBlockScheduler:
             m_block_window_max_no_mask,
             m_block_sink_min,
             m_block_sink_max,
+            m_block_last,
         )
 
 
@@ -1743,7 +1753,7 @@ class AttnBwdPointerScheduler:
             stride_batch=stride_dkb,
             stride_seq=stride_dkn,
             HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
+            USE_PADDED=True,
         )
         dv_base = offset_batch_K(
             base_ptr=dV + config.head_kv_idx * stride_dvh,
@@ -1753,7 +1763,7 @@ class AttnBwdPointerScheduler:
             stride_batch=stride_dvb,
             stride_seq=stride_dvn,
             HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
+            USE_PADDED=True,
         )
 
         # For split QO, offset key and value gradients base pointers by split_idx
@@ -2048,6 +2058,55 @@ class AttnBwdPointerScheduler:
             offs_k=offs_k,
             TILE_K=config.TILE_K,
             SWAP_AB=False,
+        )
+
+    @gluon.jit
+    def make_m_predicate(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        offs_m: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct sequence length predicate for the current M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: current M block index
+        :type m_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+
+        :return: sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=offs_m,
+            TILE_MN=config.TILE_M,
+        )
+
+    @gluon.jit
+    def make_n_predicate(
+        self,
+        config: AttnBwdConfig,
+        offs_n: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct sequence length predicate for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+
+        :return: sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=config.n_block,
+            actual_seqlen=config.actual_seqlen_k,
+            offs_mn=offs_n,
+            TILE_MN=config.TILE_N,
         )
 
 
