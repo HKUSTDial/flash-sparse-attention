@@ -181,7 +181,7 @@ def get_m_block_min_max(
     IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
     IS_SPLIT_QO: gl.constexpr,
-) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
     """
     Compute the query block ranges processed by a backward key block.
 
@@ -220,6 +220,7 @@ def get_m_block_min_max(
     :return m_block_window_max: maximum M block in the distant local-window range
     :return m_block_sink_min: minimum M block in the sink range
     :return m_block_sink_max: maximum M block in the sink range
+    :return m_block_last: partial final M block, or -1 when absent from this split
     """
     m_block_max = gl.cdiv(seqlen_q, TILE_M)
     m_block_min = gl.to_tensor(0)
@@ -297,6 +298,30 @@ def get_m_block_min_max(
     else:
         m_block_window_min = 0
         m_block_window_max = 0
+
+    num_full_m_blocks = seqlen_q // TILE_M
+    m_block_range_max = gl.maximum(
+        gl.where(m_block_min < m_block_max, m_block_max, 0),
+        gl.maximum(
+            gl.where(
+                m_block_window_min < m_block_window_max,
+                m_block_window_max,
+                0,
+            ),
+            gl.where(m_block_sink_min < m_block_sink_max, m_block_sink_max, 0),
+        ),
+    )
+    m_block_last = gl.where(
+        (seqlen_q % TILE_M != 0) & (m_block_range_max > num_full_m_blocks),
+        num_full_m_blocks,
+        -1,
+    )
+    m_block_max = gl.minimum(m_block_max, num_full_m_blocks)
+    m_block_window_max = gl.minimum(m_block_window_max, num_full_m_blocks)
+    m_block_sink_max = gl.minimum(m_block_sink_max, num_full_m_blocks)
+    m_block_min = gl.minimum(m_block_min, m_block_max)
+    m_block_window_min = gl.minimum(m_block_window_min, m_block_window_max)
+    m_block_sink_min = gl.minimum(m_block_sink_min, m_block_sink_max)
     return (
         m_block_min,
         m_block_max,
@@ -304,6 +329,7 @@ def get_m_block_min_max(
         m_block_window_max,
         m_block_sink_min,
         m_block_sink_max,
+        m_block_last,
     )
 
 
