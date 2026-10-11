@@ -136,7 +136,7 @@ def _bwd_inner_dense_kernel(
         eviction_policy="evict_first",
     )
 
-    # Commit next Q and LSE
+    # Commit next Q and LSE group
     async_copy.commit_group()
 
     # Compute dP
@@ -188,7 +188,7 @@ def _bwd_inner_dense_kernel(
         eviction_policy="evict_first",
     )
 
-    # Commit next dO and dPsum
+    # Commit next dO and dPsum group
     async_copy.commit_group()
 
     # Compute dQ
