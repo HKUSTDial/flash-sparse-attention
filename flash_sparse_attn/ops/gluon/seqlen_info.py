@@ -10,8 +10,8 @@ def get_seqlen_info(
     cu_seqlens: gl.tensor,
     seqused: gl.tensor,
     TILE_MN: gl.constexpr,
-    HAS_CU_SEQLENS: gl.constexpr,
-    HAS_SEQUSED: gl.constexpr,
+    HAS_CU_SEQLENS: gl.constexpr = False,
+    HAS_SEQUSED: gl.constexpr = False,
 ) -> tuple[gl.tensor, gl.tensor, gl.tensor]:
     """
     Get offset and seqlen for a given batch index.
@@ -63,10 +63,10 @@ def get_seqlen_info_qk(
     seqused_k: gl.tensor,
     TILE_M: gl.constexpr,
     TILE_N: gl.constexpr,
-    HAS_CU_SEQLENS_Q: gl.constexpr,
-    HAS_CU_SEQLENS_K: gl.constexpr,
-    HAS_SEQUSED_Q: gl.constexpr,
-    HAS_SEQUSED_K: gl.constexpr,
+    HAS_CU_SEQLENS_Q: gl.constexpr = False,
+    HAS_CU_SEQLENS_K: gl.constexpr = False,
+    HAS_SEQUSED_Q: gl.constexpr = False,
+    HAS_SEQUSED_K: gl.constexpr = False,
 ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
     """
     Get offset, padded_offset, and seqlen for both Q and K.
@@ -133,8 +133,8 @@ def get_softmax_threshold(
     seqlen_q: gl.tensor,
     seqlen_k: gl.tensor,
     row_offsets: gl.tensor,
-    IS_CAUSAL: gl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
+    IS_CAUSAL: gl.constexpr = False,
+    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
 ) -> gl.tensor:
     """
     Compute the softmax threshold for a given block.
@@ -175,8 +175,8 @@ def offset_batch_Q(
     padded_offset: gl.tensor,
     stride_batch: gl.tensor,
     stride_seq: gl.tensor,
-    HAS_CU_SEQLENS: gl.constexpr,
-    USE_PADDED: gl.constexpr,
+    HAS_CU_SEQLENS: gl.constexpr = False,
+    USE_PADDED: gl.constexpr = False,
 ) -> gl.tensor:
     """
     Offset a Q-like base pointer to the selected batch or packed sequence.
@@ -214,8 +214,8 @@ def offset_batch_K(
     padded_offset: gl.tensor,
     stride_batch: gl.tensor,
     stride_seq: gl.tensor,
-    HAS_CU_SEQLENS: gl.constexpr,
-    USE_PADDED: gl.constexpr,
+    HAS_CU_SEQLENS: gl.constexpr = False,
+    USE_PADDED: gl.constexpr = False,
 ) -> gl.tensor:
     """
     Offset a K-like base pointer to the selected batch or packed sequence.
@@ -253,7 +253,7 @@ def make_ptrs(
     offs_mn: gl.tensor,
     offs_k: gl.tensor,
     TILE_K: gl.constexpr,
-    SWAP_AB: gl.constexpr,
+    SWAP_AB: gl.constexpr = False,
 ) -> gl.tensor:
     """
     Construct pointers for a sequence tile.
@@ -295,7 +295,7 @@ def make_pack_gqa_ptrs(
     offs_m: gl.tensor,
     offs_k: gl.tensor,
     TILE_K: gl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
+    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
 ) -> gl.tensor:
     """
     Construct pointers for a packed-GQA tile.
@@ -343,6 +343,7 @@ def make_seqlen_predicate(
     actual_seqlen: gl.tensor,
     offs_mn: gl.tensor,
     TILE_MN: gl.constexpr,
+    QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
 ) -> gl.tensor:
     """
     Construct predicate for a sequence tile.
@@ -355,8 +356,10 @@ def make_seqlen_predicate(
     :type offs_mn: tensor
     :param TILE_MN: tile size along the M or N dimension
     :type TILE_MN: int
+    :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
+    :type QHEAD_PER_KVHEAD_PACKGQA: int
 
     :return: predicate indicating which elements are within the actual sequence length
     :rtype: tensor
     """
-    return mn_block * TILE_MN + offs_mn < actual_seqlen
+    return (mn_block * TILE_MN + offs_mn) // QHEAD_PER_KVHEAD_PACKGQA < actual_seqlen
