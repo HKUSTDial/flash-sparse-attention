@@ -18,10 +18,10 @@ from flash_sparse_attn.ops.gluon.scheduler import (
 
 from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_inputs
 from flash_sparse_attn.ops.gluon.utils import (
+    get_device_num_sms,
     window_sizes_heuristic,
     num_splits_heuristic,
 )
-from flash_sparse_attn.ops.gluon.cache_utils import get_device_num_sms
 from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
 from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
@@ -133,12 +133,16 @@ def _fwd_inner_dense_kernel(
 
 @triton.heuristics(
     {
-        "EVEN_M": lambda args: not args["HAS_CU_SEQLENS_Q"]
-        and not args["HAS_SEQUSED_Q"]
-        and args["seqlen_q"] % args["TILE_M"] == 0,
-        "EVEN_N": lambda args: not args["HAS_CU_SEQLENS_K"]
-        and not args["HAS_SEQUSED_K"]
-        and args["seqlen_k"] % args["TILE_N"] == 0,
+        "EVEN_M": lambda args: (
+            not args["HAS_CU_SEQLENS_Q"]
+            and not args["HAS_SEQUSED_Q"]
+            and args["seqlen_q"] % args["TILE_M"] == 0
+        ),
+        "EVEN_N": lambda args: (
+            not args["HAS_CU_SEQLENS_K"]
+            and not args["HAS_SEQUSED_K"]
+            and args["seqlen_k"] % args["TILE_N"] == 0
+        ),
     }
 )
 @gluon.jit(repr=fwd_dense_repr)
@@ -178,18 +182,18 @@ def _fwd_dense_kernel(
     PACK_GQA: gl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
     NUM_SPLITS: gl.constexpr,
-    TILE_M: gl.constexpr,
-    TILE_N: gl.constexpr,
-    TILE_K: gl.constexpr,
+    IS_SPLIT_KV: gl.constexpr,
     IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
-    IS_SPLIT_KV: gl.constexpr,
     HAS_CU_SEQLENS_Q: gl.constexpr,
     HAS_CU_SEQLENS_K: gl.constexpr,
     HAS_SEQUSED_Q: gl.constexpr,
     HAS_SEQUSED_K: gl.constexpr,
     EVEN_M: gl.constexpr,
     EVEN_N: gl.constexpr,
+    TILE_M: gl.constexpr,
+    TILE_N: gl.constexpr,
+    TILE_K: gl.constexpr,
     num_warps: gl.constexpr,
 ):
     warp_size: gl.constexpr = 32
@@ -671,9 +675,9 @@ def _fwd_dense_kernel(
 
 
 def _flash_dense_attn_forward(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
@@ -684,12 +688,15 @@ def _flash_dense_attn_forward(
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    tile_m: Optional[int] = None,
+    tile_n: Optional[int] = None,
+    num_threads: Optional[int] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    device = query.device
+    device = q.device
     num_SMs = get_device_num_sms(device)
-    batch_size, seqlen_q, num_heads_q, head_dim = query.shape
-    _, seqlen_k, num_heads_kv, _ = key.shape
+    batch_size, seqlen_q, num_heads_q, head_dim = q.shape
+    _, seqlen_k, num_heads_kv, _ = k.shape
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
@@ -701,9 +708,9 @@ def _flash_dense_attn_forward(
     # Assert the validity of inputs
     if not skip_checks:
         assert_fwd_inputs(
-            query=query,
-            key=key,
-            value=value,
+            q=q,
+            k=k,
+            v=v,
             window_sizes=window_sizes,
             seqused_k=seqused_k,
             num_heads_q=num_heads_q,
@@ -713,44 +720,47 @@ def _flash_dense_attn_forward(
         )
 
     # Setup launch configuration
-    TILE_M = 128
-    TILE_N = 64
+    TILE_M = tile_m if tile_m is not None else 128
+    TILE_N = tile_n if tile_n is not None else 64
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
-    num_warps = 4
+    num_warps = num_threads // 32 if num_threads is not None else 4
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
-            seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
-            seqlen_k=seqlen_k,
-            num_SMs=num_SMs,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            is_local=is_local,
+            batch_size=batch_size,
+            seqlen_parallel=seqlen_q * qhead_per_kvhead_packgqa,
+            seqlen_loop=seqlen_k,
+            num_heads_parallel=num_heads_q // qhead_per_kvhead_packgqa,
             num_heads_kv=num_heads_kv,
+            num_SMs=num_SMs,
+            TILE_PARALLEL=TILE_M,
+            TILE_LOOP=TILE_N,
+            is_local=is_local,
         )
+        is_split_kv = True if num_splits > 1 else False
     elif not is_split_kv:
         num_splits = 1
 
     # Allocate outputs
-    out = out if out is not None else torch.empty_like(query)
+    out = out if out is not None else torch.empty_like(q)
     lse = (
         lse
         if lse is not None
         else torch.empty(
             (batch_size, num_heads_q, seqlen_q),
             dtype=torch.float32,
-            device=query.device,
+            device=q.device,
         )
     )
     if is_split_kv:
         out_partial = torch.empty(
-            (num_splits, batch_size, seqlen_q, num_heads_q, head_dim),
+            (num_splits, batch_size, num_heads_q, seqlen_q, head_dim),
             dtype=torch.float32,
-            device=query.device,
+            device=q.device,
         )
         lse_partial = torch.empty(
             (num_splits, batch_size, num_heads_q, seqlen_q),
             dtype=torch.float32,
-            device=query.device,
+            device=q.device,
         )
 
     # Get the grid for the kernel launch
@@ -765,9 +775,9 @@ def _flash_dense_attn_forward(
 
     # Launch the kernel
     _fwd_dense_kernel[grid](
-        query,
-        key,
-        value,
+        q,
+        k,
+        v,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         window_sizes,
@@ -775,18 +785,18 @@ def _flash_dense_attn_forward(
         None,  # cu_seqlens_k
         None,  # seqused_q
         seqused_k,
-        query.stride(-4),
-        query.stride(-2),
-        query.stride(-3),
-        key.stride(-4),
-        key.stride(-2),
-        key.stride(-3),
-        value.stride(-4),
-        value.stride(-2),
-        value.stride(-3),
+        q.stride(-4),
+        q.stride(-2),
+        q.stride(-3),
+        k.stride(-4),
+        k.stride(-2),
+        k.stride(-3),
+        v.stride(-4),
+        v.stride(-2),
+        v.stride(-3),
         out.stride(-4) if not is_split_kv else out_partial.stride(-4),
-        out.stride(-2) if not is_split_kv else out_partial.stride(-2),
-        out.stride(-3) if not is_split_kv else out_partial.stride(-3),
+        out.stride(-2) if not is_split_kv else out_partial.stride(-3),
+        out.stride(-3) if not is_split_kv else out_partial.stride(-2),
         0 if not is_split_kv else out_partial.stride(-5),
         lse.stride(-3) if not is_split_kv else lse_partial.stride(-3),
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
@@ -800,36 +810,37 @@ def _flash_dense_attn_forward(
         PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         NUM_SPLITS=num_splits,
-        TILE_M=TILE_M,
-        TILE_N=TILE_N,
-        TILE_K=TILE_K,
+        IS_SPLIT_KV=is_split_kv,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
-        IS_SPLIT_KV=is_split_kv,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
         HAS_SEQUSED_K=seqused_k is not None,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
+        TILE_K=TILE_K,
         num_warps=num_warps,
         num_stages=1,  # only change compiler metadata
     )
 
-    # Combine partial results if split_kv was used
     if is_split_kv:
+        # Combine partial O and LSE
         _flash_attn_fwd_combine(
             out_partial,
             lse_partial,
             out,
             lse,
+            skip_checks=True,
         )
 
     return out, lse, softmax_scale
 
 
 def _flash_dense_attn_varlen_forward(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: int,
@@ -845,12 +856,15 @@ def _flash_dense_attn_varlen_forward(
     seqused_k: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     lse: Optional[torch.Tensor] = None,
+    tile_m: Optional[int] = None,
+    tile_n: Optional[int] = None,
+    num_threads: Optional[int] = None,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    device = query.device
+    device = q.device
     num_SMs = get_device_num_sms(device)
-    total_seqlen_q, num_heads_q, head_dim = query.shape
-    _, num_heads_kv, _ = key.shape
+    total_q, num_heads_q, head_dim = q.shape
+    _, num_heads_kv, _ = k.shape
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
@@ -865,9 +879,9 @@ def _flash_dense_attn_varlen_forward(
     # Assert the validity of inputs
     if not skip_checks:
         assert_fwd_inputs(
-            query=query,
-            key=key,
-            value=value,
+            q=q,
+            k=k,
+            v=v,
             window_sizes=window_sizes,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
@@ -880,44 +894,47 @@ def _flash_dense_attn_varlen_forward(
         )
 
     # Setup launch configuration
-    TILE_M = 128
-    TILE_N = 64
+    TILE_M = tile_m if tile_m is not None else 128
+    TILE_N = tile_n if tile_n is not None else 64
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
-    num_warps = 4
+    num_warps = num_threads // 32 if num_threads is not None else 4
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
-            seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
-            seqlen_k=seqlen_k,
-            num_SMs=num_SMs,
-            TILE_M=TILE_M,
-            TILE_N=TILE_N,
-            is_local=is_local,
+            batch_size=batch_size,
+            seqlen_parallel=seqlen_q * qhead_per_kvhead_packgqa,
+            seqlen_loop=seqlen_k,
+            num_heads_parallel=num_heads_q // qhead_per_kvhead_packgqa,
             num_heads_kv=num_heads_kv,
+            num_SMs=num_SMs,
+            TILE_PARALLEL=TILE_M,
+            TILE_LOOP=TILE_N,
+            is_local=is_local,
         )
+        is_split_kv = True if num_splits > 1 else False
     elif not is_split_kv:
         num_splits = 1
 
     # Allocate outputs
-    out = out if out is not None else torch.empty_like(query)
+    out = out if out is not None else torch.empty_like(q)
     lse = (
         lse
         if lse is not None
         else torch.empty(
-            (num_heads_q, total_seqlen_q),
+            (num_heads_q, total_q),
             dtype=torch.float32,
-            device=query.device,
+            device=q.device,
         )
     )
     if is_split_kv:
         out_partial = torch.empty(
-            (num_splits, total_seqlen_q, num_heads_q, head_dim),
+            (num_splits, num_heads_q, total_q, head_dim),
             dtype=torch.float32,
-            device=query.device,
+            device=q.device,
         )
         lse_partial = torch.empty(
-            (num_splits, num_heads_q, total_seqlen_q),
+            (num_splits, num_heads_q, total_q),
             dtype=torch.float32,
-            device=query.device,
+            device=q.device,
         )
 
     # Get the grid for the kernel launch
@@ -932,9 +949,9 @@ def _flash_dense_attn_varlen_forward(
 
     # Launch the kernel
     _fwd_dense_kernel[grid](
-        query,
-        key,
-        value,
+        q,
+        k,
+        v,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         window_sizes,
@@ -943,17 +960,17 @@ def _flash_dense_attn_varlen_forward(
         seqused_q,
         seqused_k,
         0,
-        query.stride(-2),
-        query.stride(-3),
+        q.stride(-2),
+        q.stride(-3),
         0,
-        key.stride(-2),
-        key.stride(-3),
+        k.stride(-2),
+        k.stride(-3),
         0,
-        value.stride(-2),
-        value.stride(-3),
+        v.stride(-2),
+        v.stride(-3),
         0,
-        out.stride(-2) if not is_split_kv else out_partial.stride(-2),
-        out.stride(-3) if not is_split_kv else out_partial.stride(-3),
+        out.stride(-2) if not is_split_kv else out_partial.stride(-3),
+        out.stride(-3) if not is_split_kv else out_partial.stride(-2),
         0 if not is_split_kv else out_partial.stride(-4),
         0,
         lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
@@ -967,22 +984,22 @@ def _flash_dense_attn_varlen_forward(
         PACK_GQA=pack_gqa,
         QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
         NUM_SPLITS=num_splits,
-        TILE_M=TILE_M,
-        TILE_N=TILE_N,
-        TILE_K=TILE_K,
+        IS_SPLIT_KV=is_split_kv,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
-        IS_SPLIT_KV=is_split_kv,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
         HAS_SEQUSED_K=seqused_k is not None,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
+        TILE_K=TILE_K,
         num_warps=num_warps,
         num_stages=1,  # only change compiler metadata
     )
 
-    # Combine partial results if split_kv was used
     if is_split_kv:
+        # Combine partial O and LSE
         _flash_attn_fwd_combine(
             out_partial,
             lse_partial,
@@ -990,6 +1007,8 @@ def _flash_dense_attn_varlen_forward(
             lse,
             cu_seqlens_q=cu_seqlens_q,
             seqused_q=seqused_q,
+            max_seqlen_q=max_seqlen_q,
+            skip_checks=True,
         )
 
     return out, lse, softmax_scale
