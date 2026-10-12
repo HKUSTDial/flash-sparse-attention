@@ -312,35 +312,20 @@ def _fwd_dense_kernel(
     # Create softmax scheduler
     softmax_sched = SoftmaxScheduler.create(config)
 
-    # Compute predicates for global memory copy and MMA operations
-    if not EVEN_M:
-        copy_m_rows = (
-            (config.m_block * TILE_M + copy_row_m_offs) // QHEAD_PER_KVHEAD_PACKGQA
-            if PACK_GQA
-            else config.m_block * TILE_M + copy_row_m_offs
-        )
-        mma_m_rows = (
-            (config.m_block * TILE_M + mma_row_m_offs) // QHEAD_PER_KVHEAD_PACKGQA
-            if PACK_GQA
-            else config.m_block * TILE_M + mma_row_m_offs
-        )
-        predicate_copy_m = copy_m_rows < config.actual_seqlen_q
-        predicate_mma_m = mma_m_rows < config.actual_seqlen_q
-    if not EVEN_N:
-        copy_n_cols = (block_sched.n_block_max - 1) * TILE_N + copy_row_n_offs
-        predicate_copy_n = copy_n_cols < config.actual_seqlen_k
-
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
         empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, mma_layout)
+        if not EVEN_M:
+            pO = ptrs_sched.make_m_predicate(config, mma_row_m_offs[:, None])
         gO = ptrs_sched.make_out_ptrs(config, mma_row_m_offs, mma_col_k_offs)
-        empty_o = empty_o.to(gO.dtype.element_ty)
-        gl.store(gO, empty_o, mask=predicate_mma_m[:, None] if not EVEN_M else None)
+        gl.store(gO, empty_o, mask=pO if not EVEN_M else None)
         empty_lse = gl.full(
             [TILE_M], float("-inf"), mLse.dtype.element_ty, mma_row_layout
         )
+        if not EVEN_M:
+            pLSE = ptrs_sched.make_m_predicate(config, mma_row_m_offs)
         gLSE = ptrs_sched.make_lse_ptrs(config, mma_row_m_offs)
-        gl.store(gLSE, empty_lse, mask=predicate_mma_m if not EVEN_M else None)
+        gl.store(gLSE, empty_lse, mask=pLSE if not EVEN_M else None)
         return
 
     # Allocate shared memory for Q/K/V tiles
@@ -363,37 +348,47 @@ def _fwd_dense_kernel(
     acc_o = gl.zeros([TILE_M, TILE_K], gl.float32, mma_layout)
 
     # Load Q
+    if not EVEN_M:
+        pQ = ptrs_sched.make_m_predicate(config, copy_row_m_offs[:, None])
     gQ = ptrs_sched.make_q_ptrs(config, copy_row_m_offs, copy_col_k_offs)
     async_copy.async_copy_global_to_shared(
         sQ,
         gQ,
-        mask=predicate_copy_m[:, None] if not EVEN_M else None,
+        mask=pQ if not EVEN_M else None,
         cache_modifier=".ca",
         eviction_policy="evict_last",
     )
     async_copy.commit_group()
 
     # Load K for near-diagonal
+    if not EVEN_N:
+        pK = ptrs_sched.make_n_predicate(
+            config, block_sched.n_block_max - 1, copy_row_n_offs[:, None]
+        )
     gK = ptrs_sched.make_k_ptrs(
         config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
     )
     async_copy.async_copy_global_to_shared(
         sK,
         gK,
-        mask=predicate_copy_n[:, None] if not EVEN_N else None,
+        mask=pK if not EVEN_N else None,
         cache_modifier=".cg",
         eviction_policy="evict_first",
     )
     async_copy.commit_group()
 
-    # Load V for near-diagonal
+    # Load V
+    if not EVEN_N:
+        pV = ptrs_sched.make_n_predicate(
+            config, block_sched.n_block_max - 1, copy_row_n_offs[:, None]
+        )
     gV = ptrs_sched.make_v_ptrs(
         config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
     )
     async_copy.async_copy_global_to_shared(
         sV,
         gV,
-        mask=predicate_copy_n[:, None] if not EVEN_N else None,
+        mask=pV if not EVEN_N else None,
         cache_modifier=".cg",
         eviction_policy="evict_first",
     )
@@ -668,22 +663,28 @@ def _fwd_dense_kernel(
     row_scale, lse = softmax_sched.finalize(row_max, row_sum, IS_LOG2=IS_SPLIT_KV)
 
     # Store LSE
+    if not EVEN_M:
+        pLSE = ptrs_sched.make_m_predicate(config, mma_row_m_offs)
     gLSE = ptrs_sched.make_lse_ptrs(config, mma_row_m_offs)
-    gl.store(gLSE, lse, mask=predicate_mma_m if not EVEN_M else None)
+    gl.store(gLSE, lse, mask=pLSE if not EVEN_M else None)
 
     # Finalize rescale
     acc_o = softmax_sched.rescale_o(acc_o, row_scale)
 
-    # Store output
+    # Store O
     if IS_SPLIT_KV:
+        if not EVEN_M:
+            pO = ptrs_sched.make_m_predicate(config, mma_row_m_offs[:, None])
         gO = ptrs_sched.make_out_ptrs(config, mma_row_m_offs, mma_col_k_offs)
-        gl.store(gO, acc_o, mask=predicate_mma_m[:, None] if not EVEN_M else None)
+        gl.store(gO, acc_o, mask=pO if not EVEN_M else None)
     else:
         sQ.store(acc_o.to(mOut.dtype.element_ty))
         gl.barrier()
         rO = sQ.load(copy_layout)
+        if not EVEN_M:
+            pO = ptrs_sched.make_m_predicate(config, copy_row_m_offs[:, None])
         gO = ptrs_sched.make_out_ptrs(config, copy_row_m_offs, copy_col_k_offs)
-        gl.store(gO, rO, mask=predicate_copy_m[:, None] if not EVEN_M else None)
+        gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
 def _flash_dense_attn_forward(
