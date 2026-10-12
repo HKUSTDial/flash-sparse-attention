@@ -102,35 +102,28 @@ def online_softmax(
 
 
 @gluon.jit
-def online_sparse_softmax(
+def skip(
     acc_s: gl.tensor,
     row_max: gl.tensor,
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
     softmax_threshold_log2: gl.tensor,
-    CHECK_INF: gl.constexpr,
-) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+) -> gl.tensor:
     """
-    Apply online sparse softmax to acc_s, and update row_max and row_sum.
+    Determine whether the current score can be skipped.
 
     :param acc_s: attention scores of shape [TILE_M, TILE_N]
     :type acc_s: tensor
-    :param row_max: running maximum values per row of shape [TILE_M], init to -inf
+    :param row_max: running maximum values per row of shape [TILE_M]
     :type row_max: tensor
-    :param row_sum: running sum values per row of shape [TILE_M], init to 0
+    :param row_sum: running sum values per row of shape [TILE_M]
     :type row_sum: tensor
     :param scale_log2: log2 of the scaling factor to be applied to acc_s
     :type scale_log2: tensor
     :param softmax_threshold_log2: threshold in log2-domain for block-level skip
     :type softmax_threshold_log2: tensor
-    :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
-    :type CHECK_INF: bool
 
-    :return p: online softmax probabilities of shape [TILE_M, TILE_N]
-    :return row_max_new: updated running maximum values per row of shape [TILE_M]
-    :return row_sum_new: updated running sum values per row of shape [TILE_M]
-    :return row_scale: scaling factors per row of shape [TILE_M]
-    :return skip_softmax: boolean indicating whether this block was skipped
+    :return: boolean indicating whether this block can be skipped
     """
     # Compute current row max
     row_max_curr = gl.max(acc_s, axis=1)
@@ -142,37 +135,9 @@ def online_sparse_softmax(
     row_max_diff_log2 -= gl.log2(row_sum)
 
     # Update skip condition based on threshold
-    skip_softmax = gl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
+    is_skip = gl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
 
-    if skip_softmax:
-        # Return zero attention weights
-        p = gl.zeros(acc_s.shape, acc_s.dtype, layout=acc_s.type.layout)
-        row_max_new = row_max
-        row_sum_new = row_sum
-        row_scale = gl.full(
-            row_max.shape, 1.0, row_max.dtype, layout=row_max.type.layout
-        )
-    else:
-        # Update row max
-        row_max_new = gl.maximum(row_max_curr, row_max)
-
-        # Avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
-        if CHECK_INF:
-            row_max_new = check_inf(row_max_new)
-
-        # Compute scaled differences to new row max
-        acc_scale_log2 = (row_max - row_max_new) * scale_log2
-
-        # Compute row scale
-        row_scale = exp2(acc_scale_log2)
-
-        # Compute attention weights
-        p = exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
-
-        # Update row sum
-        row_sum_new = row_sum * row_scale + gl.sum(p, axis=1)
-
-    return p, row_max_new, row_sum_new, row_scale, skip_softmax
+    return is_skip
 
 
 @gluon.jit
