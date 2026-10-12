@@ -42,10 +42,10 @@ def _fwd_inner_dense_kernel(
     acc_o,
     n_block,
     n_block_min,
-    mma_offs_m,
-    mma_offs_n,
-    copy_offs_n,
-    copy_offs_k,
+    mma_row_m_offs,
+    mma_col_n_offs,
+    copy_row_n_offs,
+    copy_col_k_offs,
     mma_layout: gl.constexpr,
     IS_MASK: gl.constexpr,
     MASK_SEQLEN: gl.constexpr,
@@ -53,7 +53,7 @@ def _fwd_inner_dense_kernel(
     MASK_LOCAL: gl.constexpr = False,
     MASK_SINK: gl.constexpr = False,
 ):
-    # MMA operand layouts for QK/PV
+    # MMA operand layouts
     mma_lhs_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=0,
         parent=mma_layout,
@@ -77,8 +77,8 @@ def _fwd_inner_dense_kernel(
         acc_s = mask_sched.apply_mask(
             acc_s,
             n_block,
-            mma_offs_m,
-            mma_offs_n,
+            mma_row_m_offs,
+            mma_col_n_offs,
             MASK_SEQLEN=MASK_SEQLEN,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
@@ -98,8 +98,8 @@ def _fwd_inner_dense_kernel(
     gl.barrier()
 
     # Make pointers for next K and V
-    gK_next = ptrs_sched.make_k_ptrs(config, n_block - 1, copy_offs_n, copy_offs_k)
-    gV_next = ptrs_sched.make_v_ptrs(config, n_block - 1, copy_offs_n, copy_offs_k)
+    gK_next = ptrs_sched.make_k_ptrs(config, n_block - 1, copy_row_n_offs, copy_col_k_offs)
+    gV_next = ptrs_sched.make_v_ptrs(config, n_block - 1, copy_row_n_offs, copy_col_k_offs)
 
     # TODO: Support a CTA-uniform issue predicate for both copy and commit_group to reduce empty copy in last iteration.
     prefetch_mask = n_block > n_block_min
@@ -220,12 +220,12 @@ def _fwd_dense_kernel(
     mma_col_layout: gl.constexpr = gl.SliceLayout(0, mma_layout)
 
     # Compute offsets for global memory copy and MMA operations
-    copy_offs_m = gl.arange(0, TILE_M, copy_row_layout)
-    copy_offs_n = gl.arange(0, TILE_N, copy_row_layout)
-    copy_offs_k = gl.arange(0, TILE_K, copy_col_layout)
-    mma_offs_m = gl.arange(0, TILE_M, mma_row_layout)
-    mma_offs_n = gl.arange(0, TILE_N, mma_col_layout)
-    mma_offs_k = gl.arange(0, TILE_K, mma_col_layout)
+    copy_row_m_offs = gl.arange(0, TILE_M, copy_row_layout)
+    copy_row_n_offs = gl.arange(0, TILE_N, copy_row_layout)
+    copy_col_k_offs = gl.arange(0, TILE_K, copy_col_layout)
+    mma_row_m_offs = gl.arange(0, TILE_M, mma_row_layout)
+    mma_col_n_offs = gl.arange(0, TILE_N, mma_col_layout)
+    mma_col_k_offs = gl.arange(0, TILE_K, mma_col_layout)
 
     # Create grid index
     grid_idx = AttnFwdGridIndex.create(
@@ -247,7 +247,7 @@ def _fwd_dense_kernel(
         head_kv_idx=grid_idx.head_kv_idx,
         split_idx=grid_idx.split_idx,
         m_block=grid_idx.m_block,
-        row_offsets=mma_offs_m,
+        row_offsets=mma_row_m_offs,
         softmax_scale=softmax_scale,
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
@@ -315,31 +315,31 @@ def _fwd_dense_kernel(
     # Compute predicates for global memory copy and MMA operations
     if not EVEN_M:
         copy_m_rows = (
-            (config.m_block * TILE_M + copy_offs_m) // QHEAD_PER_KVHEAD_PACKGQA
+            (config.m_block * TILE_M + copy_row_m_offs) // QHEAD_PER_KVHEAD_PACKGQA
             if PACK_GQA
-            else config.m_block * TILE_M + copy_offs_m
+            else config.m_block * TILE_M + copy_row_m_offs
         )
         mma_m_rows = (
-            (config.m_block * TILE_M + mma_offs_m) // QHEAD_PER_KVHEAD_PACKGQA
+            (config.m_block * TILE_M + mma_row_m_offs) // QHEAD_PER_KVHEAD_PACKGQA
             if PACK_GQA
-            else config.m_block * TILE_M + mma_offs_m
+            else config.m_block * TILE_M + mma_row_m_offs
         )
         predicate_copy_m = copy_m_rows < config.actual_seqlen_q
         predicate_mma_m = mma_m_rows < config.actual_seqlen_q
     if not EVEN_N:
-        copy_n_cols = (block_sched.n_block_max - 1) * TILE_N + copy_offs_n
+        copy_n_cols = (block_sched.n_block_max - 1) * TILE_N + copy_row_n_offs
         predicate_copy_n = copy_n_cols < config.actual_seqlen_k
 
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
         empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, mma_layout)
-        gO = ptrs_sched.make_out_ptrs(config, mma_offs_m, mma_offs_k)
+        gO = ptrs_sched.make_out_ptrs(config, mma_row_m_offs, mma_col_k_offs)
         empty_o = empty_o.to(gO.dtype.element_ty)
         gl.store(gO, empty_o, mask=predicate_mma_m[:, None] if not EVEN_M else None)
         empty_lse = gl.full(
             [TILE_M], float("-inf"), mLse.dtype.element_ty, mma_row_layout
         )
-        gLSE = ptrs_sched.make_lse_ptrs(config, mma_offs_m)
+        gLSE = ptrs_sched.make_lse_ptrs(config, mma_row_m_offs)
         gl.store(gLSE, empty_lse, mask=predicate_mma_m if not EVEN_M else None)
         return
 
@@ -363,7 +363,7 @@ def _fwd_dense_kernel(
     acc_o = gl.zeros([TILE_M, TILE_K], gl.float32, mma_layout)
 
     # Load Q
-    gQ = ptrs_sched.make_q_ptrs(config, copy_offs_m, copy_offs_k)
+    gQ = ptrs_sched.make_q_ptrs(config, copy_row_m_offs, copy_col_k_offs)
     async_copy.async_copy_global_to_shared(
         sQ,
         gQ,
@@ -375,7 +375,7 @@ def _fwd_dense_kernel(
 
     # Load K for near-diagonal
     gK = ptrs_sched.make_k_ptrs(
-        config, block_sched.n_block_max - 1, copy_offs_n, copy_offs_k
+        config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
     )
     async_copy.async_copy_global_to_shared(
         sK,
@@ -388,7 +388,7 @@ def _fwd_dense_kernel(
 
     # Load V for near-diagonal
     gV = ptrs_sched.make_v_ptrs(
-        config, block_sched.n_block_max - 1, copy_offs_n, copy_offs_k
+        config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
     )
     async_copy.async_copy_global_to_shared(
         sV,
@@ -424,10 +424,10 @@ def _fwd_dense_kernel(
                 acc_o,
                 n_block,
                 block_sched.n_block_min,
-                mma_offs_m,
-                mma_offs_n,
-                copy_offs_n,
-                copy_offs_k,
+                mma_row_m_offs,
+                mma_col_n_offs,
+                copy_row_n_offs,
+                copy_col_k_offs,
                 mma_layout,
                 IS_MASK=True,
                 MASK_SEQLEN=not EVEN_N,
@@ -452,10 +452,10 @@ def _fwd_dense_kernel(
             acc_o,
             n_block,
             block_sched.n_block_min,
-            mma_offs_m,
-            mma_offs_n,
-            copy_offs_n,
-            copy_offs_k,
+            mma_row_m_offs,
+            mma_col_n_offs,
+            copy_row_n_offs,
+            copy_col_k_offs,
             mma_layout,
             IS_MASK=not EVEN_N,
             MASK_SEQLEN=not EVEN_N,
@@ -481,10 +481,10 @@ def _fwd_dense_kernel(
                 acc_o,
                 n_block,
                 block_sched.n_block_min,
-                mma_offs_m,
-                mma_offs_n,
-                copy_offs_n,
-                copy_offs_k,
+                mma_row_m_offs,
+                mma_col_n_offs,
+                copy_row_n_offs,
+                copy_col_k_offs,
                 mma_layout,
                 IS_MASK=False,
                 MASK_SEQLEN=False,
@@ -495,7 +495,10 @@ def _fwd_dense_kernel(
         if block_sched.n_block_window_max > block_sched.n_block_window_min:
             # Load K for long-range window
             gK = ptrs_sched.make_k_ptrs(
-                config, block_sched.n_block_window_max - 1, copy_offs_n, copy_offs_k
+                config,
+                block_sched.n_block_window_max - 1,
+                copy_row_n_offs,
+                copy_col_k_offs,
             )
             async_copy.async_copy_global_to_shared(
                 sK, gK, cache_modifier=".cg", eviction_policy="evict_first"
@@ -504,7 +507,10 @@ def _fwd_dense_kernel(
 
             # Load V for long-range window
             gV = ptrs_sched.make_v_ptrs(
-                config, block_sched.n_block_window_max - 1, copy_offs_n, copy_offs_k
+                config,
+                block_sched.n_block_window_max - 1,
+                copy_row_n_offs,
+                copy_col_k_offs,
             )
             async_copy.async_copy_global_to_shared(
                 sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
@@ -530,10 +536,10 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_window_min,
-                    mma_offs_m,
-                    mma_offs_n,
-                    copy_offs_n,
-                    copy_offs_k,
+                    mma_row_m_offs,
+                    mma_col_n_offs,
+                    copy_row_n_offs,
+                    copy_col_k_offs,
                     mma_layout,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
@@ -561,10 +567,10 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_window_min,
-                    mma_offs_m,
-                    mma_offs_n,
-                    copy_offs_n,
-                    copy_offs_k,
+                    mma_row_m_offs,
+                    mma_col_n_offs,
+                    copy_row_n_offs,
+                    copy_col_k_offs,
                     mma_layout,
                     IS_MASK=False,
                     MASK_SEQLEN=False,
@@ -590,10 +596,10 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_window_min,
-                    mma_offs_m,
-                    mma_offs_n,
-                    copy_offs_n,
-                    copy_offs_k,
+                    mma_row_m_offs,
+                    mma_col_n_offs,
+                    copy_row_n_offs,
+                    copy_col_k_offs,
                     mma_layout,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
@@ -605,7 +611,10 @@ def _fwd_dense_kernel(
         if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
             # Load K for prefix-sink
             gK = ptrs_sched.make_k_ptrs(
-                config, block_sched.n_block_sink_max - 1, copy_offs_n, copy_offs_k
+                config,
+                block_sched.n_block_sink_max - 1,
+                copy_row_n_offs,
+                copy_col_k_offs,
             )
             async_copy.async_copy_global_to_shared(
                 sK, gK, cache_modifier=".cg", eviction_policy="evict_first"
@@ -614,7 +623,10 @@ def _fwd_dense_kernel(
 
             # Load V for prefix-sink
             gV = ptrs_sched.make_v_ptrs(
-                config, block_sched.n_block_sink_max - 1, copy_offs_n, copy_offs_k
+                config,
+                block_sched.n_block_sink_max - 1,
+                copy_row_n_offs,
+                copy_col_k_offs,
             )
             async_copy.async_copy_global_to_shared(
                 sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
@@ -640,10 +652,10 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_sink_min,
-                    mma_offs_m,
-                    mma_offs_n,
-                    copy_offs_n,
-                    copy_offs_k,
+                    mma_row_m_offs,
+                    mma_col_n_offs,
+                    copy_row_n_offs,
+                    copy_col_k_offs,
                     mma_layout,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
@@ -656,7 +668,7 @@ def _fwd_dense_kernel(
     row_scale, lse = softmax_sched.finalize(row_max, row_sum, IS_LOG2=IS_SPLIT_KV)
 
     # Store LSE
-    gLSE = ptrs_sched.make_lse_ptrs(config, mma_offs_m)
+    gLSE = ptrs_sched.make_lse_ptrs(config, mma_row_m_offs)
     gl.store(gLSE, lse, mask=predicate_mma_m if not EVEN_M else None)
 
     # Finalize rescale
@@ -664,13 +676,13 @@ def _fwd_dense_kernel(
 
     # Store output
     if IS_SPLIT_KV:
-        gO = ptrs_sched.make_out_ptrs(config, mma_offs_m, mma_offs_k)
+        gO = ptrs_sched.make_out_ptrs(config, mma_row_m_offs, mma_col_k_offs)
         gl.store(gO, acc_o, mask=predicate_mma_m[:, None] if not EVEN_M else None)
     else:
         sQ.store(acc_o.to(mOut.dtype.element_ty))
         gl.barrier()
         rO = sQ.load(copy_layout)
-        gO = ptrs_sched.make_out_ptrs(config, copy_offs_m, copy_offs_k)
+        gO = ptrs_sched.make_out_ptrs(config, copy_row_m_offs, copy_col_k_offs)
         gl.store(gO, rO, mask=predicate_copy_m[:, None] if not EVEN_M else None)
 
 
