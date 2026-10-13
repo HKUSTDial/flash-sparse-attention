@@ -42,6 +42,7 @@ def _fwd_inner_dense_kernel(
     acc_o,
     n_block,
     n_block_min,
+    k_stage,
     mma_row_m_offs,
     mma_col_n_offs,
     copy_row_n_offs,
@@ -65,15 +66,25 @@ def _fwd_inner_dense_kernel(
         k_width=max(32 // sK.dtype.primitive_bitwidth, 1),
     )
 
-    # Wait for K
-    async_copy.wait_group(1)
+    # TODO: Support a CTA-uniform issue predicate for both copy and commit_group to reduce empty copy in last iteration.
+    # prefetch_mask = n_block > n_block_min
 
-    # Compute attention scores
+    # Wait for Q and K
+    async_copy.wait_group(1)
+    gl.barrier()
+
+    # Compute S
     acc_s = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, mma_layout)
-    acc_s = gemm(acc_s, sQ, sK, mma_lhs_layout, mma_rhs_layout)
+    acc_s = gemm(
+        acc=acc_s,
+        sA=sQ,
+        sB=sK.index(k_stage).permute((1, 0)),
+        lhs_layout=mma_lhs_layout,
+        rhs_layout=mma_rhs_layout,
+    )
 
     if IS_MASK:
-        # Apply mask to attention scores
+        # Apply mask to S
         acc_s = mask_sched.apply_mask(
             acc_s,
             n_block,
@@ -85,47 +96,56 @@ def _fwd_inner_dense_kernel(
             MASK_SINK=MASK_SINK,
         )
 
+    # Load next K
+    gK_next = ptrs_sched.make_k_ptrs(
+        config, n_block - 1, copy_row_n_offs, copy_col_k_offs
+    )
+    async_copy.async_copy_global_to_shared(
+        sK.index(1 - k_stage),
+        gK_next,
+        mask=n_block > n_block_min,
+        cache_modifier=".cg",
+        eviction_policy="evict_first",
+    )
+
+    # Commit next K
+    async_copy.commit_group()
+
     # Apply online softmax
     p, row_max, row_sum, row_scale = softmax_sched.online_softmax(
         acc_s, row_max, row_sum, CHECK_INF=IS_MASK
     )
 
-    # Rescale output accumulator
+    # Rescale O accumulator
     acc_o = softmax_sched.rescale_o(acc_o, row_scale)
 
     # Wait for V
-    async_copy.wait_group(0)
+    async_copy.wait_group(1)
     gl.barrier()
 
-    # Make pointers for next K and V
-    gK_next = ptrs_sched.make_k_ptrs(config, n_block - 1, copy_row_n_offs, copy_col_k_offs)
-    gV_next = ptrs_sched.make_v_ptrs(config, n_block - 1, copy_row_n_offs, copy_col_k_offs)
-
-    # TODO: Support a CTA-uniform issue predicate for both copy and commit_group to reduce empty copy in last iteration.
-    prefetch_mask = n_block > n_block_min
-
-    # Load next K
-    async_copy.async_copy_global_to_shared(
-        sK,
-        gK_next,
-        mask=prefetch_mask,
-        cache_modifier=".cg",
-        eviction_policy="evict_first",
+    # Compute O
+    acc_o = gemm_rs(
+        acc=acc_o,
+        rA=p,
+        sB=sV,
+        lhs_layout=mma_lhs_layout,
+        rhs_layout=mma_rhs_layout,
     )
-    async_copy.commit_group()
-
-    # Update output accumulator
-    acc_o = gemm_rs(acc_o, p, sV, mma_lhs_layout, mma_rhs_layout)
     gl.barrier()
 
     # Load next V
+    gV_next = ptrs_sched.make_v_ptrs(
+        config, n_block - 1, copy_row_n_offs, copy_col_k_offs
+    )
     async_copy.async_copy_global_to_shared(
         sV,
         gV_next,
-        mask=prefetch_mask,
+        mask=n_block > n_block_min,
         cache_modifier=".cg",
         eviction_policy="evict_first",
     )
+
+    # Commit next V group
     async_copy.commit_group()
 
     return row_max, row_sum, acc_o
@@ -328,7 +348,7 @@ def _fwd_dense_kernel(
         gl.store(gLSE, empty_lse, mask=pLSE if not EVEN_M else None)
         return
 
-    # Allocate shared memory for Q/K/V tiles
+    # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
         [TILE_M, TILE_K], mQ.dtype.element_ty
     )
@@ -339,13 +359,16 @@ def _fwd_dense_kernel(
         [TILE_N, TILE_K], mV.dtype.element_ty
     )
     sQ = gl.allocate_shared_memory(mQ.dtype.element_ty, [TILE_M, TILE_K], sQ_layout)
-    sK = gl.allocate_shared_memory(mK.dtype.element_ty, [TILE_N, TILE_K], sK_layout)
+    sK = gl.allocate_shared_memory(mK.dtype.element_ty, [2, TILE_N, TILE_K], sK_layout)
     sV = gl.allocate_shared_memory(mV.dtype.element_ty, [TILE_N, TILE_K], sV_layout)
 
     # Initialize accumulators
     row_max = gl.full([TILE_M], float("-inf"), gl.float32, mma_row_layout)
     row_sum = gl.zeros([TILE_M], gl.float32, mma_row_layout)
     acc_o = gl.zeros([TILE_M, TILE_K], gl.float32, mma_layout)
+
+    # Initialize the K stage for the asynchronous copy pipeline
+    k_stage = gl.to_tensor(0)
 
     # Load Q
     if not EVEN_M:
@@ -360,43 +383,44 @@ def _fwd_dense_kernel(
     )
     async_copy.commit_group()
 
-    # Load K for near-diagonal
-    if not EVEN_N:
-        pK = ptrs_sched.make_n_predicate(
-            config, block_sched.n_block_max - 1, copy_row_n_offs[:, None]
+    if not IS_LOCAL or block_sched.n_block_min < block_sched.n_block_max:
+        # Load K
+        if not EVEN_N:
+            pK = ptrs_sched.make_n_predicate(
+                config, block_sched.n_block_max - 1, copy_row_n_offs[:, None]
+            )
+        gK = ptrs_sched.make_k_ptrs(
+            config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
         )
-    gK = ptrs_sched.make_k_ptrs(
-        config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
-    )
-    async_copy.async_copy_global_to_shared(
-        sK,
-        gK,
-        mask=pK if not EVEN_N else None,
-        cache_modifier=".cg",
-        eviction_policy="evict_first",
-    )
-    async_copy.commit_group()
-
-    # Load V
-    if not EVEN_N:
-        pV = ptrs_sched.make_n_predicate(
-            config, block_sched.n_block_max - 1, copy_row_n_offs[:, None]
+        async_copy.async_copy_global_to_shared(
+            sK.index(k_stage),
+            gK,
+            mask=pK if not EVEN_N else None,
+            cache_modifier=".cg",
+            eviction_policy="evict_first",
         )
-    gV = ptrs_sched.make_v_ptrs(
-        config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
-    )
-    async_copy.async_copy_global_to_shared(
-        sV,
-        gV,
-        mask=pV if not EVEN_N else None,
-        cache_modifier=".cg",
-        eviction_policy="evict_first",
-    )
-    async_copy.commit_group()
 
-    # Wait for Q
-    async_copy.wait_group(2)
-    gl.barrier()
+        # Commit K group
+        async_copy.commit_group()
+
+        # Load V
+        if not EVEN_N:
+            pV = ptrs_sched.make_n_predicate(
+                config, block_sched.n_block_max - 1, copy_row_n_offs[:, None]
+            )
+        gV = ptrs_sched.make_v_ptrs(
+            config, block_sched.n_block_max - 1, copy_row_n_offs, copy_col_k_offs
+        )
+        async_copy.async_copy_global_to_shared(
+            sV,
+            gV,
+            mask=pV if not EVEN_N else None,
+            cache_modifier=".cg",
+            eviction_policy="evict_first",
+        )
+
+        # Commit V group
+        async_copy.commit_group()
 
     # Process n_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
@@ -419,6 +443,7 @@ def _fwd_dense_kernel(
                 acc_o,
                 n_block,
                 block_sched.n_block_min,
+                k_stage,
                 mma_row_m_offs,
                 mma_col_n_offs,
                 copy_row_n_offs,
@@ -430,6 +455,7 @@ def _fwd_dense_kernel(
                 MASK_LOCAL=IS_LOCAL,
                 MASK_SINK=False,
             )
+            k_stage = 1 - k_stage
     else:
         # First iteration with seqlen masking
         n_block = block_sched.n_block_max - 1
@@ -447,6 +473,7 @@ def _fwd_dense_kernel(
             acc_o,
             n_block,
             block_sched.n_block_min,
+            k_stage,
             mma_row_m_offs,
             mma_col_n_offs,
             copy_row_n_offs,
@@ -456,6 +483,7 @@ def _fwd_dense_kernel(
             MASK_SEQLEN=not EVEN_N,
             MASK_CAUSAL=False,
         )
+        k_stage = 1 - k_stage
 
     if not IS_LOCAL and n_block_max_no_mask > block_sched.n_block_min:
         for n_block in range(
@@ -476,6 +504,7 @@ def _fwd_dense_kernel(
                 acc_o,
                 n_block,
                 block_sched.n_block_min,
+                k_stage,
                 mma_row_m_offs,
                 mma_col_n_offs,
                 copy_row_n_offs,
@@ -485,10 +514,14 @@ def _fwd_dense_kernel(
                 MASK_SEQLEN=False,
                 MASK_CAUSAL=False,
             )
+            k_stage = 1 - k_stage
 
     if IS_LOCAL:
         if block_sched.n_block_window_max > block_sched.n_block_window_min:
-            # Load K for long-range window
+            # Synchronize to ensure all previous shared-memory reads are complete
+            gl.barrier()
+
+            # Load K
             gK = ptrs_sched.make_k_ptrs(
                 config,
                 block_sched.n_block_window_max - 1,
@@ -496,11 +529,16 @@ def _fwd_dense_kernel(
                 copy_col_k_offs,
             )
             async_copy.async_copy_global_to_shared(
-                sK, gK, cache_modifier=".cg", eviction_policy="evict_first"
+                sK.index(k_stage),
+                gK,
+                cache_modifier=".cg",
+                eviction_policy="evict_first",
             )
+
+            # Commit K group
             async_copy.commit_group()
 
-            # Load V for long-range window
+            # Load V
             gV = ptrs_sched.make_v_ptrs(
                 config,
                 block_sched.n_block_window_max - 1,
@@ -510,6 +548,8 @@ def _fwd_dense_kernel(
             async_copy.async_copy_global_to_shared(
                 sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
             )
+
+            # Commit V group
             async_copy.commit_group()
 
             # Process n_blocks with local right masking
@@ -531,6 +571,7 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_window_min,
+                    k_stage,
                     mma_row_m_offs,
                     mma_col_n_offs,
                     copy_row_n_offs,
@@ -542,6 +583,7 @@ def _fwd_dense_kernel(
                     MASK_LOCAL=True,
                     MASK_SINK=False,
                 )
+                k_stage = 1 - k_stage
 
             # Process n_blocks without masking
             for n_block in range(
@@ -562,6 +604,7 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_window_min,
+                    k_stage,
                     mma_row_m_offs,
                     mma_col_n_offs,
                     copy_row_n_offs,
@@ -571,6 +614,7 @@ def _fwd_dense_kernel(
                     MASK_SEQLEN=False,
                     MASK_CAUSAL=False,
                 )
+                k_stage = 1 - k_stage
 
             # Process n_blocks with local left masking
             for n_block in range(
@@ -591,6 +635,7 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_window_min,
+                    k_stage,
                     mma_row_m_offs,
                     mma_col_n_offs,
                     copy_row_n_offs,
@@ -602,9 +647,13 @@ def _fwd_dense_kernel(
                     MASK_LOCAL=True,
                     MASK_SINK=False,
                 )
+                k_stage = 1 - k_stage
 
         if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
-            # Load K for prefix-sink
+            # Synchronize to ensure all previous shared-memory reads are complete
+            gl.barrier()
+
+            # Load K
             gK = ptrs_sched.make_k_ptrs(
                 config,
                 block_sched.n_block_sink_max - 1,
@@ -612,11 +661,16 @@ def _fwd_dense_kernel(
                 copy_col_k_offs,
             )
             async_copy.async_copy_global_to_shared(
-                sK, gK, cache_modifier=".cg", eviction_policy="evict_first"
+                sK.index(k_stage),
+                gK,
+                cache_modifier=".cg",
+                eviction_policy="evict_first",
             )
+
+            # Commit K group
             async_copy.commit_group()
 
-            # Load V for prefix-sink
+            # Load V
             gV = ptrs_sched.make_v_ptrs(
                 config,
                 block_sched.n_block_sink_max - 1,
@@ -626,6 +680,8 @@ def _fwd_dense_kernel(
             async_copy.async_copy_global_to_shared(
                 sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
             )
+
+            # Commit V group
             async_copy.commit_group()
 
             # Process n_blocks with prefix-sink masking
@@ -647,6 +703,7 @@ def _fwd_dense_kernel(
                     acc_o,
                     n_block,
                     block_sched.n_block_sink_min,
+                    k_stage,
                     mma_row_m_offs,
                     mma_col_n_offs,
                     copy_row_n_offs,
@@ -658,6 +715,7 @@ def _fwd_dense_kernel(
                     MASK_LOCAL=True,
                     MASK_SINK=True,
                 )
+                k_stage = 1 - k_stage
 
     # Finalize softmax
     row_scale, lse = softmax_sched.finalize(row_max, row_sum, IS_LOG2=IS_SPLIT_KV)
