@@ -21,7 +21,7 @@ from flash_sparse_attn.ops.gluon.utils import (
     num_splits_heuristic,
 )
 from flash_sparse_attn.ops.gluon.launch_grid import get_bwd_grid
-from flash_sparse_attn.ops.gluon.kernel_repr import bwd_dense_repr
+from flash_sparse_attn.ops.gluon.kernel_repr import bwd_sparse_repr
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, atomic_add
 from flash_sparse_attn.ops.gluon.softmax import exp2
 from flash_sparse_attn.ops.gluon.flash_bwd_preprocess import (
@@ -34,7 +34,7 @@ from flash_sparse_attn.ops.gluon.flash_bwd_combine import _flash_attn_bwd_combin
 
 
 @gluon.jit
-def _bwd_inner_dense_kernel(
+def _bwd_inner_sparse_kernel(
     config: AttnBwdConfig,
     ptrs_sched: AttnBwdPointerScheduler,
     mask_sched: AttnMaskScheduler,
@@ -227,8 +227,8 @@ def _bwd_inner_dense_kernel(
         ),
     }
 )
-@gluon.jit(repr=bwd_dense_repr)
-def _bwd_dense_kernel(
+@gluon.jit(repr=bwd_sparse_repr)
+def _bwd_sparse_kernel(
     mQ,
     mK,
     mV,
@@ -274,6 +274,7 @@ def _bwd_dense_kernel(
     seqlen_q,
     seqlen_k,
     softmax_scale,
+    softmax_threshold,
     head_dim,
     QHEAD_PER_KVHEAD: gl.constexpr,
     NUM_SPLITS: gl.constexpr,
@@ -351,6 +352,7 @@ def _bwd_dense_kernel(
         n_block=grid_idx.n_block,
         row_offsets=mma_col_m_offs,
         softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -1053,7 +1055,7 @@ def _bwd_dense_kernel(
         gl.store(gdK, acc_dK)
 
 
-def _flash_dense_attn_backward(
+def _flash_sparse_attn_backward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -1063,6 +1065,7 @@ def _flash_dense_attn_backward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: float = None,
     is_local: bool = False,
     is_split_qo: bool = False,
     num_splits: Optional[int] = None,
@@ -1082,6 +1085,7 @@ def _flash_dense_attn_backward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
@@ -1177,7 +1181,7 @@ def _flash_dense_attn_backward(
     )
 
     # Launch the kernel
-    _bwd_dense_kernel[grid](
+    _bwd_sparse_kernel[grid](
         q,
         k,
         v,
@@ -1223,6 +1227,7 @@ def _flash_dense_attn_backward(
         seqlen_q,
         seqlen_k,
         softmax_scale,
+        softmax_threshold,
         head_dim,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         NUM_SPLITS=num_splits,
@@ -1263,7 +1268,7 @@ def _flash_dense_attn_backward(
     return dq, dk, dv
 
 
-def _flash_dense_attn_varlen_backward(
+def _flash_sparse_attn_varlen_backward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -1277,6 +1282,7 @@ def _flash_dense_attn_varlen_backward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: float = None,
     is_local: bool = False,
     is_split_qo: bool = False,
     num_splits: Optional[int] = None,
@@ -1300,6 +1306,7 @@ def _flash_dense_attn_varlen_backward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
@@ -1401,7 +1408,7 @@ def _flash_dense_attn_varlen_backward(
     )
 
     # Launch the kernel
-    _bwd_dense_kernel[grid](
+    _bwd_sparse_kernel[grid](
         q,
         k,
         v,
@@ -1447,6 +1454,7 @@ def _flash_dense_attn_varlen_backward(
         seqlen_q,
         seqlen_k,
         softmax_scale,
+        softmax_threshold,
         head_dim,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         NUM_SPLITS=num_splits,
