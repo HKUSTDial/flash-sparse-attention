@@ -108,7 +108,7 @@ def _fwd_inner_dense_kernel(
         eviction_policy="evict_first",
     )
 
-    # Commit next K
+    # Commit next K group
     async_copy.commit_group()
 
     # Apply online softmax
@@ -381,6 +381,8 @@ def _fwd_dense_kernel(
         cache_modifier=".ca",
         eviction_policy="evict_last",
     )
+
+    # Commit Q group
     async_copy.commit_group()
 
     if not IS_LOCAL or block_sched.n_block_min < block_sched.n_block_max:
@@ -905,7 +907,7 @@ def _flash_dense_attn_forward(
             skip_checks=True,
         )
 
-    return out, lse, softmax_scale
+    return out, lse
 
 
 def _flash_dense_attn_varlen_forward(
@@ -1082,4 +1084,4 @@ def _flash_dense_attn_varlen_forward(
             skip_checks=True,
         )
 
-    return out, lse, softmax_scale
+    return out, lse
