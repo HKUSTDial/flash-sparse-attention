@@ -23,7 +23,7 @@ from flash_sparse_attn.ops.gluon.block_info import (
 from flash_sparse_attn.ops.gluon.mask import apply_mask
 from flash_sparse_attn.ops.gluon.softmax import (
     online_softmax,
-    online_sparse_softmax,
+    skip,
     rescale_o,
     finalize,
 )
@@ -2373,16 +2373,15 @@ class SoftmaxScheduler:
         )
 
     @gluon.jit
-    def online_sparse_softmax(
+    def skip(
         self,
         acc_s: gl.tensor,
         row_max: gl.tensor,
         row_sum: gl.tensor,
         softmax_threshold_log2: gl.tensor,
-        CHECK_INF: gl.constexpr = False,
-    ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+    ) -> gl.tensor:
         """
-        Apply online sparse softmax and update its running row statistics.
+        Determine whether the current score can be skipped.
 
         :param acc_s: attention scores tensor
         :type acc_s: tensor
@@ -2392,22 +2391,15 @@ class SoftmaxScheduler:
         :type row_sum: tensor
         :param softmax_threshold_log2: softmax threshold in log2-domain
         :type softmax_threshold_log2: tensor
-        :param CHECK_INF: boolean flag indicating if negative infinity is clamped
-        :type CHECK_INF: bool
 
-        :return p: online softmax probabilities for the current score
-        :return row_max_new: updated running maximum values per row
-        :return row_sum_new: updated running sum values per row
-        :return row_scale: scaling factors for the previous output accumulator
-        :return skip_softmax: boolean tensor indicating whether the block was skipped
+        :return: boolean indicating whether the block can be skipped
         """
-        return online_sparse_softmax(
+        return skip(
             acc_s=acc_s,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
             softmax_threshold_log2=softmax_threshold_log2,
-            CHECK_INF=CHECK_INF,
         )
 
     @gluon.jit
