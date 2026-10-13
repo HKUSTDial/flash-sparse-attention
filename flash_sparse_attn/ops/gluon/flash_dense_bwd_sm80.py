@@ -77,7 +77,7 @@ def _bwd_inner_dense_kernel(
     # TODO: Support a CTA-uniform issue predicate for both copy and commit_group to reduce empty copy in last iteration.
     # prefetch_mask = m_block < m_block_max - 1
 
-    # Wait Q and LSE
+    # Wait for K, V, Q and LSE
     async_copy.wait_group(1)
     gl.barrier()
 
