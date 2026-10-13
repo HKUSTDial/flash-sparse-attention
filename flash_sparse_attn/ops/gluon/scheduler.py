@@ -1490,6 +1490,58 @@ class AttnFwdPointerScheduler:
             SWAP_AB=False,
         )
 
+    @gluon.jit
+    def make_m_predicate(
+        self,
+        config: AttnFwdConfig,
+        offs_m: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct sequence length predicate for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+
+        :return: sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=config.m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=offs_m,
+            TILE_MN=config.TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA
+            if config.PACK_GQA
+            else 1,
+        )
+
+    @gluon.jit
+    def make_n_predicate(
+        self,
+        config: AttnFwdConfig,
+        n_block: gl.tensor,
+        offs_n: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct sequence length predicate for the current N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param n_block: current N block index
+        :type n_block: tensor
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+
+        :return: sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=n_block,
+            actual_seqlen=config.actual_seqlen_k,
+            offs_mn=offs_n,
+            TILE_MN=config.TILE_N,
+        )
+
 
 @aggregate
 class AttnBwdPointerScheduler:
