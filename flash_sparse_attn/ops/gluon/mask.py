@@ -3,9 +3,59 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 
 
+@gluon.constexpr_function
+def get_mask_atom_stride(layout):
+    assert isinstance(layout, gl.NVMMADistributedLayout), (
+        "Packed masks require an NVIDIA MMA layout"
+    )
+    assert layout.version[0] == 2, "Packed masks currently support MMAv2 only"
+    return 2, 8 * layout.warps_per_cta[1]
+
+
+@gluon.jit
+def make_prefix_mask(
+    col_limit,
+    col_base,
+    mask_atom: gl.constexpr,
+    mask_stride: gl.constexpr,
+):
+    return gl.inline_asm_elementwise(
+        f"""{{
+        .reg .s32 offset, rank, remainder, shift;
+        sub.s32 offset, $1, $2;
+        shr.s32 rank, offset, {mask_stride.bit_length() - 1};
+        shl.b32 rank, rank, {mask_atom.bit_length() - 1};
+        and.b32 remainder, offset, {mask_stride - 1};
+        min.s32 remainder, remainder, {mask_atom};
+        add.s32 rank, rank, remainder;
+        sub.s32 shift, 32, rank;
+        max.s32 shift, shift, 0;
+        shr.b32 $0, 0xffffffff, shift;
+        }}""",
+        "=r,r,r",
+        [col_limit, col_base],
+        dtype=gl.uint32,
+        is_pure=True,
+        pack=1,
+    )
+
+
+@gluon.jit
+def make_interval_mask(
+    col_limit_min,
+    col_limit_max,
+    col_base,
+    mask_atom: gl.constexpr,
+    mask_stride: gl.constexpr,
+):
+    return make_prefix_mask(
+        col_limit_max, col_base, mask_atom, mask_stride
+    ) & ~make_prefix_mask(col_limit_min, col_base, mask_atom, mask_stride)
+
+
 @gluon.jit
 def apply_mask(
-    acc_s: gl.tensor,
+    acc_S: gl.tensor,
     m_block: gl.tensor,
     n_block: gl.tensor,
     offs_m: gl.tensor,
@@ -28,8 +78,8 @@ def apply_mask(
     """
     Apply seqlen, causal, and local masks to the attention scores.
 
-    :param acc_s: attention scores of shape [BLOCK_M, BLOCK_N]
-    :type acc_s: tensor
+    :param acc_S: attention scores of shape [BLOCK_M, BLOCK_N]
+    :type acc_S: tensor
     :param m_block: current block index along the M dimension
     :type m_block: tensor
     :param n_block: current block index along the N dimension
@@ -67,41 +117,108 @@ def apply_mask(
     :param SWAP_AB: boolean flag indicating if query and key dimensions are swapped
     :type SWAP_AB: bool
 
-    :return acc_s: masked attention scores of shape [BLOCK_M, BLOCK_N]
+    :return acc_S: masked attention scores of shape [BLOCK_M, BLOCK_N]
     """
+    gl.static_assert(
+        not SWAP_AB or QHEAD_PER_KVHEAD_PACKGQA == 1,
+        "SWAP_AB with PackGQA > 1 is not supported",
+    )
+    if not (MASK_SEQLEN or MASK_CAUSAL or MASK_LOCAL or MASK_SINK):
+        return acc_S
+
+    mask_atom: gl.constexpr = get_mask_atom_stride(acc_S.type.layout)[0]
+    mask_stride: gl.constexpr = get_mask_atom_stride(acc_S.type.layout)[1]
+    mask_cols: gl.constexpr = mask_stride * (32 // mask_atom)
+    m_block_start = m_block * TILE_M
+    q_base = m_block_start // QHEAD_PER_KVHEAD_PACKGQA
+    k_base = n_block * TILE_N
+    offs_m = (
+        m_block_start % QHEAD_PER_KVHEAD_PACKGQA + offs_m
+    ) // QHEAD_PER_KVHEAD_PACKGQA
+
     if SWAP_AB:
-        gl.static_assert(
-            QHEAD_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PackGQA > 1 is not supported"
-        )
-        offs_m = m_block * TILE_M + offs_m
-        offs_n = n_block * TILE_N + offs_n
         q_idx = offs_m[None, :]
         k_idx = offs_n[:, None]
+        offs_col = q_idx
+        col_limit = seqlen_q - q_base
+        row_valid = k_idx < seqlen_k - k_base
+        col_limit_causal = (k_base - q_base - (seqlen_k - seqlen_q)) + k_idx
     else:
-        offs_m = m_block * TILE_M + offs_m
-        offs_n = n_block * TILE_N + offs_n
         q_idx = offs_m[:, None]
         k_idx = offs_n[None, :]
-        if QHEAD_PER_KVHEAD_PACKGQA > 1:
-            q_idx //= QHEAD_PER_KVHEAD_PACKGQA
+        offs_col = k_idx
+        col_limit = seqlen_k - k_base
+        row_valid = q_idx < seqlen_q - q_base
+        col_limit_causal = (q_base + (seqlen_k - seqlen_q) - k_base) + q_idx + 1
+
+    col_base = (
+        offs_col % mask_stride // mask_atom * mask_atom
+        + offs_col // mask_cols * mask_cols
+    )
+
+    if MASK_LOCAL or MASK_SINK:
+        mask = gl.full(acc_S.shape, 0, gl.uint32, acc_S.type.layout)
+        if MASK_LOCAL:
+            if SWAP_AB:
+                col_limit_min = col_limit_causal
+                col_limit_max = col_limit_min + window_size_near
+                mask |= make_interval_mask(
+                    col_limit_min, col_limit_max, col_base, mask_atom, mask_stride
+                )
+                col_limit_min = col_limit_max + window_size_right
+                col_limit_max = col_limit_min + window_size_left
+            else:
+                col_limit_max = col_limit_causal
+                col_limit_min = col_limit_max - window_size_near
+                mask |= make_interval_mask(
+                    col_limit_min, col_limit_max, col_base, mask_atom, mask_stride
+                )
+                col_limit_max = col_limit_min - window_size_right
+                col_limit_min = col_limit_max - window_size_left
+            mask |= make_interval_mask(
+                col_limit_min, col_limit_max, col_base, mask_atom, mask_stride
+            )
+        if MASK_SINK:
+            if SWAP_AB:
+                mask |= gl.where(
+                    k_idx < window_size_sink - k_base,
+                    ~make_prefix_mask(
+                        col_limit_causal, col_base, mask_atom, mask_stride
+                    ),
+                    0,
+                )
+            else:
+                mask |= make_prefix_mask(
+                    gl.minimum(col_limit_causal, window_size_sink - k_base),
+                    col_base,
+                    mask_atom,
+                    mask_stride,
+                )
+    elif MASK_CAUSAL:
+        mask = make_prefix_mask(col_limit_causal, col_base, mask_atom, mask_stride)
+        if SWAP_AB:
+            mask = ~mask
+    else:
+        mask = gl.full(acc_S.shape, 0xFFFFFFFF, gl.uint32, acc_S.type.layout)
 
     if MASK_SEQLEN:
-        valid = (q_idx < seqlen_q) & (k_idx < seqlen_k)
-    else:
-        valid = q_idx == q_idx  # constant True avoid creating additional layout
+        mask &= make_prefix_mask(col_limit, col_base, mask_atom, mask_stride)
+        mask = gl.where(row_valid, mask, 0)
 
-    if MASK_CAUSAL or MASK_LOCAL or MASK_SINK:
-        near = q_idx + seqlen_k - seqlen_q - k_idx
-        if MASK_LOCAL or MASK_SINK:
-            allowed = near < near  # constant False avoid creating additional layout
-            if MASK_LOCAL:
-                allowed |= (near >= 0) & (near < window_size_near)
-                allowed |= (near >= window_size_near + window_size_right) & (
-                    near < window_size_near + window_size_right + window_size_left
-                )
-            if MASK_SINK:
-                allowed |= (k_idx < window_size_sink) & (near >= 0)
-            valid &= allowed
-        elif MASK_CAUSAL:
-            valid &= near >= 0
-    return gl.where(valid, acc_s, float("-inf"))
+    mask_bit = (
+        1 << ((offs_col % mask_cols) // mask_stride * mask_atom + offs_col % mask_atom)
+    ).to(gl.uint32)
+    return gl.inline_asm_elementwise(
+        """{
+            .reg .pred valid;
+            .reg .b32 bit;
+            and.b32 bit, $2, $3;
+            setp.ne.u32 valid, bit, 0;
+            selp.f32 $0, $1, 0fFF800000, valid;
+        }""",
+        "=f,f,r,r",
+        [acc_S, mask, mask_bit],
+        dtype=gl.float32,
+        is_pure=True,
+        pack=1,
+    )
