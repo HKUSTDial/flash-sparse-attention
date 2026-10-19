@@ -2169,7 +2169,7 @@ class AttnBwdPointerScheduler:
         :param offs_k: offsets within the K dimension
         :type offs_k: tensor
 
-        :return: accumulated query gradient pointers of shape [TILE_M, TILE_K]
+        :return: accumulated query gradient pointers of shape [TILE_K, TILE_M]
         """
         return make_ptrs(
             base_ptr=self.dq_accum_base,
@@ -2178,7 +2178,7 @@ class AttnBwdPointerScheduler:
             offs_mn=offs_m,
             offs_k=offs_k,
             TILE_K=config.TILE_K,
-            SWAP_AB=False,
+            SWAP_AB=True,
         )
 
     @gluon.jit
