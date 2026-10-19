@@ -152,6 +152,26 @@ def get_n_block_min_max(
             n_block_window_min,
         )
         n_block_sink_max = gl.maximum(n_block_sink_max, n_block_sink_min)
+        n_block_max = gl.maximum(
+            gl.where(n_block_min >= n_block_max, 0, n_block_max),
+            gl.maximum(
+                gl.where(
+                    n_block_window_min < n_block_window_max,
+                    n_block_window_max,
+                    0,
+                ),
+                gl.where(n_block_sink_min < n_block_sink_max, n_block_sink_max, 0),
+            ),
+        )
+        n_block_min = gl.where(
+            n_block_min >= n_block_max, gl.maximum(n_block_max - 1, 0), n_block_min
+        )
+        n_block_window_max = gl.maximum(
+            n_block_window_min, gl.minimum(n_block_window_max, n_block_max - 1)
+        )
+        n_block_sink_max = gl.maximum(
+            n_block_sink_min, gl.minimum(n_block_sink_max, n_block_max - 1)
+        )
     else:
         n_block_window_min = 0
         n_block_window_max = 0
@@ -181,7 +201,7 @@ def get_m_block_min_max(
     IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
     IS_SPLIT_QO: gl.constexpr,
-) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
+) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
     """
     Compute the query block ranges processed by a backward key block.
 
@@ -220,7 +240,6 @@ def get_m_block_min_max(
     :return m_block_window_max: maximum M block in the distant local-window range
     :return m_block_sink_min: minimum M block in the sink range
     :return m_block_sink_max: maximum M block in the sink range
-    :return m_block_last: partial final M block, or -1 when absent from this split
     """
     m_block_max = gl.cdiv(seqlen_q, TILE_M)
     m_block_min = gl.to_tensor(0)
@@ -241,7 +260,7 @@ def get_m_block_min_max(
         n_idx_min = n_block * TILE_N
         m_idx_sink = n_idx_min + seqlen_q - seqlen_k
         m_block_sink_min = gl.maximum(m_idx_sink // TILE_M, 0)
-        m_block_sink_max = gl.where(is_sink_block, gl.cdiv(seqlen_q, TILE_M), 0)
+        m_block_sink_max = gl.where(is_sink_block, gl.cdiv(seqlen_q, TILE_M) - 1, 0)
         m_block_sink_min = gl.where(is_sink_block, m_block_sink_min, 0)
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
@@ -249,8 +268,8 @@ def get_m_block_min_max(
         m_block_max = gl.minimum(m_block_max, gl.cdiv(m_idx_near, TILE_M))
         m_idx_left = m_idx + window_size_near + window_size_right + window_size_left
         m_block_window_max = gl.minimum(m_block_window_max, gl.cdiv(m_idx_left, TILE_M))
-        m_block_min = gl.where(is_sink_block, 0, m_block_min)
-        m_block_max = gl.where(is_sink_block, 0, m_block_max)
+        m_block_min = gl.where(is_sink_block, m_block_sink_max, m_block_min)
+        m_block_max = gl.where(is_sink_block, m_block_sink_max + 1, m_block_max)
         m_block_window_min = gl.where(is_sink_block, 0, m_block_window_min)
         m_block_window_max = gl.where(is_sink_block, 0, m_block_window_max)
     if IS_SPLIT_QO:
@@ -295,33 +314,17 @@ def get_m_block_min_max(
             m_block_window_max,
         )
         m_block_sink_min = gl.minimum(m_block_sink_min, m_block_sink_max)
+        m_block_max = gl.maximum(
+            m_block_max,
+            gl.where(m_block_window_min < m_block_window_max, m_block_window_max, 0),
+        )
+        m_block_window_max = gl.maximum(
+            m_block_window_min, gl.minimum(m_block_window_max, m_block_max - 1)
+        )
     else:
         m_block_window_min = 0
         m_block_window_max = 0
 
-    num_full_m_blocks = seqlen_q // TILE_M
-    m_block_range_max = gl.maximum(
-        gl.where(m_block_min < m_block_max, m_block_max, 0),
-        gl.maximum(
-            gl.where(
-                m_block_window_min < m_block_window_max,
-                m_block_window_max,
-                0,
-            ),
-            gl.where(m_block_sink_min < m_block_sink_max, m_block_sink_max, 0),
-        ),
-    )
-    m_block_last = gl.where(
-        (seqlen_q % TILE_M != 0) & (m_block_range_max > num_full_m_blocks),
-        num_full_m_blocks,
-        -1,
-    )
-    m_block_max = gl.minimum(m_block_max, num_full_m_blocks)
-    m_block_window_max = gl.minimum(m_block_window_max, num_full_m_blocks)
-    m_block_sink_max = gl.minimum(m_block_sink_max, num_full_m_blocks)
-    m_block_min = gl.minimum(m_block_min, m_block_max)
-    m_block_window_min = gl.minimum(m_block_window_min, m_block_window_max)
-    m_block_sink_min = gl.minimum(m_block_sink_min, m_block_sink_max)
     return (
         m_block_min,
         m_block_max,
@@ -329,7 +332,6 @@ def get_m_block_min_max(
         m_block_window_max,
         m_block_sink_min,
         m_block_sink_max,
-        m_block_last,
     )
 
 
@@ -344,6 +346,7 @@ def get_n_block_max_no_causal_local_mask(
     window_size_near: gl.tensor,
     TILE_N: gl.constexpr,
     TILE_M: gl.constexpr,
+    IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr,
 ) -> gl.tensor:
@@ -368,6 +371,8 @@ def get_n_block_max_no_causal_local_mask(
     :type TILE_N: int
     :param TILE_M: tile size along the M dimension
     :type TILE_M: int
+    :param IS_CAUSAL: boolean flag indicating if the attention is causal
+    :type IS_CAUSAL: bool
     :param IS_LOCAL: boolean flag indicating if local attention is enabled
     :type IS_LOCAL: bool
     :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
@@ -375,17 +380,20 @@ def get_n_block_max_no_causal_local_mask(
 
     :return: maximum N block that does not require causal or local masking
     """
-    m_idx_min = m_block * TILE_M
-    if QHEAD_PER_KVHEAD_PACKGQA > 1:
-        m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
-    n_idx = m_idx_min + seqlen_k - seqlen_q
-    n_idx_right = (
-        n_idx if not IS_LOCAL else n_idx - window_size_near - window_size_right
-    )
-    return gl.minimum(
-        gl.maximum(n_block_min, n_idx_right // TILE_N),
-        n_block_max,
-    )
+    if not IS_CAUSAL and not IS_LOCAL:
+        return n_block_max
+    else:
+        m_idx_min = m_block * TILE_M
+        if QHEAD_PER_KVHEAD_PACKGQA > 1:
+            m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
+        n_idx = m_idx_min + seqlen_k - seqlen_q
+        n_idx_right = (
+            n_idx if not IS_LOCAL else n_idx - window_size_near - window_size_right
+        )
+        return gl.minimum(
+            gl.maximum(n_block_min, n_idx_right // TILE_N),
+            n_block_max,
+        )
 
 
 @gluon.jit
