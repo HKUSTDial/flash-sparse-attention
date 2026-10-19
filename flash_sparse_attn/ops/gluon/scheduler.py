@@ -1024,25 +1024,18 @@ class AttnFwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
             n_block_min=n_block_min,
-            n_block_max=n_block_max,
+            n_block_max=n_block_max - 1,
             window_size_right=0,
-            window_size_near=0,
+            window_size_near=config.window_size_near,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_LOCAL=False,
+            IS_CAUSAL=config.IS_CAUSAL,
+            IS_LOCAL=config.IS_LOCAL,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
 
         if config.IS_LOCAL:
             # Compute local n_block range for this m_block
-            if config.IS_SPLIT_KV:
-                n_block_max_no_mask = gl.where(
-                    config.split_idx >= config.NUM_SPLITS - 1,
-                    n_block_min,
-                    n_block_max_no_mask,
-                )
-            else:
-                n_block_max_no_mask = n_block_min
             n_block_window_max_no_mask = get_n_block_max_no_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -1053,6 +1046,7 @@ class AttnFwdBlockScheduler:
                 window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
+                IS_CAUSAL=False,
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
@@ -1100,7 +1094,6 @@ class AttnBwdBlockScheduler:
     m_block_window_max_no_mask: gl.tensor
     m_block_sink_min: gl.tensor
     m_block_sink_max: gl.tensor
-    m_block_last: gl.tensor
 
     @gluon.constexpr_function
     def __init__(
@@ -1114,7 +1107,6 @@ class AttnBwdBlockScheduler:
         m_block_window_max_no_mask,
         m_block_sink_min,
         m_block_sink_max,
-        m_block_last,
     ):
         self.m_block_min = m_block_min
         self.m_block_max = m_block_max
@@ -1125,7 +1117,6 @@ class AttnBwdBlockScheduler:
         self.m_block_window_max_no_mask = m_block_window_max_no_mask
         self.m_block_sink_min = m_block_sink_min
         self.m_block_sink_max = m_block_sink_max
-        self.m_block_last = m_block_last
 
     @gluon.jit
     def is_empty(self) -> gl.tensor:
@@ -1138,7 +1129,6 @@ class AttnBwdBlockScheduler:
             (self.m_block_max <= self.m_block_min)
             & (self.m_block_window_max <= self.m_block_window_min)
             & (self.m_block_sink_max <= self.m_block_sink_min)
-            & (self.m_block_last < 0)
         )
 
     @staticmethod
@@ -1160,7 +1150,6 @@ class AttnBwdBlockScheduler:
             m_block_window_max,
             m_block_sink_min,
             m_block_sink_max,
-            m_block_last,
         ) = get_m_block_min_max(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
@@ -1182,18 +1171,17 @@ class AttnBwdBlockScheduler:
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
             m_block_min=m_block_min,
-            m_block_max=m_block_max,
+            m_block_max=m_block_max - 1,
             window_size_right=0,
-            window_size_near=0,
+            window_size_near=config.window_size_near,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
             IS_CAUSAL=config.IS_CAUSAL or config.IS_LOCAL,
-            IS_LOCAL=False,
+            IS_LOCAL=config.IS_LOCAL,
         )
 
         if config.IS_LOCAL:
             # Compute local m_block range for this n_block
-            m_block_min_no_mask = m_block_max
             m_block_window_min_no_mask = get_m_block_min_no_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -1236,7 +1224,6 @@ class AttnBwdBlockScheduler:
             m_block_window_max_no_mask,
             m_block_sink_min,
             m_block_sink_max,
-            m_block_last,
         )
 
 
