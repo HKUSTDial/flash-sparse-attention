@@ -51,22 +51,22 @@ def exp(
 
 @gluon.jit
 def online_softmax(
-    acc_s: gl.tensor,
+    acc_S: gl.tensor,
     row_max: gl.tensor,
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
     CHECK_INF: gl.constexpr,
 ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
     """
-    Apply online softmax to acc_s, and update row_max and row_sum.
+    Apply online softmax to acc_S, and update row_max and row_sum.
 
-    :param acc_s: attention scores of shape [TILE_M, TILE_N]
-    :type acc_s: tensor
+    :param acc_S: attention scores of shape [TILE_M, TILE_N]
+    :type acc_S: tensor
     :param row_max: running maximum values per row of shape [TILE_M], init to -inf
     :type row_max: tensor
     :param row_sum: running sum values per row of shape [TILE_M], init to 0
     :type row_sum: tensor
-    :param scale_log2: log2 of the scaling factor to be applied to acc_s
+    :param scale_log2: log2 of the scaling factor to be applied to acc_S
     :type scale_log2: tensor
     :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
     :type CHECK_INF: bool
@@ -77,7 +77,7 @@ def online_softmax(
     :return row_scale: scaling factors per row of shape [TILE_M]
     """
     # Compute current row max
-    row_max_curr = gl.max(acc_s, axis=1)
+    row_max_curr = gl.max(acc_S, axis=1)
 
     # Update row max
     row_max_new = gl.maximum(row_max_curr, row_max)
@@ -93,17 +93,17 @@ def online_softmax(
     row_scale = exp2(acc_scale_log2)
 
     # Compute attention weights
-    p = exp2(acc_s * scale_log2 - row_max_new[:, None] * scale_log2)
+    rP = exp2(acc_S * scale_log2 - row_max_new[:, None] * scale_log2)
 
     # Update row sum
-    row_sum_new = row_sum * row_scale + gl.sum(p, axis=1)
+    row_sum_new = row_sum * row_scale + gl.sum(rP, axis=1)
 
-    return p, row_max_new, row_sum_new, row_scale
+    return rP, row_max_new, row_sum_new, row_scale
 
 
 @gluon.jit
 def skip(
-    acc_s: gl.tensor,
+    acc_S: gl.tensor,
     row_max: gl.tensor,
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
@@ -112,13 +112,13 @@ def skip(
     """
     Determine whether the current score can be skipped.
 
-    :param acc_s: attention scores of shape [TILE_M, TILE_N]
-    :type acc_s: tensor
+    :param acc_S: attention scores of shape [TILE_M, TILE_N]
+    :type acc_S: tensor
     :param row_max: running maximum values per row of shape [TILE_M]
     :type row_max: tensor
     :param row_sum: running sum values per row of shape [TILE_M]
     :type row_sum: tensor
-    :param scale_log2: log2 of the scaling factor to be applied to acc_s
+    :param scale_log2: log2 of the scaling factor to be applied to acc_S
     :type scale_log2: tensor
     :param softmax_threshold_log2: threshold in log2-domain for block-level skip
     :type softmax_threshold_log2: tensor
@@ -126,7 +126,7 @@ def skip(
     :return: boolean indicating whether this block can be skipped
     """
     # Compute current row max
-    row_max_curr = gl.max(acc_s, axis=1)
+    row_max_curr = gl.max(acc_S, axis=1)
 
     # Compute scaled differences to new row max
     row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
@@ -156,7 +156,7 @@ def finalize(
     :type row_max: tensor
     :param row_sum: final sum values per row of shape [TILE_M]
     :type row_sum: tensor
-    :param scale_log2: log2 of the scaling factor applied to acc_s
+    :param scale_log2: log2 of the scaling factor applied to acc_S
     :type scale_log2: tensor
     :param final_scale: scaling factor to be applied to the output
     :type final_scale: tensor
@@ -188,18 +188,18 @@ def finalize(
 
 @gluon.jit
 def rescale_o(
-    acc_o: gl.tensor,
+    acc_O: gl.tensor,
     row_scale: gl.tensor,
 ) -> gl.tensor:
     """
     Rescale output accumulator by row_scale.
 
-    :param acc_o: output accumulator tensor of shape [TILE_M, TILE_K]
-    :type acc_o: tensor
+    :param acc_O: output accumulator tensor of shape [TILE_M, TILE_K]
+    :type acc_O: tensor
     :param row_scale: scaling factors per row of shape [TILE_M]
     :type row_scale: tensor
 
-    :return acc_o: rescaled output accumulator tensor of shape [TILE_M, TILE_K]
+    :return acc_O: rescaled output accumulator tensor of shape [TILE_M, TILE_K]
     """
-    acc_o *= row_scale[:, None]
-    return acc_o
+    acc_O *= row_scale[:, None]
+    return acc_O
