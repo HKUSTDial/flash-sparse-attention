@@ -2378,7 +2378,7 @@ class AttnMaskScheduler:
     @gluon.jit
     def apply_mask(
         self,
-        acc_s: gl.tensor,
+        acc_S: gl.tensor,
         iter_block: gl.tensor,
         offs_m: gl.tensor,
         offs_n: gl.tensor,
@@ -2390,8 +2390,8 @@ class AttnMaskScheduler:
         """
         Apply the selected seqlen, causal, local, and sink masks to the attention scores.
 
-        :param acc_s: attention scores
-        :type acc_s: tensor
+        :param acc_S: attention scores
+        :type acc_S: tensor
         :param iter_block: block index of the iterated dimension
         :type iter_block: tensor
         :param offs_m: offsets within the M dimension
@@ -2416,7 +2416,7 @@ class AttnMaskScheduler:
             m_block = iter_block
             n_block = self.fixed_block
         return apply_mask(
-            acc_s=acc_s,
+            acc_S=acc_S,
             m_block=m_block,
             n_block=n_block,
             offs_m=offs_m,
@@ -2469,7 +2469,7 @@ class SoftmaxScheduler:
     @gluon.jit
     def online_softmax(
         self,
-        acc_s: gl.tensor,
+        acc_S: gl.tensor,
         row_max: gl.tensor,
         row_sum: gl.tensor,
         CHECK_INF: gl.constexpr = False,
@@ -2477,8 +2477,8 @@ class SoftmaxScheduler:
         """
         Apply online softmax and update its running row statistics.
 
-        :param acc_s: attention scores
-        :type acc_s: tensor
+        :param acc_S: attention scores
+        :type acc_S: tensor
         :param row_max: running maximum values per row
         :type row_max: tensor
         :param row_sum: running sum values per row
@@ -2492,7 +2492,7 @@ class SoftmaxScheduler:
         :return row_scale: scaling factors for the previous output accumulator
         """
         return online_softmax(
-            acc_s=acc_s,
+            acc_S=acc_S,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
@@ -2502,7 +2502,7 @@ class SoftmaxScheduler:
     @gluon.jit
     def skip(
         self,
-        acc_s: gl.tensor,
+        acc_S: gl.tensor,
         row_max: gl.tensor,
         row_sum: gl.tensor,
         softmax_threshold_log2: gl.tensor,
@@ -2510,8 +2510,8 @@ class SoftmaxScheduler:
         """
         Determine whether the current score can be skipped.
 
-        :param acc_s: attention scores tensor
-        :type acc_s: tensor
+        :param acc_S: attention scores tensor
+        :type acc_S: tensor
         :param row_max: running maximum values per row
         :type row_max: tensor
         :param row_sum: running sum values per row
@@ -2522,7 +2522,7 @@ class SoftmaxScheduler:
         :return: boolean indicating whether the block can be skipped
         """
         return skip(
-            acc_s=acc_s,
+            acc_S=acc_S,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
@@ -2532,21 +2532,21 @@ class SoftmaxScheduler:
     @gluon.jit
     def rescale_o(
         self,
-        acc_o: gl.tensor,
+        acc_O: gl.tensor,
         row_scale: gl.tensor,
     ) -> gl.tensor:
         """
         Rescale an output accumulator after an online softmax update.
 
-        :param acc_o: output accumulator tensor
-        :type acc_o: tensor
+        :param acc_O: output accumulator tensor
+        :type acc_O: tensor
         :param row_scale: scaling factors for each query row
         :type row_scale: tensor
 
         :return: rescaled output accumulator
         """
         return rescale_o(
-            acc_o=acc_o,
+            acc_O=acc_O,
             row_scale=row_scale,
         )
 
