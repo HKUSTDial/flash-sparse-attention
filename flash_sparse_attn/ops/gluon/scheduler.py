@@ -232,6 +232,10 @@ class AttnFwdConfig:
     window_size_right: gl.tensor
     window_size_near: gl.tensor
     head_dim: gl.tensor
+    copy_row_layout: gl.constexpr
+    copy_col_layout: gl.constexpr
+    mma_row_layout: gl.constexpr
+    mma_col_layout: gl.constexpr
     PACK_GQA: gl.constexpr
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr
     NUM_SPLITS: gl.constexpr
@@ -264,6 +268,10 @@ class AttnFwdConfig:
         window_size_right,
         window_size_near,
         head_dim,
+        copy_row_layout,
+        copy_col_layout,
+        mma_row_layout,
+        mma_col_layout,
         PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA,
         NUM_SPLITS,
@@ -293,6 +301,10 @@ class AttnFwdConfig:
         self.window_size_right = window_size_right
         self.window_size_near = window_size_near
         self.head_dim = head_dim
+        self.copy_row_layout = gl.constexpr(copy_row_layout)
+        self.copy_col_layout = gl.constexpr(copy_col_layout)
+        self.mma_row_layout = gl.constexpr(mma_row_layout)
+        self.mma_col_layout = gl.constexpr(mma_col_layout)
         self.PACK_GQA = gl.constexpr(PACK_GQA)
         self.QHEAD_PER_KVHEAD_PACKGQA = gl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
         self.NUM_SPLITS = gl.constexpr(NUM_SPLITS)
@@ -311,7 +323,6 @@ class AttnFwdConfig:
         head_kv_idx: gl.tensor,
         split_idx: gl.tensor,
         m_block: gl.tensor,
-        row_offsets: gl.tensor,
         softmax_scale: gl.tensor = 0.0,
         softmax_threshold: gl.tensor = 0.0,
         query_scale: gl.tensor = None,
@@ -328,6 +339,8 @@ class AttnFwdConfig:
         seqused_k: gl.tensor = None,
         seqlen_q: gl.tensor = 0,
         seqlen_k: gl.tensor = 0,
+        copy_layout: gl.constexpr = None,
+        mma_layout: gl.constexpr = None,
         PACK_GQA: gl.constexpr = False,
         QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
         NUM_SPLITS: gl.constexpr = 1,
@@ -356,8 +369,6 @@ class AttnFwdConfig:
         :type split_idx: tensor
         :param m_block: current block index along the M dimension
         :type m_block: tensor
-        :param row_offsets: row offsets within the M dimension
-        :type row_offsets: tensor
         :param softmax_scale: scale applied to attention scores
         :type softmax_scale: tensor
         :param softmax_threshold: dimensionless multiple of uniform attention
@@ -390,6 +401,10 @@ class AttnFwdConfig:
         :type seqlen_q: tensor
         :param seqlen_k: static key sequence length
         :type seqlen_k: tensor
+        :param copy_layout: layout for copy operations
+        :type copy_layout: gl.constexpr
+        :param mma_layout: layout for MMA operations
+        :type mma_layout: gl.constexpr
         :param PACK_GQA: boolean flag indicating if packed GQA is enabled
         :type PACK_GQA: bool
         :param QHEAD_PER_KVHEAD_PACKGQA: packed query heads per KV head
@@ -421,6 +436,11 @@ class AttnFwdConfig:
 
         :return: attention forward configuration for the current program
         """
+        copy_row_layout: gl.constexpr = gl.SliceLayout(1, copy_layout)
+        copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
+        mma_row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
+        mma_col_layout: gl.constexpr = gl.SliceLayout(0, mma_layout)
+
         # Get seqlen info for this batch
         (
             offset_q,
@@ -459,7 +479,7 @@ class AttnFwdConfig:
             m_block=m_block,
             seqlen_q=actual_seqlen_q,
             seqlen_k=actual_seqlen_k,
-            row_offsets=row_offsets,
+            row_offsets=gl.arange(0, TILE_M, mma_row_layout),
             IS_CAUSAL=IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         )
@@ -483,6 +503,10 @@ class AttnFwdConfig:
             gl.to_tensor(window_size_right),
             gl.to_tensor(window_size_near),
             gl.to_tensor(head_dim),
+            copy_row_layout,
+            copy_col_layout,
+            mma_row_layout,
+            mma_col_layout,
             PACK_GQA,
             QHEAD_PER_KVHEAD_PACKGQA,
             NUM_SPLITS,
@@ -494,6 +518,54 @@ class AttnFwdConfig:
             IS_SPLIT_KV,
         )
 
+    @gluon.jit
+    def copy_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_row_layout)
+
+    @gluon.jit
+    def copy_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_col_layout)
+
+    @gluon.jit
+    def copy_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_row_layout)
+
+    @gluon.jit
+    def copy_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_col_layout)
+
+    @gluon.jit
+    def copy_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_row_layout)
+
+    @gluon.jit
+    def copy_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_col_layout)
+
+    @gluon.jit
+    def mma_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_row_layout)
+
+    @gluon.jit
+    def mma_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_col_layout)
+
+    @gluon.jit
+    def mma_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_row_layout)
+
+    @gluon.jit
+    def mma_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_col_layout)
+
+    @gluon.jit
+    def mma_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_row_layout)
+
+    @gluon.jit
+    def mma_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_col_layout)
+
 
 @aggregate
 class AttnBwdConfig:
@@ -502,7 +574,6 @@ class AttnBwdConfig:
     head_kv_idx: gl.tensor
     split_idx: gl.tensor
     n_block: gl.tensor
-    row_offsets: gl.tensor
     softmax_scale_log2: gl.tensor
     softmax_threshold: gl.tensor
     query_scale: gl.tensor
@@ -519,6 +590,10 @@ class AttnBwdConfig:
     window_size_right: gl.tensor
     window_size_near: gl.tensor
     head_dim: gl.tensor
+    copy_row_layout: gl.constexpr
+    copy_col_layout: gl.constexpr
+    mma_row_layout: gl.constexpr
+    mma_col_layout: gl.constexpr
     QHEAD_PER_KVHEAD: gl.constexpr
     NUM_SPLITS: gl.constexpr
     TILE_M: gl.constexpr
@@ -536,7 +611,6 @@ class AttnBwdConfig:
         head_kv_idx,
         split_idx,
         n_block,
-        row_offsets,
         softmax_scale_log2,
         softmax_threshold,
         query_scale,
@@ -553,6 +627,10 @@ class AttnBwdConfig:
         window_size_right,
         window_size_near,
         head_dim,
+        copy_row_layout,
+        copy_col_layout,
+        mma_row_layout,
+        mma_col_layout,
         QHEAD_PER_KVHEAD,
         NUM_SPLITS,
         TILE_M,
@@ -567,7 +645,6 @@ class AttnBwdConfig:
         self.head_kv_idx = head_kv_idx
         self.split_idx = split_idx
         self.n_block = n_block
-        self.row_offsets = row_offsets
         self.softmax_scale_log2 = softmax_scale_log2
         self.softmax_threshold = softmax_threshold
         self.query_scale = query_scale
@@ -584,6 +661,10 @@ class AttnBwdConfig:
         self.window_size_right = window_size_right
         self.window_size_near = window_size_near
         self.head_dim = head_dim
+        self.copy_row_layout = gl.constexpr(copy_row_layout)
+        self.copy_col_layout = gl.constexpr(copy_col_layout)
+        self.mma_row_layout = gl.constexpr(mma_row_layout)
+        self.mma_col_layout = gl.constexpr(mma_col_layout)
         self.QHEAD_PER_KVHEAD = gl.constexpr(QHEAD_PER_KVHEAD)
         self.NUM_SPLITS = gl.constexpr(NUM_SPLITS)
         self.TILE_M = gl.constexpr(TILE_M)
@@ -601,7 +682,6 @@ class AttnBwdConfig:
         head_kv_idx: gl.tensor,
         split_idx: gl.tensor,
         n_block: gl.tensor,
-        row_offsets: gl.tensor,
         softmax_scale: gl.tensor = 0.0,
         softmax_threshold: gl.tensor = 0.0,
         query_scale: gl.tensor = None,
@@ -618,6 +698,8 @@ class AttnBwdConfig:
         seqused_k: gl.tensor = None,
         seqlen_q: gl.tensor = 0,
         seqlen_k: gl.tensor = 0,
+        copy_layout: gl.constexpr = None,
+        mma_layout: gl.constexpr = None,
         QHEAD_PER_KVHEAD: gl.constexpr = 1,
         NUM_SPLITS: gl.constexpr = 1,
         TILE_M: gl.constexpr = 64,
@@ -645,8 +727,6 @@ class AttnBwdConfig:
         :type split_idx: tensor
         :param n_block: current block index along the N dimension
         :type n_block: tensor
-        :param row_offsets: row offsets within the M dimension
-        :type row_offsets: tensor
         :param softmax_scale: scale applied to attention scores
         :type softmax_scale: tensor
         :param softmax_threshold: dimensionless multiple of uniform attention
@@ -679,6 +759,10 @@ class AttnBwdConfig:
         :type seqlen_q: tensor
         :param seqlen_k: static key sequence length
         :type seqlen_k: tensor
+        :param copy_layout: layout for copy operations
+        :type copy_layout: gl.constexpr
+        :param mma_layout: layout for MMA operations
+        :type mma_layout: gl.constexpr
         :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
         :type QHEAD_PER_KVHEAD: int
         :param NUM_SPLITS: number of QO splits
@@ -708,6 +792,11 @@ class AttnBwdConfig:
 
         :return: attention backward configuration for the current program
         """
+        copy_row_layout: gl.constexpr = gl.SliceLayout(1, copy_layout)
+        copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
+        mma_row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
+        mma_col_layout: gl.constexpr = gl.SliceLayout(0, mma_layout)
+
         # Get seqlen info for this batch
         (
             offset_q,
@@ -747,7 +836,6 @@ class AttnBwdConfig:
             gl.to_tensor(head_kv_idx),
             gl.to_tensor(split_idx),
             gl.to_tensor(n_block),
-            gl.to_tensor(row_offsets),
             gl.to_tensor(softmax_scale_log2),
             gl.to_tensor(softmax_threshold),
             gl.to_tensor(q_scale),
@@ -764,6 +852,10 @@ class AttnBwdConfig:
             gl.to_tensor(window_size_right),
             gl.to_tensor(window_size_near),
             gl.to_tensor(head_dim),
+            copy_row_layout,
+            copy_col_layout,
+            mma_row_layout,
+            mma_col_layout,
             QHEAD_PER_KVHEAD,
             NUM_SPLITS,
             TILE_M,
@@ -789,10 +881,58 @@ class AttnBwdConfig:
             m_block=m_block,
             seqlen_q=self.actual_seqlen_q,
             seqlen_k=self.actual_seqlen_k,
-            row_offsets=self.row_offsets,
+            row_offsets=gl.arange(0, self.TILE_M, self.mma_col_layout),
             IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
         )
+
+    @gluon.jit
+    def copy_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_row_layout)
+
+    @gluon.jit
+    def copy_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_col_layout)
+
+    @gluon.jit
+    def copy_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_row_layout)
+
+    @gluon.jit
+    def copy_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_col_layout)
+
+    @gluon.jit
+    def copy_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_row_layout)
+
+    @gluon.jit
+    def copy_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_col_layout)
+
+    @gluon.jit
+    def mma_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_row_layout)
+
+    @gluon.jit
+    def mma_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_col_layout)
+
+    @gluon.jit
+    def mma_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_row_layout)
+
+    @gluon.jit
+    def mma_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_col_layout)
+
+    @gluon.jit
+    def mma_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_row_layout)
+
+    @gluon.jit
+    def mma_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_col_layout)
 
 
 @aggregate
