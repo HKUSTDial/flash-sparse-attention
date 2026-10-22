@@ -14,12 +14,6 @@ from triton.experimental.gluon.language.nvidia.hopper import (
     warpgroup_mma_init,
 )
 
-from flash_sparse_attn.ops.gluon.hopper_helpers import (
-    warpgroup_mma_wait,
-    pack_mma_operand,
-    unpack_mma_operand,
-)
-
 from flash_sparse_attn.ops.gluon.scheduler import (
     AttnFwdGridIndex,
     AttnFwdConfig,
@@ -32,12 +26,17 @@ from flash_sparse_attn.ops.gluon.scheduler import (
 from flash_sparse_attn.ops.gluon.assert_inputs import assert_fwd_inputs
 from flash_sparse_attn.ops.gluon.utils import (
     get_device_num_sms,
-    alloc_fn,
     window_sizes_heuristic,
     num_splits_heuristic,
+    alloc_fn,
 )
 from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
 from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
+from flash_sparse_attn.ops.gluon.hopper_helpers import (
+    warpgroup_mma_wait,
+    pack_mma_operand,
+    unpack_mma_operand,
+)
 from flash_sparse_attn.ops.gluon.flash_fwd_combine import _flash_attn_fwd_combine
 
 
@@ -107,7 +106,7 @@ def _fwd_producer_dense_kernel(
             )
 
             if kv_iter > 0:
-                # Issue the previous V only after the next K has been issued.
+                # Issue the previous V only after the next K has been issued
                 if kv_iter >= 2:
                     mbarrier.wait(v_release, (kv_iter - 2) & 1)
                 _fwd_load_dense_kernel(
@@ -116,7 +115,7 @@ def _fwd_producer_dense_kernel(
             prev_n_block = n_block
             kv_iter += 1
 
-    # Drain the final V, including a one-block sequence.
+    # Drain the final V
     if kv_iter > 0:
         if kv_iter >= 2:
             mbarrier.wait(v_release, (kv_iter - 2) & 1)
