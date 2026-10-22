@@ -136,7 +136,7 @@ def get_softmax_threshold(
     row_offsets: gl.tensor,
     IS_CAUSAL: gl.constexpr = False,
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
-    USE_FAST_MATH: gl.constexpr = True,
+    FAST_MATH: gl.constexpr = True,
 ) -> gl.tensor:
     """
     Compute the softmax threshold for a given block.
@@ -155,8 +155,8 @@ def get_softmax_threshold(
     :type IS_CAUSAL: bool
     :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
     :type QHEAD_PER_KVHEAD_PACKGQA: int
-    :param USE_FAST_MATH: use approximate FTZ log2
-    :type USE_FAST_MATH: bool
+    :param FAST_MATH: use approximate FTZ log2
+    :type FAST_MATH: bool
 
     :return softmax_threshold_log2: softmax threshold of shape [TILE_M] in log2-domain for the given block
     """
@@ -168,7 +168,7 @@ def get_softmax_threshold(
     else:
         visible_len = row_offsets * 0.0 + seqlen_k
     threshold = gl.maximum(gl.minimum(softmax_threshold / visible_len, 1.0), 0.0)
-    if USE_FAST_MATH:
+    if FAST_MATH:
         return libdevice.fast_log2f(threshold)
     else:
         return gl.log2(threshold)
