@@ -2473,6 +2473,7 @@ class SoftmaxScheduler:
         row_max: gl.tensor,
         row_sum: gl.tensor,
         CHECK_INF: gl.constexpr = False,
+        PARTIAL_SUM: gl.constexpr = False,
     ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
         """
         Apply online softmax and update its running row statistics.
@@ -2485,6 +2486,8 @@ class SoftmaxScheduler:
         :type row_sum: tensor
         :param CHECK_INF: boolean flag indicating if negative infinity is clamped
         :type CHECK_INF: bool
+        :param PARTIAL_SUM: boolean flag indicating if partial sums are retained
+        :type PARTIAL_SUM: bool
 
         :return p: online softmax probabilities for the current score
         :return row_max_new: updated running maximum values per row
@@ -2497,6 +2500,7 @@ class SoftmaxScheduler:
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
             CHECK_INF=CHECK_INF,
+            PARTIAL_SUM=PARTIAL_SUM,
         )
 
     @gluon.jit
