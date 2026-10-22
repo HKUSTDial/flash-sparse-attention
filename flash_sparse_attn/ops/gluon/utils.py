@@ -209,3 +209,7 @@ def num_splits_heuristic(
             effective_loop_blocks,
         ),
     )
+
+
+def alloc_fn(size: int, alignment: int, stream):
+    return torch.empty(size, device="cuda", dtype=torch.int8)
