@@ -14,7 +14,7 @@ from flash_sparse_attn.ops.gluon.seqlen_info import (
     make_ptrs,
     make_seqlen_predicate,
 )
-from flash_sparse_attn.ops.gluon.softmax import check_inf
+from flash_sparse_attn.ops.gluon.softmax import check_neginf
 
 
 @triton.heuristics(
@@ -292,7 +292,7 @@ def _bwd_preprocess_kernel(
     # Compute LSELog2
     log2_e: gl.constexpr = 1.4426950408889634
     rLSElog2 = gl.where(rLSE == rLSE, rLSE * log2_e, 1e6)
-    rLSElog2 = check_inf(rLSElog2)
+    rLSElog2 = check_neginf(rLSElog2)
 
     # Store LSELog2
     if not EVEN_M:

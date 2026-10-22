@@ -113,7 +113,7 @@ def _fwd_inner_sparse_kernel(
         acc_S,
         row_max,
         row_sum,
-        config.softmax_threshold_log2,
+        config.get_softmax_threshold_log2(),
     )
 
     if is_skip:
@@ -249,8 +249,8 @@ def _fwd_sparse_kernel(
     grid_idx = AttnFwdGridIndex.create(
         NUM_SPLITS=NUM_SPLITS,
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
-        IS_SPLIT_KV=IS_SPLIT_KV,
         PACK_GQA=PACK_GQA,
+        IS_SPLIT_KV=IS_SPLIT_KV,
     )
 
     # Load window sizes
@@ -460,8 +460,8 @@ def _fwd_sparse_kernel(
     # Toggle the k_stage for the remaining range
     k_stage = 1 - k_stage
 
-    # Process the remaining n_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
+        # Process n_blocks with causal masking
         for n_block in range(
             n_block_max - 1,
             block_sched.n_block_max_no_mask - 1,
@@ -493,6 +493,7 @@ def _fwd_sparse_kernel(
             k_stage = 1 - k_stage
 
     if not IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
+        # Process n_blocks without masking
         for n_block in range(
             block_sched.n_block_max_no_mask - 1,
             block_sched.n_block_min - 1,
