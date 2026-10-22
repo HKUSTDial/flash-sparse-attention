@@ -1,10 +1,107 @@
 # Copyright (c) 2026, Jingze Shi.
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
+from triton.experimental.gluon.language.extra import libdevice
 
 
 @gluon.jit
-def check_inf(
+def rcp(
+    x: gl.tensor,
+    FAST_MATH: gl.constexpr = False,
+) -> gl.tensor:
+    """
+    Compute reciprocal of the input tensor.
+
+    :param x: input tensor
+    :type x: tensor
+    :param FAST_MATH: boolean flag indicating if fast math approximation should be used
+    :type FAST_MATH: bool
+
+    :return: tensor containing reciprocal values of the input
+    """
+    if FAST_MATH:
+        return gl.inline_asm_elementwise(
+            "rcp.approx.ftz.f32 $0, $1;",
+            constraints="=f,f",
+            args=[x],
+            dtype=gl.float32,
+            is_pure=True,
+            pack=1,
+        )
+    else:
+        return 1.0 / x
+
+
+@gluon.jit
+def log2(
+    x: gl.tensor,
+    FAST_MATH: gl.constexpr = False,
+) -> gl.tensor:
+    """
+    Compute logarithm base 2 of the input tensor.
+
+    :param x: input tensor
+    :type x: tensor
+    :param FAST_MATH: boolean flag indicating if fast math approximation should be used
+    :type FAST_MATH: bool
+
+    :return: tensor containing log2 values of the input
+    """
+    if FAST_MATH:
+        return libdevice.fast_log2f(x)
+    else:
+        return gl.log2(x)
+
+
+@gluon.jit
+def exp2(
+    x: gl.tensor,
+    FAST_MATH: gl.constexpr = False,
+) -> gl.tensor:
+    """
+    Compute exponent base 2 of the input tensor.
+
+    :param x: input tensor
+    :type x: tensor
+    :param FAST_MATH: boolean flag indicating if fast math approximation should be used
+    :type FAST_MATH: bool
+
+    :return: tensor containing 2^x values
+    """
+    if FAST_MATH:
+        return gl.inline_asm_elementwise(
+            "ex2.approx.ftz.f32 $0, $1;",
+            constraints="=f,f",
+            args=[x],
+            dtype=gl.float32,
+            is_pure=True,
+            pack=1,
+        )
+    else:
+        return gl.exp2(x)
+
+
+@gluon.jit
+def exp(
+    x: gl.tensor,
+    FAST_MATH: gl.constexpr = False,
+) -> gl.tensor:
+    """
+    Compute exponential of the input tensor.
+
+    :param x: input tensor
+    :type x: tensor
+    :param FAST_MATH: boolean flag indicating if fast math approximation should be used
+    :type FAST_MATH: bool
+
+    :return: tensor containing e^x values
+    """
+    log2_e: gl.constexpr = 1.4426950408889634
+    return exp2(x * log2_e, FAST_MATH=FAST_MATH)
+
+
+@gluon.jit
+def check_neginf(
     x: gl.tensor,
 ) -> gl.tensor:
     """
@@ -16,37 +113,6 @@ def check_inf(
     :return: tensor with -inf values clamp values below -1e6
     """
     return gl.maximum(x, -1e6)
-
-
-@gluon.jit
-def exp2(
-    x: gl.tensor,
-) -> gl.tensor:
-    """
-    Compute 2^x.
-
-    :param x: input tensor
-    :type x: tensor
-
-    :return: tensor containing 2^x values
-    """
-    return gl.exp2(x)
-
-
-@gluon.jit
-def exp(
-    x: gl.tensor,
-) -> gl.tensor:
-    """
-    Compute e^x.
-
-    :param x: input tensor
-    :type x: tensor
-
-    :return: tensor containing e^x values
-    """
-    log2_e: gl.constexpr = 1.4426950408889634
-    return exp2(x * log2_e)
 
 
 @gluon.jit
@@ -82,9 +148,9 @@ def online_softmax(
     # Update row max
     row_max_new = gl.maximum(row_max_curr, row_max)
 
-    # Avoid exp(-inf - (-inf)) = nan by clamping -inf to 0
+    # Avoid exp(-inf - (-inf)) = nan using the finite clamp.
     if CHECK_INF:
-        row_max_new = check_inf(row_max_new)
+        row_max_new = check_neginf(row_max_new)
 
     # Compute scaled differences to new row max
     acc_scale_log2 = (row_max - row_max_new) * scale_log2
@@ -132,7 +198,7 @@ def skip(
     row_max_diff_log2 = (row_max_curr - row_max) * scale_log2
 
     # Compute approximate final probability with current row max diff and row sum
-    row_max_diff_log2 -= gl.log2(row_sum)
+    row_max_diff_log2 -= log2(row_sum, FAST_MATH=True)
 
     # Update skip condition based on threshold
     is_skip = gl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
@@ -175,11 +241,11 @@ def finalize(
         lse = gl.where(
             invalid,
             float("-inf"),
-            row_max * scale_log2 + gl.log2(row_sum),
+            row_max * scale_log2 + log2(row_sum, FAST_MATH=True),
         )
     else:
         row_scale = final_scale / row_sum
-        lse = row_max * scale_log2 + gl.log2(row_sum)
+        lse = row_max * scale_log2 + log2(row_sum, FAST_MATH=True)
     if not IS_LOG2:
         ln2: gl.constexpr = 0.6931471805599453
         lse *= ln2
