@@ -121,7 +121,8 @@ def online_softmax(
     row_max: gl.tensor,
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
-    CHECK_INF: gl.constexpr,
+    CHECK_INF: gl.constexpr = False,
+    PARTIAL_SUM: gl.constexpr = False,
 ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
     """
     Apply online softmax to acc_S, and update row_max and row_sum.
@@ -136,6 +137,8 @@ def online_softmax(
     :type scale_log2: tensor
     :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
     :type CHECK_INF: bool
+    :param PARTIAL_SUM: boolean flag indicating if partial sum optimization should be used
+    :type PARTIAL_SUM: bool
 
     :return p: online softmax probabilities of shape [TILE_M, TILE_N]
     :return row_max_new: updated running maximum values per row of shape [TILE_M]
@@ -162,7 +165,14 @@ def online_softmax(
     rP = exp2(acc_S * scale_log2 - row_max_new[:, None] * scale_log2)
 
     # Update row sum
-    row_sum_new = row_sum * row_scale + gl.sum(rP, axis=1)
+    if PARTIAL_SUM:
+        TILE_M: gl.constexpr = rP.shape[0]
+        TILE_N: gl.constexpr = rP.shape[1]
+        parts = gl.sum(rP.reshape([TILE_M, TILE_N // 8, 4, 2]).sum(3), 1)
+        scale_parts = gl.convert_layout(row_scale, gl.SliceLayout(1, parts.type.layout))
+        row_sum_new = row_sum * scale_parts[:, None] + parts
+    else:
+        row_sum_new = row_sum * row_scale + gl.sum(rP, axis=1)
 
     return rP, row_max_new, row_sum_new, row_scale
 
