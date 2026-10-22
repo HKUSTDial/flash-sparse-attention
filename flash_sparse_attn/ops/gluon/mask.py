@@ -8,7 +8,12 @@ def get_mask_atom_stride(layout):
     assert isinstance(layout, gl.NVMMADistributedLayout), (
         "Packed masks require an NVIDIA MMA layout"
     )
-    assert layout.version[0] == 2, "Packed masks currently support MMAv2 only"
+    assert layout.version[0] in (2, 3), "Packed masks require MMAv2 or MMAv3"
+    if layout.version[0] == 3:
+        assert layout.warps_per_cta[1] == 1, (
+            "Packed MMAv3 masks require warp groups along M"
+        )
+        return 2, 8
     return 2, 8 * layout.warps_per_cta[1]
 
 
@@ -208,6 +213,7 @@ def apply_mask(
     mask_bit = (
         1 << ((offs_col % mask_cols) // mask_stride * mask_atom + offs_col % mask_atom)
     ).to(gl.uint32)
+    # TODO: pack=8 is slower yet to be optimized
     return gl.inline_asm_elementwise(
         """{
             .reg .pred valid;
