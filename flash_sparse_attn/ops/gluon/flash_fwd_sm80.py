@@ -74,7 +74,7 @@ def _fwd_inner_kernel(
     gK_next = ptrs_sched.make_k_ptrs(
         config, n_block - 1, config.copy_row_n_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sK.index(1 - k_stage),
         gK_next,
         mask=n_block > n_block_min,
@@ -147,7 +147,7 @@ def _fwd_inner_kernel(
     gV_next = ptrs_sched.make_v_ptrs(
         config, n_block - 1, config.copy_row_n_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sV,
         gV_next,
         mask=n_block > n_block_min,
@@ -384,7 +384,7 @@ def _fwd_kernel(
     gQ = ptrs_sched.make_q_ptrs(
         config, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sQ,
         gQ,
         mask=pQ if not EVEN_M else None,
@@ -406,7 +406,7 @@ def _fwd_kernel(
         config.copy_row_n_offs(),
         config.copy_col_k_offs(),
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sK.index(k_stage),
         gK,
         mask=pK if not EVEN_N else None,
@@ -428,7 +428,7 @@ def _fwd_kernel(
         config.copy_row_n_offs(),
         config.copy_col_k_offs(),
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sV,
         gV,
         mask=pV if not EVEN_N else None,
@@ -543,7 +543,7 @@ def _fwd_kernel(
                 config.copy_row_n_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sK.index(k_stage),
                 gK,
                 cache_modifier=".cg",
@@ -560,7 +560,7 @@ def _fwd_kernel(
                 config.copy_row_n_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
             )
 
@@ -671,7 +671,7 @@ def _fwd_kernel(
                 config.copy_row_n_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sK.index(k_stage),
                 gK,
                 cache_modifier=".cg",
@@ -688,7 +688,7 @@ def _fwd_kernel(
                 config.copy_row_n_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
             )
 
