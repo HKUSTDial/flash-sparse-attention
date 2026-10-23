@@ -4,6 +4,38 @@ from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.extra import libdevice
 
 
+@gluon.constexpr_function
+def _warp_all_asm(outputs, inputs):
+    (result,) = outputs
+    (predicates,) = inputs
+    instructions = [
+        "{",
+        "    .reg .pred p_local;",
+        "    setp.eq.u32 p_local, 0, 0;",
+    ]
+    instructions.extend(
+        f"    and.pred p_local, p_local, {predicate};" for predicate in predicates
+    )
+    instructions.extend(
+        [
+            f"    vote.sync.all.pred {result[0]}, p_local, 0xffffffff;",
+            "}",
+        ]
+    )
+    return "\n".join(instructions)
+
+
+@gluon.jit
+def warp_all(predicates):
+    return gl.inline_asm(
+        _warp_all_asm,
+        constraints=("=b", "b"),
+        args=[predicates],
+        result_types=gl.int1,
+        is_pure=False,
+    )
+
+
 @gluon.jit
 def rcp(
     x: gl.tensor,
@@ -211,7 +243,7 @@ def skip(
     row_max_diff_log2 -= log2(row_sum, FAST_MATH=True)
 
     # Update skip condition based on threshold
-    is_skip = gl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
+    is_skip = warp_all(row_max_diff_log2 < softmax_threshold_log2)
 
     return is_skip
 
