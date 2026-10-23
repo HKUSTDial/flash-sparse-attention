@@ -153,6 +153,7 @@ def online_softmax(
     row_max: gl.tensor,
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
+    row_max_curr: gl.tensor = None,
     CHECK_INF: gl.constexpr = False,
     PARTIAL_SUM: gl.constexpr = False,
 ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
@@ -167,6 +168,8 @@ def online_softmax(
     :type row_sum: tensor
     :param scale_log2: log2 of the scaling factor to be applied to acc_S
     :type scale_log2: tensor
+    :param row_max_curr: precomputed current row maximum values
+    :type row_max_curr: tensor
     :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
     :type CHECK_INF: bool
     :param PARTIAL_SUM: boolean flag indicating if partial sum optimization should be used
@@ -177,8 +180,9 @@ def online_softmax(
     :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]
     """
-    # Compute current row max
-    row_max_curr = gl.max(acc_S, axis=1)
+    if row_max_curr is None:
+        # Compute current row max
+        row_max_curr = gl.max(acc_S, axis=1)
 
     # Update row max
     row_max_new = gl.maximum(row_max_curr, row_max)
@@ -216,7 +220,7 @@ def skip(
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
     softmax_threshold_log2: gl.tensor,
-) -> gl.tensor:
+) -> tuple[gl.tensor, gl.tensor]:
     """
     Determine whether the current score can be skipped.
 
@@ -231,7 +235,8 @@ def skip(
     :param softmax_threshold_log2: threshold in log2-domain for block-level skip
     :type softmax_threshold_log2: tensor
 
-    :return: boolean indicating whether this block can be skipped
+    :return is_skip: boolean indicating whether this block can be skipped
+    :return row_max_curr: current row maximum values
     """
     # Compute current row max
     row_max_curr = gl.max(acc_S, axis=1)
@@ -245,7 +250,7 @@ def skip(
     # Update skip condition based on threshold
     is_skip = warp_all(row_max_diff_log2 < softmax_threshold_log2)
 
-    return is_skip
+    return is_skip, row_max_curr
 
 
 @gluon.jit
