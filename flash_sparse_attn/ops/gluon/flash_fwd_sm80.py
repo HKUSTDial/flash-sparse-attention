@@ -23,13 +23,13 @@ from flash_sparse_attn.ops.gluon.utils import (
     num_splits_heuristic,
 )
 from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
-from flash_sparse_attn.ops.gluon.kernel_repr import fwd_sparse_repr
+from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
 from flash_sparse_attn.ops.gluon.flash_fwd_combine import _flash_attn_fwd_combine
 
 
 @gluon.jit
-def _fwd_inner_sparse_kernel(
+def _fwd_inner_kernel(
     config: AttnFwdConfig,
     ptrs_sched: AttnFwdPointerScheduler,
     mask_sched: AttnMaskScheduler,
@@ -44,9 +44,10 @@ def _fwd_inner_sparse_kernel(
     n_block_min,
     k_stage,
     mma_layout: gl.constexpr,
-    IS_MASK: gl.constexpr,
-    MASK_SEQLEN: gl.constexpr,
-    MASK_CAUSAL: gl.constexpr,
+    IS_FIRST: gl.constexpr = False,
+    IS_MASK: gl.constexpr = False,
+    MASK_SEQLEN: gl.constexpr = False,
+    MASK_CAUSAL: gl.constexpr = False,
     MASK_LOCAL: gl.constexpr = False,
     MASK_SINK: gl.constexpr = False,
 ):
@@ -62,8 +63,7 @@ def _fwd_inner_sparse_kernel(
         k_width=max(32 // sK.dtype.primitive_bitwidth, 1),
     )
 
-    # TODO: Support a CTA-uniform issue predicate for both copy and commit_group
-    # to remove the empty K copy group in the last iteration.
+    # TODO: Support a CTA-uniform issue predicate for both copy and commit_group to reduce empty copy in last iteration.
     # prefetch_mask = n_block > n_block_min
 
     # Wait for Q and K
@@ -88,9 +88,9 @@ def _fwd_inner_sparse_kernel(
     # Compute S
     acc_S = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, mma_layout)
     acc_S = gemm(
-        acc=acc_S,
-        sA=sQ,
-        sB=sK.index(k_stage).permute((1, 0)),
+        acc_S,
+        sQ,
+        sK.index(k_stage).permute((1, 0)),
         lhs_layout=mma_lhs_layout,
         rhs_layout=mma_rhs_layout,
     )
@@ -108,39 +108,40 @@ def _fwd_inner_sparse_kernel(
             MASK_SINK=MASK_SINK,
         )
 
-    # Determine skip condition
-    is_skip = softmax_sched.skip(
-        acc_S,
-        row_max,
-        row_sum,
-        config.get_softmax_threshold_log2(),
-    )
-
-    if is_skip:
-        # Wait for V
-        async_copy.wait_group(1)
+    if not config.IS_SPARSE or IS_FIRST:
+        is_skip: gl.constexpr = False
+        row_max_curr: gl.constexpr = None
     else:
+        # Determine skip condition
+        is_skip, row_max_curr = softmax_sched.skip(
+            acc_S,
+            row_max,
+            row_sum,
+            config.get_softmax_threshold_log2(),
+        )
+
+    # Wait for V
+    async_copy.wait_group(1)
+    gl.barrier()
+
+    if not is_skip:
         # Apply online softmax
         rP, row_max, row_sum, row_scale = softmax_sched.online_softmax(
-            acc_S, row_max, row_sum, CHECK_INF=IS_MASK
+            acc_S, row_max, row_sum, row_max_curr=row_max_curr, CHECK_INF=IS_MASK
         )
 
         # Rescale O accumulator
         acc_O = softmax_sched.rescale_o(acc_O, row_scale)
 
-        # Wait for V
-        async_copy.wait_group(1)
-        gl.barrier()
-
         # Compute O
         acc_O = gemm_rs(
-            acc=acc_O,
-            rA=rP,
-            sB=sV,
+            acc_O,
+            rP,
+            sV,
             lhs_layout=mma_lhs_layout,
             rhs_layout=mma_rhs_layout,
         )
-        gl.barrier()
+    gl.barrier()
 
     # Load next V
     gV_next = ptrs_sched.make_v_ptrs(
@@ -174,8 +175,8 @@ def _fwd_inner_sparse_kernel(
         ),
     }
 )
-@gluon.jit(repr=fwd_sparse_repr)
-def _fwd_sparse_kernel(
+@gluon.jit(repr=fwd_dense_repr)
+def _fwd_kernel(
     mQ,
     mK,
     mV,
@@ -215,6 +216,7 @@ def _fwd_sparse_kernel(
     IS_SPLIT_KV: gl.constexpr,
     IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
+    IS_SPARSE: gl.constexpr,
     HAS_CU_SEQLENS_Q: gl.constexpr,
     HAS_CU_SEQLENS_K: gl.constexpr,
     HAS_SEQUSED_Q: gl.constexpr,
@@ -291,6 +293,7 @@ def _fwd_sparse_kernel(
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
+        IS_SPARSE=IS_SPARSE,
         IS_SPLIT_KV=IS_SPLIT_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
@@ -438,7 +441,7 @@ def _fwd_sparse_kernel(
 
     # First iteration with seqlen masking
     n_block_max = block_sched.n_block_max - 1
-    row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+    row_max, row_sum, acc_O = _fwd_inner_kernel(
         config,
         ptrs_sched,
         mask_sched,
@@ -453,6 +456,7 @@ def _fwd_sparse_kernel(
         block_sched.n_block_min,
         k_stage,
         mma_layout,
+        IS_FIRST=True,
         IS_MASK=IS_CAUSAL or IS_LOCAL or not EVEN_N,
         MASK_SEQLEN=not EVEN_N,
         MASK_CAUSAL=IS_CAUSAL,
@@ -470,7 +474,7 @@ def _fwd_sparse_kernel(
             block_sched.n_block_max_no_mask - 1,
             -1,
         ):
-            row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+            row_max, row_sum, acc_O = _fwd_inner_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
@@ -502,7 +506,7 @@ def _fwd_sparse_kernel(
             block_sched.n_block_min - 1,
             -1,
         ):
-            row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+            row_max, row_sum, acc_O = _fwd_inner_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
@@ -569,7 +573,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_window_max_no_mask - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -600,7 +604,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_window_min_no_mask - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -631,7 +635,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_window_min - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -697,7 +701,7 @@ def _fwd_sparse_kernel(
                 block_sched.n_block_sink_min - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_sparse_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -754,15 +758,16 @@ def _fwd_sparse_kernel(
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
-def _flash_sparse_attn_forward(
+def _flash_attn_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
-    softmax_threshold: float = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
+    is_sparse: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
@@ -773,7 +778,7 @@ def _flash_sparse_attn_forward(
     tile_n: Optional[int] = None,
     num_threads: Optional[int] = None,
     skip_checks: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = q.device
     num_SMs = get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = q.shape
@@ -781,11 +786,12 @@ def _flash_sparse_attn_forward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
-    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    if softmax_threshold is None:
+        softmax_threshold = 1.0 if is_sparse else 0.0
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -856,7 +862,7 @@ def _flash_sparse_attn_forward(
     )
 
     # Launch the kernel
-    _fwd_sparse_kernel[grid](
+    _fwd_kernel[grid](
         q,
         k,
         v,
@@ -896,6 +902,7 @@ def _flash_sparse_attn_forward(
         IS_SPLIT_KV=is_split_kv,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPARSE=is_sparse,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
@@ -920,7 +927,7 @@ def _flash_sparse_attn_forward(
     return out, lse
 
 
-def _flash_sparse_attn_varlen_forward(
+def _flash_attn_varlen_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -931,8 +938,9 @@ def _flash_sparse_attn_varlen_forward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
-    softmax_threshold: float = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
+    is_sparse: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
@@ -944,7 +952,7 @@ def _flash_sparse_attn_varlen_forward(
     tile_n: Optional[int] = None,
     num_threads: Optional[int] = None,
     skip_checks: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     device = q.device
     num_SMs = get_device_num_sms(device)
     total_q, num_heads_q, head_dim = q.shape
@@ -955,11 +963,12 @@ def _flash_sparse_attn_varlen_forward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
-    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    if softmax_threshold is None:
+        softmax_threshold = 1.0 if is_sparse else 0.0
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -1033,7 +1042,7 @@ def _flash_sparse_attn_varlen_forward(
     )
 
     # Launch the kernel
-    _fwd_sparse_kernel[grid](
+    _fwd_kernel[grid](
         q,
         k,
         v,
@@ -1073,6 +1082,7 @@ def _flash_sparse_attn_varlen_forward(
         IS_SPLIT_KV=is_split_kv,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPARSE=is_sparse,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
