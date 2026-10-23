@@ -48,45 +48,95 @@ class AttnFwdGridIndex:
     @staticmethod
     @gluon.jit
     def create(
-        NUM_SPLITS: gl.constexpr,
-        QHEAD_PER_KVHEAD: gl.constexpr,
-        IS_SPLIT_KV: gl.constexpr,
-        PACK_GQA: gl.constexpr,
+        seqlen_k: gl.tensor = None,
+        head_dim: gl.tensor = None,
+        NUM_SPLITS: gl.constexpr = None,
+        QHEAD_PER_KVHEAD: gl.constexpr = None,
+        PACK_GQA: gl.constexpr = False,
+        IS_SPLIT_KV: gl.constexpr = False,
+        IS_LPT: gl.constexpr = False,
     ) -> "AttnFwdGridIndex":
         """
         Decode the forward program IDs into attention grid indices.
 
+        :param seqlen_k: sequence length of the key
+        :type seqlen_k: gl.tensor
+        :param head_dim: attention head dimension
+        :type head_dim: gl.tensor
         :param NUM_SPLITS: number of KV splits
         :type NUM_SPLITS: int
         :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
         :type QHEAD_PER_KVHEAD: int
-        :param IS_SPLIT_KV: boolean flag indicating if the KV range is split
-        :type IS_SPLIT_KV: bool
         :param PACK_GQA: boolean flag indicating if packed GQA is enabled
         :type PACK_GQA: bool
+        :param IS_SPLIT_KV: boolean flag indicating if the KV range is split
+        :type IS_SPLIT_KV: bool
+        :param IS_LPT: reverse M blocks within head groups
+        :type IS_LPT: bool
 
         :return: forward grid indices for the current program
         """
-        m_block = gl.program_id(0)
-        head_idx = gl.program_id(1)
-        batch_split_idx = gl.program_id(2)
-        if IS_SPLIT_KV:
-            batch_idx = batch_split_idx // NUM_SPLITS
-            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+        if IS_LPT:
+            gl.static_assert(
+                not PACK_GQA and not IS_SPLIT_KV,
+                "LPT does not support PackGQA or split KV",
+            )
+            gl.static_assert(
+                seqlen_k is not None and head_dim is not None,
+                "LPT requires seqlen_k and head_dim",
+            )
+            num_m_blocks = gl.num_programs(0)
+            num_heads = gl.num_programs(1)
+            num_batches = gl.num_programs(2)
+            tile_idx = gl.program_id(0) + num_m_blocks * (
+                gl.program_id(1) + num_heads * gl.program_id(2)
+            )
+            capacity = gl.maximum((50 * 1024 * 1024) // (seqlen_k * head_dim * 4), 1)
+            log2_capacity = gl.inline_asm_elementwise(
+                "bfind.u32 $0, $1;",
+                constraints="=r,r",
+                args=[capacity],
+                dtype=gl.int32,
+                is_pure=True,
+                pack=1,
+            )
+            swizzle = 1 << log2_capacity
+            group_idx = tile_idx // (swizzle * num_m_blocks)
+            within_group = tile_idx % (swizzle * num_m_blocks)
+            group_heads = gl.where(
+                group_idx < num_heads * num_batches // swizzle,
+                swizzle,
+                gl.maximum(num_heads * num_batches % swizzle, 1),
+            )
+            head_batch_idx = group_idx * swizzle + within_group % group_heads
+            return AttnFwdGridIndex(
+                num_m_blocks - 1 - within_group // group_heads,
+                head_batch_idx // num_heads,
+                head_batch_idx % num_heads,
+                (head_batch_idx % num_heads) // QHEAD_PER_KVHEAD,
+                gl.to_tensor(0),
+            )
         else:
-            batch_idx = batch_split_idx
-            split_idx = gl.to_tensor(0)
-        if PACK_GQA:
-            head_kv_idx = head_idx
-        else:
-            head_kv_idx = head_idx // QHEAD_PER_KVHEAD
-        return AttnFwdGridIndex(
-            m_block,
-            batch_idx,
-            head_idx,
-            head_kv_idx,
-            split_idx,
-        )
+            m_block = gl.program_id(0)
+            head_idx = gl.program_id(1)
+            batch_split_idx = gl.program_id(2)
+            if IS_SPLIT_KV:
+                batch_idx = batch_split_idx // NUM_SPLITS
+                split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+            else:
+                batch_idx = batch_split_idx
+                split_idx = gl.to_tensor(0)
+            if PACK_GQA:
+                head_kv_idx = head_idx
+            else:
+                head_kv_idx = head_idx // QHEAD_PER_KVHEAD
+            return AttnFwdGridIndex(
+                m_block,
+                batch_idx,
+                head_idx,
+                head_kv_idx,
+                split_idx,
+            )
 
     @gluon.jit
     def load_window_sizes(
