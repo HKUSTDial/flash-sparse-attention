@@ -4,6 +4,38 @@ from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.extra import libdevice
 
 
+@gluon.constexpr_function
+def _warp_all_asm(outputs, inputs):
+    (result,) = outputs
+    (predicates,) = inputs
+    instructions = [
+        "{",
+        "    .reg .pred p_local;",
+        "    setp.eq.u32 p_local, 0, 0;",
+    ]
+    instructions.extend(
+        f"    and.pred p_local, p_local, {predicate};" for predicate in predicates
+    )
+    instructions.extend(
+        [
+            f"    vote.sync.all.pred {result[0]}, p_local, 0xffffffff;",
+            "}",
+        ]
+    )
+    return "\n".join(instructions)
+
+
+@gluon.jit
+def warp_all(predicates):
+    return gl.inline_asm(
+        _warp_all_asm,
+        constraints=("=b", "b"),
+        args=[predicates],
+        result_types=gl.int1,
+        is_pure=False,
+    )
+
+
 @gluon.jit
 def rcp(
     x: gl.tensor,
@@ -121,6 +153,7 @@ def online_softmax(
     row_max: gl.tensor,
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
+    row_max_curr: gl.tensor = None,
     CHECK_INF: gl.constexpr = False,
     PARTIAL_SUM: gl.constexpr = False,
 ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
@@ -135,6 +168,8 @@ def online_softmax(
     :type row_sum: tensor
     :param scale_log2: log2 of the scaling factor to be applied to acc_S
     :type scale_log2: tensor
+    :param row_max_curr: precomputed current row maximum values
+    :type row_max_curr: tensor
     :param CHECK_INF: boolean flag indicating if -inf row_max should be clamp values below -1e6
     :type CHECK_INF: bool
     :param PARTIAL_SUM: boolean flag indicating if partial sum optimization should be used
@@ -145,8 +180,9 @@ def online_softmax(
     :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]
     """
-    # Compute current row max
-    row_max_curr = gl.max(acc_S, axis=1)
+    if row_max_curr is None:
+        # Compute current row max
+        row_max_curr = gl.max(acc_S, axis=1)
 
     # Update row max
     row_max_new = gl.maximum(row_max_curr, row_max)
@@ -184,7 +220,7 @@ def skip(
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
     softmax_threshold_log2: gl.tensor,
-) -> gl.tensor:
+) -> tuple[gl.tensor, gl.tensor]:
     """
     Determine whether the current score can be skipped.
 
@@ -199,7 +235,8 @@ def skip(
     :param softmax_threshold_log2: threshold in log2-domain for block-level skip
     :type softmax_threshold_log2: tensor
 
-    :return: boolean indicating whether this block can be skipped
+    :return is_skip: boolean indicating whether this block can be skipped
+    :return row_max_curr: current row maximum values
     """
     # Compute current row max
     row_max_curr = gl.max(acc_S, axis=1)
@@ -211,9 +248,9 @@ def skip(
     row_max_diff_log2 -= log2(row_sum, FAST_MATH=True)
 
     # Update skip condition based on threshold
-    is_skip = gl.max(row_max_diff_log2 - softmax_threshold_log2) < 0.0
+    is_skip = warp_all(row_max_diff_log2 < softmax_threshold_log2)
 
-    return is_skip
+    return is_skip, row_max_curr
 
 
 @gluon.jit
