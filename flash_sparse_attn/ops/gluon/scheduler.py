@@ -2564,6 +2564,7 @@ class SoftmaxScheduler:
         acc_S: gl.tensor,
         row_max: gl.tensor,
         row_sum: gl.tensor,
+        row_max_curr: gl.tensor = None,
         CHECK_INF: gl.constexpr = False,
         PARTIAL_SUM: gl.constexpr = False,
     ) -> tuple[gl.tensor, gl.tensor, gl.tensor, gl.tensor]:
@@ -2576,6 +2577,8 @@ class SoftmaxScheduler:
         :type row_max: tensor
         :param row_sum: running sum values per row
         :type row_sum: tensor
+        :param row_max_curr: precomputed current row maximum values
+        :type row_max_curr: tensor
         :param CHECK_INF: boolean flag indicating if negative infinity is clamped
         :type CHECK_INF: bool
         :param PARTIAL_SUM: boolean flag indicating if partial sums are retained
@@ -2591,6 +2594,7 @@ class SoftmaxScheduler:
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
+            row_max_curr=row_max_curr,
             CHECK_INF=CHECK_INF,
             PARTIAL_SUM=PARTIAL_SUM,
         )
@@ -2602,7 +2606,7 @@ class SoftmaxScheduler:
         row_max: gl.tensor,
         row_sum: gl.tensor,
         softmax_threshold_log2: gl.tensor,
-    ) -> gl.tensor:
+    ) -> tuple[gl.tensor, gl.tensor]:
         """
         Determine whether the current score can be skipped.
 
@@ -2615,7 +2619,8 @@ class SoftmaxScheduler:
         :param softmax_threshold_log2: softmax threshold in log2-domain
         :type softmax_threshold_log2: tensor
 
-        :return: boolean indicating whether the block can be skipped
+        :return is_skip: boolean indicating whether the block can be skipped
+        :return row_max_curr: current row maximum values
         """
         return skip(
             acc_S=acc_S,
