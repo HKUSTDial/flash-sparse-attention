@@ -233,10 +233,13 @@ def _fwd_dense_kernel(
 
     # Create grid index
     grid_idx = AttnFwdGridIndex.create(
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
         NUM_SPLITS=NUM_SPLITS,
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
         PACK_GQA=PACK_GQA,
         IS_SPLIT_KV=IS_SPLIT_KV,
+        IS_LPT=not PACK_GQA and not IS_SPLIT_KV,
     )
 
     # Load window sizes
