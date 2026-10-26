@@ -36,6 +36,42 @@ def warp_all(predicates):
     )
 
 
+@gluon.constexpr_function
+def _cta_all_asm(outputs, inputs):
+    (result,) = outputs
+    (predicates,) = inputs
+    instructions = [
+        "{",
+        "    .reg .pred p_local, p_all;",
+        "    setp.eq.u32 p_local, 0, 0;",
+    ]
+    instructions.extend(
+        f"    and.pred p_local, p_local, {predicate};" for predicate in predicates
+    )
+    instructions.extend(
+        [
+            "    bar.red.and.pred p_all, 0, p_local;",
+            f"    selp.u32 {result[0]}, 1, 0, p_all;",
+            "}",
+        ]
+    )
+    return "\n".join(instructions)
+
+
+@gluon.jit
+def cta_all(predicates):
+    return (
+        gl.inline_asm(
+            _cta_all_asm,
+            constraints=("=r", "b"),
+            args=[predicates],
+            result_types=gl.int32,
+            is_pure=False,
+        )
+        != 0
+    )
+
+
 @gluon.jit
 def rcp(
     x: gl.tensor,
@@ -214,7 +250,7 @@ def online_softmax(
 
 
 @gluon.jit
-def skip(
+def score_skip(
     acc_S: gl.tensor,
     row_max: gl.tensor,
     row_sum: gl.tensor,
@@ -251,6 +287,26 @@ def skip(
     is_skip = warp_all(row_max_diff_log2 < softmax_threshold_log2)
 
     return is_skip, row_max_curr
+
+
+@gluon.jit
+def prob_skip(
+    rPlog2: gl.tensor,
+    softmax_threshold_log2: gl.tensor,
+) -> gl.tensor:
+    """
+    Determine whether the current probability can be skipped.
+
+    :param rPlog2: attention probabilities in log2-domain of shape [TILE_M, TILE_N]
+    :type rPlog2: tensor
+    :param softmax_threshold_log2: threshold in log2-domain for block-level skip
+    :type softmax_threshold_log2: tensor
+
+    :return: boolean indicating whether this block can be skipped
+    """
+    # Update skip condition based on threshold
+    is_skip = cta_all(rPlog2 < softmax_threshold_log2[None, :])
+    return is_skip
 
 
 @gluon.jit

@@ -23,7 +23,8 @@ from flash_sparse_attn.ops.gluon.block_info import (
 from flash_sparse_attn.ops.gluon.mask import apply_mask
 from flash_sparse_attn.ops.gluon.softmax import (
     online_softmax,
-    skip,
+    score_skip,
+    prob_skip,
     rescale_o,
     finalize,
 )
@@ -2600,7 +2601,7 @@ class SoftmaxScheduler:
         )
 
     @gluon.jit
-    def skip(
+    def score_skip(
         self,
         acc_S: gl.tensor,
         row_max: gl.tensor,
@@ -2622,11 +2623,32 @@ class SoftmaxScheduler:
         :return is_skip: boolean indicating whether the block can be skipped
         :return row_max_curr: current row maximum values
         """
-        return skip(
+        return score_skip(
             acc_S=acc_S,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
+        )
+
+    @gluon.jit
+    def prob_skip(
+        self,
+        rPlog2: gl.tensor,
+        softmax_threshold_log2: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Determine whether the current block can be skipped based on the softmax threshold.
+
+        :param rPlog2: attention probabilities tensor in log2-domain
+        :type rPlog2: tensor
+        :param softmax_threshold_log2: softmax threshold in log2-domain
+        :type softmax_threshold_log2: tensor
+
+        :return is_skip: boolean indicating whether the block can be skipped
+        """
+        return prob_skip(
+            rPlog2=rPlog2,
             softmax_threshold_log2=softmax_threshold_log2,
         )
 
