@@ -79,9 +79,7 @@ def _fwd_producer_dense_kernel(
         if range_idx == 0:
             n_block_max = block_sched.n_block_max
             n_block_min = (
-                block_sched.n_block_max_no_mask
-                if config.IS_LOCAL
-                else block_sched.n_block_min
+                block_sched.n_block_max_no_mask if config.IS_LOCAL else block_sched.n_block_min
             )
         elif range_idx == 1:
             n_block_max = block_sched.n_block_window_max
@@ -109,9 +107,7 @@ def _fwd_producer_dense_kernel(
                 # Issue the previous V only after the next K has been issued
                 if kv_iter >= 2:
                     mbarrier.wait(v_release, (kv_iter - 2) & 1)
-                _fwd_load_dense_kernel(
-                    config, desc_V, sV, v_ready, prev_n_block, HAS_CU_SEQLENS_K
-                )
+                _fwd_load_dense_kernel(config, desc_V, sV, v_ready, prev_n_block, HAS_CU_SEQLENS_K)
             prev_n_block = n_block
             kv_iter += 1
 
@@ -119,9 +115,7 @@ def _fwd_producer_dense_kernel(
     if kv_iter > 0:
         if kv_iter >= 2:
             mbarrier.wait(v_release, (kv_iter - 2) & 1)
-        _fwd_load_dense_kernel(
-            config, desc_V, sV, v_ready, prev_n_block, HAS_CU_SEQLENS_K
-        )
+        _fwd_load_dense_kernel(config, desc_V, sV, v_ready, prev_n_block, HAS_CU_SEQLENS_K)
 
 
 @gluon.jit
@@ -250,9 +244,7 @@ def _fwd_consumer_dense_kernel(
     # Initialize accumulators
     row_max = gl.full([config.TILE_M], float("-inf"), gl.float32, config.mma_row_layout)
     partial_sum = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, mma_layout)
-    row_sum = gl.sum(
-        partial_sum.reshape([config.TILE_M, config.TILE_N // 8, 4, 2]).sum(3), 1
-    )
+    row_sum = gl.sum(partial_sum.reshape([config.TILE_M, config.TILE_N // 8, 4, 2]).sum(3), 1)
     acc_O = gl.zeros([config.TILE_M, config.TILE_K], gl.float32, mma_layout)
 
     # This counter is continuous across diagonal, window, and sink ranges
@@ -261,9 +253,7 @@ def _fwd_consumer_dense_kernel(
     # Load Q
     if not EVEN_M:
         pQ = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-    gQ = ptrs_sched.make_q_ptrs(
-        config, config.copy_row_m_offs(), config.copy_col_k_offs()
-    )
+    gQ = ptrs_sched.make_q_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
     async_copy.async_load(
         sQ,
         gQ,
@@ -340,10 +330,7 @@ def _fwd_consumer_dense_kernel(
             # Advance the K/V pipeline
             kv_iter += 1
 
-    if (
-        not config.IS_LOCAL
-        and block_sched.n_block_max_no_mask > block_sched.n_block_min
-    ):
+    if not config.IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
         # Process n_blocks without masking
         for n_block in range(
             block_sched.n_block_max_no_mask - 1,
@@ -536,9 +523,7 @@ def _fwd_consumer_dense_kernel(
     if config.IS_SPLIT_KV:
         if not EVEN_M:
             pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.mma_row_m_offs(), config.mma_col_k_offs()
-        )
+        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
         gl.store(gO, acc_O, mask=pO if not EVEN_M else None)
     else:
         sQ.store(acc_O.to(sQ.dtype))
@@ -546,9 +531,7 @@ def _fwd_consumer_dense_kernel(
         rO = sQ.load(copy_layout)
         if not EVEN_M:
             pO = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.copy_row_m_offs(), config.copy_col_k_offs()
-        )
+        gO = ptrs_sched.make_out_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
@@ -710,13 +693,9 @@ def _fwd_dense_kernel(
         empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, mma_layout)
         if not EVEN_M:
             pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.mma_row_m_offs(), config.mma_col_k_offs()
-        )
+        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
         gl.store(gO, empty_o, mask=pO if not EVEN_M else None)
-        empty_lse = gl.full(
-            [TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_row_layout
-        )
+        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_row_layout)
         if not EVEN_M:
             pLSE = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs())
         gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_row_m_offs())
@@ -734,12 +713,8 @@ def _fwd_dense_kernel(
         [TILE_N, TILE_K], desc_V.block_type.element_ty
     )
     sQ = gl.allocate_shared_memory(mQ.dtype.element_ty, [TILE_M, TILE_K], sQ_layout)
-    sK = gl.allocate_shared_memory(
-        desc_K.block_type.element_ty, [2, TILE_N, TILE_K], sK_layout
-    )
-    sV = gl.allocate_shared_memory(
-        desc_V.block_type.element_ty, [TILE_N, TILE_K], sV_layout
-    )
+    sK = gl.allocate_shared_memory(desc_K.block_type.element_ty, [2, TILE_N, TILE_K], sK_layout)
+    sV = gl.allocate_shared_memory(desc_V.block_type.element_ty, [TILE_N, TILE_K], sV_layout)
 
     # Independent ready barriers
     k_ready = gl.allocate_shared_memory(gl.int64, [2, 1], mbarrier.MBarrierLayout())
@@ -827,9 +802,7 @@ def _flash_dense_attn_forward(
     num_SMs = get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = q.shape
     _, seqlen_k, num_heads_kv, _ = k.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
@@ -1001,9 +974,7 @@ def _flash_dense_attn_varlen_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:

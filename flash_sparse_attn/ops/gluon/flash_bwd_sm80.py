@@ -104,8 +104,7 @@ def _bwd_inner_kernel(
 
     # Compute Plog2
     rPlog2 = (
-        acc_S * config.softmax_scale_log2
-        - sLSE.index(q_stage).load(config.mma_col_layout)[None, :]
+        acc_S * config.softmax_scale_log2 - sLSE.index(q_stage).load(config.mma_col_layout)[None, :]
     )
 
     # Load next Q
@@ -214,9 +213,7 @@ def _bwd_inner_kernel(
     )
 
     # Load next dPsum
-    gdPsum_next = ptrs_sched.make_dpsum_ptrs(
-        config, m_block + 1, config.copy_row_m_offs()
-    )
+    gdPsum_next = ptrs_sched.make_dpsum_ptrs(config, m_block + 1, config.copy_row_m_offs())
     async_copy.async_load(
         sdPsum.index(0),
         gdPsum_next,
@@ -440,37 +437,81 @@ def _bwd_kernel(
 
     # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K], mQ.dtype.element_ty
+        [TILE_M, TILE_K],
+        mQ.dtype.element_ty,
     )
     sK_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K], mK.dtype.element_ty
+        [TILE_N, TILE_K],
+        mK.dtype.element_ty,
     )
     sV_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K], mV.dtype.element_ty
+        [TILE_N, TILE_K],
+        mV.dtype.element_ty,
     )
     sdO_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K], mdO.dtype.element_ty
+        [TILE_M, TILE_K],
+        mdO.dtype.element_ty,
     )
     sP_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_M], mQ.dtype.element_ty
+        [TILE_N, TILE_M],
+        mQ.dtype.element_ty,
     )
     sdS_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_M], mQ.dtype.element_ty
+        [TILE_N, TILE_M],
+        mQ.dtype.element_ty,
     )
     sLSE_layout: gl.constexpr = gl.SwizzledSharedLayout(
-        vec=1, per_phase=1, max_phase=1, order=[0]
+        vec=1,
+        per_phase=1,
+        max_phase=1,
+        order=[0],
     )
     sdPsum_layout: gl.constexpr = gl.SwizzledSharedLayout(
-        vec=1, per_phase=1, max_phase=1, order=[0]
+        vec=1,
+        per_phase=1,
+        max_phase=1,
+        order=[0],
     )
-    sQ = gl.allocate_shared_memory(mQ.dtype.element_ty, [2, TILE_M, TILE_K], sQ_layout)
-    sK = gl.allocate_shared_memory(mK.dtype.element_ty, [TILE_N, TILE_K], sK_layout)
-    sV = gl.allocate_shared_memory(mV.dtype.element_ty, [TILE_N, TILE_K], sV_layout)
-    sdO = gl.allocate_shared_memory(mdO.dtype.element_ty, [TILE_M, TILE_K], sdO_layout)
-    sP = gl.allocate_shared_memory(mQ.dtype.element_ty, [TILE_N, TILE_M], sP_layout)
-    sdS = gl.allocate_shared_memory(mQ.dtype.element_ty, [TILE_N, TILE_M], sdS_layout)
-    sLSE = gl.allocate_shared_memory(gl.float32, [2, TILE_M], sLSE_layout)
-    sdPsum = gl.allocate_shared_memory(gl.float32, [1, TILE_M], sdPsum_layout)
+    sQ = gl.allocate_shared_memory(
+        mQ.dtype.element_ty,
+        [2, TILE_M, TILE_K],
+        sQ_layout,
+    )
+    sK = gl.allocate_shared_memory(
+        mK.dtype.element_ty,
+        [TILE_N, TILE_K],
+        sK_layout,
+    )
+    sV = gl.allocate_shared_memory(
+        mV.dtype.element_ty,
+        [TILE_N, TILE_K],
+        sV_layout,
+    )
+    sdO = gl.allocate_shared_memory(
+        mdO.dtype.element_ty,
+        [TILE_M, TILE_K],
+        sdO_layout,
+    )
+    sP = gl.allocate_shared_memory(
+        mQ.dtype.element_ty,
+        [TILE_N, TILE_M],
+        sP_layout,
+    )
+    sdS = gl.allocate_shared_memory(
+        mQ.dtype.element_ty,
+        [TILE_N, TILE_M],
+        sdS_layout,
+    )
+    sLSE = gl.allocate_shared_memory(
+        gl.float32,
+        [2, TILE_M],
+        sLSE_layout,
+    )
+    sdPsum = gl.allocate_shared_memory(
+        gl.float32,
+        [1, TILE_M],
+        sdPsum_layout,
+    )
 
     # Initialize the Q stage for the asynchronous copy pipeline
     q_stage = gl.to_tensor(0)
@@ -482,9 +523,7 @@ def _bwd_kernel(
     # Load K
     if not EVEN_N:
         pK = ptrs_sched.make_n_predicate(config, config.copy_row_n_offs()[:, None])
-    gK = ptrs_sched.make_k_ptrs(
-        config, config.copy_row_n_offs(), config.copy_col_k_offs()
-    )
+    gK = ptrs_sched.make_k_ptrs(config, config.copy_row_n_offs(), config.copy_col_k_offs())
     async_copy.async_load(
         sK,
         gK,
@@ -496,9 +535,7 @@ def _bwd_kernel(
     # Load V
     if not EVEN_N:
         pV = ptrs_sched.make_n_predicate(config, config.copy_row_n_offs()[:, None])
-    gV = ptrs_sched.make_v_ptrs(
-        config, config.copy_row_n_offs(), config.copy_col_k_offs()
-    )
+    gV = ptrs_sched.make_v_ptrs(config, config.copy_row_n_offs(), config.copy_col_k_offs())
     async_copy.async_load(
         sV,
         gV,
@@ -515,9 +552,7 @@ def _bwd_kernel(
 
     # Load Q
     if not EVEN_M:
-        pQ = ptrs_sched.make_m_predicate(
-            config, m_block_max, config.copy_row_m_offs()[:, None]
-        )
+        pQ = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_row_m_offs()[:, None])
     gQ = ptrs_sched.make_q_ptrs(
         config, m_block_max, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
@@ -531,9 +566,7 @@ def _bwd_kernel(
 
     # Load LSE
     if not EVEN_M:
-        pLSE = ptrs_sched.make_m_predicate(
-            config, m_block_max, config.copy_row_m_offs()
-        )
+        pLSE = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_row_m_offs())
     gLSE = ptrs_sched.make_lse_ptrs(config, m_block_max, config.copy_row_m_offs())
     async_copy.async_load(
         sLSE.index(q_stage),
@@ -548,9 +581,7 @@ def _bwd_kernel(
 
     # Load dO
     if not EVEN_M:
-        pdO = ptrs_sched.make_m_predicate(
-            config, m_block_max, config.copy_row_m_offs()[:, None]
-        )
+        pdO = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_row_m_offs()[:, None])
     gdO = ptrs_sched.make_do_ptrs(
         config, m_block_max, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
@@ -564,9 +595,7 @@ def _bwd_kernel(
 
     # Load dPsum
     if not EVEN_M:
-        pdPsum = ptrs_sched.make_m_predicate(
-            config, m_block_max, config.copy_row_m_offs()
-        )
+        pdPsum = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_row_m_offs())
     gdPsum = ptrs_sched.make_dpsum_ptrs(config, m_block_max, config.copy_row_m_offs())
     async_copy.async_load(
         sdPsum.index(0),
@@ -609,9 +638,7 @@ def _bwd_kernel(
     # Toggle the q_stage for the remaining range
     q_stage = 1 - q_stage
 
-    if block_sched.m_block_min < (
-        block_sched.m_block_min_no_mask if IS_LOCAL else m_block_max
-    ):
+    if block_sched.m_block_min < (block_sched.m_block_min_no_mask if IS_LOCAL else m_block_max):
         # Synchronize to ensure all previous shared-memory reads are complete
         async_copy.wait_group(0)
         gl.barrier()
@@ -631,9 +658,7 @@ def _bwd_kernel(
         )
 
         # Load LSE
-        gLSE = ptrs_sched.make_lse_ptrs(
-            config, block_sched.m_block_min, config.copy_row_m_offs()
-        )
+        gLSE = ptrs_sched.make_lse_ptrs(config, block_sched.m_block_min, config.copy_row_m_offs())
         async_copy.async_load(
             sLSE.index(q_stage),
             gLSE,
@@ -839,10 +864,7 @@ def _bwd_kernel(
                 q_stage = 1 - q_stage
 
         # Process m_blocks without masking
-        if (
-            block_sched.m_block_window_min_no_mask
-            < block_sched.m_block_window_max_no_mask
-        ):
+        if block_sched.m_block_window_min_no_mask < block_sched.m_block_window_max_no_mask:
             for m_block in range(
                 block_sched.m_block_window_min_no_mask,
                 block_sched.m_block_window_max_no_mask,
@@ -1006,9 +1028,7 @@ def _bwd_kernel(
                 q_stage = 1 - q_stage
 
     # Store dV
-    gdV = ptrs_sched.make_dv_ptrs(
-        config, config.mma_row_n_offs(), config.mma_col_k_offs()
-    )
+    gdV = ptrs_sched.make_dv_ptrs(config, config.mma_row_n_offs(), config.mma_col_k_offs())
     if QHEAD_PER_KVHEAD > 1:
         gl.atomic_add(gdV, acc_dV, sem="relaxed")
     else:
@@ -1018,9 +1038,7 @@ def _bwd_kernel(
     acc_dK = acc_dK * softmax_scale
 
     # Store dK
-    gdK = ptrs_sched.make_dk_ptrs(
-        config, config.mma_row_n_offs(), config.mma_col_k_offs()
-    )
+    gdK = ptrs_sched.make_dk_ptrs(config, config.mma_row_n_offs(), config.mma_col_k_offs())
     if QHEAD_PER_KVHEAD > 1:
         gl.atomic_add(gdK, acc_dK, sem="relaxed")
     else:
@@ -1055,9 +1073,7 @@ def _flash_attn_backward(
     num_SMs = get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = q.shape
     _, seqlen_k, num_heads_kv, _ = k.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
@@ -1280,9 +1296,7 @@ def _flash_sparse_attn_varlen_backward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:

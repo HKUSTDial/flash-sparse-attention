@@ -402,9 +402,7 @@ def get_fwd_combine_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-get_fwd_combine_launch_config = cache_utils.cache_launch_config(
-    get_fwd_combine_launch_config
-)
+get_fwd_combine_launch_config = cache_utils.cache_launch_config(get_fwd_combine_launch_config)
 
 
 def get_dec_combine_launch_config(
@@ -443,6 +441,4 @@ def get_dec_combine_launch_config(
         raise NotImplementedError(f"Unsupported device type: {device.type}")
 
 
-get_dec_combine_launch_config = cache_utils.cache_launch_config(
-    get_dec_combine_launch_config
-)
+get_dec_combine_launch_config = cache_utils.cache_launch_config(get_dec_combine_launch_config)

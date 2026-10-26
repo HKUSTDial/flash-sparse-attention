@@ -10,9 +10,7 @@ from triton.experimental.gluon.language.nvidia.hopper import (
 @_core.builtin
 def warpgroup_mma_wait(num_outstanding=0, deps=None, _semantic=None):
     # Wait for each warpgroup's own MMA work
-    result = _warpgroup_mma_wait(
-        num_outstanding=num_outstanding, deps=deps, _semantic=_semantic
-    )
+    result = _warpgroup_mma_wait(num_outstanding=num_outstanding, deps=deps, _semantic=_semantic)
     results = result if isinstance(result, tuple) else (result,)
     for value in results:
         value.handle.set_attr("warpGroupLocal", _semantic.builder.get_unit_attr())

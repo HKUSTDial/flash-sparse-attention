@@ -135,9 +135,7 @@ def window_sizes_heuristic(
     window_sink = min(max(window_sink, 0), max(seqlen_k - window_near, 0))
     distance_span = max(seqlen_k - window_sink - window_near, 0)
     if equal_bandwidth:
-        breakpoints = (distance_span * head_kv_idx / num_heads_kv_global).to(
-            torch.int32
-        )
+        breakpoints = (distance_span * head_kv_idx / num_heads_kv_global).to(torch.int32)
     else:
         breakpoints = (
             distance_span * (1.0 - torch.sqrt(1.0 - head_kv_idx / num_heads_kv_global))

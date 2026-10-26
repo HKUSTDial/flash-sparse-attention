@@ -24,8 +24,7 @@ def load_paged_k(
     offs_k = tl.arange(0, TILE_K)
     return tl.load(
         k_base + page * stride_kb + offs_n[:, None] * stride_kn + offs_k[None, :],
-        mask=(n_block * TILE_N + offs_n < actual_seqlen_k)[:, None]
-        & (offs_k[None, :] < head_dim),
+        mask=(n_block * TILE_N + offs_n < actual_seqlen_k)[:, None] & (offs_k[None, :] < head_dim),
         other=0.0,
         cache_modifier=".ca",
     )
@@ -48,8 +47,7 @@ def load_paged_v(
     offs_k = tl.arange(0, TILE_K)
     return tl.load(
         v_base + page * stride_vb + offs_n[:, None] * stride_vn + offs_k[None, :],
-        mask=(n_block * TILE_N + offs_n < actual_seqlen_k)[:, None]
-        & (offs_k[None, :] < head_dim),
+        mask=(n_block * TILE_N + offs_n < actual_seqlen_k)[:, None] & (offs_k[None, :] < head_dim),
         other=0.0,
         cache_modifier=".ca",
     )

@@ -46,9 +46,7 @@ def get_seqlen_info(
         offset = gl.to_tensor(0)
         seqlen = gl.load(seqused + batch_idx) if HAS_SEQUSED else seqlen_static
     padded_offset = (
-        (offset + batch_idx * TILE_MN) // TILE_MN * TILE_MN
-        if HAS_CU_SEQLENS
-        else gl.to_tensor(0)
+        (offset + batch_idx * TILE_MN) // TILE_MN * TILE_MN if HAS_CU_SEQLENS else gl.to_tensor(0)
     )
     return offset, padded_offset, seqlen
 
@@ -335,17 +333,12 @@ def make_pack_gqa_ptrs(
     """
     offs_m = m_block * offs_m.shape[0] + offs_m
     m_idx = offs_m // QHEAD_PER_KVHEAD_PACKGQA
-    q_head = (
-        head_idx * QHEAD_PER_KVHEAD_PACKGQA + offs_m - m_idx * QHEAD_PER_KVHEAD_PACKGQA
-    )
+    q_head = head_idx * QHEAD_PER_KVHEAD_PACKGQA + offs_m - m_idx * QHEAD_PER_KVHEAD_PACKGQA
     if TILE_K == 1:
         return base_ptr + m_idx * stride_seq + q_head * stride_head
     else:
         return (
-            base_ptr
-            + m_idx[:, None] * stride_seq
-            + q_head[:, None] * stride_head
-            + offs_k[None, :]
+            base_ptr + m_idx[:, None] * stride_seq + q_head[:, None] * stride_head + offs_k[None, :]
         )
 
 

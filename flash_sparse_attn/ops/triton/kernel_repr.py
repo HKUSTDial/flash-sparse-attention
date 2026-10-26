@@ -7,78 +7,48 @@ def _get(c, key, default=None):
 
 def fwd_dense_repr(specialization):
     c = specialization.constants
-    mask = (
-        "causal"
-        if _get(c, "IS_CAUSAL")
-        else ("local" if _get(c, "IS_LOCAL") else "full")
-    )
+    mask = "causal" if _get(c, "IS_CAUSAL") else ("local" if _get(c, "IS_LOCAL") else "full")
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     split = "_splitkv" if _get(c, "IS_SPLIT_KV") else ""
     is_paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
-    return (
-        f"flash_dense_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
-    )
+    return f"flash_dense_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
 
 
 def fwd_sparse_repr(specialization):
     c = specialization.constants
-    mask = (
-        "causal"
-        if _get(c, "IS_CAUSAL")
-        else ("local" if _get(c, "IS_LOCAL") else "full")
-    )
+    mask = "causal" if _get(c, "IS_CAUSAL") else ("local" if _get(c, "IS_LOCAL") else "full")
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     split = "_splitkv" if _get(c, "IS_SPLIT_KV") else ""
     is_paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
-    return (
-        f"flash_sparse_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
-    )
+    return f"flash_sparse_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
 
 
 def fwd_gated_repr(specialization):
     c = specialization.constants
-    mask = (
-        "causal"
-        if _get(c, "IS_CAUSAL")
-        else ("local" if _get(c, "IS_LOCAL") else "full")
-    )
+    mask = "causal" if _get(c, "IS_CAUSAL") else ("local" if _get(c, "IS_LOCAL") else "full")
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     split = "_splitkv" if _get(c, "IS_SPLIT_KV") else ""
     is_paged = "_paged" if _get(c, "IS_PAGED_KV") else ""
-    return (
-        f"flash_gated_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
-    )
+    return f"flash_gated_fwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{split}{is_paged}{varlen}"
 
 
 def bwd_dense_repr(specialization):
     c = specialization.constants
-    mask = (
-        "causal"
-        if _get(c, "IS_CAUSAL")
-        else ("local" if _get(c, "IS_LOCAL") else "full")
-    )
+    mask = "causal" if _get(c, "IS_CAUSAL") else ("local" if _get(c, "IS_LOCAL") else "full")
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     return f"flash_dense_bwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
 
 
 def bwd_sparse_repr(specialization):
     c = specialization.constants
-    mask = (
-        "causal"
-        if _get(c, "IS_CAUSAL")
-        else ("local" if _get(c, "IS_LOCAL") else "full")
-    )
+    mask = "causal" if _get(c, "IS_CAUSAL") else ("local" if _get(c, "IS_LOCAL") else "full")
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     return f"flash_sparse_bwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
 
 
 def bwd_gated_repr(specialization):
     c = specialization.constants
-    mask = (
-        "causal"
-        if _get(c, "IS_CAUSAL")
-        else ("local" if _get(c, "IS_LOCAL") else "full")
-    )
+    mask = "causal" if _get(c, "IS_CAUSAL") else ("local" if _get(c, "IS_LOCAL") else "full")
     varlen = "_varlen" if _get(c, "HAS_CU_SEQLENS_Q") else ""
     return f"flash_gated_bwd_{mask}_{c['TILE_M']}x{c['TILE_N']}{varlen}"
 

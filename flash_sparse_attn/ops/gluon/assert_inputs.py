@@ -59,29 +59,21 @@ def assert_fwd_inputs(
     :raises AssertionError: If any of the assertions fail
     """
     arch = get_device_arch(device)
-    assert device == q.device == k.device == v.device, (
-        "All inputs must be on the same device"
-    )
+    assert device == q.device == k.device == v.device, "All inputs must be on the same device"
     if arch >= 90:
         assert q.dtype in [
             torch.float16,
             torch.bfloat16,
             torch.float8_e5m2,
             torch.float8_e4m3fn,
-        ], (
-            "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
-        )
+        ], "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
     else:
         assert q.dtype in [
             torch.float16,
             torch.bfloat16,
         ], "query tensor dtype must be float16 or bfloat16"
-    assert q.dtype == k.dtype == v.dtype, (
-        "query/key/value tensors must have the same dtype"
-    )
-    assert num_heads_q % num_heads_kv == 0, (
-        "num_heads_q must be divisible by num_heads_kv"
-    )
+    assert q.dtype == k.dtype == v.dtype, "query/key/value tensors must have the same dtype"
+    assert num_heads_q % num_heads_kv == 0, "num_heads_q must be divisible by num_heads_kv"
     assert head_dim in [32, 64, 128, 256], (
         "head_dim must be one of [32, 64, 128, 256] for efficient memory access"
     )
@@ -179,39 +171,27 @@ def assert_bwd_inputs(
     :raises AssertionError: If any of the assertions fail
     """
     arch = get_device_arch(device)
-    assert (
-        device
-        == q.device
-        == k.device
-        == v.device
-        == out.device
-        == dout.device
-        == lse.device
-    ), "All inputs must be on the same device"
+    assert device == q.device == k.device == v.device == out.device == dout.device == lse.device, (
+        "All inputs must be on the same device"
+    )
     if arch >= 90:
         assert q.dtype in [
             torch.float16,
             torch.bfloat16,
             torch.float8_e5m2,
             torch.float8_e4m3fn,
-        ], (
-            "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
-        )
+        ], "query tensor dtype must be float16 or bfloat16 or float8_e5m2 or float8_e4m3fn"
     else:
         assert q.dtype in [
             torch.float16,
             torch.bfloat16,
         ], "query tensor dtype must be float16 or bfloat16"
-    assert q.dtype == k.dtype == v.dtype, (
-        "query/key/value tensors must have the same dtype"
-    )
+    assert q.dtype == k.dtype == v.dtype, "query/key/value tensors must have the same dtype"
     assert out.dtype == dout.dtype, "out/dout tensors must have the same dtype"
     assert lse.dtype == torch.float32, (
         "lse must be float32 for numerical stability in backward pass"
     )
-    assert num_heads_q % num_heads_kv == 0, (
-        "num_heads_q must be divisible by num_heads_kv"
-    )
+    assert num_heads_q % num_heads_kv == 0, "num_heads_q must be divisible by num_heads_kv"
     assert head_dim in [32, 64, 128, 256], (
         "head_dim must be one of [32, 64, 128, 256] for efficient memory access"
     )

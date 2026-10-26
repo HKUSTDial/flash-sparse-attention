@@ -54,9 +54,7 @@ def _lazy_imports(implementation: Optional[str]):
     """
     is_fsa = is_flash_sparse_attn_available()
 
-    if (implementation == "flash_sparse_attn" and is_fsa) or (
-        implementation is None and is_fsa
-    ):
+    if (implementation == "flash_sparse_attn" and is_fsa) or (implementation is None and is_fsa):
         from flash_sparse_attn import (
             flash_sparse_attn_func,
             flash_sparse_attn_varlen_func,
@@ -84,18 +82,14 @@ def _lazy_define_process_function(flash_function):
     """
 
     flash_parameters = inspect.signature(flash_function).parameters
-    process_parameters = inspect.signature(
-        _process_flash_sparse_attention_kwargs
-    ).parameters
+    process_parameters = inspect.signature(_process_flash_sparse_attention_kwargs).parameters
 
     supports_mapping = {}
     for param in process_parameters:
         fsa_param = _hf_api_to_flash_mapping.get(param, param)
         supports_mapping[fsa_param] = fsa_param in flash_parameters
 
-    return partial(
-        _process_flash_sparse_attention_kwargs, supports_mapping=supports_mapping
-    )
+    return partial(_process_flash_sparse_attention_kwargs, supports_mapping=supports_mapping)
 
 
 def lazy_import_flash_sparse_attention(
@@ -109,12 +103,9 @@ def lazy_import_flash_sparse_attention(
     """
     global _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn
     if force_import or any(
-        k is None
-        for k in [_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn]
+        k is None for k in [_fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn]
     ):
-        _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn = _lazy_imports(
-            implementation
-        )
+        _fsa_fn, _fsa_varlen_fn, _pad_fn, _unpad_fn, _create_mask_fn = _lazy_imports(implementation)
 
     global _process_flash_kwargs_fn
     if force_import or _process_flash_kwargs_fn is None:
@@ -241,8 +232,8 @@ def _upad_input(
     else:
         # The -q_len: slice assumes left padding.
         attention_mask = attention_mask[:, -query_length:]
-        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = (
-            unpad_input_func(query_layer, attention_mask)
+        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = unpad_input_func(
+            query_layer, attention_mask
         )
 
     return (
@@ -356,13 +347,9 @@ def _is_packed_sequence(position_ids, batch_size):
         return False
 
     increasing_position_sequences = (
-        torch.arange(position_ids.shape[1], device=position_ids.device)
-        + position_ids.min()
+        torch.arange(position_ids.shape[1], device=position_ids.device) + position_ids.min()
     )
-    return (
-        batch_size == 1
-        and (increasing_position_sequences - position_ids).abs().sum().bool()
-    )
+    return batch_size == 1 and (increasing_position_sequences - position_ids).abs().sum().bool()
 
 
 def fsa_peft_integration_check(
@@ -453,11 +440,7 @@ def _process_flash_sparse_attention_kwargs(
         "softmax_scale": softmax_scale,
     }
 
-    if (
-        supports_mapping["window_size"]
-        and window_size is not None
-        and key_length > window_size
-    ):
+    if supports_mapping["window_size"] and window_size is not None and key_length > window_size:
         flash_kwargs["window_size"] = window_size
 
     if supports_mapping["deterministic"]:
@@ -521,11 +504,7 @@ def _flash_sparse_attention_forward(
             The attention implementation to use. If None, will default to the one based on the environment.
     """
 
-    if (
-        attention_mask is not None
-        and attention_mask.dim() == 2
-        and attention_bias is not None
-    ):
+    if attention_mask is not None and attention_mask.dim() == 2 and attention_bias is not None:
         raise ValueError(
             "If shape of attention_mask is (batch_size, seq_len), attention_bias has to be None."
         )
@@ -559,12 +538,9 @@ def _flash_sparse_attention_forward(
     #
     # NOTE: it is user's responsibility to take care of flattening `position_ids` if that's needed by the model.
     # See #39121 for more information.
-    is_fsa_with_position_ids = _is_packed_sequence(
-        position_ids, batch_size=query_states.size(0)
-    )
+    is_fsa_with_position_ids = _is_packed_sequence(position_ids, batch_size=query_states.size(0))
     is_fsa_with_varlen_kwargs = all(
-        kwarg is not None
-        for kwarg in (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
+        kwarg is not None for kwarg in (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
     )
 
     # Contains at least one padding token in the sequence
@@ -609,9 +585,7 @@ def _flash_sparse_attention_forward(
     elif is_fsa_with_varlen_kwargs or is_fsa_with_position_ids:
         if cu_seq_lens_q is None or cu_seq_lens_k is None:
             q, k, v, (cu_seq_lens_q, cu_seq_lens_k), (max_length_q, max_length_k) = (
-                _prepare_from_posids(
-                    query_states, key_states, value_states, position_ids
-                )
+                _prepare_from_posids(query_states, key_states, value_states, position_ids)
             )
         else:
             q = query_states.reshape(-1, query_states.size(-2), query_states.size(-1))
@@ -641,11 +615,7 @@ def _flash_sparse_attention_forward(
     # No padding
     else:
         # Generate a combined attention mask if `attention_bias` are provided
-        if (
-            attention_bias is not None
-            and window_size is not None
-            and key_length > window_size
-        ):
+        if attention_bias is not None and window_size is not None and key_length > window_size:
             attention_mask = create_mask_fn(
                 attention_bias,
                 attention_mask,

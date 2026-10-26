@@ -1057,9 +1057,7 @@ class AttnBwdBlockScheduler:
                 IS_CAUSAL=False,
                 IS_LOCAL=True,
             )
-            m_block_window_min_no_mask = tl.maximum(
-                m_block_window_min_no_mask, m_block_window_min
-            )
+            m_block_window_min_no_mask = tl.maximum(m_block_window_min_no_mask, m_block_window_min)
             m_block_window_max_no_mask = block_info.get_m_block_max_before_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
@@ -1614,9 +1612,7 @@ class AttnFwdPointerScheduler:
             offs_k = config.get_offs_k()
             return tl.load(
                 q_ptrs,
-                mask=(
-                    (offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q
-                )[:, None]
+                mask=((offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q)[:, None]
                 & (offs_k < config.head_dim)[None, :],
                 other=0.0,
                 cache_modifier=".ca",
@@ -1664,8 +1660,7 @@ class AttnFwdPointerScheduler:
         if config.PACK_GQA:
             return tl.load(
                 a_ptrs,
-                mask=(offs_m // config.QHEAD_PER_KVHEAD_PACKGQA)
-                < config.actual_seqlen_q,
+                mask=(offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q,
                 other=0.0,
             ).to(tl.float32)
         else:
@@ -1696,9 +1691,7 @@ class AttnFwdPointerScheduler:
             ).to(tl.float32)
 
     @triton.jit
-    def store_out(
-        self, config: AttnFwdConfig, out_ptrs, o_tile, IS_SPLIT_KV: tl.constexpr = False
-    ):
+    def store_out(self, config: AttnFwdConfig, out_ptrs, o_tile, IS_SPLIT_KV: tl.constexpr = False):
         if not IS_SPLIT_KV:
             if config.PACK_GQA:
                 o_tile = o_tile.to(out_ptrs.dtype.element_ty)
@@ -1710,9 +1703,7 @@ class AttnFwdPointerScheduler:
             tl.store(
                 out_ptrs,
                 o_tile,
-                mask=(
-                    (offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q
-                )[:, None]
+                mask=((offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q)[:, None]
                 & (offs_k < config.head_dim)[None, :],
                 cache_modifier=".wb",
             )
@@ -1726,9 +1717,7 @@ class AttnFwdPointerScheduler:
             tl.store(
                 lse_ptrs,
                 lse_tile,
-                mask=(
-                    (offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q
-                ),
+                mask=((offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q),
                 cache_modifier=".wb",
             )
         else:
@@ -2154,9 +2143,9 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def load_v(self, config: AttnBwdConfig, v_ptrs):
-        return (
-            v_ptrs.load([config.n_block * config.TILE_N, 0]) * config.value_scale
-        ).to(self.do_base.dtype.element_ty)
+        return (v_ptrs.load([config.n_block * config.TILE_N, 0]) * config.value_scale).to(
+            self.do_base.dtype.element_ty
+        )
 
     @triton.jit
     def load_a(self, config: AttnBwdConfig, a_ptrs, m_block):

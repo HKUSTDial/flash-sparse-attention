@@ -26,9 +26,7 @@ def _get_block_size_n(device, head_dim, is_causal):
     # This should match the block sizes in the CUDA kernel
     assert head_dim <= 256
     major, minor = torch.cuda.get_device_capability(device)
-    is_sm8x = (
-        major == 8 and minor > 0
-    )  # Only include sm86 and sm89, exclude sm80 (A100)
+    is_sm8x = major == 8 and minor > 0  # Only include sm86 and sm89, exclude sm80 (A100)
     # is_sm80 = major == 8 and minor == 0
     # is_sm90 = major == 9 and minor == 0
     if head_dim <= 32:
@@ -62,9 +60,7 @@ if version.parse(torch.__version__) >= version.parse("2.4.0"):
     _torch_register_fake_wrapper = torch.library.register_fake
 else:
 
-    def noop_custom_op_wrapper(
-        name, fn=None, /, *, mutates_args, device_types=None, schema=None
-    ):
+    def noop_custom_op_wrapper(name, fn=None, /, *, mutates_args, device_types=None, schema=None):
         def wrap(func):
             return func
 
@@ -178,9 +174,7 @@ def _flash_sparse_attn_backward(
     softcap: float,
     deterministic: bool,
 ) -> torch.Tensor:
-    dout, q, k, v, b, db, out = [
-        maybe_contiguous(x) for x in (dout, q, k, v, b, db, out)
-    ]
+    dout, q, k, v, b, db, out = [maybe_contiguous(x) for x in (dout, q, k, v, b, db, out)]
 
     (
         dq,

@@ -120,22 +120,13 @@ def _fwd_kernel(
 
     # Initialize pointers to Q, K, V, B
     q_ptrs = (
-        Q
-        + off_b * stride_qb
-        + off_hq * stride_qh
-        + (offs_m[:, None] * stride_qm + offs_d[None, :])
+        Q + off_b * stride_qb + off_hq * stride_qh + (offs_m[:, None] * stride_qm + offs_d[None, :])
     )
     k_ptrs = (
-        K
-        + off_b * stride_kb
-        + off_hk * stride_kh
-        + (offs_n[:, None] * stride_kn + offs_d[None, :])
+        K + off_b * stride_kb + off_hk * stride_kh + (offs_n[:, None] * stride_kn + offs_d[None, :])
     )
     v_ptrs = (
-        V
-        + off_b * stride_vb
-        + off_hk * stride_vh
-        + (offs_n[:, None] * stride_vn + offs_d[None, :])
+        V + off_b * stride_vb + off_hk * stride_vh + (offs_n[:, None] * stride_vn + offs_d[None, :])
     )
     b_ptrs = (
         (
@@ -189,8 +180,7 @@ def _fwd_kernel(
             else:
                 b = tl.load(
                     b_ptrs + start_n,
-                    mask=(offs_m[:, None] < seqlen_q)
-                    & ((start_n + offs_n)[None, :] < seqlen_k),
+                    mask=(offs_m[:, None] < seqlen_q) & ((start_n + offs_n)[None, :] < seqlen_k),
                     other=-1.0,
                 ).to(tl.float32)
 
@@ -219,8 +209,7 @@ def _fwd_kernel(
                 else:
                     k = tl.load(
                         k_ptrs + start_n * stride_kn,
-                        mask=((start_n + offs_n)[:, None] < seqlen_k)
-                        & (offs_d[None, :] < headdim),
+                        mask=((start_n + offs_n)[:, None] < seqlen_k) & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
@@ -235,13 +224,10 @@ def _fwd_kernel(
             # Apply masks
             # Trying to combine the two masks seem to make the result wrong
             if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
-                acc_s += tl.where(
-                    (start_n + offs_n)[None, :] < seqlen_k, 0, float("-inf")
-                )
+                acc_s += tl.where((start_n + offs_n)[None, :] < seqlen_k, 0, float("-inf"))
             if IS_CAUSAL:
                 acc_s += tl.where(
-                    offs_m[:, None] + (seqlen_k - seqlen_q)
-                    >= (start_n + offs_n)[None, :],
+                    offs_m[:, None] + (seqlen_k - seqlen_q) >= (start_n + offs_n)[None, :],
                     0,
                     float("-inf"),
                 )
@@ -278,8 +264,7 @@ def _fwd_kernel(
                 else:
                     v = tl.load(
                         v_ptrs + start_n * stride_vn,
-                        mask=((start_n + offs_n)[:, None] < seqlen_k)
-                        & (offs_d[None, :] < headdim),
+                        mask=((start_n + offs_n)[:, None] < seqlen_k) & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
@@ -351,11 +336,7 @@ def _bwd_preprocess_do_o_dot(
     offs_d = tl.arange(0, BLOCK_HEADDIM)
     # Load o
     o = tl.load(
-        Out
-        + off_b * stride_ob
-        + off_h * stride_oh
-        + offs_m[:, None] * stride_om
-        + offs_d[None, :],
+        Out + off_b * stride_ob + off_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :],
         mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
         other=0.0,
     ).to(tl.float32)
@@ -493,9 +474,7 @@ def _bwd_kernel_one_col_block(
     k = (k * softmax_scale).to(k.dtype)
 
     # Initialize accumulator for db if needed
-    acc_db = (
-        tl.zeros([BLOCK_N], dtype=tl.float32) if (HAS_BIAS and ACCUM_DBIAS) else None
-    )
+    acc_db = tl.zeros([BLOCK_N], dtype=tl.float32) if (HAS_BIAS and ACCUM_DBIAS) else None
 
     # Loop over q and update accumulators
     num_block_m = tl.cdiv(seqlen_q, BLOCK_M)
@@ -511,8 +490,7 @@ def _bwd_kernel_one_col_block(
             else:
                 b = tl.load(
                     b_ptrs,
-                    mask=(offs_m_curr[:, None] < seqlen_q)
-                    & (offs_n[None, :] < seqlen_k),
+                    mask=(offs_m_curr[:, None] < seqlen_q) & (offs_n[None, :] < seqlen_k),
                     other=-1.0,
                 ).to(tl.float32)
 
@@ -530,8 +508,7 @@ def _bwd_kernel_one_col_block(
                 else:
                     q = tl.load(
                         q_ptrs,
-                        mask=(offs_m_curr[:, None] < seqlen_q)
-                        & (offs_d[None, :] < headdim),
+                        mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
@@ -548,9 +525,7 @@ def _bwd_kernel_one_col_block(
             if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
                 acc_s += tl.where(offs_n[None, :] < seqlen_k, 0, float("-inf"))
             if IS_CAUSAL:
-                acc_s += tl.where(
-                    offs_m_curr[:, None] >= (offs_n[None, :]), 0, float("-inf")
-                )
+                acc_s += tl.where(offs_m_curr[:, None] >= (offs_n[None, :]), 0, float("-inf"))
 
             lse_i = tl.load(LSE + offs_m_curr)
             # p = tl.exp(acc_s - lse_i[:, None])
@@ -563,8 +538,7 @@ def _bwd_kernel_one_col_block(
                 # There's a race condition if we just use m_mask and not d_mask.
                 do = tl.load(
                     do_ptrs,
-                    mask=(offs_m_curr[:, None] < seqlen_q)
-                    & (offs_d[None, :] < headdim),
+                    mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                     other=0.0,
                 )
 
@@ -598,8 +572,7 @@ def _bwd_kernel_one_col_block(
                         tl.store(
                             db_ptrs,
                             ds,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_n[None, :] < seqlen_k),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_n[None, :] < seqlen_k),
                         )
 
             # Compute dk
@@ -629,8 +602,7 @@ def _bwd_kernel_one_col_block(
                     else:
                         dq = tl.load(
                             dq_ptrs,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                             other=0.0,
                             eviction_policy="evict_last",
                         )
@@ -638,8 +610,7 @@ def _bwd_kernel_one_col_block(
                         tl.store(
                             dq_ptrs,
                             dq,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                             eviction_policy="evict_last",
                         )
             else:  # If we're parallelizing across the seqlen_k dimension
@@ -653,8 +624,7 @@ def _bwd_kernel_one_col_block(
                         tl.atomic_add(
                             dq_ptrs,
                             dq,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                         )
 
             # Increment pointers
@@ -741,9 +711,9 @@ def init_to_zero(names):
         "EVEN_M": lambda args: args["seqlen_q"] % args["BLOCK_M"] == 0,
         "EVEN_N": lambda args: args["seqlen_k"] % args["BLOCK_N"] == 0,
         "EVEN_HEADDIM": lambda args: args["headdim"] == args["BLOCK_HEADDIM"],
-        "ACCUM_DBIAS": lambda args: args["HAS_BIAS"]
-        and (args["stride_dbm"] == 0)
-        and (args["seqlen_q"] > 1),
+        "ACCUM_DBIAS": lambda args: (
+            args["HAS_BIAS"] and (args["stride_dbm"] == 0) and (args["seqlen_q"] > 1)
+        ),
     }
 )
 @triton.jit
@@ -922,9 +892,7 @@ def _flash_sparse_attn_forward(q, k, v, b, softmax_scale=None, is_causal=False):
     batch, seqlen_q, nheads, d = q.shape
     _, seqlen_k, nheads_k, _ = k.shape
 
-    assert nheads % nheads_k == 0, (
-        "Number of Q heads must be divisible by KV heads for GQA/MQA"
-    )
+    assert nheads % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
     assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same type"
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
@@ -942,9 +910,7 @@ def _flash_sparse_attn_forward(q, k, v, b, softmax_scale=None, is_causal=False):
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
-    lse = torch.empty(
-        (batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32
-    )
+    lse = torch.empty((batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32)
     o = torch.empty_like(q)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
@@ -1004,18 +970,14 @@ def _flash_sparse_attn_forward(q, k, v, b, softmax_scale=None, is_causal=False):
     return o, lse, softmax_scale  # softmax_scale could have been updated
 
 
-def _flash_sparse_attn_backward(
-    do, q, k, v, b, o, lse, softmax_scale=None, is_causal=False
-):
+def _flash_sparse_attn_backward(do, q, k, v, b, o, lse, softmax_scale=None, is_causal=False):
     # Make sure that the last dimension is contiguous
     if do.stride(-1) != 1:
         do = do.contiguous()
     batch, seqlen_q, nheads, d = q.shape
     _, seqlen_k, nheads_k, dk = k.shape
 
-    assert nheads % nheads_k == 0, (
-        "Number of Q heads must be divisible by KV heads for GQA/MQA"
-    )
+    assert nheads % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
     assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     seqlen_k_rounded = math.ceil(seqlen_k / 128) * 128
@@ -1036,11 +998,7 @@ def _flash_sparse_attn_backward(
     # delta = torch.zeros_like(lse)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
-    db = (
-        torch.empty_like(b)
-        if has_bias
-        else torch.empty(0, device=q.device, dtype=q.dtype)
-    )
+    db = torch.empty_like(b) if has_bias else torch.empty(0, device=q.device, dtype=q.dtype)
 
     dk_expanded = (
         torch.empty(batch, seqlen_k, nheads, d, device=q.device, dtype=q.dtype)
@@ -1155,11 +1113,7 @@ def _flash_sparse_attn_backward(
         dv_expanded.stride(1),
         (db_expanded.stride(0) if has_bias else 0),
         (db_expanded.stride(1) if has_bias else 0),
-        (
-            0
-            if (has_bias and b.shape[-2] == 1)
-            else (db_expanded.stride(2) if has_bias else 0)
-        ),
+        (0 if (has_bias and b.shape[-2] == 1) else (db_expanded.stride(2) if has_bias else 0)),
         nheads,
         nheads_k,
         nheads_b,
@@ -1183,12 +1137,8 @@ def _flash_sparse_attn_backward(
     )
     dq = dq_accum.to(q.dtype)
     if nheads != nheads_k:
-        dk = dk_expanded.view(batch, seqlen_k, nheads_k, nheads // nheads_k, d).sum(
-            dim=3
-        )
-        dv = dv_expanded.view(batch, seqlen_k, nheads_k, nheads // nheads_k, d).sum(
-            dim=3
-        )
+        dk = dk_expanded.view(batch, seqlen_k, nheads_k, nheads // nheads_k, d).sum(dim=3)
+        dv = dv_expanded.view(batch, seqlen_k, nheads_k, nheads // nheads_k, d).sum(dim=3)
     if has_bias:
         if nheads_b != nheads and b.shape[0] == batch and b.shape[-2] == seqlen_q:
             db = db_expanded.view(
@@ -1242,9 +1192,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
         """
 
         # Make sure that the last dimension is contiguous
-        query, key, value, attn_bias = [
-            maybe_contiguous(x) for x in [query, key, value, attn_bias]
-        ]
+        query, key, value, attn_bias = [maybe_contiguous(x) for x in [query, key, value, attn_bias]]
 
         # Padding to multiple of 8 for 16-bit memory allocations
         head_size_og = query.size(3)
@@ -1318,6 +1266,4 @@ def triton_sparse_attn_func(
     is_causal=False,
     softmax_scale=None,
 ):
-    return FlashSparseAttnFunc.apply(
-        query, key, value, attn_bias, is_causal, softmax_scale
-    )
+    return FlashSparseAttnFunc.apply(query, key, value, attn_bias, is_causal, softmax_scale)
