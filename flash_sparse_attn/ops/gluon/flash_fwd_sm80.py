@@ -29,7 +29,7 @@ from flash_sparse_attn.ops.gluon.flash_fwd_combine import _flash_attn_fwd_combin
 
 
 @gluon.jit
-def _fwd_inner_kernel(
+def _fwd_inner_sm80_kernel(
     config: AttnFwdConfig,
     ptrs_sched: AttnFwdPointerScheduler,
     mask_sched: AttnMaskScheduler,
@@ -176,7 +176,7 @@ def _fwd_inner_kernel(
     }
 )
 @gluon.jit(repr=fwd_repr)
-def _fwd_kernel(
+def _fwd_sm80_kernel(
     mQ,
     mK,
     mV,
@@ -452,7 +452,7 @@ def _fwd_kernel(
     async_copy.commit_group()
 
     # Process n_block with seqlen masking
-    row_max, row_sum, acc_O = _fwd_inner_kernel(
+    row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
         config,
         ptrs_sched,
         mask_sched,
@@ -485,7 +485,7 @@ def _fwd_kernel(
             block_sched.n_block_max_no_mask - 1,
             -1,
         ):
-            row_max, row_sum, acc_O = _fwd_inner_kernel(
+            row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
@@ -517,7 +517,7 @@ def _fwd_kernel(
             block_sched.n_block_min - 1,
             -1,
         ):
-            row_max, row_sum, acc_O = _fwd_inner_kernel(
+            row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
@@ -582,7 +582,7 @@ def _fwd_kernel(
                 block_sched.n_block_window_max_no_mask - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -613,7 +613,7 @@ def _fwd_kernel(
                 block_sched.n_block_window_min_no_mask - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -644,7 +644,7 @@ def _fwd_kernel(
                 block_sched.n_block_window_min - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -708,7 +708,7 @@ def _fwd_kernel(
                 block_sched.n_block_sink_min - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O = _fwd_inner_kernel(
+                row_max, row_sum, acc_O = _fwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -761,7 +761,7 @@ def _fwd_kernel(
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
-def _flash_attn_forward(
+def _flash_attn_forward_sm80(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -863,7 +863,7 @@ def _flash_attn_forward(
     )
 
     # Launch the kernel
-    _fwd_kernel[grid](
+    _fwd_sm80_kernel[grid](
         q,
         k,
         v,
@@ -928,7 +928,7 @@ def _flash_attn_forward(
     return out, lse
 
 
-def _flash_attn_varlen_forward(
+def _flash_attn_varlen_forward_sm80(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -1041,7 +1041,7 @@ def _flash_attn_varlen_forward(
     )
 
     # Launch the kernel
-    _fwd_kernel[grid](
+    _fwd_sm80_kernel[grid](
         q,
         k,
         v,
