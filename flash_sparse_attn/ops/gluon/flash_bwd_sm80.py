@@ -12,6 +12,7 @@ from flash_sparse_attn.ops.gluon.scheduler import (
     AttnBwdBlockScheduler,
     AttnBwdPointerScheduler,
     AttnMaskScheduler,
+    SoftmaxScheduler,
 )
 
 from flash_sparse_attn.ops.gluon.assert_inputs import assert_bwd_inputs
@@ -21,7 +22,7 @@ from flash_sparse_attn.ops.gluon.utils import (
     num_splits_heuristic,
 )
 from flash_sparse_attn.ops.gluon.launch_grid import get_bwd_grid
-from flash_sparse_attn.ops.gluon.kernel_repr import bwd_dense_repr
+from flash_sparse_attn.ops.gluon.kernel_repr import bwd_repr
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm
 from flash_sparse_attn.ops.gluon.softmax import exp2
 from flash_sparse_attn.ops.gluon.flash_bwd_preprocess import (
@@ -34,10 +35,11 @@ from flash_sparse_attn.ops.gluon.flash_bwd_combine import _flash_attn_bwd_combin
 
 
 @gluon.jit
-def _bwd_inner_dense_kernel(
+def _bwd_inner_kernel(
     config: AttnBwdConfig,
     ptrs_sched: AttnBwdPointerScheduler,
     mask_sched: AttnMaskScheduler,
+    softmax_sched: SoftmaxScheduler,
     sQ,
     sK,
     sV,
@@ -100,8 +102,8 @@ def _bwd_inner_dense_kernel(
             MASK_SINK=MASK_SINK,
         )
 
-    # Compute P
-    rP = exp2(
+    # Compute Plog2
+    rPlog2 = (
         acc_S * config.softmax_scale_log2
         - sLSE.index(q_stage).load(config.mma_col_layout)[None, :]
     )
@@ -110,7 +112,7 @@ def _bwd_inner_dense_kernel(
     gQ_next = ptrs_sched.make_q_ptrs(
         config, m_block + 1, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sQ.index(1 - q_stage),
         gQ_next,
         mask=m_block < m_block_max - 1,
@@ -120,7 +122,7 @@ def _bwd_inner_dense_kernel(
 
     # Load next LSE
     gLSE_next = ptrs_sched.make_lse_ptrs(config, m_block + 1, config.copy_row_m_offs())
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sLSE.index(1 - q_stage),
         gLSE_next,
         mask=m_block < m_block_max - 1,
@@ -131,66 +133,79 @@ def _bwd_inner_dense_kernel(
     # Commit next Q and LSE group
     async_copy.commit_group()
 
+    if not config.IS_SPARSE:
+        is_skip: gl.constexpr = False
+    else:
+        # Determine skip condition
+        is_skip = softmax_sched.prob_skip(
+            rPlog2,
+            config.get_softmax_threshold_log2(m_block),
+        )
+
     # Wait for dO and dPsum
     async_copy.wait_group(1)
     gl.barrier()
 
-    # Compute dP
-    acc_dP = gl.zeros([config.TILE_N, config.TILE_M], gl.float32, mma_layout)
-    acc_dP = gemm(
-        acc=acc_dP,
-        sA=sV,
-        sB=sdO.permute((1, 0)),
-        lhs_layout=mma_lhs_layout,
-        rhs_layout=mma_rhs_layout,
-    )
+    if not is_skip:
+        # Compute P
+        rP = exp2(rPlog2)
 
-    # Compute dS
-    rdS = rP * (acc_dP - sdPsum.index(0).load(config.mma_col_layout)[None, :])
-    sP.store(rP.to(sQ.dtype))
-    sdS.store(rdS.to(sQ.dtype))
-    gl.barrier()
+        # Compute dP
+        acc_dP = gl.zeros([config.TILE_N, config.TILE_M], gl.float32, mma_layout)
+        acc_dP = gemm(
+            acc=acc_dP,
+            sA=sV,
+            sB=sdO.permute((1, 0)),
+            lhs_layout=mma_lhs_layout,
+            rhs_layout=mma_rhs_layout,
+        )
 
-    # Compute dV
-    acc_dV = gemm(
-        acc=acc_dV,
-        sA=sP,
-        sB=sdO,
-        lhs_layout=mma_lhs_layout,
-        rhs_layout=mma_rhs_layout,
-    )
+        # Compute dS
+        rdS = rP * (acc_dP - sdPsum.index(0).load(config.mma_col_layout)[None, :])
+        sP.store(rP.to(sQ.dtype))
+        sdS.store(rdS.to(sQ.dtype))
+        gl.barrier()
 
-    # Compute dK
-    acc_dK = gemm(
-        acc=acc_dK,
-        sA=sdS,
-        sB=sQ.index(q_stage),
-        lhs_layout=mma_lhs_layout,
-        rhs_layout=mma_rhs_layout,
-    )
+        # Compute dV
+        acc_dV = gemm(
+            acc=acc_dV,
+            sA=sP,
+            sB=sdO,
+            lhs_layout=mma_lhs_layout,
+            rhs_layout=mma_rhs_layout,
+        )
 
-    # Compute dQ
-    acc_dQ = gl.zeros([config.TILE_K, config.TILE_M], gl.float32, mma_layout)
-    acc_dQ = gemm(
-        acc=acc_dQ,
-        sA=sK.permute((1, 0)),
-        sB=sdS,
-        lhs_layout=mma_lhs_layout,
-        rhs_layout=mma_rhs_layout,
-    )
+        # Compute dK
+        acc_dK = gemm(
+            acc=acc_dK,
+            sA=sdS,
+            sB=sQ.index(q_stage),
+            lhs_layout=mma_lhs_layout,
+            rhs_layout=mma_rhs_layout,
+        )
 
-    # Store dQ
-    # TODO: fused make_ptrs and per-address_atomic_add to avoid spilling
-    gdQaccum = ptrs_sched.make_dq_accum_ptrs(
-        config, m_block, config.mma_col_m_offs(), config.mma_row_k_offs()
-    )
-    gl.atomic_add(gdQaccum, acc_dQ, sem="relaxed")
+        # Compute dQ
+        acc_dQ = gl.zeros([config.TILE_K, config.TILE_M], gl.float32, mma_layout)
+        acc_dQ = gemm(
+            acc=acc_dQ,
+            sA=sK.permute((1, 0)),
+            sB=sdS,
+            lhs_layout=mma_lhs_layout,
+            rhs_layout=mma_rhs_layout,
+        )
+
+        # Store dQ
+        # TODO: fused make_ptrs and per-address_atomic_add to avoid spilling
+        gdQaccum = ptrs_sched.make_dq_accum_ptrs(
+            config, m_block, config.mma_col_m_offs(), config.mma_row_k_offs()
+        )
+        gl.atomic_add(gdQaccum, acc_dQ, sem="relaxed")
 
     # Load next dO
     gdO_next = ptrs_sched.make_do_ptrs(
         config, m_block + 1, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sdO,
         gdO_next,
         mask=m_block < m_block_max - 1,
@@ -202,7 +217,7 @@ def _bwd_inner_dense_kernel(
     gdPsum_next = ptrs_sched.make_dpsum_ptrs(
         config, m_block + 1, config.copy_row_m_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sdPsum.index(0),
         gdPsum_next,
         mask=m_block < m_block_max - 1,
@@ -230,8 +245,8 @@ def _bwd_inner_dense_kernel(
         ),
     }
 )
-@gluon.jit(repr=bwd_dense_repr)
-def _bwd_dense_kernel(
+@gluon.jit(repr=bwd_repr)
+def _bwd_kernel(
     mQ,
     mK,
     mV,
@@ -277,12 +292,14 @@ def _bwd_dense_kernel(
     seqlen_q,
     seqlen_k,
     softmax_scale,
+    softmax_threshold,
     head_dim,
     QHEAD_PER_KVHEAD: gl.constexpr,
     NUM_SPLITS: gl.constexpr,
     IS_SPLIT_QO: gl.constexpr,
     IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
+    IS_SPARSE: gl.constexpr,
     HAS_CU_SEQLENS_Q: gl.constexpr,
     HAS_CU_SEQLENS_K: gl.constexpr,
     HAS_SEQUSED_Q: gl.constexpr,
@@ -315,9 +332,12 @@ def _bwd_dense_kernel(
 
     # Create grid index
     grid_idx = AttnBwdGridIndex.create(
+        seqlen_q=seqlen_q,
+        head_dim=head_dim,
         NUM_SPLITS=NUM_SPLITS,
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
         IS_SPLIT_QO=IS_SPLIT_QO,
+        IS_SPT=False,
     )
 
     # Load window sizes
@@ -333,6 +353,7 @@ def _bwd_dense_kernel(
         split_idx=grid_idx.split_idx,
         n_block=grid_idx.n_block,
         softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -353,6 +374,7 @@ def _bwd_dense_kernel(
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
+        IS_SPARSE=IS_SPARSE,
         IS_SPLIT_QO=IS_SPLIT_QO,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
@@ -404,10 +426,13 @@ def _bwd_dense_kernel(
     )
 
     # Create block scheduler
-    block_sched = AttnBwdBlockScheduler.create(config=config)
+    block_sched = AttnBwdBlockScheduler.create(config)
 
     # Create mask scheduler
     mask_sched = AttnMaskScheduler.create(config, SWAP_AB=True)
+
+    # Create softmax scheduler
+    softmax_sched = SoftmaxScheduler.create(config)
 
     # Early exit if no m_blocks to process
     if block_sched.is_empty():
@@ -460,7 +485,7 @@ def _bwd_dense_kernel(
     gK = ptrs_sched.make_k_ptrs(
         config, config.copy_row_n_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sK,
         gK,
         mask=pK if not EVEN_N else None,
@@ -474,7 +499,7 @@ def _bwd_dense_kernel(
     gV = ptrs_sched.make_v_ptrs(
         config, config.copy_row_n_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sV,
         gV,
         mask=pV if not EVEN_N else None,
@@ -485,7 +510,7 @@ def _bwd_dense_kernel(
     # Commit K and V group
     async_copy.commit_group()
 
-    # First iteration with seqlen masking
+    # Last iteration with seqlen masking
     m_block_max = block_sched.m_block_max - 1
 
     # Load Q
@@ -496,7 +521,7 @@ def _bwd_dense_kernel(
     gQ = ptrs_sched.make_q_ptrs(
         config, m_block_max, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sQ.index(q_stage),
         gQ,
         mask=pQ if not EVEN_M else None,
@@ -510,7 +535,7 @@ def _bwd_dense_kernel(
             config, m_block_max, config.copy_row_m_offs()
         )
     gLSE = ptrs_sched.make_lse_ptrs(config, m_block_max, config.copy_row_m_offs())
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sLSE.index(q_stage),
         gLSE,
         mask=pLSE if not EVEN_M else None,
@@ -529,7 +554,7 @@ def _bwd_dense_kernel(
     gdO = ptrs_sched.make_do_ptrs(
         config, m_block_max, config.copy_row_m_offs(), config.copy_col_k_offs()
     )
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sdO,
         gdO,
         mask=pdO if not EVEN_M else None,
@@ -543,7 +568,7 @@ def _bwd_dense_kernel(
             config, m_block_max, config.copy_row_m_offs()
         )
     gdPsum = ptrs_sched.make_dpsum_ptrs(config, m_block_max, config.copy_row_m_offs())
-    async_copy.async_copy_global_to_shared(
+    async_copy.async_load(
         sdPsum.index(0),
         gdPsum,
         mask=pdPsum if not EVEN_M else None,
@@ -554,10 +579,12 @@ def _bwd_dense_kernel(
     # Commit dO and dPsum group
     async_copy.commit_group()
 
-    acc_dK, acc_dV = _bwd_inner_dense_kernel(
+    # Process m_block with seqlen masking
+    acc_dK, acc_dV = _bwd_inner_kernel(
         config,
         ptrs_sched,
         mask_sched,
+        softmax_sched,
         sQ,
         sK,
         sV,
@@ -596,7 +623,7 @@ def _bwd_dense_kernel(
             config.copy_row_m_offs(),
             config.copy_col_k_offs(),
         )
-        async_copy.async_copy_global_to_shared(
+        async_copy.async_load(
             sQ.index(q_stage),
             gQ,
             cache_modifier=".cg",
@@ -607,7 +634,7 @@ def _bwd_dense_kernel(
         gLSE = ptrs_sched.make_lse_ptrs(
             config, block_sched.m_block_min, config.copy_row_m_offs()
         )
-        async_copy.async_copy_global_to_shared(
+        async_copy.async_load(
             sLSE.index(q_stage),
             gLSE,
             cache_modifier=".cg",
@@ -624,7 +651,7 @@ def _bwd_dense_kernel(
             config.copy_row_m_offs(),
             config.copy_col_k_offs(),
         )
-        async_copy.async_copy_global_to_shared(
+        async_copy.async_load(
             sdO,
             gdO,
             cache_modifier=".cg",
@@ -635,7 +662,7 @@ def _bwd_dense_kernel(
         gdPsum = ptrs_sched.make_dpsum_ptrs(
             config, block_sched.m_block_min, config.copy_row_m_offs()
         )
-        async_copy.async_copy_global_to_shared(
+        async_copy.async_load(
             sdPsum.index(0),
             gdPsum,
             cache_modifier=".cg",
@@ -651,10 +678,11 @@ def _bwd_dense_kernel(
             block_sched.m_block_min,
             block_sched.m_block_min_no_mask,
         ):
-            acc_dK, acc_dV = _bwd_inner_dense_kernel(
+            acc_dK, acc_dV = _bwd_inner_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
+                softmax_sched,
                 sQ,
                 sK,
                 sV,
@@ -685,10 +713,11 @@ def _bwd_dense_kernel(
             block_sched.m_block_min_no_mask,
             m_block_max,
         ):
-            acc_dK, acc_dV = _bwd_inner_dense_kernel(
+            acc_dK, acc_dV = _bwd_inner_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
+                softmax_sched,
                 sQ,
                 sK,
                 sV,
@@ -725,7 +754,7 @@ def _bwd_dense_kernel(
                 config.copy_row_m_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sQ.index(q_stage),
                 gQ,
                 cache_modifier=".cg",
@@ -736,7 +765,7 @@ def _bwd_dense_kernel(
             gLSE = ptrs_sched.make_lse_ptrs(
                 config, block_sched.m_block_window_min, config.copy_row_m_offs()
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sLSE.index(q_stage),
                 gLSE,
                 cache_modifier=".cg",
@@ -753,7 +782,7 @@ def _bwd_dense_kernel(
                 config.copy_row_m_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sdO,
                 gdO,
                 cache_modifier=".cg",
@@ -764,7 +793,7 @@ def _bwd_dense_kernel(
             gdPsum = ptrs_sched.make_dpsum_ptrs(
                 config, block_sched.m_block_window_min, config.copy_row_m_offs()
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sdPsum.index(0),
                 gdPsum,
                 cache_modifier=".cg",
@@ -780,10 +809,11 @@ def _bwd_dense_kernel(
                 block_sched.m_block_window_min,
                 block_sched.m_block_window_min_no_mask,
             ):
-                acc_dK, acc_dV = _bwd_inner_dense_kernel(
+                acc_dK, acc_dV = _bwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
+                    softmax_sched,
                     sQ,
                     sK,
                     sV,
@@ -817,10 +847,11 @@ def _bwd_dense_kernel(
                 block_sched.m_block_window_min_no_mask,
                 block_sched.m_block_window_max_no_mask,
             ):
-                acc_dK, acc_dV = _bwd_inner_dense_kernel(
+                acc_dK, acc_dV = _bwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
+                    softmax_sched,
                     sQ,
                     sK,
                     sV,
@@ -851,10 +882,11 @@ def _bwd_dense_kernel(
                 block_sched.m_block_window_max_no_mask,
                 block_sched.m_block_window_max,
             ):
-                acc_dK, acc_dV = _bwd_inner_dense_kernel(
+                acc_dK, acc_dV = _bwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
+                    softmax_sched,
                     sQ,
                     sK,
                     sV,
@@ -891,7 +923,7 @@ def _bwd_dense_kernel(
                 config.copy_row_m_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sQ.index(q_stage),
                 gQ,
                 cache_modifier=".cg",
@@ -902,7 +934,7 @@ def _bwd_dense_kernel(
             gLSE = ptrs_sched.make_lse_ptrs(
                 config, block_sched.m_block_sink_min, config.copy_row_m_offs()
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sLSE.index(q_stage),
                 gLSE,
                 cache_modifier=".cg",
@@ -919,7 +951,7 @@ def _bwd_dense_kernel(
                 config.copy_row_m_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sdO,
                 gdO,
                 cache_modifier=".cg",
@@ -930,7 +962,7 @@ def _bwd_dense_kernel(
             gdPsum = ptrs_sched.make_dpsum_ptrs(
                 config, block_sched.m_block_sink_min, config.copy_row_m_offs()
             )
-            async_copy.async_copy_global_to_shared(
+            async_copy.async_load(
                 sdPsum.index(0),
                 gdPsum,
                 cache_modifier=".cg",
@@ -944,10 +976,11 @@ def _bwd_dense_kernel(
                 block_sched.m_block_sink_min,
                 block_sched.m_block_sink_max,
             ):
-                acc_dK, acc_dV = _bwd_inner_dense_kernel(
+                acc_dK, acc_dV = _bwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
+                    softmax_sched,
                     sQ,
                     sK,
                     sV,
@@ -994,7 +1027,7 @@ def _bwd_dense_kernel(
         gl.store(gdK, acc_dK)
 
 
-def _flash_dense_attn_backward(
+def _flash_attn_backward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -1004,7 +1037,9 @@ def _flash_dense_attn_backward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
+    is_sparse: bool = False,
     is_split_qo: bool = False,
     num_splits: Optional[int] = None,
     seqused_k: Optional[torch.Tensor] = None,
@@ -1023,9 +1058,12 @@ def _flash_dense_attn_backward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    if softmax_threshold is None:
+        softmax_threshold = 1.0 if is_sparse else 0.0
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -1118,7 +1156,7 @@ def _flash_dense_attn_backward(
     )
 
     # Launch the kernel
-    _bwd_dense_kernel[grid](
+    _bwd_kernel[grid](
         q,
         k,
         v,
@@ -1164,12 +1202,14 @@ def _flash_dense_attn_backward(
         seqlen_q,
         seqlen_k,
         softmax_scale,
+        softmax_threshold,
         head_dim,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         NUM_SPLITS=num_splits,
         IS_SPLIT_QO=is_split_qo,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPARSE=is_sparse,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
@@ -1204,7 +1244,7 @@ def _flash_dense_attn_backward(
     return dq, dk, dv
 
 
-def _flash_dense_attn_varlen_backward(
+def _flash_sparse_attn_varlen_backward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -1218,7 +1258,9 @@ def _flash_dense_attn_varlen_backward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
+    is_sparse: bool = False,
     is_split_qo: bool = False,
     num_splits: Optional[int] = None,
     seqused_q: Optional[torch.Tensor] = None,
@@ -1241,9 +1283,12 @@ def _flash_dense_attn_varlen_backward(
     softmax_scale = (
         softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     )
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    if softmax_threshold is None:
+        softmax_threshold = 1.0 if is_sparse else 0.0
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -1342,7 +1387,7 @@ def _flash_dense_attn_varlen_backward(
     )
 
     # Launch the kernel
-    _bwd_dense_kernel[grid](
+    _bwd_kernel[grid](
         q,
         k,
         v,
@@ -1388,12 +1433,14 @@ def _flash_dense_attn_varlen_backward(
         seqlen_q,
         seqlen_k,
         softmax_scale,
+        softmax_threshold,
         head_dim,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         NUM_SPLITS=num_splits,
         IS_SPLIT_QO=is_split_qo,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPARSE=is_sparse,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
