@@ -35,7 +35,7 @@ from flash_sparse_attn.ops.gluon.flash_bwd_combine import _flash_attn_bwd_combin
 
 
 @gluon.jit
-def _bwd_inner_kernel(
+def _bwd_inner_sm80_kernel(
     config: AttnBwdConfig,
     ptrs_sched: AttnBwdPointerScheduler,
     mask_sched: AttnMaskScheduler,
@@ -243,7 +243,7 @@ def _bwd_inner_kernel(
     }
 )
 @gluon.jit(repr=bwd_repr)
-def _bwd_kernel(
+def _bwd_sm80_kernel(
     mQ,
     mK,
     mV,
@@ -609,7 +609,7 @@ def _bwd_kernel(
     async_copy.commit_group()
 
     # Process m_block with seqlen masking
-    acc_dK, acc_dV = _bwd_inner_kernel(
+    acc_dK, acc_dV = _bwd_inner_sm80_kernel(
         config,
         ptrs_sched,
         mask_sched,
@@ -703,7 +703,7 @@ def _bwd_kernel(
             block_sched.m_block_min,
             block_sched.m_block_min_no_mask,
         ):
-            acc_dK, acc_dV = _bwd_inner_kernel(
+            acc_dK, acc_dV = _bwd_inner_sm80_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
@@ -738,7 +738,7 @@ def _bwd_kernel(
             block_sched.m_block_min_no_mask,
             m_block_max,
         ):
-            acc_dK, acc_dV = _bwd_inner_kernel(
+            acc_dK, acc_dV = _bwd_inner_sm80_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
@@ -834,7 +834,7 @@ def _bwd_kernel(
                 block_sched.m_block_window_min,
                 block_sched.m_block_window_min_no_mask,
             ):
-                acc_dK, acc_dV = _bwd_inner_kernel(
+                acc_dK, acc_dV = _bwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -869,7 +869,7 @@ def _bwd_kernel(
                 block_sched.m_block_window_min_no_mask,
                 block_sched.m_block_window_max_no_mask,
             ):
-                acc_dK, acc_dV = _bwd_inner_kernel(
+                acc_dK, acc_dV = _bwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -904,7 +904,7 @@ def _bwd_kernel(
                 block_sched.m_block_window_max_no_mask,
                 block_sched.m_block_window_max,
             ):
-                acc_dK, acc_dV = _bwd_inner_kernel(
+                acc_dK, acc_dV = _bwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -998,7 +998,7 @@ def _bwd_kernel(
                 block_sched.m_block_sink_min,
                 block_sched.m_block_sink_max,
             ):
-                acc_dK, acc_dV = _bwd_inner_kernel(
+                acc_dK, acc_dV = _bwd_inner_sm80_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
@@ -1045,13 +1045,13 @@ def _bwd_kernel(
         gl.store(gdK, acc_dK)
 
 
-def _flash_attn_backward(
+def _flash_attn_backward_sm80(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     out: torch.Tensor,
-    dout: torch.Tensor,
     lse: torch.Tensor,
+    dout: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
@@ -1172,7 +1172,7 @@ def _flash_attn_backward(
     )
 
     # Launch the kernel
-    _bwd_kernel[grid](
+    _bwd_sm80_kernel[grid](
         q,
         k,
         v,
@@ -1260,13 +1260,13 @@ def _flash_attn_backward(
     return dq, dk, dv
 
 
-def _flash_sparse_attn_varlen_backward(
+def _flash_attn_varlen_backward_sm80(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     out: torch.Tensor,
-    dout: torch.Tensor,
     lse: torch.Tensor,
+    dout: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
     cu_seqlens_k: torch.Tensor,
     max_seqlen_q: Optional[int] = None,
@@ -1401,7 +1401,7 @@ def _flash_sparse_attn_varlen_backward(
     )
 
     # Launch the kernel
-    _bwd_kernel[grid](
+    _bwd_sm80_kernel[grid](
         q,
         k,
         v,
