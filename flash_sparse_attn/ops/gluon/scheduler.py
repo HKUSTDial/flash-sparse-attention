@@ -127,10 +127,7 @@ class AttnFwdGridIndex:
             else:
                 batch_idx = batch_split_idx
                 split_idx = gl.to_tensor(0)
-            if PACK_GQA:
-                head_kv_idx = head_idx
-            else:
-                head_kv_idx = head_idx // QHEAD_PER_KVHEAD
+            head_kv_idx = head_idx if PACK_GQA else head_idx // QHEAD_PER_KVHEAD
             return AttnFwdGridIndex(
                 m_block,
                 batch_idx,
@@ -193,39 +190,89 @@ class AttnBwdGridIndex:
     @staticmethod
     @gluon.jit
     def create(
-        NUM_SPLITS: gl.constexpr,
-        QHEAD_PER_KVHEAD: gl.constexpr,
-        IS_SPLIT_QO: gl.constexpr,
+        seqlen_q: gl.tensor = None,
+        head_dim: gl.tensor = None,
+        NUM_SPLITS: gl.constexpr = None,
+        QHEAD_PER_KVHEAD: gl.constexpr = None,
+        IS_SPLIT_QO: gl.constexpr = False,
+        IS_SPT: gl.constexpr = False,
     ) -> "AttnBwdGridIndex":
         """
         Decode the backward program IDs into attention grid indices.
 
+        :param seqlen_q: sequence length of the query
+        :type seqlen_q: gl.tensor
+        :param head_dim: attention head dimension
+        :type head_dim: gl.tensor
         :param NUM_SPLITS: number of QO splits
         :type NUM_SPLITS: int
         :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
         :type QHEAD_PER_KVHEAD: int
         :param IS_SPLIT_QO: boolean flag indicating if the QO range is split
         :type IS_SPLIT_QO: bool
+        :param IS_SPT: reverse N blocks within head groups
+        :type IS_SPT: bool
 
         :return: backward grid indices for the current program
         """
-        n_block = gl.program_id(0)
-        head_idx = gl.program_id(1)
-        batch_split_idx = gl.program_id(2)
-        if IS_SPLIT_QO:
-            batch_idx = batch_split_idx // NUM_SPLITS
-            split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+        if IS_SPT:
+            gl.static_assert(
+                not IS_SPLIT_QO,
+                "SPT does not support split QO",
+            )
+            gl.static_assert(
+                seqlen_q is not None and head_dim is not None,
+                "SPT requires seqlen_q and head_dim",
+            )
+            num_n_blocks = gl.num_programs(0)
+            num_heads = gl.num_programs(1)
+            num_batches = gl.num_programs(2)
+            tile_idx = gl.program_id(0) + num_n_blocks * (
+                gl.program_id(1) + num_heads * gl.program_id(2)
+            )
+            capacity = gl.maximum(((50 * 1024 * 1024) // (seqlen_q * head_dim * 8)), 1)
+            log2_capacity = gl.inline_asm_elementwise(
+                "bfind.u32 $0, $1;",
+                constraints="=r,r",
+                args=[capacity],
+                dtype=gl.int32,
+                is_pure=True,
+                pack=1,
+            )
+            swizzle = 1 << log2_capacity
+            group_idx = tile_idx // (swizzle * num_n_blocks)
+            within_group = tile_idx % (swizzle * num_n_blocks)
+            group_heads = gl.where(
+                group_idx < num_heads * num_batches // swizzle,
+                swizzle,
+                gl.maximum(num_heads * num_batches % swizzle, 1),
+            )
+            head_batch_idx = group_idx * swizzle + within_group % group_heads
+            return AttnBwdGridIndex(
+                num_n_blocks - 1 - within_group // group_heads,
+                head_batch_idx // num_heads,
+                head_batch_idx % num_heads,
+                (head_batch_idx % num_heads) // QHEAD_PER_KVHEAD,
+                gl.to_tensor(0),
+            )
         else:
-            batch_idx = batch_split_idx
-            split_idx = gl.to_tensor(0)
-        head_kv_idx = head_idx // QHEAD_PER_KVHEAD
-        return AttnBwdGridIndex(
-            n_block,
-            batch_idx,
-            head_idx,
-            head_kv_idx,
-            split_idx,
-        )
+            n_block = gl.program_id(0)
+            head_idx = gl.program_id(1)
+            batch_split_idx = gl.program_id(2)
+            if IS_SPLIT_QO:
+                batch_idx = batch_split_idx // NUM_SPLITS
+                split_idx = batch_split_idx - batch_idx * NUM_SPLITS
+            else:
+                batch_idx = batch_split_idx
+                split_idx = gl.to_tensor(0)
+            head_kv_idx = head_idx // QHEAD_PER_KVHEAD
+            return AttnBwdGridIndex(
+                n_block,
+                batch_idx,
+                head_idx,
+                head_kv_idx,
+                split_idx,
+            )
 
     @gluon.jit
     def load_window_sizes(
@@ -668,6 +715,7 @@ class AttnBwdConfig:
     TILE_K: gl.constexpr
     IS_CAUSAL: gl.constexpr
     IS_LOCAL: gl.constexpr
+    IS_SPARSE: gl.constexpr
     IS_SPLIT_QO: gl.constexpr
 
     @gluon.constexpr_function
@@ -705,6 +753,7 @@ class AttnBwdConfig:
         TILE_K,
         IS_CAUSAL,
         IS_LOCAL,
+        IS_SPARSE,
         IS_SPLIT_QO,
     ):
         self.batch_idx = batch_idx
@@ -739,6 +788,7 @@ class AttnBwdConfig:
         self.TILE_K = gl.constexpr(TILE_K)
         self.IS_CAUSAL = gl.constexpr(IS_CAUSAL)
         self.IS_LOCAL = gl.constexpr(IS_LOCAL)
+        self.IS_SPARSE = gl.constexpr(IS_SPARSE)
         self.IS_SPLIT_QO = gl.constexpr(IS_SPLIT_QO)
 
     @staticmethod
@@ -774,6 +824,7 @@ class AttnBwdConfig:
         TILE_K: gl.constexpr = 64,
         IS_CAUSAL: gl.constexpr = False,
         IS_LOCAL: gl.constexpr = False,
+        IS_SPARSE: gl.constexpr = False,
         IS_SPLIT_QO: gl.constexpr = False,
         IS_QUANT: gl.constexpr = False,
         HAS_CU_SEQLENS_Q: gl.constexpr = False,
@@ -844,6 +895,8 @@ class AttnBwdConfig:
         :type IS_CAUSAL: bool
         :param IS_LOCAL: boolean flag indicating if local attention is enabled
         :type IS_LOCAL: bool
+        :param IS_SPARSE: boolean flag indicating if sparse attention is enabled
+        :type IS_SPARSE: bool
         :param IS_SPLIT_QO: boolean flag indicating if the QO range is split
         :type IS_SPLIT_QO: bool
         :param IS_QUANT: boolean flag indicating if QKV quantization is enabled
@@ -930,6 +983,7 @@ class AttnBwdConfig:
             TILE_K,
             IS_CAUSAL,
             IS_LOCAL,
+            IS_SPARSE,
             IS_SPLIT_QO,
         )
 
@@ -951,6 +1005,7 @@ class AttnBwdConfig:
             row_offsets=self.mma_col_m_offs(),
             IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
+            IS_LOG2=True,
         )
 
     @gluon.jit
@@ -1471,9 +1526,7 @@ class AttnFwdPointerScheduler:
         )
         out_base = (
             offset_batch_Q(
-                base_ptr=(
-                    Out + config.head_idx * stride_oh if not config.PACK_GQA else Out
-                ),
+                base_ptr=(Out + config.head_idx * stride_oh if not config.PACK_GQA else Out),
                 batch_idx=config.batch_idx,
                 offset=config.offset_q,
                 padded_offset=config.padded_offset_q,
@@ -1487,9 +1540,7 @@ class AttnFwdPointerScheduler:
         )
         lse_base = (
             offset_batch_Q(
-                base_ptr=(
-                    Lse + config.head_idx * stride_lh if not config.PACK_GQA else Lse
-                ),
+                base_ptr=(Lse + config.head_idx * stride_lh if not config.PACK_GQA else Lse),
                 batch_idx=config.batch_idx,
                 offset=config.offset_q,
                 padded_offset=config.padded_offset_q,
@@ -1731,9 +1782,7 @@ class AttnFwdPointerScheduler:
             actual_seqlen=config.actual_seqlen_q,
             offs_mn=offs_m,
             TILE_MN=config.TILE_M,
-            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA
-            if config.PACK_GQA
-            else 1,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA if config.PACK_GQA else 1,
         )
 
     @gluon.jit
@@ -1765,15 +1814,15 @@ class AttnFwdPointerScheduler:
 
 @aggregate
 class AttnBwdPointerScheduler:
-    q_base: gl.tensor
-    k_base: gl.tensor
-    v_base: gl.tensor
-    do_base: gl.tensor
-    lse_base: gl.tensor
-    dpsum_base: gl.tensor
-    dq_accum_base: gl.tensor
-    dk_base: gl.tensor
-    dv_base: gl.tensor
+    q_base: gl.tensor | gl.constexpr
+    k_base: gl.tensor | gl.constexpr
+    v_base: gl.tensor | gl.constexpr
+    do_base: gl.tensor | gl.constexpr
+    lse_base: gl.tensor | gl.constexpr
+    dpsum_base: gl.tensor | gl.constexpr
+    dq_accum_base: gl.tensor | gl.constexpr
+    dk_base: gl.tensor | gl.constexpr
+    dv_base: gl.tensor | gl.constexpr
     stride_qm: gl.tensor
     stride_kn: gl.tensor
     stride_vn: gl.tensor
@@ -1802,15 +1851,15 @@ class AttnBwdPointerScheduler:
         stride_dkn,
         stride_dvn,
     ):
-        self.q_base = q_base
-        self.k_base = k_base
-        self.v_base = v_base
-        self.do_base = do_base
-        self.lse_base = lse_base
-        self.dpsum_base = dpsum_base
-        self.dq_accum_base = dq_accum_base
-        self.dk_base = dk_base
-        self.dv_base = dv_base
+        self.q_base = q_base if q_base is not None else gl.constexpr(None)
+        self.k_base = k_base if k_base is not None else gl.constexpr(None)
+        self.v_base = v_base if v_base is not None else gl.constexpr(None)
+        self.do_base = do_base if do_base is not None else gl.constexpr(None)
+        self.lse_base = lse_base if lse_base is not None else gl.constexpr(None)
+        self.dpsum_base = dpsum_base if dpsum_base is not None else gl.constexpr(None)
+        self.dq_accum_base = dq_accum_base if dq_accum_base is not None else gl.constexpr(None)
+        self.dk_base = dk_base if dk_base is not None else gl.constexpr(None)
+        self.dv_base = dv_base if dv_base is not None else gl.constexpr(None)
         self.stride_qm = stride_qm
         self.stride_kn = stride_kn
         self.stride_vn = stride_vn
@@ -1947,95 +1996,131 @@ class AttnBwdPointerScheduler:
         :return: backward pointer scheduler for the selected batch, head, and split
         """
         # Initialize base pointers
-        q_base = offset_batch_Q(
-            base_ptr=Q + config.head_idx * stride_qh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_q,
-            padded_offset=config.padded_offset_q,
-            stride_batch=stride_qb,
-            stride_seq=stride_qm,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
+        q_base = (
+            offset_batch_Q(
+                base_ptr=Q + config.head_idx * stride_qh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_qb,
+                stride_seq=stride_qm,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            if Q is not None
+            else None
         )
-        k_base = offset_batch_K(
-            base_ptr=K + config.head_kv_idx * stride_kh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_k,
-            padded_offset=config.padded_offset_k,
-            stride_batch=stride_kb,
-            stride_seq=stride_kn,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
+        k_base = (
+            offset_batch_K(
+                base_ptr=K + config.head_kv_idx * stride_kh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_kb,
+                stride_seq=stride_kn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            if K is not None
+            else None
         )
-        v_base = offset_batch_K(
-            base_ptr=V + config.head_kv_idx * stride_vh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_k,
-            padded_offset=config.padded_offset_k,
-            stride_batch=stride_vb,
-            stride_seq=stride_vn,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
+        v_base = (
+            offset_batch_K(
+                base_ptr=V + config.head_kv_idx * stride_vh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_vb,
+                stride_seq=stride_vn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            if V is not None
+            else None
         )
-        do_base = offset_batch_Q(
-            base_ptr=dO + config.head_idx * stride_doh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_q,
-            padded_offset=config.padded_offset_q,
-            stride_batch=stride_dob,
-            stride_seq=stride_dom,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
+        do_base = (
+            offset_batch_Q(
+                base_ptr=dO + config.head_idx * stride_doh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_dob,
+                stride_seq=stride_dom,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            if dO is not None
+            else None
         )
-        lse_base = offset_batch_Q(
-            base_ptr=LSELog2 + config.head_idx * stride_lh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_q,
-            padded_offset=config.padded_offset_q,
-            stride_batch=stride_lb,
-            stride_seq=1,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
+        lse_base = (
+            offset_batch_Q(
+                base_ptr=LSELog2 + config.head_idx * stride_lh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_lb,
+                stride_seq=1,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=True,
+            )
+            if LSELog2 is not None
+            else None
         )
-        dpsum_base = offset_batch_Q(
-            base_ptr=dPsum + config.head_idx * stride_ph,
-            batch_idx=config.batch_idx,
-            offset=config.offset_q,
-            padded_offset=config.padded_offset_q,
-            stride_batch=stride_pb,
-            stride_seq=1,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
+        dpsum_base = (
+            offset_batch_Q(
+                base_ptr=dPsum + config.head_idx * stride_ph,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_pb,
+                stride_seq=1,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=True,
+            )
+            if dPsum is not None
+            else None
         )
-        dq_accum_base = offset_batch_Q(
-            base_ptr=dQaccum + config.head_idx * stride_dqah,
-            batch_idx=config.batch_idx,
-            offset=config.offset_q,
-            padded_offset=config.padded_offset_q,
-            stride_batch=stride_dqab,
-            stride_seq=stride_dqam,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
+        dq_accum_base = (
+            offset_batch_Q(
+                base_ptr=dQaccum + config.head_idx * stride_dqah,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_dqab,
+                stride_seq=stride_dqam,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=True,
+            )
+            if dQaccum is not None
+            else None
         )
-        dk_base = offset_batch_K(
-            base_ptr=dK + config.head_kv_idx * stride_dkh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_k,
-            padded_offset=config.padded_offset_k,
-            stride_batch=stride_dkb,
-            stride_seq=stride_dkn,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
-            USE_PADDED=True,
+        dk_base = (
+            offset_batch_K(
+                base_ptr=dK + config.head_kv_idx * stride_dkh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_dkb,
+                stride_seq=stride_dkn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=True,
+            )
+            if dK is not None
+            else None
         )
-        dv_base = offset_batch_K(
-            base_ptr=dV + config.head_kv_idx * stride_dvh,
-            batch_idx=config.batch_idx,
-            offset=config.offset_k,
-            padded_offset=config.padded_offset_k,
-            stride_batch=stride_dvb,
-            stride_seq=stride_dvn,
-            HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
-            USE_PADDED=True,
+        dv_base = (
+            offset_batch_K(
+                base_ptr=dV + config.head_kv_idx * stride_dvh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_dvb,
+                stride_seq=stride_dvn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=True,
+            )
+            if dV is not None
+            else None
         )
 
         # For split QO, offset key and value gradients base pointers by split_idx
