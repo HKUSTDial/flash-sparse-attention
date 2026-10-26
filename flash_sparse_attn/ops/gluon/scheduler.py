@@ -715,6 +715,7 @@ class AttnBwdConfig:
     TILE_K: gl.constexpr
     IS_CAUSAL: gl.constexpr
     IS_LOCAL: gl.constexpr
+    IS_SPARSE: gl.constexpr
     IS_SPLIT_QO: gl.constexpr
 
     @gluon.constexpr_function
@@ -752,6 +753,7 @@ class AttnBwdConfig:
         TILE_K,
         IS_CAUSAL,
         IS_LOCAL,
+        IS_SPARSE,
         IS_SPLIT_QO,
     ):
         self.batch_idx = batch_idx
@@ -786,6 +788,7 @@ class AttnBwdConfig:
         self.TILE_K = gl.constexpr(TILE_K)
         self.IS_CAUSAL = gl.constexpr(IS_CAUSAL)
         self.IS_LOCAL = gl.constexpr(IS_LOCAL)
+        self.IS_SPARSE = gl.constexpr(IS_SPARSE)
         self.IS_SPLIT_QO = gl.constexpr(IS_SPLIT_QO)
 
     @staticmethod
@@ -821,6 +824,7 @@ class AttnBwdConfig:
         TILE_K: gl.constexpr = 64,
         IS_CAUSAL: gl.constexpr = False,
         IS_LOCAL: gl.constexpr = False,
+        IS_SPARSE: gl.constexpr = False,
         IS_SPLIT_QO: gl.constexpr = False,
         IS_QUANT: gl.constexpr = False,
         HAS_CU_SEQLENS_Q: gl.constexpr = False,
@@ -891,6 +895,8 @@ class AttnBwdConfig:
         :type IS_CAUSAL: bool
         :param IS_LOCAL: boolean flag indicating if local attention is enabled
         :type IS_LOCAL: bool
+        :param IS_SPARSE: boolean flag indicating if sparse attention is enabled
+        :type IS_SPARSE: bool
         :param IS_SPLIT_QO: boolean flag indicating if the QO range is split
         :type IS_SPLIT_QO: bool
         :param IS_QUANT: boolean flag indicating if QKV quantization is enabled
@@ -977,6 +983,7 @@ class AttnBwdConfig:
             TILE_K,
             IS_CAUSAL,
             IS_LOCAL,
+            IS_SPARSE,
             IS_SPLIT_QO,
         )
 
@@ -998,6 +1005,7 @@ class AttnBwdConfig:
             row_offsets=self.mma_col_m_offs(),
             IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
+            IS_LOG2=True,
         )
 
     @gluon.jit
