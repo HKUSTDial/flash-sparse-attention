@@ -46,9 +46,7 @@ def cache_launch_config(fn):
     params = list(inspect.signature(fn).parameters.keys())
     device_idx = params.index("device") if "device" in params else None
     arch_idx = params.index("arch") if "arch" in params else None
-    cached = functools.lru_cache(maxsize=None)(
-        lambda _arch, *args, **kwargs: fn(*args, **kwargs)
-    )
+    cached = functools.lru_cache(maxsize=None)(lambda _arch, *args, **kwargs: fn(*args, **kwargs))
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
@@ -122,9 +120,7 @@ class CachedKernel:
                     launch_grid = launch_grid + (1,) * (3 - len(launch_grid))
 
             if tensor_indices is None:
-                tensor_indices = tuple(
-                    i for i, a in enumerate(args) if torch.is_tensor(a)
-                )
+                tensor_indices = tuple(i for i, a in enumerate(args) if torch.is_tensor(a))
 
             key = (
                 tuple((args[i].dtype, args[i].device.type) for i in tensor_indices),

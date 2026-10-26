@@ -235,8 +235,6 @@ def create_mask(
             block_size=block_size,
         )
     else:
-        raise ValueError(
-            f"Unsupported mask type: {type}. Supported types are 'topk' and 'relu'."
-        )
+        raise ValueError(f"Unsupported mask type: {type}. Supported types are 'topk' and 'relu'.")
 
     return attention_mask

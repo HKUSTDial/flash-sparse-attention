@@ -335,9 +335,7 @@ def _fwd_sparse_kernel(
         # Load key tile
         k_tile = ptrs_sched.load_k(config, k_ptrs, n_block_max_no_mask - 1)
 
-        for n_block in tl.range(
-            n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1
-        ):
+        for n_block in tl.range(n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1):
             k_tile, acc_o, row_max, row_sum = _fwd_inner_sparse_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
@@ -363,9 +361,7 @@ def _fwd_sparse_kernel(
         # Process n_blocks with local right masking
         if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max - 1)
 
             for n_block in tl.range(
                 block_sched.n_block_window_max - 1,
@@ -394,14 +390,9 @@ def _fwd_sparse_kernel(
                 )
 
         # Process n_blocks without masking
-        if (
-            block_sched.n_block_window_max_no_mask
-            > block_sched.n_block_window_min_no_mask
-        ):
+        if block_sched.n_block_window_max_no_mask > block_sched.n_block_window_min_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max_no_mask - 1)
 
             for n_block in tl.range(
                 block_sched.n_block_window_max_no_mask - 1,
@@ -432,9 +423,7 @@ def _fwd_sparse_kernel(
         # Process n_blocks with local left masking
         if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_min_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_min_no_mask - 1)
 
             for n_block in tl.range(
                 block_sched.n_block_window_min_no_mask - 1,
@@ -523,9 +512,7 @@ def _get_autotuned_kernel(tile_n=None):
     global _fwd_sparse_kernel_autotuned
     if tile_n not in _fwd_sparse_kernel_autotuned:
         jit_kernel = _fwd_sparse_kernel._kernel
-        autotuned = autotuner.make_fwd_sparse_autotuned_kernel(
-            jit_kernel, tile_n=tile_n
-        )
+        autotuned = autotuner.make_fwd_sparse_autotuned_kernel(jit_kernel, tile_n=tile_n)
         _fwd_sparse_kernel_autotuned[tile_n] = autotuner.AutotunedKernel(autotuned)
     return _fwd_sparse_kernel_autotuned[tile_n]
 
@@ -563,9 +550,7 @@ def _flash_sparse_attn_forward(
     else:
         page_size = None
         _, seqlen_k, num_heads_kv, _ = key.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
@@ -627,9 +612,7 @@ def _flash_sparse_attn_forward(
             kernel = _fwd_sparse_kernel
             TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
         else:
-            kernel = _get_autotuned_kernel(
-                page_size if page_table is not None else None
-            )
+            kernel = _get_autotuned_kernel(page_size if page_table is not None else None)
             # Placeholder for pre-launch computations
             TILE_M = 64
             TILE_N = page_size if page_table is not None else 64
@@ -810,9 +793,7 @@ def _flash_sparse_attn_varlen_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1

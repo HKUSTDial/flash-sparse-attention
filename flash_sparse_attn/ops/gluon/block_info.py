@@ -288,9 +288,7 @@ def get_m_block_min_max(
             )
             win_cnt = gl.where(split_idx < extra, base + 1, base)
             m_block_window_min = m_block_window_min + win_off
-            m_block_window_max = gl.minimum(
-                m_block_window_min + win_cnt, m_block_window_max
-            )
+            m_block_window_max = gl.minimum(m_block_window_min + win_cnt, m_block_window_max)
             # First split keeps diagonal, others skip it
             m_block_min = gl.where(split_idx == 0, m_block_min, m_block_max)
             m_block_sink_max = gl.where(split_idx == 0, m_block_sink_max, 0)
@@ -387,9 +385,7 @@ def get_n_block_max_no_causal_local_mask(
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
             m_idx_min = m_idx_min // QHEAD_PER_KVHEAD_PACKGQA
         n_idx = m_idx_min + seqlen_k - seqlen_q
-        n_idx_right = (
-            n_idx if not IS_LOCAL else n_idx - window_size_near - window_size_right
-        )
+        n_idx_right = n_idx if not IS_LOCAL else n_idx - window_size_near - window_size_right
         return gl.minimum(
             gl.maximum(n_block_min, n_idx_right // TILE_N),
             n_block_max,

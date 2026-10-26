@@ -288,9 +288,7 @@ def _flash_attn_bwd_combine(
     )
     PADDED_TILE_N = padded_tile_n if padded_tile_n is not None else TILE_N
     num_warps = (
-        num_threads // 32
-        if num_threads is not None
-        else min(8, TILE_N, TILE_N * TILE_K // 32)
+        num_threads // 32 if num_threads is not None else min(8, TILE_N, TILE_N * TILE_K // 32)
     )
 
     # Get the grid for the kernel launch

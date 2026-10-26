@@ -64,14 +64,12 @@ def _fwd_inner_gated_kernel(
             )
 
         # Apply online sparse softmax
-        p, row_max, row_sum, row_scale, skip_softmax = (
-            softmax_sched.online_sparse_softmax(
-                acc_s=acc_s,
-                row_max=row_max,
-                row_sum=row_sum,
-                softmax_threshold_log2=config.softmax_threshold_log2,
-                CHECK_INF=CHECK_INF,
-            )
+        p, row_max, row_sum, row_scale, skip_softmax = softmax_sched.online_sparse_softmax(
+            acc_s=acc_s,
+            row_max=row_max,
+            row_sum=row_sum,
+            softmax_threshold_log2=config.softmax_threshold_log2,
+            CHECK_INF=CHECK_INF,
         )
 
         if not skip_softmax:
@@ -484,9 +482,7 @@ def _fwd_gated_kernel(
         # Compute attention scores
         acc_s += tl.dot(q_tile, k_tile.T)
 
-        for n_block in tl.range(
-            n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1
-        ):
+        for n_block in tl.range(n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1):
             (
                 skip_gate_curr,
                 acc_s,
@@ -525,14 +521,10 @@ def _fwd_gated_kernel(
         # Process n_blocks with local right masking
         if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max - 1)
 
             # Load delta tile
-            d_tile = ptrs_sched.load_d(
-                config, d_ptrs, block_sched.n_block_window_max - 1
-            )
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_max - 1)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -596,19 +588,12 @@ def _fwd_gated_kernel(
                 )
 
         # Process n_blocks without masking
-        if (
-            block_sched.n_block_window_max_no_mask
-            > block_sched.n_block_window_min_no_mask
-        ):
+        if block_sched.n_block_window_max_no_mask > block_sched.n_block_window_min_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max_no_mask - 1)
 
             # Load delta tile
-            d_tile = ptrs_sched.load_d(
-                config, d_ptrs, block_sched.n_block_window_max_no_mask - 1
-            )
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_max_no_mask - 1)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -674,14 +659,10 @@ def _fwd_gated_kernel(
         # Process n_blocks with local left masking
         if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_min_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_min_no_mask - 1)
 
             # Load delta tile
-            d_tile = ptrs_sched.load_d(
-                config, d_ptrs, block_sched.n_block_window_min_no_mask - 1
-            )
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_min_no_mask - 1)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -886,9 +867,7 @@ def _flash_gated_attn_forward(
     else:
         page_size = None
         _, seqlen_k, num_heads_kv, _ = key.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
     qhead_per_kvhead = num_heads_q // num_heads_kv
@@ -953,9 +932,7 @@ def _flash_gated_attn_forward(
             kernel = _fwd_gated_kernel
             TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
         else:
-            kernel = _get_autotuned_kernel(
-                page_size if page_table is not None else None
-            )
+            kernel = _get_autotuned_kernel(page_size if page_table is not None else None)
             # Placeholder for pre-launch computations
             TILE_M = 64
             TILE_N = page_size if page_table is not None else 64
@@ -1152,9 +1129,7 @@ def _flash_gated_attn_varlen_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
     qhead_per_kvhead = num_heads_q // num_heads_kv

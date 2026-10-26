@@ -10,9 +10,7 @@ def get_mask_atom_stride(layout):
     )
     assert layout.version[0] in (2, 3), "Packed masks require MMAv2 or MMAv3"
     if layout.version[0] == 3:
-        assert layout.warps_per_cta[1] == 1, (
-            "Packed MMAv3 masks require warp groups along M"
-        )
+        assert layout.warps_per_cta[1] == 1, "Packed MMAv3 masks require warp groups along M"
         return 2, 8
     return 2, 8 * layout.warps_per_cta[1]
 
@@ -53,9 +51,9 @@ def make_interval_mask(
     mask_atom: gl.constexpr,
     mask_stride: gl.constexpr,
 ):
-    return make_prefix_mask(
-        col_limit_max, col_base, mask_atom, mask_stride
-    ) & ~make_prefix_mask(col_limit_min, col_base, mask_atom, mask_stride)
+    return make_prefix_mask(col_limit_max, col_base, mask_atom, mask_stride) & ~make_prefix_mask(
+        col_limit_min, col_base, mask_atom, mask_stride
+    )
 
 
 @gluon.jit
@@ -137,9 +135,7 @@ def apply_mask(
     m_block_start = m_block * TILE_M
     q_base = m_block_start // QHEAD_PER_KVHEAD_PACKGQA
     k_base = n_block * TILE_N
-    offs_m = (
-        m_block_start % QHEAD_PER_KVHEAD_PACKGQA + offs_m
-    ) // QHEAD_PER_KVHEAD_PACKGQA
+    offs_m = (m_block_start % QHEAD_PER_KVHEAD_PACKGQA + offs_m) // QHEAD_PER_KVHEAD_PACKGQA
 
     if SWAP_AB:
         q_idx = offs_m[None, :]
@@ -156,10 +152,7 @@ def apply_mask(
         row_valid = q_idx < seqlen_q - q_base
         col_limit_causal = (q_base + (seqlen_k - seqlen_q) - k_base) + q_idx + 1
 
-    col_base = (
-        offs_col % mask_stride // mask_atom * mask_atom
-        + offs_col // mask_cols * mask_cols
-    )
+    col_base = offs_col % mask_stride // mask_atom * mask_atom + offs_col // mask_cols * mask_cols
 
     if MASK_LOCAL or MASK_SINK:
         mask = gl.full(acc_S.shape, 0, gl.uint32, acc_S.type.layout)
@@ -187,9 +180,7 @@ def apply_mask(
             if SWAP_AB:
                 mask |= gl.where(
                     k_idx < window_size_sink - k_base,
-                    ~make_prefix_mask(
-                        col_limit_causal, col_base, mask_atom, mask_stride
-                    ),
+                    ~make_prefix_mask(col_limit_causal, col_base, mask_atom, mask_stride),
                     0,
                 )
             else:
@@ -210,9 +201,9 @@ def apply_mask(
         mask &= make_prefix_mask(col_limit, col_base, mask_atom, mask_stride)
         mask = gl.where(row_valid, mask, 0)
 
-    mask_bit = (
-        1 << ((offs_col % mask_cols) // mask_stride * mask_atom + offs_col % mask_atom)
-    ).to(gl.uint32)
+    mask_bit = (1 << ((offs_col % mask_cols) // mask_stride * mask_atom + offs_col % mask_atom)).to(
+        gl.uint32
+    )
     # TODO: pack=8 is slower yet to be optimized
     return gl.inline_asm_elementwise(
         """{

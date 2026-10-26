@@ -331,9 +331,7 @@ def _fwd_dense_kernel(
         # Load key tile
         k_tile = ptrs_sched.load_k(config, k_ptrs, n_block_max_no_mask - 1)
 
-        for n_block in tl.range(
-            n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1
-        ):
+        for n_block in tl.range(n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1):
             k_tile, acc_o, row_max, row_sum = _fwd_inner_dense_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
@@ -359,9 +357,7 @@ def _fwd_dense_kernel(
         # Process n_blocks with local right masking
         if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max - 1)
 
             for n_block in tl.range(
                 block_sched.n_block_window_max - 1,
@@ -390,14 +386,9 @@ def _fwd_dense_kernel(
                 )
 
         # Process n_blocks without masking
-        if (
-            block_sched.n_block_window_max_no_mask
-            > block_sched.n_block_window_min_no_mask
-        ):
+        if block_sched.n_block_window_max_no_mask > block_sched.n_block_window_min_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max_no_mask - 1)
 
             for n_block in tl.range(
                 block_sched.n_block_window_max_no_mask - 1,
@@ -428,9 +419,7 @@ def _fwd_dense_kernel(
         # Process n_blocks with local left masking
         if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_min_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_min_no_mask - 1)
 
             for n_block in tl.range(
                 block_sched.n_block_window_min_no_mask - 1,
@@ -556,9 +545,7 @@ def _flash_dense_attn_forward(
     else:
         page_size = None
         _, seqlen_k, num_heads_kv, _ = key.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
@@ -619,9 +606,7 @@ def _flash_dense_attn_forward(
             kernel = _fwd_dense_kernel
             TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
         else:
-            kernel = _get_autotuned_kernel(
-                page_size if page_table is not None else None
-            )
+            kernel = _get_autotuned_kernel(page_size if page_table is not None else None)
             # Placeholder for pre-launch computations
             TILE_M = 64
             TILE_N = page_size if page_table is not None else 64
@@ -800,9 +785,7 @@ def _flash_dense_attn_varlen_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:

@@ -71,14 +71,12 @@ def _dec_inner_gated_kernel(
             )
 
         # Apply online softmax
-        p, row_max, row_sum, row_scale, skip_softmax = (
-            softmax_sched.online_sparse_softmax(
-                acc_s=acc_s,
-                row_max=row_max,
-                row_sum=row_sum,
-                softmax_threshold_log2=config.softmax_threshold_log2,
-                CHECK_INF=CHECK_INF,
-            )
+        p, row_max, row_sum, row_scale, skip_softmax = softmax_sched.online_sparse_softmax(
+            acc_s=acc_s,
+            row_max=row_max,
+            row_sum=row_sum,
+            softmax_threshold_log2=config.softmax_threshold_log2,
+            CHECK_INF=CHECK_INF,
         )
 
         if not skip_softmax:
@@ -357,9 +355,7 @@ def _dec_gated_kernel(
         topk_indices = ptrs_sched.load_topk_indices(config, block_sched.n_block_max - 1)
 
     # Load delta tile
-    d_tile = ptrs_sched.load_d(
-        config, d_ptrs, block_sched.n_block_max - 1, topk_indices
-    )
+    d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_max - 1, topk_indices)
     d_max = tl.max(d_tile)
     d_min = tl.min(d_tile)
 
@@ -384,17 +380,13 @@ def _dec_gated_kernel(
         )
 
     # Load key tile
-    k_tile = ptrs_sched.load_k(
-        config, k_ptrs, block_sched.n_block_max - 1, topk_indices
-    )
+    k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_max - 1, topk_indices)
 
     # Compute attention scores for first tile
     acc_s += tl.dot(q_tile, k_tile.T)
 
     # Process n_blocks with seqlen masking
-    for n_block in tl.range(
-        block_sched.n_block_max - 1, block_sched.n_block_max_no_mask - 1, -1
-    ):
+    for n_block in tl.range(block_sched.n_block_max - 1, block_sched.n_block_max_no_mask - 1, -1):
         (
             skip_gate_curr,
             acc_s,
@@ -431,9 +423,7 @@ def _dec_gated_kernel(
         )
 
     # Process n_blocks without masking
-    if (
-        not IS_LOCAL or IS_GATHER_KV
-    ) and block_sched.n_block_max_no_mask > block_sched.n_block_min:
+    if (not IS_LOCAL or IS_GATHER_KV) and block_sched.n_block_max_no_mask > block_sched.n_block_min:
         if IS_GATHER_KV:
             # Load topk indices
             topk_indices = ptrs_sched.load_topk_indices(
@@ -515,14 +505,10 @@ def _dec_gated_kernel(
         # Process n_blocks with local right masking
         if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max - 1)
 
             # Load delta tile
-            d_tile = ptrs_sched.load_d(
-                config, d_ptrs, block_sched.n_block_window_max - 1
-            )
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_max - 1)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -587,19 +573,12 @@ def _dec_gated_kernel(
                 )
 
         # Process n_blocks without masking
-        if (
-            block_sched.n_block_window_max_no_mask
-            > block_sched.n_block_window_min_no_mask
-        ):
+        if block_sched.n_block_window_max_no_mask > block_sched.n_block_window_min_no_mask:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_max_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max_no_mask - 1)
 
             # Load delta tile
-            d_tile = ptrs_sched.load_d(
-                config, d_ptrs, block_sched.n_block_window_max_no_mask - 1
-            )
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_max_no_mask - 1)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -666,14 +645,10 @@ def _dec_gated_kernel(
         # Process n_blocks with local left masking
         if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
             # Load key tile
-            k_tile = ptrs_sched.load_k(
-                config, k_ptrs, block_sched.n_block_window_min_no_mask - 1
-            )
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_min_no_mask - 1)
 
             # Load delta tile
-            d_tile = ptrs_sched.load_d(
-                config, d_ptrs, block_sched.n_block_window_min_no_mask - 1
-            )
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_min_no_mask - 1)
             d_max = tl.max(d_tile)
             d_min = tl.min(d_tile)
 
@@ -880,9 +855,7 @@ def _flash_gated_attn_decode(
     is_paged_kv = page_table is not None
     is_gather_kv = gather_kv_indices is not None and not is_paged_kv
     topk_seqlen_k = gather_kv_indices.shape[-1] if is_gather_kv else seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
     qhead_per_kvhead = num_heads_q // num_heads_kv
@@ -943,9 +916,7 @@ def _flash_gated_attn_decode(
             kernel = _dec_gated_kernel
             TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
         else:
-            kernel = _get_autotuned_kernel(
-                page_size if page_table is not None else None
-            )
+            kernel = _get_autotuned_kernel(page_size if page_table is not None else None)
             TILE_M = max(triton.next_power_of_2(qhead_per_kvhead), 16)
             TILE_N = page_size if page_table is not None else 128
             num_warps = num_stages = num_ctas = None
@@ -964,11 +935,7 @@ def _flash_gated_attn_decode(
         )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
-    out = (
-        out
-        if out is not None
-        else torch.empty(query.shape, dtype=out_dtype, device=device)
-    )
+    out = out if out is not None else torch.empty(query.shape, dtype=out_dtype, device=device)
     lse = (
         lse
         if lse is not None
@@ -1125,12 +1092,8 @@ def _flash_gated_attn_varlen_decode(
     batch_size, num_heads_q, head_dim = query.shape
     _, num_heads_kv, _ = key.shape
     seqlen_k = max_seqlen_k
-    topk_seqlen_k = (
-        gather_kv_indices.shape[-1] if gather_kv_indices is not None else seqlen_k
-    )
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    topk_seqlen_k = gather_kv_indices.shape[-1] if gather_kv_indices is not None else seqlen_k
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
     gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
     qhead_per_kvhead = num_heads_q // num_heads_kv
@@ -1198,11 +1161,7 @@ def _flash_gated_attn_varlen_decode(
         )
 
     out_dtype = torch.bfloat16 if is_quant else query.dtype
-    out = (
-        out
-        if out is not None
-        else torch.empty(query.shape, dtype=out_dtype, device=device)
-    )
+    out = out if out is not None else torch.empty(query.shape, dtype=out_dtype, device=device)
     lse = (
         lse
         if lse is not None

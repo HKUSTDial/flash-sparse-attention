@@ -185,12 +185,10 @@ def _flash_attn_fwd_combine(
 
     TILE_K = max(triton.next_power_of_2(head_dim), 16)
 
-    TILE_M, num_warps, num_stages, num_ctas = (
-        launch_template.get_fwd_combine_launch_config(
-            tile_k=TILE_K,
-            device=device,
-            arch=arch,
-        )
+    TILE_M, num_warps, num_stages, num_ctas = launch_template.get_fwd_combine_launch_config(
+        tile_k=TILE_K,
+        device=device,
+        arch=arch,
     )
 
     grid = launch_grid.get_fwd_combine_grid(

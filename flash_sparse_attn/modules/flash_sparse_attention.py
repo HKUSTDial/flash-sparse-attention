@@ -27,9 +27,7 @@ class FlashSparseAttentionConfig:
 
 
 class FlashSparseAttention(nn.Module):
-    def __init__(
-        self, config: FlashSparseAttentionConfig, layer_idx: Optional[int] = None
-    ):
+    def __init__(self, config: FlashSparseAttentionConfig, layer_idx: Optional[int] = None):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -53,12 +51,8 @@ class FlashSparseAttention(nn.Module):
         self.v_proj = nn.Linear(
             config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
         )
-        self.a_proj = nn.Linear(
-            config.hidden_size, self.num_attention_heads, bias=False
-        )
-        self.d_proj = nn.Linear(
-            config.hidden_size, self.num_key_value_heads, bias=False
-        )
+        self.a_proj = nn.Linear(config.hidden_size, self.num_attention_heads, bias=False)
+        self.d_proj = nn.Linear(config.hidden_size, self.num_key_value_heads, bias=False)
         self.o_proj = nn.Linear(
             self.num_attention_heads * self.head_dim, config.hidden_size, bias=False
         )

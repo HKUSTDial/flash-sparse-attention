@@ -209,9 +209,7 @@ def _fwd_combine_kernel(
 
         # Compute normalized exponentials
         new_row_max = gl.maximum(rLSEpartial_s, row_max)
-        old_scale = gl.where(
-            row_max == float("-inf"), 0.0, gl.exp2(row_max - new_row_max)
-        )
+        old_scale = gl.where(row_max == float("-inf"), 0.0, gl.exp2(row_max - new_row_max))
         exp_logic = gl.where(
             rLSEpartial_s == float("-inf"), 0.0, gl.exp2(rLSEpartial_s - new_row_max)
         )
@@ -302,9 +300,7 @@ def _flash_attn_fwd_combine(
         )
     )
     num_warps = (
-        num_threads // 32
-        if num_threads is not None
-        else min(8, TILE_M, TILE_M * TILE_K // 32)
+        num_threads // 32 if num_threads is not None else min(8, TILE_M, TILE_M * TILE_K // 32)
     )
 
     # Get the grid for the kernel launch

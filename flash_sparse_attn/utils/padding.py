@@ -29,9 +29,7 @@ def unpad_input(hidden_states, attention_mask, unused_mask=None):
         max_seqlen_in_batch: int
         seqused: (batch), returns the number of tokens selected in attention_mask + unused_mask.
     """
-    all_masks = (
-        (attention_mask + unused_mask) if unused_mask is not None else attention_mask
-    )
+    all_masks = (attention_mask + unused_mask) if unused_mask is not None else attention_mask
     seqlens_in_batch = all_masks.sum(dim=-1, dtype=torch.int32)
     used_seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(all_masks.flatten(), as_tuple=False).flatten()
@@ -167,8 +165,8 @@ def upad_input(
     else:
         # The -q_len: slice assumes left padding.
         attention_mask = attention_mask[:, -query_length:]
-        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = (
-            unpad_input_func(query_layer, attention_mask)
+        query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q, *_ = unpad_input_func(
+            query_layer, attention_mask
         )
 
     return (

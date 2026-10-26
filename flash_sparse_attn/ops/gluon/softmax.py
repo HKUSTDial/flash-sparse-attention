@@ -13,9 +13,7 @@ def _warp_all_asm(outputs, inputs):
         "    .reg .pred p_local;",
         "    setp.eq.u32 p_local, 0, 0;",
     ]
-    instructions.extend(
-        f"    and.pred p_local, p_local, {predicate};" for predicate in predicates
-    )
+    instructions.extend(f"    and.pred p_local, p_local, {predicate};" for predicate in predicates)
     instructions.extend(
         [
             f"    vote.sync.all.pred {result[0]}, p_local, 0xffffffff;",
@@ -45,9 +43,7 @@ def _cta_all_asm(outputs, inputs):
         "    .reg .pred p_local, p_all;",
         "    setp.eq.u32 p_local, 0, 0;",
     ]
-    instructions.extend(
-        f"    and.pred p_local, p_local, {predicate};" for predicate in predicates
-    )
+    instructions.extend(f"    and.pred p_local, p_local, {predicate};" for predicate in predicates)
     instructions.extend(
         [
             "    bar.red.and.pred p_all, 0, p_local;",

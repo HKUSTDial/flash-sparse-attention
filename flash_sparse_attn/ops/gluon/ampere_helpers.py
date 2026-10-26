@@ -17,10 +17,7 @@ def reshape_acc_to_frgA(acc):
         return (a0, a1)
     elif TILE_N == 4 * MMA_K:
         a02, a13 = (
-            acc.reshape((TILE_M, 4, MMA_K))
-            .permute(0, 2, 1)
-            .reshape((TILE_M, MMA_K, 2, 2))
-            .split()
+            acc.reshape((TILE_M, 4, MMA_K)).permute(0, 2, 1).reshape((TILE_M, MMA_K, 2, 2)).split()
         )
         a0, a2 = a02.split()
         a1, a3 = a13.split()
@@ -40,9 +37,7 @@ def reshape_acc_to_frgA(acc):
         a3, a7 = a37.split()
         return (a0, a1, a2, a3, a4, a5, a6, a7)
     else:
-        gl.static_assert(
-            False, "reshape_acc_to_frgA requires TILE_N in {16, 32, 64, 128}"
-        )
+        gl.static_assert(False, "reshape_acc_to_frgA requires TILE_N in {16, 32, 64, 128}")
 
 
 @gluon.jit

@@ -4,9 +4,7 @@ import triton
 
 def _get_max_shared_mem():
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
-    return getattr(
-        props, "shared_memory_per_block_optin", props.shared_memory_per_block
-    )
+    return getattr(props, "shared_memory_per_block_optin", props.shared_memory_per_block)
 
 
 def _smem_bytes_fwd(tile_m, tile_n, tile_k, num_stages, dtype_bytes):

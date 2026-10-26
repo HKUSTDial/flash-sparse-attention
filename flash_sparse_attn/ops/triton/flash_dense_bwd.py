@@ -66,9 +66,7 @@ def _bwd_inner_dense_kernel(
         )
 
     # Compute attention weights
-    p = activations.exp2(acc_s * config.softmax_scale_log2 - lse_log2[None, :]).to(
-        q_tile.dtype
-    )
+    p = activations.exp2(acc_s * config.softmax_scale_log2 - lse_log2[None, :]).to(q_tile.dtype)
 
     # Load output gradients tile
     do_tile = ptrs_sched.load_do(config, do_ptrs, m_block)
@@ -302,9 +300,7 @@ def _bwd_dense_kernel(
 
     # Process m_blocks with causal masking
     if IS_CAUSAL or IS_LOCAL:
-        for m_block in tl.range(
-            block_sched.m_block_min, block_sched.m_block_min_no_mask
-        ):
+        for m_block in tl.range(block_sched.m_block_min, block_sched.m_block_min_no_mask):
             acc_dk, acc_dv = _bwd_inner_dense_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
@@ -327,9 +323,7 @@ def _bwd_dense_kernel(
 
     # Process m_blocks without masking
     if not IS_LOCAL and block_sched.m_block_min_no_mask < block_sched.m_block_max:
-        for m_block in tl.range(
-            block_sched.m_block_min_no_mask, block_sched.m_block_max
-        ):
+        for m_block in tl.range(block_sched.m_block_min_no_mask, block_sched.m_block_max):
             acc_dk, acc_dv = _bwd_inner_dense_kernel(
                 config=config,
                 ptrs_sched=ptrs_sched,
@@ -378,10 +372,7 @@ def _bwd_dense_kernel(
                 )
 
         # Process m_blocks without masking
-        if (
-            block_sched.m_block_window_min_no_mask
-            < block_sched.m_block_window_max_no_mask
-        ):
+        if block_sched.m_block_window_min_no_mask < block_sched.m_block_window_max_no_mask:
             for m_block in tl.range(
                 block_sched.m_block_window_min_no_mask,
                 block_sched.m_block_window_max_no_mask,
@@ -508,9 +499,7 @@ def _flash_dense_attn_backward(
     num_SMs = cache_utils.get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = query.shape
     _, seqlen_k, num_heads_kv, _ = key.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
@@ -776,9 +765,7 @@ def _flash_dense_attn_varlen_backward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     if is_local and window_sizes is None:
         window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)

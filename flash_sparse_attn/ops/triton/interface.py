@@ -82,9 +82,7 @@ class FlashDenseAttnFunc(torch.autograd.Function):
             is_split_kv = True
             is_split_qo = True
 
-        if is_quant and (
-            query_scale is None or key_scale is None or value_scale is None
-        ):
+        if is_quant and (query_scale is None or key_scale is None or value_scale is None):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
@@ -206,9 +204,7 @@ class FlashDenseAttnVarlenFunc(torch.autograd.Function):
             is_split_kv = True
             is_split_qo = True
 
-        if is_quant and (
-            query_scale is None or key_scale is None or value_scale is None
-        ):
+        if is_quant and (query_scale is None or key_scale is None or value_scale is None):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
@@ -359,9 +355,7 @@ class FlashSparseAttnFunc(torch.autograd.Function):
             is_split_kv = True
             is_split_qo = True
 
-        if is_quant and (
-            query_scale is None or key_scale is None or value_scale is None
-        ):
+        if is_quant and (query_scale is None or key_scale is None or value_scale is None):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
@@ -487,9 +481,7 @@ class FlashSparseAttnVarlenFunc(torch.autograd.Function):
             is_split_kv = True
             is_split_qo = True
 
-        if is_quant and (
-            query_scale is None or key_scale is None or value_scale is None
-        ):
+        if is_quant and (query_scale is None or key_scale is None or value_scale is None):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
@@ -648,9 +640,7 @@ class FlashGatedAttnFunc(torch.autograd.Function):
             is_split_kv = True
             is_split_qo = True
 
-        if is_quant and (
-            query_scale is None or key_scale is None or value_scale is None
-        ):
+        if is_quant and (query_scale is None or key_scale is None or value_scale is None):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)
@@ -659,36 +649,34 @@ class FlashGatedAttnFunc(torch.autograd.Function):
         alpha = alpha.transpose(-2, -1).contiguous()
         delta = delta.transpose(-2, -1).contiguous()
 
-        out, lse, softmax_scale, softmax_threshold, gate_threshold = (
-            _flash_gated_attn_forward(
-                query=query,
-                key=key,
-                value=value,
-                alpha=alpha,
-                delta=delta,
-                is_causal=is_causal,
-                softmax_scale=softmax_scale,
-                query_scale=query_scale,
-                key_scale=key_scale,
-                value_scale=value_scale,
-                window_sizes=window_sizes,
-                softmax_threshold=softmax_threshold,
-                gate_threshold=gate_threshold,
-                is_logsigmoid_gate=is_logsigmoid_gate,
-                is_adapt_gate=is_adapt_gate,
-                is_local=is_local,
-                is_quant=is_quant,
-                is_split_kv=is_split_kv,
-                pack_gqa=pack_gqa,
-                num_splits=num_splits,
-                page_table=page_table,
-                seqused_k=seqused_k,
-                out=out,
-                lse=lse,
-                is_autotune=is_autotune,
-                tile_mn=tile_mn,
-                skip_checks=skip_checks,
-            )
+        out, lse, softmax_scale, softmax_threshold, gate_threshold = _flash_gated_attn_forward(
+            query=query,
+            key=key,
+            value=value,
+            alpha=alpha,
+            delta=delta,
+            is_causal=is_causal,
+            softmax_scale=softmax_scale,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
+            window_sizes=window_sizes,
+            softmax_threshold=softmax_threshold,
+            gate_threshold=gate_threshold,
+            is_logsigmoid_gate=is_logsigmoid_gate,
+            is_adapt_gate=is_adapt_gate,
+            is_local=is_local,
+            is_quant=is_quant,
+            is_split_kv=is_split_kv,
+            pack_gqa=pack_gqa,
+            num_splits=num_splits,
+            page_table=page_table,
+            seqused_k=seqused_k,
+            out=out,
+            lse=lse,
+            is_autotune=is_autotune,
+            tile_mn=tile_mn,
+            skip_checks=skip_checks,
         )
 
         ctx.save_for_backward(query, key, value, alpha, delta, out, lse)
@@ -804,9 +792,7 @@ class FlashGatedAttnVarlenFunc(torch.autograd.Function):
             is_split_kv = True
             is_split_qo = True
 
-        if is_quant and (
-            query_scale is None or key_scale is None or value_scale is None
-        ):
+        if is_quant and (query_scale is None or key_scale is None or value_scale is None):
             query, query_scale = quant.quantize_fp8(query)
             key, key_scale = quant.quantize_fp8(key)
             value, value_scale = quant.quantize_fp8(value)

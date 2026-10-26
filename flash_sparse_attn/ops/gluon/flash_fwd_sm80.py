@@ -343,13 +343,9 @@ def _fwd_kernel(
         empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, mma_layout)
         if not EVEN_M:
             pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.mma_row_m_offs(), config.mma_col_k_offs()
-        )
+        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
         gl.store(gO, empty_o, mask=pO if not EVEN_M else None)
-        empty_lse = gl.full(
-            [TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_row_layout
-        )
+        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_row_layout)
         if not EVEN_M:
             pLSE = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs())
         gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_row_m_offs())
@@ -358,17 +354,32 @@ def _fwd_kernel(
 
     # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K], mQ.dtype.element_ty
+        [TILE_M, TILE_K],
+        mQ.dtype.element_ty,
     )
     sK_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K], mK.dtype.element_ty
+        [TILE_N, TILE_K],
+        mK.dtype.element_ty,
     )
     sV_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K], mV.dtype.element_ty
+        [TILE_N, TILE_K],
+        mV.dtype.element_ty,
     )
-    sQ = gl.allocate_shared_memory(mQ.dtype.element_ty, [TILE_M, TILE_K], sQ_layout)
-    sK = gl.allocate_shared_memory(mK.dtype.element_ty, [2, TILE_N, TILE_K], sK_layout)
-    sV = gl.allocate_shared_memory(mV.dtype.element_ty, [TILE_N, TILE_K], sV_layout)
+    sQ = gl.allocate_shared_memory(
+        mQ.dtype.element_ty,
+        [TILE_M, TILE_K],
+        sQ_layout,
+    )
+    sK = gl.allocate_shared_memory(
+        mK.dtype.element_ty,
+        [2, TILE_N, TILE_K],
+        sK_layout,
+    )
+    sV = gl.allocate_shared_memory(
+        mV.dtype.element_ty,
+        [TILE_N, TILE_K],
+        sV_layout,
+    )
 
     # Initialize accumulators
     row_max = gl.full([TILE_M], float("-inf"), gl.float32, config.mma_row_layout)
@@ -381,9 +392,7 @@ def _fwd_kernel(
     # Load Q
     if not EVEN_M:
         pQ = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-    gQ = ptrs_sched.make_q_ptrs(
-        config, config.copy_row_m_offs(), config.copy_col_k_offs()
-    )
+    gQ = ptrs_sched.make_q_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
     async_copy.async_load(
         sQ,
         gQ,
@@ -562,9 +571,7 @@ def _fwd_kernel(
                 config.copy_row_n_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_load(
-                sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
-            )
+            async_copy.async_load(sV, gV, cache_modifier=".cg", eviction_policy="evict_first")
 
             # Commit V group
             async_copy.commit_group()
@@ -690,9 +697,7 @@ def _fwd_kernel(
                 config.copy_row_n_offs(),
                 config.copy_col_k_offs(),
             )
-            async_copy.async_load(
-                sV, gV, cache_modifier=".cg", eviction_policy="evict_first"
-            )
+            async_copy.async_load(sV, gV, cache_modifier=".cg", eviction_policy="evict_first")
 
             # Commit V group
             async_copy.commit_group()
@@ -744,9 +749,7 @@ def _fwd_kernel(
     if IS_SPLIT_KV:
         if not EVEN_M:
             pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.mma_row_m_offs(), config.mma_col_k_offs()
-        )
+        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
         gl.store(gO, acc_O, mask=pO if not EVEN_M else None)
     else:
         sQ.store(acc_O.to(mOut.dtype.element_ty))
@@ -754,9 +757,7 @@ def _fwd_kernel(
         rO = sQ.load(copy_layout)
         if not EVEN_M:
             pO = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.copy_row_m_offs(), config.copy_col_k_offs()
-        )
+        gO = ptrs_sched.make_out_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
@@ -785,9 +786,7 @@ def _flash_attn_forward(
     num_SMs = get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = q.shape
     _, seqlen_k, num_heads_kv, _ = k.shape
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
@@ -962,9 +961,7 @@ def _flash_attn_varlen_forward(
     batch_size = cu_seqlens_q.shape[0] - 1
     seqlen_q = max_seqlen_q
     seqlen_k = max_seqlen_k
-    softmax_scale = (
-        softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
-    )
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
     qhead_per_kvhead = num_heads_q // num_heads_kv
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:

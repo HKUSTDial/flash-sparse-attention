@@ -84,9 +84,7 @@ def flash_sparse_attention_forward(
             target_dtype = module.config._pre_quantization_dtype
         else:
             target_dtype = next(
-                layer
-                for layer in module.modules()
-                if isinstance(layer, torch.nn.Linear)
+                layer for layer in module.modules() if isinstance(layer, torch.nn.Linear)
             ).weight.dtype
 
     # Instead of relying on the value set in the module directly, we use the is_causal passed in kwargs if it is presented

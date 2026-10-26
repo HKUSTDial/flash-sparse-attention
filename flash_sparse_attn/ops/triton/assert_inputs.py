@@ -58,11 +58,9 @@ def assert_fwd_inputs(
         assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
             "Input dtype must be float8_e5m2 or float8_e4m3fn"
         )
-        assert (
-            query_scale is not None
-            and key_scale is not None
-            and value_scale is not None
-        ), "Scale tensors must be provided for quantized inputs"
+        assert query_scale is not None and key_scale is not None and value_scale is not None, (
+            "Scale tensors must be provided for quantized inputs"
+        )
         assert query_scale.dtype in [torch.float16, torch.bfloat16, torch.float32], (
             "Scale tensors must be float16, bfloat16, or float32"
         )
@@ -76,18 +74,10 @@ def assert_fwd_inputs(
         assert query.dtype in [torch.float16, torch.bfloat16], (
             "Input dtype must be float16 or bfloat16"
         )
-    assert query.dtype == key.dtype == value.dtype, (
-        "All inputs must have the same dtype"
-    )
-    assert num_heads_q % num_heads_kv == 0, (
-        "num_heads_q must be divisible by num_heads_kv"
-    )
-    assert head_dim % 16 == 0, (
-        "head_dim must be a multiple of 16 for efficient memory access"
-    )
-    assert head_dim <= 512, (
-        "head_dim must be less than or equal to 512 for efficient memory access"
-    )
+    assert query.dtype == key.dtype == value.dtype, "All inputs must have the same dtype"
+    assert num_heads_q % num_heads_kv == 0, "num_heads_q must be divisible by num_heads_kv"
+    assert head_dim % 16 == 0, "head_dim must be a multiple of 16 for efficient memory access"
+    assert head_dim <= 512, "head_dim must be less than or equal to 512 for efficient memory access"
     if page_size is not None:
         assert page_size in [32, 64, 128, 256], (
             "paged KV page_size must be one of 32, 64, 128, or 256"
@@ -95,9 +85,7 @@ def assert_fwd_inputs(
         if tile_mn is not None:
             assert tile_mn[1] == page_size, "paged KV requires tile_mn[1] == page_size"
     if alpha is not None and delta is not None:
-        assert device == alpha.device == delta.device, (
-            "All inputs must be on the same device"
-        )
+        assert device == alpha.device == delta.device, "All inputs must be on the same device"
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
             "All inputs must be on the same device"
@@ -182,11 +170,9 @@ def assert_bwd_inputs(
         assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
             "Input dtype must be float8_e5m2 or float8_e4m3fn"
         )
-        assert (
-            query_scale is not None
-            and key_scale is not None
-            and value_scale is not None
-        ), "Scale tensors must be provided for quantized inputs"
+        assert query_scale is not None and key_scale is not None and value_scale is not None, (
+            "Scale tensors must be provided for quantized inputs"
+        )
         assert query_scale.dtype in [torch.float16, torch.bfloat16, torch.float32], (
             "Scale tensors must be float16, bfloat16, or float32"
         )
@@ -196,9 +182,7 @@ def assert_bwd_inputs(
         assert query_scale.device == key_scale.device == value_scale.device == device, (
             "All scale tensors must be on the same device as query/key/value"
         )
-        assert query.dtype == key.dtype == value.dtype, (
-            "All inputs must have the same dtype"
-        )
+        assert query.dtype == key.dtype == value.dtype, "All inputs must have the same dtype"
     else:
         assert query.dtype in [torch.float16, torch.bfloat16], (
             "Input dtype must be float16 or bfloat16"
@@ -209,19 +193,11 @@ def assert_bwd_inputs(
     assert lse.dtype == torch.float32, (
         "lse must be float32 for numerical stability in backward pass"
     )
-    assert num_heads_q % num_heads_kv == 0, (
-        "num_heads_q must be divisible by num_heads_kv"
-    )
-    assert head_dim % 16 == 0, (
-        "head_dim must be a multiple of 16 for efficient memory access"
-    )
-    assert head_dim <= 512, (
-        "head_dim must be less than or equal to 512 for efficient memory access"
-    )
+    assert num_heads_q % num_heads_kv == 0, "num_heads_q must be divisible by num_heads_kv"
+    assert head_dim % 16 == 0, "head_dim must be a multiple of 16 for efficient memory access"
+    assert head_dim <= 512, "head_dim must be less than or equal to 512 for efficient memory access"
     if alpha is not None and delta is not None:
-        assert device == alpha.device == delta.device, (
-            "All inputs must be on the same device"
-        )
+        assert device == alpha.device == delta.device, "All inputs must be on the same device"
     if cu_seqlens_q is not None and cu_seqlens_k is not None:
         assert device == cu_seqlens_q.device == cu_seqlens_k.device, (
             "All inputs must be on the same device"
@@ -298,11 +274,9 @@ def assert_dec_inputs(
         assert query.dtype in [torch.float8_e5m2, torch.float8_e4m3fn], (
             "Input dtype must be float8_e5m2 or float8_e4m3fn"
         )
-        assert (
-            query_scale is not None
-            and key_scale is not None
-            and value_scale is not None
-        ), "Scale tensors must be provided for quantized inputs"
+        assert query_scale is not None and key_scale is not None and value_scale is not None, (
+            "Scale tensors must be provided for quantized inputs"
+        )
         assert query_scale.dtype in [torch.float16, torch.bfloat16, torch.float32], (
             "Scale tensors must be float16, bfloat16, or float32"
         )
@@ -316,18 +290,10 @@ def assert_dec_inputs(
         assert query.dtype in [torch.float16, torch.bfloat16], (
             "Input dtype must be float16 or bfloat16"
         )
-    assert query.dtype == key.dtype == value.dtype, (
-        "All inputs must have the same dtype"
-    )
-    assert num_heads_q % num_heads_kv == 0, (
-        "num_heads_q must be divisible by num_heads_kv"
-    )
-    assert head_dim % 16 == 0, (
-        "head_dim must be a multiple of 16 for efficient memory access"
-    )
-    assert head_dim <= 512, (
-        "head_dim must be less than or equal to 512 for efficient memory access"
-    )
+    assert query.dtype == key.dtype == value.dtype, "All inputs must have the same dtype"
+    assert num_heads_q % num_heads_kv == 0, "num_heads_q must be divisible by num_heads_kv"
+    assert head_dim % 16 == 0, "head_dim must be a multiple of 16 for efficient memory access"
+    assert head_dim <= 512, "head_dim must be less than or equal to 512 for efficient memory access"
     if page_size is not None:
         assert page_size in [32, 64, 128, 256], (
             "paged KV page_size must be one of 32, 64, 128, or 256"
@@ -338,9 +304,7 @@ def assert_dec_inputs(
         "decode does not support gather_kv_indices with paged KV"
     )
     if alpha is not None and delta is not None:
-        assert device == alpha.device == delta.device, (
-            "All inputs must be on the same device"
-        )
+        assert device == alpha.device == delta.device, "All inputs must be on the same device"
     if cu_seqlens_k is not None:
         assert device == cu_seqlens_k.device, "All inputs must be on the same device"
         assert cu_seqlens_k.dtype == torch.int32, "cu_seqlens_k must be int32"

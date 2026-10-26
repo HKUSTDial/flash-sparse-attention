@@ -128,12 +128,8 @@ def _fwd_preprocess(
             k = tl.load(k_ptrs, mask=valid_idx[:, None], other=0.0)
             v = tl.load(v_ptrs, mask=valid_idx[:, None], other=0.0)
         else:
-            k = tl.load(
-                k_ptrs, mask=valid_idx[:, None] & (offs_d[None, :] < headdim), other=0.0
-            )
-            v = tl.load(
-                v_ptrs, mask=valid_idx[:, None] & (offs_d[None, :] < headdim), other=0.0
-            )
+            k = tl.load(k_ptrs, mask=valid_idx[:, None] & (offs_d[None, :] < headdim), other=0.0)
+            v = tl.load(v_ptrs, mask=valid_idx[:, None] & (offs_d[None, :] < headdim), other=0.0)
         b_ptrs = b_base_ptrs + gather_idx * stride_bn
         b = tl.load(b_ptrs, mask=valid_idx, other=0.0)
 
@@ -162,11 +158,7 @@ def _fwd_preprocess(
             start_m = tl.multiple_of(start_m, BLOCK_M)
             offs_m = start_m + tl.arange(0, BLOCK_M)
 
-            cum_ptrs = (
-                cum_base_ptrs
-                + offs_m[:, None] * stride_cmm
-                + offs_k[None, :] * stride_cmk
-            )
+            cum_ptrs = cum_base_ptrs + offs_m[:, None] * stride_cmm + offs_k[None, :] * stride_cmk
 
             col_mask = offs_k < window_size
             row_mask = offs_m[:, None] < seqlen_q
@@ -280,10 +272,7 @@ def _fwd_kernel(
 
     # Initialize pointers to Q, CuK, CuV, CuM, CuB
     q_ptrs = (
-        Q
-        + off_b * stride_qb
-        + off_hq * stride_qh
-        + (offs_m[:, None] * stride_qm + offs_d[None, :])
+        Q + off_b * stride_qb + off_hq * stride_qh + (offs_m[:, None] * stride_qm + offs_d[None, :])
     )
     cuk_base_ptrs = CuK + off_b * stride_ckb + off_hk * stride_ckh
     cv_base_ptrs = CuV + off_b * stride_cvb + off_hk * stride_cvh
@@ -319,9 +308,7 @@ def _fwd_kernel(
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
         cum_ptrs = (
-            cum_base_ptrs
-            + offs_m[:, None] * stride_cmm
-            + (start_n + offs_n)[None, :] * stride_cmk
+            cum_base_ptrs + offs_m[:, None] * stride_cmm + (start_n + offs_n)[None, :] * stride_cmk
         )
         # Load mask
         if EVEN_M & EVEN_N:
@@ -329,8 +316,7 @@ def _fwd_kernel(
         else:
             m = tl.load(
                 cum_ptrs,
-                mask=(offs_m[:, None] < seqlen_q)
-                & ((start_n + offs_n)[None, :] < window_size),
+                mask=(offs_m[:, None] < seqlen_q) & ((start_n + offs_n)[None, :] < window_size),
                 other=False,
             )
 
@@ -340,11 +326,7 @@ def _fwd_kernel(
         # Skip this iteration if no active elements
         if any_active:
             # Load k
-            cuk_ptrs = (
-                cuk_base_ptrs
-                + (start_n + offs_n)[:, None] * stride_ckk
-                + offs_d[None, :]
-            )
+            cuk_ptrs = cuk_base_ptrs + (start_n + offs_n)[:, None] * stride_ckk + offs_d[None, :]
             if EVEN_N:
                 if EVEN_HEADDIM:
                     k = tl.load(cuk_ptrs)
@@ -385,9 +367,7 @@ def _fwd_kernel(
             # Apply masks
             # Trying to combine the two masks seem to make the result wrong
             if not EVEN_N:  # Need to mask out otherwise the softmax is wrong
-                acc_s += tl.where(
-                    (start_n + offs_n)[None, :] < window_size, 0, float("-inf")
-                )
+                acc_s += tl.where((start_n + offs_n)[None, :] < window_size, 0, float("-inf"))
             acc_s += tl.where(m, 0, float("-inf"))
 
             # Compute p
@@ -402,11 +382,7 @@ def _fwd_kernel(
             acc_o = acc_o * acc_o_scale[:, None]
 
             # Load v
-            cuv_ptrs = (
-                cv_base_ptrs
-                + (start_n + offs_n)[:, None] * stride_cvk
-                + offs_d[None, :]
-            )
+            cuv_ptrs = cv_base_ptrs + (start_n + offs_n)[:, None] * stride_cvk + offs_d[None, :]
             if EVEN_N:
                 if EVEN_HEADDIM:
                     v = tl.load(cuv_ptrs)
@@ -494,11 +470,7 @@ def _bwd_preprocess_do_o_dot(
     offs_d = tl.arange(0, BLOCK_HEADDIM)
     # Load o
     o = tl.load(
-        Out
-        + off_b * stride_ob
-        + off_h * stride_oh
-        + offs_m[:, None] * stride_om
-        + offs_d[None, :],
+        Out + off_b * stride_ob + off_h * stride_oh + offs_m[:, None] * stride_om + offs_d[None, :],
         mask=(offs_m[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
         other=0.0,
     ).to(tl.float32)
@@ -613,16 +585,13 @@ def _bwd_kernel_one_col_block(
         offs_m_curr = start_m + offs_m
 
         # Load mask
-        cum_ptrs = (
-            CuM + offs_m_curr[:, None] * stride_cmm + offs_n[None, :] * stride_cmk
-        )
+        cum_ptrs = CuM + offs_m_curr[:, None] * stride_cmm + offs_n[None, :] * stride_cmk
         if EVEN_M & EVEN_N:
             m = tl.load(cum_ptrs)
         else:
             m = tl.load(
                 cum_ptrs,
-                mask=(offs_m_curr[:, None] < seqlen_q)
-                & (offs_n[None, :] < window_size),
+                mask=(offs_m_curr[:, None] < seqlen_q) & (offs_n[None, :] < window_size),
                 other=False,
             )
 
@@ -640,8 +609,7 @@ def _bwd_kernel_one_col_block(
                 else:
                     q = tl.load(
                         q_ptrs,
-                        mask=(offs_m_curr[:, None] < seqlen_q)
-                        & (offs_d[None, :] < headdim),
+                        mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                         other=0.0,
                     )
 
@@ -668,8 +636,7 @@ def _bwd_kernel_one_col_block(
                 # There's a race condition if we just use m_mask and not d_mask.
                 do = tl.load(
                     do_ptrs,
-                    mask=(offs_m_curr[:, None] < seqlen_q)
-                    & (offs_d[None, :] < headdim),
+                    mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                     other=0.0,
                 )
 
@@ -717,8 +684,7 @@ def _bwd_kernel_one_col_block(
                     else:
                         dq = tl.load(
                             dq_ptrs,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                             other=0.0,
                             eviction_policy="evict_last",
                         )
@@ -726,8 +692,7 @@ def _bwd_kernel_one_col_block(
                         tl.store(
                             dq_ptrs,
                             dq,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                             eviction_policy="evict_last",
                         )
             else:  # If we're parallelizing across the seqlen_k dimension
@@ -741,8 +706,7 @@ def _bwd_kernel_one_col_block(
                         tl.atomic_add(
                             dq_ptrs,
                             dq,
-                            mask=(offs_m_curr[:, None] < seqlen_q)
-                            & (offs_d[None, :] < headdim),
+                            mask=(offs_m_curr[:, None] < seqlen_q) & (offs_d[None, :] < headdim),
                         )
 
             # Increment pointers
@@ -986,43 +950,27 @@ def _bwd_kernel(
         )
 
 
-def _flash_dmattn_forward(
-    q, k, v, b, i, softmax_scale=None, is_causal=False, window_size=None
-):
+def _flash_dmattn_forward(q, k, v, b, i, softmax_scale=None, is_causal=False, window_size=None):
     # shape constraints
     batch, nheads, seqlen_q, d = q.shape
     _, nheads_k, seqlen_k, _ = k.shape
 
-    assert nheads % nheads_k == 0, (
-        "Number of Q heads must be divisible by KV heads for GQA/MQA"
-    )
+    assert nheads % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
     assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
-    assert q.dtype == k.dtype == v.dtype == b.dtype, (
-        "All tensors must have the same type"
-    )
+    assert q.dtype == k.dtype == v.dtype == b.dtype, "All tensors must have the same type"
     assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert i.dtype == torch.int64, "Indices must be int64"
-    assert q.is_cuda and k.is_cuda and v.is_cuda and b.is_cuda, (
-        "All tensors must be on GPU"
-    )
+    assert q.is_cuda and k.is_cuda and v.is_cuda and b.is_cuda, "All tensors must be on GPU"
 
     softmax_scale = softmax_scale or 1.0 / math.sqrt(d)
 
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
-    cu_k = torch.empty(
-        (batch, nheads_k, window_size, d), device=q.device, dtype=k.dtype
-    )
-    cu_v = torch.empty(
-        (batch, nheads_k, window_size, d), device=q.device, dtype=v.dtype
-    )
+    cu_k = torch.empty((batch, nheads_k, window_size, d), device=q.device, dtype=k.dtype)
+    cu_v = torch.empty((batch, nheads_k, window_size, d), device=q.device, dtype=v.dtype)
     cu_b = torch.empty((batch, nheads_k, window_size), device=q.device, dtype=b.dtype)
-    cu_m = torch.zeros(
-        (batch, nheads_k, seqlen_q, window_size), device=q.device, dtype=torch.bool
-    )
+    cu_m = torch.zeros((batch, nheads_k, seqlen_q, window_size), device=q.device, dtype=torch.bool)
 
-    lse = torch.empty(
-        (batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32
-    )
+    lse = torch.empty((batch, nheads, seqlen_q_rounded), device=q.device, dtype=torch.float32)
     o = torch.empty_like(q)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
@@ -1135,9 +1083,7 @@ def _flash_dmattn_backward(
     batch, nheads, _, d = q.shape
     _, nheads_k, _, _ = cuk.shape
 
-    assert nheads % nheads_k == 0, (
-        "Number of Q heads must be divisible by KV heads for GQA/MQA"
-    )
+    assert nheads % nheads_k == 0, "Number of Q heads must be divisible by KV heads for GQA/MQA"
     assert d <= 128, "FlashDynamicMaskAttention only support head dimensions up to 128"
     seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
     # seqlen_k_rounded = math.ceil(seqlen_k / 128) * 128
@@ -1152,15 +1098,9 @@ def _flash_dmattn_backward(
     dv = torch.zeros(batch, nheads_k, seqlen_k, d, device=q.device, dtype=q.dtype)
     db = torch.zeros(batch, nheads_k, seqlen_k, device=q.device, dtype=q.dtype)
 
-    dk_expanded = torch.empty(
-        batch, nheads, window_size, d, device=q.device, dtype=q.dtype
-    )
-    dv_expanded = torch.empty(
-        batch, nheads, window_size, d, device=q.device, dtype=q.dtype
-    )
-    db_expanded = torch.empty(
-        batch, nheads, window_size, device=q.device, dtype=q.dtype
-    )
+    dk_expanded = torch.empty(batch, nheads, window_size, d, device=q.device, dtype=q.dtype)
+    dv_expanded = torch.empty(batch, nheads, window_size, d, device=q.device, dtype=q.dtype)
+    db_expanded = torch.empty(batch, nheads, window_size, device=q.device, dtype=q.dtype)
 
     BLOCK_HEADDIM = max(triton.next_power_of_2(d), 16)
 
@@ -1193,9 +1133,7 @@ def _flash_dmattn_backward(
     # num_warps = 4
     def grid(META):
         return (
-            triton.cdiv(window_size, META["BLOCK_N"])
-            if META["SEQUENCE_PARALLEL"]
-            else 1,
+            triton.cdiv(window_size, META["BLOCK_N"]) if META["SEQUENCE_PARALLEL"] else 1,
             batch * nheads,
         )
 
@@ -1264,15 +1202,13 @@ def _flash_dmattn_backward(
     dq = dq_accum.to(q.dtype)
 
     if nheads != nheads_k:
-        dk_expanded = dk_expanded.view(
-            batch, nheads_k, nheads // nheads_k, window_size, d
-        ).sum(dim=2)
-        dv_expanded = dv_expanded.view(
-            batch, nheads_k, nheads // nheads_k, window_size, d
-        ).sum(dim=2)
-        db_expanded = db_expanded.view(
-            batch, nheads_k, nheads // nheads_k, window_size
-        ).sum(dim=2)
+        dk_expanded = dk_expanded.view(batch, nheads_k, nheads // nheads_k, window_size, d).sum(
+            dim=2
+        )
+        dv_expanded = dv_expanded.view(batch, nheads_k, nheads // nheads_k, window_size, d).sum(
+            dim=2
+        )
+        db_expanded = db_expanded.view(batch, nheads_k, nheads // nheads_k, window_size).sum(dim=2)
 
     dk.scatter_add_(
         dim=2,

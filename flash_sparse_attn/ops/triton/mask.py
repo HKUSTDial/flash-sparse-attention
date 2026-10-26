@@ -49,9 +49,7 @@ def apply_mask(
     offs_n = n_block * TILE_N + tl.arange(0, TILE_N)
 
     if SWAP_AB:
-        tl.static_assert(
-            QHEAD_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PACKGQA > 1 not supported"
-        )
+        tl.static_assert(QHEAD_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PACKGQA > 1 not supported")
         q_idx = offs_m[None, :]
         k_idx = offs_n[:, None]
     else:

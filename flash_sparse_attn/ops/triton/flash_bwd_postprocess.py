@@ -189,9 +189,7 @@ def _flash_attn_bwd_postprocess(
         dq.stride(-2),
         dq.stride(-3) if not is_varlen else dq.stride(0),
         da_accum.stride(0) if (has_da and not is_varlen) else 0,
-        da_accum.stride(1)
-        if (has_da and not is_varlen)
-        else (da_accum.stride(0) if has_da else 0),
+        da_accum.stride(1) if (has_da and not is_varlen) else (da_accum.stride(0) if has_da else 0),
         da_accum.stride(-1) if has_da else 0,
         da.stride(0) if (has_da and not is_varlen) else 0,
         da.stride(-2) if has_da else 0,
