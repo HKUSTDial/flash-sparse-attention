@@ -23,7 +23,7 @@ from flash_sparse_attn.ops.gluon.utils import (
     num_splits_heuristic,
 )
 from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
-from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
+from flash_sparse_attn.ops.gluon.kernel_repr import fwd_repr
 from flash_sparse_attn.ops.gluon.ampere_helpers import gemm, gemm_rs
 from flash_sparse_attn.ops.gluon.flash_fwd_combine import _flash_attn_fwd_combine
 
@@ -113,7 +113,7 @@ def _fwd_inner_kernel(
         row_max_curr: gl.constexpr = None
     else:
         # Determine skip condition
-        is_skip, row_max_curr = softmax_sched.skip(
+        is_skip, row_max_curr = softmax_sched.score_skip(
             acc_S,
             row_max,
             row_sum,
@@ -175,7 +175,7 @@ def _fwd_inner_kernel(
         ),
     }
 )
-@gluon.jit(repr=fwd_dense_repr)
+@gluon.jit(repr=fwd_repr)
 def _fwd_kernel(
     mQ,
     mK,
@@ -301,9 +301,6 @@ def _fwd_kernel(
         HAS_SEQUSED_K=HAS_SEQUSED_K,
     )
 
-    # Create block scheduler
-    block_sched = AttnFwdBlockScheduler.create(config=config)
-
     # Create pointer scheduler
     ptrs_sched = AttnFwdPointerScheduler.create(
         config=config,
@@ -331,6 +328,9 @@ def _fwd_kernel(
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
+
+    # Create block scheduler
+    block_sched = AttnFwdBlockScheduler.create(config)
 
     # Create mask scheduler
     mask_sched = AttnMaskScheduler.create(config)
@@ -395,6 +395,9 @@ def _fwd_kernel(
     # Commit Q group
     async_copy.commit_group()
 
+    # First iteration with seqlen masking
+    n_block_max = block_sched.n_block_max - 1
+
     # Load K
     if not EVEN_N:
         pK = ptrs_sched.make_n_predicate(
@@ -439,8 +442,7 @@ def _fwd_kernel(
     # Commit V group
     async_copy.commit_group()
 
-    # First iteration with seqlen masking
-    n_block_max = block_sched.n_block_max - 1
+    # Process n_block with seqlen masking
     row_max, row_sum, acc_O = _fwd_inner_kernel(
         config,
         ptrs_sched,
