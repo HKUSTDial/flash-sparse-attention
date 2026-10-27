@@ -1,0 +1,1338 @@
+from typing import Tuple, Optional
+
+import torch
+import triton
+import triton.language as tl
+
+from flash_sparse_attn.ops.triton import (
+    assert_inputs,
+    utils,
+    cache_utils,
+    launch_template,
+    launch_grid,
+    flash_fwd_combine,
+    kernel_repr,
+    autotuner,
+)
+from flash_sparse_attn.ops.triton.scheduler import (
+    AttnFwdGridIndex,
+    AttnFwdConfig,
+    AttnFwdBlockScheduler,
+    AttnFwdPointerScheduler,
+    AttnMaskScheduler,
+    SoftmaxScheduler,
+)
+
+
+@triton.jit
+def _fwd_inner_gated_kernel(
+    config: AttnFwdConfig,
+    ptrs_sched: AttnFwdPointerScheduler,
+    mask_sched: AttnMaskScheduler,
+    softmax_sched: SoftmaxScheduler,
+    skip_gate_curr,
+    acc_s,
+    acc_o,
+    q_tile,
+    a_tile,
+    k_ptrs,
+    v_ptrs,
+    d_ptrs,
+    a_max,
+    a_min,
+    gate_max,
+    row_max,
+    row_sum,
+    n_block,
+    n_block_min,
+    IS_MASK: tl.constexpr,
+    MASK_CAUSAL: tl.constexpr,
+    MASK_LOCAL: tl.constexpr,
+    MASK_SINK: tl.constexpr,
+    CHECK_INF: tl.constexpr,
+):
+    skip_gate_next = True
+    if not skip_gate_curr:
+        if IS_MASK:
+            # Apply mask to attention scores
+            acc_s = mask_sched.apply_mask(
+                acc_s=acc_s,
+                iter_block=n_block,
+                MASK_CAUSAL=MASK_CAUSAL,
+                MASK_LOCAL=MASK_LOCAL,
+                MASK_SINK=MASK_SINK,
+            )
+
+        # Apply online sparse softmax
+        p, row_max, row_sum, row_scale, skip_softmax = softmax_sched.online_sparse_softmax(
+            acc_s=acc_s,
+            row_max=row_max,
+            row_sum=row_sum,
+            softmax_threshold_log2=config.softmax_threshold_log2,
+            CHECK_INF=CHECK_INF,
+        )
+
+        if not skip_softmax:
+            # Load value tile
+            v_tile = ptrs_sched.load_v(config, v_ptrs, n_block)
+
+            # Rescale output accumulator
+            acc_o = softmax_sched.rescale_o(
+                acc_o=acc_o,
+                row_scale=row_scale,
+            )
+
+            # Update output accumulator
+            acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+
+    if n_block > n_block_min:
+        # Load next delta tile
+        d_tile = ptrs_sched.load_d(config, d_ptrs, n_block - 1)
+        d_max = tl.max(d_tile)
+        d_min = tl.min(d_tile)
+
+        # Check if any gates are active for next tile
+        gate_max, skip_gate_next = softmax_sched.online_gate(
+            a_max=a_max,
+            a_min=a_min,
+            d_max=d_max,
+            d_min=d_min,
+            gate_max=gate_max,
+            gate_threshold_log2=config.gate_threshold_log2,
+        )
+
+        if not skip_gate_next:
+            # Compute attention gates for next tile
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if config.IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Load next key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, n_block - 1)
+
+            # Compute attention scores for next tile
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+    return (
+        skip_gate_next,
+        acc_s,
+        acc_o,
+        gate_max,
+        row_max,
+        row_sum,
+    )
+
+
+@triton.jit(repr=kernel_repr.fwd_gated_repr)
+def _fwd_gated_kernel(
+    Q,
+    K,
+    V,
+    A,
+    D,
+    Out,
+    Lse,
+    softmax_scale,
+    query_scale,
+    key_scale,
+    value_scale,
+    window_sizes,
+    softmax_threshold,
+    gate_threshold,
+    page_table,
+    stride_qb,
+    stride_qh,
+    stride_qm,
+    stride_kb,
+    stride_kh,
+    stride_kn,
+    stride_vb,
+    stride_vh,
+    stride_vn,
+    stride_ab,
+    stride_ah,
+    stride_am,
+    stride_db,
+    stride_dh,
+    stride_dn,
+    stride_ob,
+    stride_oh,
+    stride_om,
+    stride_os,
+    stride_lb,
+    stride_lh,
+    stride_ls,
+    stride_wh,
+    stride_pb,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    seqused_q,
+    seqused_k,
+    seqlen_q,
+    seqlen_k,
+    head_dim,
+    SEQLEN_Q_CACHE: tl.constexpr,
+    SEQLEN_K_CACHE: tl.constexpr,
+    QHEAD_PER_KVHEAD: tl.constexpr,
+    PACK_GQA: tl.constexpr,
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    TILE_M: tl.constexpr,
+    TILE_N: tl.constexpr,
+    TILE_K: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+    IS_LOCAL: tl.constexpr,
+    IS_QUANT: tl.constexpr,
+    IS_SPLIT_KV: tl.constexpr,
+    IS_PAGED_KV: tl.constexpr,
+    IS_LOGSIGMOID_GATE: tl.constexpr,
+    IS_ADAPT_GATE: tl.constexpr,
+    HAS_CU_SEQLENS_Q: tl.constexpr,
+    HAS_CU_SEQLENS_K: tl.constexpr,
+    HAS_SEQUSED_Q: tl.constexpr,
+    HAS_SEQUSED_K: tl.constexpr,
+):
+    # Create grid index
+    grid_idx = AttnFwdGridIndex.create(
+        NUM_SPLITS=NUM_SPLITS,
+        QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
+        IS_SPLIT_KV=IS_SPLIT_KV,
+        PACK_GQA=PACK_GQA,
+    )
+
+    # Load window sizes
+    (
+        window_size_sink,
+        window_size_left,
+        window_size_right,
+        window_size_near,
+    ) = grid_idx.load_window_sizes(
+        window_sizes=window_sizes,
+        stride_wh=stride_wh,
+        IS_LOCAL=IS_LOCAL,
+    )
+
+    # Create config
+    config = AttnFwdConfig.create(
+        softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
+        gate_threshold=gate_threshold,
+        query_scale=query_scale,
+        key_scale=key_scale,
+        value_scale=value_scale,
+        m_block=grid_idx.m_block,
+        batch_idx=grid_idx.batch_idx,
+        window_size_sink=window_size_sink,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+        window_size_near=window_size_near,
+        head_dim=head_dim,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
+        seqused_q=seqused_q,
+        seqused_k=seqused_k,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        PACK_GQA=PACK_GQA,
+        QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
+        TILE_K=TILE_K,
+        IS_CAUSAL=IS_CAUSAL,
+        IS_QUANT=IS_QUANT,
+        IS_PAGED_KV=IS_PAGED_KV,
+        IS_LOGSIGMOID_GATE=IS_LOGSIGMOID_GATE,
+        IS_ADAPT_GATE=IS_ADAPT_GATE,
+        HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
+        HAS_SEQUSED_Q=HAS_SEQUSED_Q,
+        HAS_SEQUSED_K=HAS_SEQUSED_K,
+    )
+
+    # Create pointer scheduler
+    ptrs_sched = AttnFwdPointerScheduler.create(
+        config=config,
+        Q=Q,
+        K=K,
+        V=V,
+        A=A,
+        D=D,
+        PageTable=page_table,
+        Out=Out,
+        Lse=Lse,
+        batch_idx=grid_idx.batch_idx,
+        head_idx=grid_idx.head_idx,
+        head_kv_idx=grid_idx.head_kv_idx,
+        split_idx=grid_idx.split_idx,
+        stride_qb=stride_qb,
+        stride_qh=stride_qh,
+        stride_qm=stride_qm,
+        stride_kb=stride_kb,
+        stride_kh=stride_kh,
+        stride_kn=stride_kn,
+        stride_vb=stride_vb,
+        stride_vh=stride_vh,
+        stride_vn=stride_vn,
+        stride_ab=stride_ab,
+        stride_ah=stride_ah,
+        stride_am=stride_am,
+        stride_db=stride_db,
+        stride_dh=stride_dh,
+        stride_dn=stride_dn,
+        stride_ob=stride_ob,
+        stride_oh=stride_oh,
+        stride_om=stride_om,
+        stride_os=stride_os,
+        stride_lb=stride_lb,
+        stride_lh=stride_lh,
+        stride_ls=stride_ls,
+        stride_pb=stride_pb,
+        IS_SPLIT_KV=IS_SPLIT_KV,
+        IS_PAGED_KV=IS_PAGED_KV,
+        IS_GATED=True,
+        HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
+    )
+
+    # Create block scheduler
+    block_sched = AttnFwdBlockScheduler.create(
+        config=config,
+        split_idx=grid_idx.split_idx,
+        NUM_SPLITS=NUM_SPLITS,
+        IS_CAUSAL=IS_CAUSAL,
+        IS_LOCAL=IS_LOCAL,
+        IS_SPLIT_KV=IS_SPLIT_KV,
+    )
+
+    # Create mask scheduler
+    mask_sched = AttnMaskScheduler.create(config)
+
+    # Create softmax scheduler
+    softmax_sched = SoftmaxScheduler.create(config)
+
+    # Create pointers
+    out_ptrs = ptrs_sched.make_out_ptrs(config)
+    lse_ptrs = ptrs_sched.make_lse_ptrs(config)
+
+    # Early exit if no n_blocks to process
+    if block_sched.is_empty():
+        ptrs_sched.store_empty(config, out_ptrs, lse_ptrs, IS_SPLIT_KV=IS_SPLIT_KV)
+        return
+
+    q_ptrs = ptrs_sched.make_q_ptrs(config)
+    k_ptrs = ptrs_sched.make_k_ptrs(config)
+    v_ptrs = ptrs_sched.make_v_ptrs(config)
+    a_ptrs = ptrs_sched.make_a_ptrs(config)
+    d_ptrs = ptrs_sched.make_d_ptrs(config)
+
+    # Initialize accumulators
+    gate_max = tl.full((), float("-inf"), dtype=tl.float32)
+    row_max = tl.full((TILE_M,), float("-inf"), dtype=tl.float32)
+    row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
+    acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
+
+    # Load query tile
+    q_tile = ptrs_sched.load_q(config, q_ptrs)
+
+    # Load alpha tile
+    a_tile = ptrs_sched.load_a(config, a_ptrs)
+    a_max = tl.max(a_tile)
+    a_min = tl.min(a_tile)
+
+    # Load key tile
+    k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_max - 1)
+
+    # Load delta tile
+    d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_max - 1)
+    d_max = tl.max(d_tile)
+    d_min = tl.min(d_tile)
+
+    # Check if any gates are active for current tile
+    gate_max, skip_gate_curr = softmax_sched.online_gate(
+        a_max=a_max,
+        a_min=a_min,
+        d_max=d_max,
+        d_min=d_min,
+        gate_max=gate_max,
+        gate_threshold_log2=config.gate_threshold_log2,
+    )
+
+    # Initialize skip_gate_curr to False for the first iteration
+    skip_gate_curr = False
+
+    # Compute attention gates for first tile
+    acc_s = a_tile[:, None] * d_tile[None, :]
+    if IS_LOGSIGMOID_GATE:
+        acc_s = softmax_sched.log_sigmoid(
+            acc_s=acc_s,
+        )
+
+    # Compute attention scores for first tile
+    acc_s += tl.dot(q_tile, k_tile.T)
+
+    # Process n_blocks with causal masking
+    if IS_CAUSAL or IS_LOCAL:
+        n_block_max_no_mask = block_sched.n_block_max_no_mask
+        for n_block in tl.range(
+            block_sched.n_block_max - 1, block_sched.n_block_max_no_mask - 1, -1
+        ):
+            (
+                skip_gate_curr,
+                acc_s,
+                acc_o,
+                gate_max,
+                row_max,
+                row_sum,
+            ) = _fwd_inner_gated_kernel(
+                config=config,
+                ptrs_sched=ptrs_sched,
+                mask_sched=mask_sched,
+                softmax_sched=softmax_sched,
+                skip_gate_curr=skip_gate_curr,
+                acc_s=acc_s,
+                acc_o=acc_o,
+                q_tile=q_tile,
+                a_tile=a_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                d_ptrs=d_ptrs,
+                a_max=a_max,
+                a_min=a_min,
+                gate_max=gate_max,
+                row_max=row_max,
+                row_sum=row_sum,
+                n_block=n_block,
+                n_block_min=block_sched.n_block_max_no_mask,
+                IS_MASK=True,
+                MASK_CAUSAL=IS_CAUSAL,
+                MASK_LOCAL=True if IS_LOCAL else False,
+                MASK_SINK=False,
+                CHECK_INF=True,
+            )
+    else:
+        # First iteration with seqlen masking
+        n_block = block_sched.n_block_max - 1
+        # Triton aggregate does not support attribute reassignment yet
+        # block_sched.n_block_max_no_mask = n_block
+        n_block_max_no_mask = n_block
+
+        (
+            skip_gate_curr,
+            acc_s,
+            acc_o,
+            gate_max,
+            row_max,
+            row_sum,
+        ) = _fwd_inner_gated_kernel(
+            config=config,
+            ptrs_sched=ptrs_sched,
+            mask_sched=mask_sched,
+            softmax_sched=softmax_sched,
+            skip_gate_curr=skip_gate_curr,
+            acc_s=acc_s,
+            acc_o=acc_o,
+            q_tile=q_tile,
+            a_tile=a_tile,
+            k_ptrs=k_ptrs,
+            v_ptrs=v_ptrs,
+            d_ptrs=d_ptrs,
+            a_max=a_max,
+            a_min=a_min,
+            gate_max=gate_max,
+            row_max=row_max,
+            row_sum=row_sum,
+            n_block=n_block,
+            n_block_min=n_block,
+            IS_MASK=True,
+            MASK_CAUSAL=False,
+            MASK_LOCAL=False,
+            MASK_SINK=False,
+            CHECK_INF=True,
+        )
+
+    # Process n_blocks without masking
+    if not IS_LOCAL and n_block_max_no_mask > block_sched.n_block_min:
+        # Load key tile
+        k_tile = ptrs_sched.load_k(config, k_ptrs, n_block_max_no_mask - 1)
+
+        # Load delta tile
+        d_tile = ptrs_sched.load_d(config, d_ptrs, n_block_max_no_mask - 1)
+        d_max = tl.max(d_tile)
+        d_min = tl.min(d_tile)
+
+        # Check if any gates are active for current tile
+        gate_max, skip_gate_curr = softmax_sched.online_gate(
+            a_max=a_max,
+            a_min=a_min,
+            d_max=d_max,
+            d_min=d_min,
+            gate_max=gate_max,
+            gate_threshold_log2=config.gate_threshold_log2,
+        )
+
+        # Compute attention gates
+        acc_s = a_tile[:, None] * d_tile[None, :]
+        if IS_LOGSIGMOID_GATE:
+            acc_s = softmax_sched.log_sigmoid(
+                acc_s=acc_s,
+            )
+
+        # Compute attention scores
+        acc_s += tl.dot(q_tile, k_tile.T)
+
+        for n_block in tl.range(n_block_max_no_mask - 1, block_sched.n_block_min - 1, -1):
+            (
+                skip_gate_curr,
+                acc_s,
+                acc_o,
+                gate_max,
+                row_max,
+                row_sum,
+            ) = _fwd_inner_gated_kernel(
+                config=config,
+                ptrs_sched=ptrs_sched,
+                mask_sched=mask_sched,
+                softmax_sched=softmax_sched,
+                skip_gate_curr=skip_gate_curr,
+                acc_s=acc_s,
+                acc_o=acc_o,
+                q_tile=q_tile,
+                a_tile=a_tile,
+                k_ptrs=k_ptrs,
+                v_ptrs=v_ptrs,
+                d_ptrs=d_ptrs,
+                a_max=a_max,
+                a_min=a_min,
+                gate_max=gate_max,
+                row_max=row_max,
+                row_sum=row_sum,
+                n_block=n_block,
+                n_block_min=block_sched.n_block_min,
+                IS_MASK=False,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
+                MASK_SINK=False,
+                CHECK_INF=False,
+            )
+
+    if IS_LOCAL:
+        # Process n_blocks with local right masking
+        if block_sched.n_block_window_max > block_sched.n_block_window_max_no_mask:
+            # Load key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max - 1)
+
+            # Load delta tile
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_max - 1)
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = softmax_sched.online_gate(
+                a_max=a_max,
+                a_min=a_min,
+                d_max=d_max,
+                d_min=d_min,
+                gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+            for n_block in tl.range(
+                block_sched.n_block_window_max - 1,
+                block_sched.n_block_window_max_no_mask - 1,
+                -1,
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    gate_max,
+                    row_max,
+                    row_sum,
+                ) = _fwd_inner_gated_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_window_max_no_mask,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
+                    MASK_SINK=False,
+                    CHECK_INF=True,
+                )
+
+        # Process n_blocks without masking
+        if block_sched.n_block_window_max_no_mask > block_sched.n_block_window_min_no_mask:
+            # Load key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_max_no_mask - 1)
+
+            # Load delta tile
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_max_no_mask - 1)
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = softmax_sched.online_gate(
+                a_max=a_max,
+                a_min=a_min,
+                d_max=d_max,
+                d_min=d_min,
+                gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+            for n_block in tl.range(
+                block_sched.n_block_window_max_no_mask - 1,
+                block_sched.n_block_window_min_no_mask - 1,
+                -1,
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    gate_max,
+                    row_max,
+                    row_sum,
+                ) = _fwd_inner_gated_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_window_min_no_mask,
+                    IS_MASK=False,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=False,
+                    MASK_SINK=False,
+                    CHECK_INF=False,
+                )
+
+        # Process n_blocks with local left masking
+        if block_sched.n_block_window_min_no_mask > block_sched.n_block_window_min:
+            # Load key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_window_min_no_mask - 1)
+
+            # Load delta tile
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_window_min_no_mask - 1)
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = softmax_sched.online_gate(
+                a_max=a_max,
+                a_min=a_min,
+                d_max=d_max,
+                d_min=d_min,
+                gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+            for n_block in tl.range(
+                block_sched.n_block_window_min_no_mask - 1,
+                block_sched.n_block_window_min - 1,
+                -1,
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    gate_max,
+                    row_max,
+                    row_sum,
+                ) = _fwd_inner_gated_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_window_min,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
+                    MASK_SINK=False,
+                    CHECK_INF=True,
+                )
+
+        # Process n_blocks with local sink masking
+        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
+            # Load key tile
+            k_tile = ptrs_sched.load_k(config, k_ptrs, block_sched.n_block_sink_max - 1)
+
+            # Load delta tile
+            d_tile = ptrs_sched.load_d(config, d_ptrs, block_sched.n_block_sink_max - 1)
+            d_max = tl.max(d_tile)
+            d_min = tl.min(d_tile)
+
+            # Check if any gates are active for current tile
+            gate_max, skip_gate_curr = softmax_sched.online_gate(
+                a_max=a_max,
+                a_min=a_min,
+                d_max=d_max,
+                d_min=d_min,
+                gate_max=gate_max,
+                gate_threshold_log2=config.gate_threshold_log2,
+            )
+
+            # Compute attention gates
+            acc_s = a_tile[:, None] * d_tile[None, :]
+            if IS_LOGSIGMOID_GATE:
+                acc_s = softmax_sched.log_sigmoid(
+                    acc_s=acc_s,
+                )
+
+            # Compute attention scores
+            acc_s += tl.dot(q_tile, k_tile.T)
+
+            for n_block in tl.range(
+                block_sched.n_block_sink_max - 1,
+                block_sched.n_block_sink_min - 1,
+                -1,
+            ):
+                (
+                    skip_gate_curr,
+                    acc_s,
+                    acc_o,
+                    gate_max,
+                    row_max,
+                    row_sum,
+                ) = _fwd_inner_gated_kernel(
+                    config=config,
+                    ptrs_sched=ptrs_sched,
+                    mask_sched=mask_sched,
+                    softmax_sched=softmax_sched,
+                    skip_gate_curr=skip_gate_curr,
+                    acc_s=acc_s,
+                    acc_o=acc_o,
+                    q_tile=q_tile,
+                    a_tile=a_tile,
+                    k_ptrs=k_ptrs,
+                    v_ptrs=v_ptrs,
+                    d_ptrs=d_ptrs,
+                    a_max=a_max,
+                    a_min=a_min,
+                    gate_max=gate_max,
+                    row_max=row_max,
+                    row_sum=row_sum,
+                    n_block=n_block,
+                    n_block_min=block_sched.n_block_sink_min,
+                    IS_MASK=True,
+                    MASK_CAUSAL=False,
+                    MASK_LOCAL=True,
+                    MASK_SINK=True,
+                    CHECK_INF=True,
+                )
+
+    # Finalize softmax
+    row_scale, lse_tile = softmax_sched.finalize(
+        row_max=row_max,
+        row_sum=row_sum,
+        IS_LOG2=IS_SPLIT_KV,
+    )
+
+    # Store LSE
+    ptrs_sched.store_lse(config, lse_ptrs, lse_tile)
+
+    # Finalize rescale
+    acc_o = softmax_sched.rescale_o(
+        acc_o=acc_o,
+        row_scale=row_scale,
+    )
+
+    # Store output
+    ptrs_sched.store_out(config, out_ptrs, acc_o, IS_SPLIT_KV=IS_SPLIT_KV)
+
+
+_fwd_gated_kernel = cache_utils.wrap_kernel(_fwd_gated_kernel)
+
+
+_fwd_gated_kernel_autotuned = {}
+
+
+def _get_autotuned_kernel(tile_n=None):
+    global _fwd_gated_kernel_autotuned
+    if tile_n not in _fwd_gated_kernel_autotuned:
+        jit_kernel = _fwd_gated_kernel._kernel
+        autotuned = autotuner.make_fwd_gated_autotuned_kernel(jit_kernel, tile_n=tile_n)
+        _fwd_gated_kernel_autotuned[tile_n] = autotuner.AutotunedKernel(autotuned)
+    return _fwd_gated_kernel_autotuned[tile_n]
+
+
+def _flash_gated_attn_forward(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
+    is_causal: bool = False,
+    softmax_scale: float = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: float = None,
+    gate_threshold: float = None,
+    is_logsigmoid_gate: bool = False,
+    is_adapt_gate: bool = True,
+    is_local: bool = False,
+    is_quant: bool = False,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
+    num_splits: Optional[int] = None,
+    page_table: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    out: Optional[torch.Tensor] = None,
+    lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
+    skip_checks: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
+    device = query.device
+    num_SMs = cache_utils.get_device_num_sms(device)
+    batch_size, seqlen_q, num_heads_q, head_dim = query.shape
+    if page_table is not None:
+        _, page_size, num_heads_kv, _ = key.shape
+        seqlen_k = page_table.shape[1] * page_size
+    else:
+        page_size = None
+        _, seqlen_k, num_heads_kv, _ = key.shape
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
+    gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
+    qhead_per_kvhead = num_heads_q // num_heads_kv
+    qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    if is_local and window_sizes is None:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+
+    if not skip_checks:
+        assert_inputs.assert_fwd_inputs(
+            query,
+            key,
+            value,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
+            window_sizes=window_sizes,
+            alpha=alpha,
+            delta=delta,
+            cu_seqlens_q=None,
+            cu_seqlens_k=None,
+            seqused_q=None,
+            seqused_k=seqused_k,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
+            page_size=page_size,
+            tile_mn=tile_mn,
+            is_quant=is_quant,
+            device=device,
+        )
+
+    TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    kernel_name = f"fwd_gated{'_split' if is_split_kv else ''}"
+    launch_config = None
+    if not is_autotune:
+        kernel = _fwd_gated_kernel
+        TILE_M, TILE_N = (
+            tile_mn
+            if tile_mn is not None
+            else (
+                64,
+                page_size if page_table is not None else 64,
+            )
+        )
+        num_warps, num_stages, num_ctas = 4, 1, 1
+    else:
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name=kernel_name,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            tile_n=page_size if page_table is not None else None,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            pack_gqa=pack_gqa,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _fwd_gated_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel(page_size if page_table is not None else None)
+            # Placeholder for pre-launch computations
+            TILE_M = 64
+            TILE_N = page_size if page_table is not None else 64
+            num_warps = num_stages = num_ctas = None
+
+    if is_split_kv and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
+            seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
+            seqlen_k=seqlen_k,
+            num_SMs=num_SMs,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
+        )
+    elif not is_split_kv:
+        num_splits = 1
+
+    out_dtype = torch.bfloat16 if is_quant else query.dtype
+    out = out if out is not None else torch.zeros_like(query, dtype=out_dtype)
+    lse = (
+        lse
+        if lse is not None
+        else torch.zeros(
+            (batch_size, num_heads_q, seqlen_q),
+            device=query.device,
+            dtype=torch.float32,
+        )
+    )
+
+    if is_split_kv:
+        out_partial = torch.empty(
+            (num_splits, batch_size, seqlen_q, num_heads_q, head_dim),
+            dtype=torch.float32,
+            device=query.device,
+        )
+        lse_partial = torch.empty(
+            (num_splits, batch_size, num_heads_q, seqlen_q),
+            dtype=torch.float32,
+            device=query.device,
+        )
+
+    grid = launch_grid.get_fwd_grid(
+        batch_size=batch_size,
+        seqlen_q=seqlen_q,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        pack_gqa=pack_gqa,
+        num_splits=num_splits,
+    )
+
+    triton.set_allocator(utils.alloc_fn)
+
+    kernel[grid](
+        query,
+        key,
+        value,
+        alpha,
+        delta,
+        out if not is_split_kv else out_partial,
+        lse if not is_split_kv else lse_partial,
+        softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
+        window_sizes,
+        softmax_threshold,
+        gate_threshold,
+        page_table,
+        query.stride(0),
+        query.stride(-2),
+        query.stride(-3),
+        key.stride(0),
+        key.stride(-2),
+        key.stride(-3),
+        value.stride(0),
+        value.stride(-2),
+        value.stride(-3),
+        alpha.stride(0),
+        alpha.stride(-2),
+        alpha.stride(-1),
+        delta.stride(0),
+        delta.stride(-2),
+        delta.stride(-1),
+        out.stride(0) if not is_split_kv else out_partial.stride(1),
+        out.stride(-2) if not is_split_kv else out_partial.stride(-2),
+        out.stride(-3) if not is_split_kv else out_partial.stride(-3),
+        0 if not is_split_kv else out_partial.stride(0),
+        lse.stride(0) if not is_split_kv else lse_partial.stride(1),
+        lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
+        0 if not is_split_kv else lse_partial.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
+        page_table.stride(0) if page_table is not None else 0,
+        None,
+        None,
+        None,
+        seqused_k,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=max(triton.next_power_of_2(seqlen_q), 256),
+        SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
+        QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        PACK_GQA=pack_gqa,
+        QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
+        NUM_SPLITS=num_splits,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
+        TILE_K=TILE_K,
+        IS_CAUSAL=is_causal,
+        IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
+        IS_SPLIT_KV=is_split_kv,
+        IS_PAGED_KV=page_table is not None,
+        IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
+        IS_ADAPT_GATE=is_adapt_gate,
+        HAS_CU_SEQLENS_Q=False,
+        HAS_CU_SEQLENS_K=False,
+        HAS_SEQUSED_Q=False,
+        HAS_SEQUSED_K=seqused_k is not None,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
+    )
+
+    if is_autotune and launch_config is None:
+        best = launch_template.extract_best_config(
+            _get_autotuned_kernel(page_size if page_table is not None else None)
+        )
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name=kernel_name,
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                tile_n=page_size if page_table is not None else None,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+                pack_gqa=pack_gqa,
+                is_quant=is_quant,
+            )
+
+    if is_split_kv:
+        flash_fwd_combine._flash_attn_fwd_combine(
+            out_partial,
+            lse_partial,
+            out,
+            lse,
+        )
+
+    return out, lse, softmax_scale, softmax_threshold, gate_threshold
+
+
+def _flash_gated_attn_varlen_forward(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    alpha: torch.Tensor,
+    delta: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    is_causal: bool = False,
+    softmax_scale: float = None,
+    query_scale: Optional[torch.Tensor] = None,
+    key_scale: Optional[torch.Tensor] = None,
+    value_scale: Optional[torch.Tensor] = None,
+    window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: float = None,
+    gate_threshold: float = None,
+    is_logsigmoid_gate: bool = True,
+    is_adapt_gate: bool = True,
+    is_local: bool = False,
+    is_quant: bool = False,
+    is_split_kv: bool = False,
+    pack_gqa: bool = False,
+    num_splits: Optional[int] = None,
+    seqused_q: Optional[torch.Tensor] = None,
+    seqused_k: Optional[torch.Tensor] = None,
+    out: Optional[torch.Tensor] = None,
+    lse: Optional[torch.Tensor] = None,
+    is_autotune: bool = True,
+    tile_mn: Optional[Tuple[int, int]] = None,
+    skip_checks: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, float, float, float]:
+    device = query.device
+    num_SMs = cache_utils.get_device_num_sms(device)
+    total_seqlen_q, num_heads_q, head_dim = query.shape
+    _, num_heads_kv, _ = key.shape
+    batch_size = cu_seqlens_q.shape[0] - 1
+    seqlen_q = max_seqlen_q
+    seqlen_k = max_seqlen_k
+    softmax_scale = softmax_scale if softmax_scale is not None else 1.0 / (head_dim**0.5)
+    softmax_threshold = softmax_threshold if softmax_threshold is not None else 1.0
+    gate_threshold = gate_threshold if gate_threshold is not None else 1.0 / seqlen_k
+    qhead_per_kvhead = num_heads_q // num_heads_kv
+    qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
+    if is_local and window_sizes is None:
+        window_sizes = utils.window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+
+    if not skip_checks:
+        assert_inputs.assert_fwd_inputs(
+            query,
+            key,
+            value,
+            query_scale=query_scale,
+            key_scale=key_scale,
+            value_scale=value_scale,
+            window_sizes=window_sizes,
+            alpha=alpha,
+            delta=delta,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            seqused_q=seqused_q,
+            seqused_k=seqused_k,
+            num_heads_q=num_heads_q,
+            num_heads_kv=num_heads_kv,
+            head_dim=head_dim,
+            is_quant=is_quant,
+            device=device,
+        )
+
+    TILE_K = max(triton.next_power_of_2(head_dim), 16)
+
+    kernel_name = f"fwd_gated{'_split' if is_split_kv else ''}"
+    launch_config = None
+    if not is_autotune:
+        kernel = _fwd_gated_kernel
+        TILE_M, TILE_N = tile_mn if tile_mn is not None else (64, 64)
+        num_warps, num_stages, num_ctas = 4, 1, 1
+    else:
+        launch_config = launch_template.load_launch_config(
+            device=device,
+            kernel_name=kernel_name,
+            seqlen_q=seqlen_q,
+            seqlen_k=seqlen_k,
+            tile_k=TILE_K,
+            is_local=is_local,
+            qhead_per_kvhead=qhead_per_kvhead,
+            is_causal=is_causal,
+            pack_gqa=pack_gqa,
+            is_quant=is_quant,
+        )
+        if launch_config is not None:
+            kernel = _fwd_gated_kernel
+            TILE_M, TILE_N, num_warps, num_stages, num_ctas = launch_config
+        else:
+            kernel = _get_autotuned_kernel()
+            # Placeholder for pre-launch computations
+            TILE_M = TILE_N = 64
+            num_warps = num_stages = num_ctas = None
+
+    if is_split_kv and num_splits is None:
+        num_splits = utils.num_splits_heuristic(
+            seqlen_q=seqlen_q * qhead_per_kvhead_packgqa,
+            seqlen_k=seqlen_k,
+            num_SMs=num_SMs,
+            TILE_M=TILE_M,
+            TILE_N=TILE_N,
+            is_local=is_local,
+            num_heads_kv=num_heads_kv,
+        )
+    elif not is_split_kv:
+        num_splits = 1
+
+    out_dtype = torch.bfloat16 if is_quant else query.dtype
+    out = out if out is not None else torch.zeros_like(query, dtype=out_dtype)
+    lse = (
+        lse
+        if lse is not None
+        else torch.empty(
+            (num_heads_q, total_seqlen_q),
+            dtype=torch.float32,
+            device=query.device,
+        )
+    )
+
+    if is_split_kv:
+        out_partial = torch.empty(
+            (num_splits, total_seqlen_q, num_heads_q, head_dim),
+            dtype=torch.float32,
+            device=query.device,
+        )
+        lse_partial = torch.empty(
+            (num_splits, num_heads_q, total_seqlen_q),
+            dtype=torch.float32,
+            device=query.device,
+        )
+
+    grid = launch_grid.get_fwd_grid(
+        batch_size=batch_size,
+        seqlen_q=seqlen_q,
+        num_heads_q=num_heads_q,
+        num_heads_kv=num_heads_kv,
+        pack_gqa=pack_gqa,
+        num_splits=num_splits,
+    )
+
+    triton.set_allocator(utils.alloc_fn)
+
+    kernel[grid](
+        query,
+        key,
+        value,
+        alpha,
+        delta,
+        out if not is_split_kv else out_partial,
+        lse if not is_split_kv else lse_partial,
+        softmax_scale,
+        query_scale,
+        key_scale,
+        value_scale,
+        window_sizes,
+        softmax_threshold,
+        gate_threshold,
+        None,
+        0,
+        query.stride(-2),
+        query.stride(0),
+        0,
+        key.stride(-2),
+        key.stride(0),
+        0,
+        value.stride(-2),
+        value.stride(0),
+        0,
+        alpha.stride(0),
+        alpha.stride(-1),
+        0,
+        delta.stride(0),
+        delta.stride(-1),
+        0,
+        out.stride(-2) if not is_split_kv else out_partial.stride(-2),
+        out.stride(0) if not is_split_kv else out_partial.stride(-3),
+        0 if not is_split_kv else out_partial.stride(0),
+        0,
+        lse.stride(-2) if not is_split_kv else lse_partial.stride(-2),
+        0 if not is_split_kv else lse_partial.stride(0),
+        window_sizes.stride(0) if window_sizes is not None else 0,
+        0,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        seqused_q,
+        seqused_k,
+        seqlen_q=seqlen_q,
+        seqlen_k=seqlen_k,
+        head_dim=head_dim,
+        SEQLEN_Q_CACHE=max(triton.next_power_of_2(seqlen_q), 256),
+        SEQLEN_K_CACHE=max(triton.next_power_of_2(seqlen_k), 256),
+        QHEAD_PER_KVHEAD=qhead_per_kvhead,
+        PACK_GQA=pack_gqa,
+        QHEAD_PER_KVHEAD_PACKGQA=qhead_per_kvhead_packgqa,
+        NUM_SPLITS=num_splits,
+        TILE_M=TILE_M,
+        TILE_N=TILE_N,
+        TILE_K=TILE_K,
+        IS_CAUSAL=is_causal,
+        IS_LOCAL=is_local,
+        IS_QUANT=is_quant,
+        IS_SPLIT_KV=is_split_kv,
+        IS_PAGED_KV=False,
+        IS_LOGSIGMOID_GATE=is_logsigmoid_gate,
+        IS_ADAPT_GATE=is_adapt_gate,
+        HAS_CU_SEQLENS_Q=True,
+        HAS_CU_SEQLENS_K=True,
+        HAS_SEQUSED_Q=seqused_q is not None,
+        HAS_SEQUSED_K=seqused_k is not None,
+        num_warps=num_warps,
+        num_stages=num_stages,
+        num_ctas=num_ctas,
+    )
+
+    if is_autotune and launch_config is None:
+        best = launch_template.extract_best_config(_get_autotuned_kernel())
+        if best is not None:
+            launch_template.store_launch_config(
+                device=device,
+                kernel_name=kernel_name,
+                seqlen_q=seqlen_q,
+                seqlen_k=seqlen_k,
+                tile_k=TILE_K,
+                config=best,
+                is_local=is_local,
+                qhead_per_kvhead=qhead_per_kvhead,
+                is_causal=is_causal,
+                pack_gqa=pack_gqa,
+                is_quant=is_quant,
+            )
+
+    if is_split_kv:
+        flash_fwd_combine._flash_attn_fwd_combine(
+            out_partial,
+            lse_partial,
+            out,
+            lse,
+            cu_seqlens_q=cu_seqlens_q,
+        )
+
+    return out, lse, softmax_scale, softmax_threshold, gate_threshold
