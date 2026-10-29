@@ -1,28 +1,39 @@
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 
 @triton.jit
 def get_seqlen_info(
-    batch_idx,
-    seqlen_static,
-    cu_seqlens,
-    seqused,
-    HAS_CU_SEQLENS: tl.constexpr,
-    HAS_SEQUSED: tl.constexpr,
-):
+    batch_idx: tl.tensor,
+    seqlen_static: tl.tensor,
+    cu_seqlens: tl.tensor,
+    seqused: tl.tensor,
+    TILE_MN: tl.constexpr,
+    HAS_CU_SEQLENS: tl.constexpr = False,
+    HAS_SEQUSED: tl.constexpr = False,
+) -> tuple[tl.tensor, tl.tensor, tl.tensor]:
     """
     Get offset and seqlen for a given batch index.
 
-    :param batch_idx: Index of the batch.
-    :param seqlen_static: Static sequence length if cu_seqlens is not provided.
-    :param cu_seqlens: Cumulative sequence lengths tensor.
-    :param seqused: Actual sequence lengths tensor.
-    :param HAS_CU_SEQLENS: Boolean flag indicating if cu_seqlens is provided.
-    :param HAS_SEQUSED: Boolean flag indicating if seqused is provided.
+    :param batch_idx: index of the batch
+    :type batch_idx: tensor
+    :param seqlen_static: static sequence length if cu_seqlens is not provided
+    :type seqlen_static: tensor
+    :param cu_seqlens: cumulative sequence lengths tensor
+    :type cu_seqlens: tensor
+    :param seqused: actual sequence lengths tensor
+    :type seqused: tensor
+    :param TILE_MN: tile size along the M or N dimension
+    :type TILE_MN: int
+    :param HAS_CU_SEQLENS: boolean flag indicating if cu_seqlens is provided
+    :type HAS_CU_SEQLENS: bool
+    :param HAS_SEQUSED: boolean flag indicating if seqused is provided
+    :type HAS_SEQUSED: bool
 
-    :return offset: Offset for the given batch index.
-    :return seqlen: Sequence length for the given batch index.
+    :return offset: offset for the given batch index
+    :return padded_offset: offset aligned to TILE_MN for the given batch index
+    :return seqlen: sequence length for the given batch index
     """
     if HAS_CU_SEQLENS:
         offset = tl.load(cu_seqlens + batch_idx)
@@ -36,172 +47,171 @@ def get_seqlen_info(
             seqlen = tl.load(seqused + batch_idx)
         else:
             seqlen = seqlen_static
-    return offset, seqlen
+    padded_offset = (
+        (offset + batch_idx * TILE_MN) // TILE_MN * TILE_MN if HAS_CU_SEQLENS else tl.to_tensor(0)
+    )
+    return offset, padded_offset, seqlen
 
 
 @triton.jit
 def get_seqlen_info_qk(
-    batch_idx,
-    seqlen_q_static,
-    seqlen_k_static,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    seqused_q,
-    seqused_k,
+    batch_idx: tl.tensor,
+    seqlen_q_static: tl.tensor,
+    seqlen_k_static: tl.tensor,
+    cu_seqlens_q: tl.tensor,
+    cu_seqlens_k: tl.tensor,
+    seqused_q: tl.tensor,
+    seqused_k: tl.tensor,
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
-    HAS_CU_SEQLENS_Q: tl.constexpr,
-    HAS_CU_SEQLENS_K: tl.constexpr,
-    HAS_SEQUSED_Q: tl.constexpr,
-    HAS_SEQUSED_K: tl.constexpr,
-):
+    HAS_CU_SEQLENS_Q: tl.constexpr = False,
+    HAS_CU_SEQLENS_K: tl.constexpr = False,
+    HAS_SEQUSED_Q: tl.constexpr = False,
+    HAS_SEQUSED_K: tl.constexpr = False,
+) -> tuple[tl.tensor, tl.tensor, tl.tensor, tl.tensor, tl.tensor, tl.tensor]:
     """
     Get offset, padded_offset, and seqlen for both Q and K.
 
-    :param batch_idx: Index of the batch.
-    :param seqlen_q_static: Static sequence length for Q if cu_seqlens_q is not provided.
-    :param seqlen_k_static: Static sequence length for K if cu_seqlens_k is not provided.
-    :param cu_seqlens_q: Cumulative sequence lengths tensor for Q.
-    :param cu_seqlens_k: Cumulative sequence lengths tensor for K.
-    :param seqused_q: Actual sequence lengths tensor for Q.
-    :param seqused_k: Actual sequence lengths tensor for K.
-    :param TILE_M: Tile size for Q.
-    :param TILE_N: Tile size for K.
-    :param HAS_CU_SEQLENS_Q: Boolean flag indicating if cu_seqlens_q is provided.
-    :param HAS_CU_SEQLENS_K: Boolean flag indicating if cu_seqlens_k is provided.
-    :param HAS_SEQUSED_Q: Boolean flag indicating if seqused_q is provided.
-    :param HAS_SEQUSED_K: Boolean flag indicating if seqused_k is provided.
+    :param batch_idx: index of the batch
+    :type batch_idx: tensor
+    :param seqlen_q_static: static sequence length for Q if cu_seqlens_q is not provided
+    :type seqlen_q_static: tensor
+    :param seqlen_k_static: static sequence length for K if cu_seqlens_k is not provided
+    :type seqlen_k_static: tensor
+    :param cu_seqlens_q: cumulative sequence lengths tensor for Q
+    :type cu_seqlens_q: tensor
+    :param cu_seqlens_k: cumulative sequence lengths tensor for K
+    :type cu_seqlens_k: tensor
+    :param seqused_q: actual sequence lengths tensor for Q
+    :type seqused_q: tensor
+    :param seqused_k: actual sequence lengths tensor for K
+    :type seqused_k: tensor
+    :param TILE_M: tile size for Q
+    :type TILE_M: int
+    :param TILE_N: tile size for K
+    :type TILE_N: int
+    :param HAS_CU_SEQLENS_Q: boolean flag indicating if cu_seqlens_q is provided
+    :type HAS_CU_SEQLENS_Q: bool
+    :param HAS_CU_SEQLENS_K: boolean flag indicating if cu_seqlens_k is provided
+    :type HAS_CU_SEQLENS_K: bool
+    :param HAS_SEQUSED_Q: boolean flag indicating if seqused_q is provided
+    :type HAS_SEQUSED_Q: bool
+    :param HAS_SEQUSED_K: boolean flag indicating if seqused_k is provided
+    :type HAS_SEQUSED_K: bool
 
-    :return offset_q: Offset for Q for the given batch index.
-    :return offset_k: Offset for K for the given batch index.
-    :return padded_offset_q: Padded offset for Q aligned to TILE_M.
-    :return padded_offset_k: Padded offset for K aligned to TILE_N.
-    :return seqlen_q: Sequence length for Q for the given batch index.
-    :return seqlen_k: Sequence length for K for the given batch index.
+    :return offset_q: offset for Q for the given batch index
+    :return offset_k: offset for K for the given batch index
+    :return padded_offset_q: padded offset for Q aligned to TILE_M
+    :return padded_offset_k: padded offset for K aligned to TILE_N
+    :return seqlen_q: sequence length for Q for the given batch index
+    :return seqlen_k: sequence length for K for the given batch index
     """
-
-    # Q offset and seqlen
-    if HAS_CU_SEQLENS_Q:
-        offset_q = tl.load(cu_seqlens_q + batch_idx)
-        padded_offset_q = (offset_q + batch_idx * TILE_M) // TILE_M * TILE_M
-        if HAS_SEQUSED_Q:
-            seqlen_q = tl.load(seqused_q + batch_idx)
-        else:
-            seqlen_q = tl.load(cu_seqlens_q + batch_idx + 1) - offset_q
-    else:
-        offset_q = 0
-        padded_offset_q = 0
-        if HAS_SEQUSED_Q:
-            seqlen_q = tl.load(seqused_q + batch_idx)
-        else:
-            seqlen_q = seqlen_q_static
-
-    # K offset and seqlen
-    if HAS_CU_SEQLENS_K:
-        offset_k = tl.load(cu_seqlens_k + batch_idx)
-        padded_offset_k = (offset_k + batch_idx * TILE_N) // TILE_N * TILE_N
-        if HAS_SEQUSED_K:
-            seqlen_k = tl.load(seqused_k + batch_idx)
-        else:
-            seqlen_k = tl.load(cu_seqlens_k + batch_idx + 1) - offset_k
-    else:
-        offset_k = 0
-        padded_offset_k = 0
-        if HAS_SEQUSED_K:
-            seqlen_k = tl.load(seqused_k + batch_idx)
-        else:
-            seqlen_k = seqlen_k_static
-
+    offset_q, padded_offset_q, seqlen_q = get_seqlen_info(
+        batch_idx,
+        seqlen_q_static,
+        cu_seqlens_q,
+        seqused_q,
+        TILE_MN=TILE_M,
+        HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+        HAS_SEQUSED=HAS_SEQUSED_Q,
+    )
+    offset_k, padded_offset_k, seqlen_k = get_seqlen_info(
+        batch_idx,
+        seqlen_k_static,
+        cu_seqlens_k,
+        seqused_k,
+        TILE_MN=TILE_N,
+        HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+        HAS_SEQUSED=HAS_SEQUSED_K,
+    )
     return offset_q, offset_k, padded_offset_q, padded_offset_k, seqlen_q, seqlen_k
 
 
 @triton.jit
 def get_softmax_threshold(
-    softmax_threshold,
-    m_block,
-    seqlen_q,
-    seqlen_k,
-    IS_CAUSAL: tl.constexpr,
-    TILE_M: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
+    softmax_threshold: tl.tensor,
+    m_block: tl.tensor,
+    seqlen_q: tl.tensor,
+    seqlen_k: tl.tensor,
+    row_offsets: tl.tensor,
+    IS_CAUSAL: tl.constexpr = False,
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr = 1,
+    IS_LOG2: tl.constexpr = True,
+    FAST_MATH: tl.constexpr = True,
 ):
     """
     Compute the softmax threshold for a given block.
 
-    :param softmax_threshold: Dimensionless multiple of uniform attention.
-    :param m_block: Current block index along the M dimension.
-    :param seqlen_q: Sequence length of the query.
-    :param seqlen_k: Sequence length of the key.
-    :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
-    :param TILE_M: Tile size along the M dimension.
-    :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
+    :param softmax_threshold: dimensionless multiple of uniform attention
+    :type softmax_threshold: tensor
+    :param m_block: current block index along the M dimension
+    :type m_block: tensor
+    :param seqlen_q: sequence length of the query
+    :type seqlen_q: tensor
+    :param seqlen_k: sequence length of the key
+    :type seqlen_k: tensor
+    :param row_offsets: row offsets for the current block
+    :type row_offsets: tensor
+    :param IS_CAUSAL: boolean flag indicating if the attention is causal
+    :type IS_CAUSAL: bool
+    :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
+    :type QHEAD_PER_KVHEAD_PACKGQA: int
+    :param IS_LOG2: boolean flag indicating if the threshold should be returned in log2-domain
+    :type IS_LOG2: bool
+    :param FAST_MATH: use approximate FTZ log2
+    :type FAST_MATH: bool
 
-    :return softmax_threshold_log2: softmax threshold of shape [TILE_M] in log2-domain for the given block.
+    :return softmax_threshold: softmax threshold of shape [TILE_M]
     """
     if IS_CAUSAL:
-        offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-        q_idx = offs_m
+        q_idx = m_block * row_offsets.shape[0] + row_offsets
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
-            q_idx = q_idx // QHEAD_PER_KVHEAD_PACKGQA
-        causal_offset = seqlen_k - seqlen_q
-        visible_len = (q_idx + causal_offset + 1).to(tl.float32)
+            q_idx //= QHEAD_PER_KVHEAD_PACKGQA
+        visible_len = (q_idx + seqlen_k - seqlen_q + 1).to(tl.float32)
     else:
-        visible_len = tl.full((TILE_M,), seqlen_k, dtype=tl.float32)
-    softmax_threshold_log2 = tl.log2(
-        tl.maximum(tl.minimum(softmax_threshold / visible_len, 1.0), 0.0)
-    )
-    return softmax_threshold_log2
-
-
-@triton.jit
-def get_gate_threshold(
-    gate_threshold,
-    m_block,
-    seqlen_q,
-    seqlen_k,
-    IS_CAUSAL: tl.constexpr,
-    TILE_M: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
-    IS_ADAPT_GATE: tl.constexpr,
-):
-    """
-    Compute the gate threshold for a given block.
-
-    :param gate_threshold: Threshold value for the gate.
-    :param m_block: Current block index along the M dimension.
-    :param seqlen_q: Sequence length of the query.
-    :param seqlen_k: Sequence length of the key.
-    :param IS_CAUSAL: Boolean flag indicating if the attention is causal.
-    :param TILE_M: Tile size along the M dimension.
-    :param QHEAD_PER_KVHEAD_PACKGQA: Ratio of query heads to key/value heads for packed GQA.
-    :param IS_ADAPT_GATE: Boolean flag indicating if self-adaptive gate threshold is enabled.
-
-    :return gate_threshold_log2: Lower-bound scalar gate threshold in log2-domain for the given block.
-    """
-    if IS_CAUSAL and IS_ADAPT_GATE:
-        offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
-        q_idx = offs_m
-        if QHEAD_PER_KVHEAD_PACKGQA > 1:
-            q_idx = q_idx // QHEAD_PER_KVHEAD_PACKGQA
-        causal_offset = seqlen_k - seqlen_q
-        g_thr = tl.min(gate_threshold * (q_idx + causal_offset + 1.0) / seqlen_k)
+        visible_len = row_offsets * 0.0 + seqlen_k
+    threshold = tl.maximum(tl.minimum(softmax_threshold / visible_len, 1.0), 0.0)
+    if not IS_LOG2:
+        return threshold
+    if FAST_MATH:
+        return libdevice.fast_log2f(threshold)
     else:
-        g_thr = tl.full((), gate_threshold, dtype=tl.float32)
-    gate_threshold_log2 = tl.log2(g_thr)
-    return gate_threshold_log2
+        return tl.log2(threshold)
 
 
 @triton.jit
 def offset_batch_Q(
-    base_ptr,
-    batch_idx,
-    offset,
-    padded_offset,
-    stride_batch,
-    stride_seq,
-    HAS_CU_SEQLENS: tl.constexpr,
-    USE_PADDED: tl.constexpr,
-):
+    base_ptr: tl.tensor,
+    batch_idx: tl.tensor,
+    offset: tl.tensor,
+    padded_offset: tl.tensor,
+    stride_batch: tl.tensor,
+    stride_seq: tl.tensor,
+    HAS_CU_SEQLENS: tl.constexpr = False,
+    USE_PADDED: tl.constexpr = False,
+) -> tl.tensor:
+    """
+    Offset a Q-like base pointer to the selected batch or packed sequence.
+
+    :param base_ptr: base pointer before applying the batch or sequence offset
+    :type base_ptr: tensor
+    :param batch_idx: index of the batch
+    :type batch_idx: tensor
+    :param offset: unpadded token offset for the selected packed sequence
+    :type offset: tensor
+    :param padded_offset: token offset aligned to TILE_M
+    :type padded_offset: tensor
+    :param stride_batch: stride between batches
+    :type stride_batch: tensor
+    :param stride_seq: stride between sequence positions
+    :type stride_seq: tensor
+    :param HAS_CU_SEQLENS: boolean flag indicating if packed sequence offsets are provided
+    :type HAS_CU_SEQLENS: bool
+    :param USE_PADDED: boolean flag indicating if the padded sequence offset should be used
+    :type USE_PADDED: bool
+
+    :return base_ptr: base pointer offset to the selected batch or packed sequence
+    """
     if HAS_CU_SEQLENS:
         actual_offset = padded_offset if USE_PADDED else offset
         return base_ptr + actual_offset * stride_seq
@@ -211,15 +221,37 @@ def offset_batch_Q(
 
 @triton.jit
 def offset_batch_K(
-    base_ptr,
-    batch_idx,
-    offset,
-    padded_offset,
-    stride_batch,
-    stride_seq,
-    HAS_CU_SEQLENS: tl.constexpr,
-    USE_PADDED: tl.constexpr,
-):
+    base_ptr: tl.tensor,
+    batch_idx: tl.tensor,
+    offset: tl.tensor,
+    padded_offset: tl.tensor,
+    stride_batch: tl.tensor,
+    stride_seq: tl.tensor,
+    HAS_CU_SEQLENS: tl.constexpr = False,
+    USE_PADDED: tl.constexpr = False,
+) -> tl.tensor:
+    """
+    Offset a K-like base pointer to the selected batch or packed sequence.
+
+    :param base_ptr: base pointer before applying the batch or sequence offset
+    :type base_ptr: tensor
+    :param batch_idx: index of the batch
+    :type batch_idx: tensor
+    :param offset: unpadded token offset for the selected packed sequence
+    :type offset: tensor
+    :param padded_offset: token offset aligned to TILE_N
+    :type padded_offset: tensor
+    :param stride_batch: stride between batches
+    :type stride_batch: tensor
+    :param stride_seq: stride between sequence positions
+    :type stride_seq: tensor
+    :param HAS_CU_SEQLENS: boolean flag indicating if packed sequence offsets are provided
+    :type HAS_CU_SEQLENS: bool
+    :param USE_PADDED: boolean flag indicating if the padded sequence offset should be used
+    :type USE_PADDED: bool
+
+    :return base_ptr: base pointer offset to the selected batch or packed sequence
+    """
     if HAS_CU_SEQLENS:
         actual_offset = padded_offset if USE_PADDED else offset
         return base_ptr + actual_offset * stride_seq
@@ -229,48 +261,86 @@ def offset_batch_K(
 
 @triton.jit
 def make_ptrs(
-    base_ptrs,
-    mn_block,
-    stride_seq,
-    TILE_MN: tl.constexpr,
+    base_ptr: tl.tensor,
+    mn_block: tl.tensor,
+    stride_seq: tl.tensor,
+    offs_mn: tl.tensor,
+    offs_k: tl.tensor,
     TILE_K: tl.constexpr,
-    SWAP_AB: tl.constexpr,
-):
-    offs_mn = mn_block * TILE_MN + tl.arange(0, TILE_MN)
-    if TILE_K > 1:
-        offs_k = tl.arange(0, TILE_K)
-        if SWAP_AB:
-            ptrs = base_ptrs + offs_mn[None, :] * stride_seq + offs_k[:, None]
-        else:
-            ptrs = base_ptrs + offs_mn[:, None] * stride_seq + offs_k[None, :]
+    SWAP_AB: tl.constexpr = False,
+) -> tl.tensor:
+    """
+    Construct pointers for a sequence tile.
+
+    :param base_ptr: base pointer for the selected batch and head
+    :type base_ptr: tensor
+    :param mn_block: current block index along the sequence dimension
+    :type mn_block: tensor
+    :param stride_seq: stride between sequence positions
+    :type stride_seq: tensor
+    :param offs_mn: lane offsets along the M or N dimension
+    :type offs_mn: tensor
+    :param offs_k: lane offsets along the K dimension
+    :type offs_k: tensor
+    :param TILE_K: tile size along the K dimension
+    :type TILE_K: int
+    :param SWAP_AB: boolean flag indicating if the sequence and K dimensions are swapped
+    :type SWAP_AB: bool
+
+    :return ptrs: pointer tensor for the requested tile
+    """
+    offs_mn = mn_block * offs_mn.shape[0] + offs_mn
+    if TILE_K == 1:
+        return base_ptr + offs_mn * stride_seq
     else:
-        ptrs = base_ptrs + offs_mn * stride_seq
-    return ptrs
+        if SWAP_AB:
+            return base_ptr + offs_mn[None, :] * stride_seq + offs_k[:, None]
+        else:
+            return base_ptr + offs_mn[:, None] * stride_seq + offs_k[None, :]
 
 
 @triton.jit
 def make_pack_gqa_ptrs(
-    base_ptrs,
-    m_block,
-    head_idx,
-    stride_head,
-    stride_seq,
-    TILE_M: tl.constexpr,
+    base_ptr: tl.tensor,
+    m_block: tl.tensor,
+    head_idx: tl.tensor,
+    stride_head: tl.tensor,
+    stride_seq: tl.tensor,
+    offs_m: tl.tensor,
+    offs_k: tl.tensor,
     TILE_K: tl.constexpr,
-    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr,
-):
-    offs_m = m_block * TILE_M + tl.arange(0, TILE_M)
+    QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr = 1,
+) -> tl.tensor:
+    """
+    Construct pointers for a packed-GQA tile.
+
+    :param base_ptr: base pointer for the selected batch
+    :type base_ptr: tensor
+    :param m_block: current block index along the packed M dimension
+    :type m_block: tensor
+    :param head_idx: index of the current KV head
+    :type head_idx: tensor
+    :param stride_head: stride between query heads
+    :type stride_head: tensor
+    :param stride_seq: stride between sequence positions
+    :type stride_seq: tensor
+    :param offs_m: lane offsets along the packed M dimension
+    :type offs_m: tensor
+    :param offs_k: lane offsets along the K dimension
+    :type offs_k: tensor
+    :param TILE_K: tile size along the K dimension
+    :type TILE_K: int
+    :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
+    :type QHEAD_PER_KVHEAD_PACKGQA: int
+
+    :return ptrs: pointer tensor for the requested packed-GQA tile
+    """
+    offs_m = m_block * offs_m.shape[0] + offs_m
     m_idx = offs_m // QHEAD_PER_KVHEAD_PACKGQA
-    q_head_offset = offs_m - m_idx * QHEAD_PER_KVHEAD_PACKGQA
-    q_head = head_idx * QHEAD_PER_KVHEAD_PACKGQA + q_head_offset
-    if TILE_K > 1:
-        offs_k = tl.arange(0, TILE_K)
-        ptrs = (
-            base_ptrs
-            + m_idx[:, None] * stride_seq
-            + q_head[:, None] * stride_head
-            + offs_k[None, :]
-        )
+    q_head = head_idx * QHEAD_PER_KVHEAD_PACKGQA + offs_m - m_idx * QHEAD_PER_KVHEAD_PACKGQA
+    if TILE_K == 1:
+        return base_ptr + m_idx * stride_seq + q_head * stride_head
     else:
-        ptrs = base_ptrs + m_idx * stride_seq + q_head * stride_head
-    return ptrs
+        return (
+            base_ptr + m_idx[:, None] * stride_seq + q_head[:, None] * stride_head + offs_k[None, :]
+        )
