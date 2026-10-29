@@ -1,3 +1,4 @@
+# Copyright (c) 2026, Jingze Shi.
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
