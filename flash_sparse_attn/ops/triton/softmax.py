@@ -32,7 +32,7 @@ def exp2(
     :return: tensor containing 2^x values
     """
     return tl.exp2(x)
-    
+
 
 @triton.jit
 def exp(
@@ -127,7 +127,7 @@ def score_skip(
     row_max: tl.tensor,
     row_sum: tl.tensor,
     scale_log2: tl.tensor,
-    softmax_threshold_log2: tl.tensor
+    softmax_threshold_log2: tl.tensor,
 ) -> tuple[tl.tensor, tl.tensor]:
     """
     Determine whether the current score can be skipped.
@@ -231,7 +231,7 @@ def finalize(
 @triton.jit
 def rescale_o(
     acc_o: tl.tensor,
-    row_scale: tl.tensor
+    row_scale: tl.tensor,
 ) -> tl.tensor:
     """
     Rescale output accumulator by row_scale.
