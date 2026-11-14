@@ -946,24 +946,17 @@ class AttnFwdBlockScheduler:
         self.n_block_sink_min = n_block_sink_min
         self.n_block_sink_max = n_block_sink_max
 
-    @triton.jit
-    def is_empty(self):
-        return (
-            (self.n_block_max <= self.n_block_min)
-            & (self.n_block_window_max <= self.n_block_window_min)
-            & (self.n_block_sink_max <= self.n_block_sink_min)
-        )
-
     @staticmethod
     @triton.jit
-    def create(
-        config: AttnFwdConfig,
-        split_idx,
-        NUM_SPLITS: tl.constexpr,
-        IS_CAUSAL: tl.constexpr,
-        IS_LOCAL: tl.constexpr,
-        IS_SPLIT_KV: tl.constexpr,
-    ):
+    def create(config: AttnFwdConfig) -> "AttnFwdBlockScheduler":
+        """
+        Compute the forward key-block ranges for the current query block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: forward block scheduler containing diagonal, window, and sink ranges
+        """
         # Compute causal n_block range for this m_block
         (
             n_block_min,
@@ -976,55 +969,47 @@ class AttnFwdBlockScheduler:
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
-            split_idx=split_idx,
+            split_idx=config.split_idx,
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
             window_size_near=config.window_size_near,
-            NUM_SPLITS=NUM_SPLITS,
+            NUM_SPLITS=config.NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_CAUSAL=IS_CAUSAL,
-            IS_LOCAL=IS_LOCAL,
-            IS_SPLIT_KV=IS_SPLIT_KV,
+            IS_CAUSAL=config.IS_CAUSAL,
+            IS_LOCAL=config.IS_LOCAL,
+            IS_SPLIT_KV=config.IS_SPLIT_KV,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
-        n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+        n_block_max_no_mask = block_info.get_n_block_max_no_causal_local_mask(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             m_block=config.m_block,
             n_block_min=n_block_min,
+            n_block_max=n_block_max - 1,
             window_size_right=0,
-            window_size_near=0,
+            window_size_near=config.window_size_near,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_LOCAL=False,
+            IS_CAUSAL=config.IS_CAUSAL,
+            IS_LOCAL=config.IS_LOCAL,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
         )
 
-        # Clamp to split's range so the no-mask loop stays within bounds
-        if IS_SPLIT_KV:
-            n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
-
-        if IS_LOCAL:
+        if config.IS_LOCAL:
             # Compute local n_block range for this m_block
-            if IS_SPLIT_KV:
-                n_block_max_no_mask = tl.where(
-                    split_idx >= NUM_SPLITS - 1,
-                    n_block_min,
-                    n_block_max_no_mask,
-                )
-            else:
-                n_block_max_no_mask = n_block_min
-            n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
+            n_block_window_max_no_mask = block_info.get_n_block_max_no_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 m_block=config.m_block,
                 n_block_min=n_block_window_min,
+                n_block_max=n_block_window_max,
                 window_size_right=config.window_size_right,
                 window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
                 TILE_M=config.TILE_M,
+                IS_CAUSAL=False,
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
@@ -1033,6 +1018,7 @@ class AttnFwdBlockScheduler:
                 seqlen_k=config.actual_seqlen_k,
                 m_block=config.m_block,
                 n_block_min=n_block_window_min,
+                n_block_max=n_block_window_max_no_mask,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
                 window_size_near=config.window_size_near,
@@ -1041,20 +1027,11 @@ class AttnFwdBlockScheduler:
                 IS_LOCAL=True,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
-            # Clamp window no-mask boundaries to the window's range
-            n_block_window_max_no_mask = tl.maximum(
-                tl.minimum(n_block_window_max_no_mask, n_block_window_max),
-                n_block_window_min,
-            )
-            n_block_window_min_no_mask = tl.maximum(
-                tl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
-                n_block_window_min,
-            )
         else:
-            n_block_window_min = 0
-            n_block_window_max = 0
-            n_block_window_min_no_mask = 0
-            n_block_window_max_no_mask = 0
+            n_block_window_min = tl.to_tensor(0)
+            n_block_window_max = tl.to_tensor(0)
+            n_block_window_min_no_mask = tl.to_tensor(0)
+            n_block_window_max_no_mask = tl.to_tensor(0)
 
         return AttnFwdBlockScheduler(
             n_block_min,
@@ -1066,6 +1043,19 @@ class AttnFwdBlockScheduler:
             n_block_window_max_no_mask,
             n_block_sink_min,
             n_block_sink_max,
+        )
+
+    @triton.jit
+    def is_empty(self) -> tl.tensor:
+        """
+        Check whether all forward key-block ranges are empty.
+
+        :return: boolean tensor indicating whether there are no N blocks to process
+        """
+        return (
+            (self.n_block_max <= self.n_block_min)
+            & (self.n_block_window_max <= self.n_block_window_min)
+            & (self.n_block_sink_max <= self.n_block_sink_min)
         )
 
 
@@ -1104,24 +1094,17 @@ class AttnBwdBlockScheduler:
         self.m_block_sink_min = m_block_sink_min
         self.m_block_sink_max = m_block_sink_max
 
-    @triton.jit
-    def is_empty(self):
-        return (
-            (self.m_block_max <= self.m_block_min)
-            & (self.m_block_window_max <= self.m_block_window_min)
-            & (self.m_block_sink_max <= self.m_block_sink_min)
-        )
-
     @staticmethod
     @triton.jit
-    def create(
-        config: AttnBwdConfig,
-        split_idx,
-        NUM_SPLITS: tl.constexpr,
-        IS_CAUSAL: tl.constexpr,
-        IS_LOCAL: tl.constexpr,
-        IS_SPLIT_QO: tl.constexpr,
-    ):
+    def create(config: AttnBwdConfig) -> "AttnBwdBlockScheduler":
+        """
+        Compute the backward query-block ranges for the current key block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: backward block scheduler containing diagonal, window, and sink ranges
+        """
         # Compute causal m_block range for this n_block
         (
             m_block_min,
@@ -1134,43 +1117,40 @@ class AttnBwdBlockScheduler:
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
-            split_idx=split_idx,
+            split_idx=config.split_idx,
             window_size_sink=config.window_size_sink,
             window_size_left=config.window_size_left,
             window_size_right=config.window_size_right,
             window_size_near=config.window_size_near,
-            NUM_SPLITS=NUM_SPLITS,
+            NUM_SPLITS=config.NUM_SPLITS,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_CAUSAL=IS_CAUSAL,
-            IS_LOCAL=IS_LOCAL,
-            IS_SPLIT_QO=IS_SPLIT_QO,
+            IS_CAUSAL=config.IS_CAUSAL,
+            IS_LOCAL=config.IS_LOCAL,
+            IS_SPLIT_QO=config.IS_SPLIT_QO,
         )
-        m_block_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+        m_block_min_no_mask = block_info.get_m_block_min_no_causal_local_mask(
             seqlen_q=config.actual_seqlen_q,
             seqlen_k=config.actual_seqlen_k,
             n_block=config.n_block,
             m_block_min=m_block_min,
+            m_block_max=m_block_max - 1,
             window_size_right=0,
-            window_size_near=0,
+            window_size_near=config.window_size_near,
             TILE_N=config.TILE_N,
             TILE_M=config.TILE_M,
-            IS_CAUSAL=IS_CAUSAL or IS_LOCAL,
-            IS_LOCAL=False,
+            IS_CAUSAL=config.IS_CAUSAL or config.IS_LOCAL,
+            IS_LOCAL=config.IS_LOCAL,
         )
 
-        # Clamp to split's range so the no-mask loop stays within bounds
-        if IS_SPLIT_QO:
-            m_block_min_no_mask = tl.minimum(m_block_min_no_mask, m_block_max)
-
-        if IS_LOCAL:
+        if config.IS_LOCAL:
             # Compute local m_block range for this n_block
-            m_block_min_no_mask = m_block_max
-            m_block_window_min_no_mask = block_info.get_m_block_min_causal_local_mask(
+            m_block_window_min_no_mask = block_info.get_m_block_min_no_causal_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 n_block=config.n_block,
                 m_block_min=m_block_window_min,
+                m_block_max=m_block_window_max,
                 window_size_right=config.window_size_right,
                 window_size_near=config.window_size_near,
                 TILE_N=config.TILE_N,
@@ -1178,11 +1158,11 @@ class AttnBwdBlockScheduler:
                 IS_CAUSAL=False,
                 IS_LOCAL=True,
             )
-            m_block_window_min_no_mask = tl.maximum(m_block_window_min_no_mask, m_block_window_min)
             m_block_window_max_no_mask = block_info.get_m_block_max_before_local_mask(
                 seqlen_q=config.actual_seqlen_q,
                 seqlen_k=config.actual_seqlen_k,
                 n_block=config.n_block,
+                m_block_min=m_block_window_min_no_mask,
                 m_block_max=m_block_window_max,
                 window_size_left=config.window_size_left,
                 window_size_right=config.window_size_right,
@@ -1191,23 +1171,11 @@ class AttnBwdBlockScheduler:
                 TILE_M=config.TILE_M,
                 IS_LOCAL=True,
             )
-            # Clamp window no-mask boundaries to the window's range
-            m_block_window_max_no_mask = tl.maximum(
-                m_block_window_max_no_mask, m_block_window_min_no_mask
-            )
-            m_block_window_min_no_mask = tl.maximum(
-                tl.minimum(m_block_window_min_no_mask, m_block_window_max),
-                m_block_window_min,
-            )
-            m_block_window_max_no_mask = tl.maximum(
-                tl.minimum(m_block_window_max_no_mask, m_block_window_max),
-                m_block_window_min_no_mask,
-            )
         else:
-            m_block_window_min_no_mask = 0
-            m_block_window_max_no_mask = 0
-            m_block_sink_min = 0
-            m_block_sink_max = 0
+            m_block_window_min_no_mask = tl.to_tensor(0)
+            m_block_window_max_no_mask = tl.to_tensor(0)
+            m_block_sink_min = tl.to_tensor(0)
+            m_block_sink_max = tl.to_tensor(0)
 
         return AttnBwdBlockScheduler(
             m_block_min,
@@ -1221,176 +1189,17 @@ class AttnBwdBlockScheduler:
             m_block_sink_max,
         )
 
-
-@aggregate
-class AttnDecBlockScheduler:
-    n_block_min: tl.tensor
-    n_block_max: tl.tensor
-    n_block_max_no_mask: tl.tensor
-    n_block_window_min: tl.tensor
-    n_block_window_max: tl.tensor
-    n_block_window_min_no_mask: tl.tensor
-    n_block_window_max_no_mask: tl.tensor
-    n_block_sink_min: tl.tensor
-    n_block_sink_max: tl.tensor
-
-    @constexpr_function
-    def __init__(
-        self,
-        n_block_min,
-        n_block_max,
-        n_block_max_no_mask,
-        n_block_window_min,
-        n_block_window_max,
-        n_block_window_min_no_mask,
-        n_block_window_max_no_mask,
-        n_block_sink_min,
-        n_block_sink_max,
-    ):
-        self.n_block_min = n_block_min
-        self.n_block_max = n_block_max
-        self.n_block_max_no_mask = n_block_max_no_mask
-        self.n_block_window_min = n_block_window_min
-        self.n_block_window_max = n_block_window_max
-        self.n_block_window_min_no_mask = n_block_window_min_no_mask
-        self.n_block_window_max_no_mask = n_block_window_max_no_mask
-        self.n_block_sink_min = n_block_sink_min
-        self.n_block_sink_max = n_block_sink_max
-
     @triton.jit
-    def is_empty(self):
+    def is_empty(self) -> tl.tensor:
+        """
+        Check whether all backward query-block ranges are empty.
+
+        :return: boolean tensor indicating whether there are no M blocks to process
+        """
         return (
-            (self.n_block_max <= self.n_block_min)
-            & (self.n_block_window_max <= self.n_block_window_min)
-            & (self.n_block_sink_max <= self.n_block_sink_min)
-        )
-
-    @staticmethod
-    @triton.jit
-    def create(
-        config: AttnDecConfig,
-        split_idx,
-        NUM_SPLITS: tl.constexpr,
-        TOPK_SEQLEN_K: tl.constexpr,
-        IS_LOCAL: tl.constexpr,
-        IS_GATHER_KV: tl.constexpr = False,
-    ):
-        if IS_GATHER_KV:
-            (
-                n_block_min,
-                n_block_max,
-                n_block_window_min,
-                n_block_window_max,
-                n_block_sink_min,
-                n_block_sink_max,
-            ) = block_info.get_topk_n_block_min_max(
-                split_idx=split_idx,
-                NUM_SPLITS=NUM_SPLITS,
-                TOPK_SEQLEN_K=TOPK_SEQLEN_K,
-                TILE_N=config.TILE_N,
-            )
-            n_block_max_no_mask = n_block_max
-            n_block_window_min_no_mask = 0
-            n_block_window_max_no_mask = 0
-        else:
-            # Compute non-causal n_block range for this m_block
-            (
-                n_block_min,
-                n_block_max,
-                n_block_window_min,
-                n_block_window_max,
-                n_block_sink_min,
-                n_block_sink_max,
-            ) = block_info.get_n_block_min_max(
-                seqlen_q=1,
-                seqlen_k=config.actual_seqlen_k,
-                m_block=0,
-                split_idx=split_idx,
-                window_size_sink=config.window_size_sink,
-                window_size_left=config.window_size_left,
-                window_size_right=config.window_size_right,
-                window_size_near=config.window_size_near,
-                NUM_SPLITS=NUM_SPLITS,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_CAUSAL=False,
-                IS_LOCAL=IS_LOCAL,
-                IS_SPLIT_KV=True,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
-            n_block_max_no_mask = block_info.get_n_block_min_causal_local_mask(
-                seqlen_q=1,
-                seqlen_k=config.actual_seqlen_k,
-                m_block=0,
-                n_block_min=n_block_min,
-                window_size_right=0,
-                window_size_near=0,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_LOCAL=False,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
-
-            # Clamp to split's range so the no-mask loop stays within bounds
-            n_block_max_no_mask = tl.minimum(n_block_max_no_mask, n_block_max)
-
-        if IS_LOCAL and not IS_GATHER_KV:
-            # Compute local n_block range for this m_block
-            n_block_max_no_mask = tl.where(
-                split_idx >= NUM_SPLITS - 1,
-                n_block_min,
-                n_block_max_no_mask,
-            )
-            n_block_window_max_no_mask = block_info.get_n_block_min_causal_local_mask(
-                seqlen_q=1,
-                seqlen_k=config.actual_seqlen_k,
-                m_block=0,
-                n_block_min=n_block_window_min,
-                window_size_right=config.window_size_right,
-                window_size_near=config.window_size_near,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_LOCAL=True,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
-            n_block_window_min_no_mask = block_info.get_n_block_min_before_local_mask(
-                seqlen_q=1,
-                seqlen_k=config.actual_seqlen_k,
-                m_block=0,
-                n_block_min=n_block_window_min,
-                window_size_left=config.window_size_left,
-                window_size_right=config.window_size_right,
-                window_size_near=config.window_size_near,
-                TILE_N=config.TILE_N,
-                TILE_M=config.TILE_M,
-                IS_LOCAL=True,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
-            # Clamp window no-mask boundaries to the window's range
-            n_block_window_max_no_mask = tl.maximum(
-                tl.minimum(n_block_window_max_no_mask, n_block_window_max),
-                n_block_window_min,
-            )
-            n_block_window_min_no_mask = tl.maximum(
-                tl.minimum(n_block_window_min_no_mask, n_block_window_max_no_mask),
-                n_block_window_min,
-            )
-        elif not IS_GATHER_KV:
-            n_block_window_min = 0
-            n_block_window_max = 0
-            n_block_window_min_no_mask = 0
-            n_block_window_max_no_mask = 0
-
-        return AttnDecBlockScheduler(
-            n_block_min,
-            n_block_max,
-            n_block_max_no_mask,
-            n_block_window_min,
-            n_block_window_max,
-            n_block_window_min_no_mask,
-            n_block_window_max_no_mask,
-            n_block_sink_min,
-            n_block_sink_max,
+            (self.m_block_max <= self.m_block_min)
+            & (self.m_block_window_max <= self.m_block_window_min)
+            & (self.m_block_sink_max <= self.m_block_sink_min)
         )
 
 
