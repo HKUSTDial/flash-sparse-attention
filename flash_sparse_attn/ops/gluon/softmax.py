@@ -207,7 +207,7 @@ def online_softmax(
     :param PARTIAL_SUM: boolean flag indicating if partial sum optimization should be used
     :type PARTIAL_SUM: bool
 
-    :return p: online softmax probabilities of shape [TILE_M, TILE_N]
+    :return rP: online softmax probabilities of shape [TILE_M, TILE_N]
     :return row_max_new: updated running maximum values per row of shape [TILE_M]
     :return row_sum_new: updated running sum values per row of shape [TILE_M]
     :return row_scale: scaling factors per row of shape [TILE_M]

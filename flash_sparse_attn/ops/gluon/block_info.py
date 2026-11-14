@@ -74,7 +74,7 @@ def get_n_block_min_max(
             m_idx_max = gl.cdiv(m_idx_max, QHEAD_PER_KVHEAD_PACKGQA)
         m_idx_max = gl.minimum(m_idx_max, seqlen_q)
         n_idx = m_idx_max + seqlen_k - seqlen_q
-        n_block_max = gl.minimum(n_block_max, gl.cdiv(n_idx, TILE_N))
+        n_block_max = gl.minimum(n_block_max, gl.maximum(gl.cdiv(n_idx, TILE_N), 0))
         if IS_LOCAL:
             n_idx_right = n_idx - window_size_near - window_size_right
             n_block_window_max = gl.minimum(
@@ -265,9 +265,11 @@ def get_m_block_min_max(
         n_idx_max = (n_block + 1) * TILE_N
         m_idx = n_idx_max + seqlen_q - seqlen_k
         m_idx_near = m_idx + window_size_near
-        m_block_max = gl.minimum(m_block_max, gl.cdiv(m_idx_near, TILE_M))
+        m_block_max = gl.minimum(m_block_max, gl.maximum(gl.cdiv(m_idx_near, TILE_M), 0))
         m_idx_left = m_idx + window_size_near + window_size_right + window_size_left
-        m_block_window_max = gl.minimum(m_block_window_max, gl.cdiv(m_idx_left, TILE_M))
+        m_block_window_max = gl.minimum(
+            m_block_window_max, gl.maximum(gl.cdiv(m_idx_left, TILE_M), 0)
+        )
         m_block_min = gl.where(is_sink_block, m_block_sink_max, m_block_min)
         m_block_max = gl.where(is_sink_block, m_block_sink_max + 1, m_block_max)
         m_block_window_min = gl.where(is_sink_block, 0, m_block_window_min)
@@ -322,7 +324,6 @@ def get_m_block_min_max(
     else:
         m_block_window_min = 0
         m_block_window_max = 0
-
     return (
         m_block_min,
         m_block_max,
