@@ -367,10 +367,21 @@ class AttnFwdConfig:
         window_size_right,
         window_size_near,
         head_dim,
-        copy_row_layout,
-        copy_col_layout,
-        mma_row_layout,
-        mma_col_layout,
+        copy_q_layout,
+        copy_k_layout,
+        copy_v_layout,
+        copy_q_row_layout,
+        copy_q_col_layout,
+        copy_k_row_layout,
+        copy_k_col_layout,
+        copy_v_row_layout,
+        copy_v_col_layout,
+        mma_s_layout,
+        mma_o_layout,
+        mma_s_row_layout,
+        mma_s_col_layout,
+        mma_o_row_layout,
+        mma_o_col_layout,
         PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA,
         NUM_SPLITS,
@@ -401,10 +412,21 @@ class AttnFwdConfig:
         self.window_size_right = window_size_right
         self.window_size_near = window_size_near
         self.head_dim = head_dim
-        self.copy_row_layout = gl.constexpr(copy_row_layout)
-        self.copy_col_layout = gl.constexpr(copy_col_layout)
-        self.mma_row_layout = gl.constexpr(mma_row_layout)
-        self.mma_col_layout = gl.constexpr(mma_col_layout)
+        self.copy_q_layout = gl.constexpr(copy_q_layout)
+        self.copy_k_layout = gl.constexpr(copy_k_layout)
+        self.copy_v_layout = gl.constexpr(copy_v_layout)
+        self.copy_q_row_layout = gl.constexpr(copy_q_row_layout)
+        self.copy_q_col_layout = gl.constexpr(copy_q_col_layout)
+        self.copy_k_row_layout = gl.constexpr(copy_k_row_layout)
+        self.copy_k_col_layout = gl.constexpr(copy_k_col_layout)
+        self.copy_v_row_layout = gl.constexpr(copy_v_row_layout)
+        self.copy_v_col_layout = gl.constexpr(copy_v_col_layout)
+        self.mma_s_layout = gl.constexpr(mma_s_layout)
+        self.mma_o_layout = gl.constexpr(mma_o_layout)
+        self.mma_s_row_layout = gl.constexpr(mma_s_row_layout)
+        self.mma_s_col_layout = gl.constexpr(mma_s_col_layout)
+        self.mma_o_row_layout = gl.constexpr(mma_o_row_layout)
+        self.mma_o_col_layout = gl.constexpr(mma_o_col_layout)
         self.PACK_GQA = gl.constexpr(PACK_GQA)
         self.QHEAD_PER_KVHEAD_PACKGQA = gl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
         self.NUM_SPLITS = gl.constexpr(NUM_SPLITS)
@@ -440,8 +462,11 @@ class AttnFwdConfig:
         seqused_k: gl.tensor = None,
         seqlen_q: gl.tensor = 0,
         seqlen_k: gl.tensor = 0,
-        copy_layout: gl.constexpr = None,
-        mma_layout: gl.constexpr = None,
+        copy_q_layout: gl.constexpr = None,
+        copy_k_layout: gl.constexpr = None,
+        copy_v_layout: gl.constexpr = None,
+        mma_s_layout: gl.constexpr = None,
+        mma_o_layout: gl.constexpr = None,
         PACK_GQA: gl.constexpr = False,
         QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr = 1,
         NUM_SPLITS: gl.constexpr = 1,
@@ -503,10 +528,16 @@ class AttnFwdConfig:
         :type seqlen_q: tensor
         :param seqlen_k: static key sequence length
         :type seqlen_k: tensor
-        :param copy_layout: layout for copy operations
-        :type copy_layout: gl.constexpr
-        :param mma_layout: layout for MMA operations
-        :type mma_layout: gl.constexpr
+        :param copy_q_layout: layout for Q copy operations
+        :type copy_q_layout: layout
+        :param copy_k_layout: layout for K copy operations
+        :type copy_k_layout: layout
+        :param copy_v_layout: layout for V copy operations
+        :type copy_v_layout: layout
+        :param mma_s_layout: layout for S MMA operations
+        :type mma_s_layout: layout
+        :param mma_o_layout: layout for O MMA operations
+        :type mma_o_layout: layout
         :param PACK_GQA: boolean flag indicating if packed GQA is enabled
         :type PACK_GQA: bool
         :param QHEAD_PER_KVHEAD_PACKGQA: packed query heads per KV head
@@ -540,10 +571,16 @@ class AttnFwdConfig:
 
         :return: attention forward configuration for the current program
         """
-        copy_row_layout: gl.constexpr = gl.SliceLayout(1, copy_layout)
-        copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
-        mma_row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
-        mma_col_layout: gl.constexpr = gl.SliceLayout(0, mma_layout)
+        copy_q_row_layout: gl.constexpr = gl.SliceLayout(1, copy_q_layout)
+        copy_q_col_layout: gl.constexpr = gl.SliceLayout(0, copy_q_layout)
+        copy_k_row_layout: gl.constexpr = gl.SliceLayout(1, copy_k_layout)
+        copy_k_col_layout: gl.constexpr = gl.SliceLayout(0, copy_k_layout)
+        copy_v_row_layout: gl.constexpr = gl.SliceLayout(1, copy_v_layout)
+        copy_v_col_layout: gl.constexpr = gl.SliceLayout(0, copy_v_layout)
+        mma_s_row_layout: gl.constexpr = gl.SliceLayout(1, mma_s_layout)
+        mma_s_col_layout: gl.constexpr = gl.SliceLayout(0, mma_s_layout)
+        mma_o_row_layout: gl.constexpr = gl.SliceLayout(1, mma_o_layout)
+        mma_o_col_layout: gl.constexpr = gl.SliceLayout(0, mma_o_layout)
 
         # Get seqlen info for this batch
         (
@@ -598,10 +635,21 @@ class AttnFwdConfig:
             gl.to_tensor(window_size_right),
             gl.to_tensor(window_size_near),
             gl.to_tensor(head_dim),
-            copy_row_layout,
-            copy_col_layout,
-            mma_row_layout,
-            mma_col_layout,
+            copy_q_layout,
+            copy_k_layout,
+            copy_v_layout,
+            copy_q_row_layout,
+            copy_q_col_layout,
+            copy_k_row_layout,
+            copy_k_col_layout,
+            copy_v_row_layout,
+            copy_v_col_layout,
+            mma_s_layout,
+            mma_o_layout,
+            mma_s_row_layout,
+            mma_s_col_layout,
+            mma_o_row_layout,
+            mma_o_col_layout,
             PACK_GQA,
             QHEAD_PER_KVHEAD_PACKGQA,
             NUM_SPLITS,
@@ -626,59 +674,91 @@ class AttnFwdConfig:
             m_block=self.m_block,
             seqlen_q=self.actual_seqlen_q,
             seqlen_k=self.actual_seqlen_k,
-            row_offsets=self.mma_row_m_offs(),
+            row_offsets=self.mma_s_row_m_offs(),
             IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
             IS_LOG2=True,
         )
 
     @gluon.jit
-    def copy_row_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.copy_row_layout)
+    def copy_q_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_q_row_layout)
 
     @gluon.jit
-    def copy_col_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.copy_col_layout)
+    def copy_q_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_q_col_layout)
 
     @gluon.jit
-    def copy_row_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.copy_row_layout)
+    def copy_q_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_q_row_layout)
 
     @gluon.jit
-    def copy_col_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.copy_col_layout)
+    def copy_q_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_q_col_layout)
 
     @gluon.jit
-    def copy_row_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.copy_row_layout)
+    def copy_k_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_k_row_layout)
 
     @gluon.jit
-    def copy_col_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.copy_col_layout)
+    def copy_k_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_k_col_layout)
 
     @gluon.jit
-    def mma_row_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.mma_row_layout)
+    def copy_k_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_k_row_layout)
 
     @gluon.jit
-    def mma_col_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.mma_col_layout)
+    def copy_k_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_k_col_layout)
 
     @gluon.jit
-    def mma_row_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.mma_row_layout)
+    def copy_v_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_v_row_layout)
 
     @gluon.jit
-    def mma_col_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.mma_col_layout)
+    def copy_v_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_v_col_layout)
 
     @gluon.jit
-    def mma_row_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.mma_row_layout)
+    def copy_v_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_v_row_layout)
 
     @gluon.jit
-    def mma_col_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.mma_col_layout)
+    def copy_v_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_v_col_layout)
+
+    @gluon.jit
+    def mma_s_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_s_row_layout)
+
+    @gluon.jit
+    def mma_s_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_s_col_layout)
+
+    @gluon.jit
+    def mma_s_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_s_row_layout)
+
+    @gluon.jit
+    def mma_s_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_s_col_layout)
+
+    @gluon.jit
+    def mma_o_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_o_row_layout)
+
+    @gluon.jit
+    def mma_o_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_o_col_layout)
+
+    @gluon.jit
+    def mma_o_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_o_row_layout)
+
+    @gluon.jit
+    def mma_o_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_o_col_layout)
 
 
 @aggregate
@@ -704,10 +784,33 @@ class AttnBwdConfig:
     window_size_right: gl.tensor
     window_size_near: gl.tensor
     head_dim: gl.tensor
-    copy_row_layout: gl.constexpr
-    copy_col_layout: gl.constexpr
-    mma_row_layout: gl.constexpr
-    mma_col_layout: gl.constexpr
+    copy_q_layout: gl.constexpr
+    copy_k_layout: gl.constexpr
+    copy_v_layout: gl.constexpr
+    copy_do_layout: gl.constexpr
+    copy_q_row_layout: gl.constexpr
+    copy_q_col_layout: gl.constexpr
+    copy_k_row_layout: gl.constexpr
+    copy_k_col_layout: gl.constexpr
+    copy_v_row_layout: gl.constexpr
+    copy_v_col_layout: gl.constexpr
+    copy_do_row_layout: gl.constexpr
+    copy_do_col_layout: gl.constexpr
+    mma_s_layout: gl.constexpr
+    mma_dp_layout: gl.constexpr
+    mma_dq_layout: gl.constexpr
+    mma_dk_layout: gl.constexpr
+    mma_dv_layout: gl.constexpr
+    mma_s_row_layout: gl.constexpr
+    mma_s_col_layout: gl.constexpr
+    mma_dp_row_layout: gl.constexpr
+    mma_dp_col_layout: gl.constexpr
+    mma_dq_row_layout: gl.constexpr
+    mma_dq_col_layout: gl.constexpr
+    mma_dk_row_layout: gl.constexpr
+    mma_dk_col_layout: gl.constexpr
+    mma_dv_row_layout: gl.constexpr
+    mma_dv_col_layout: gl.constexpr
     QHEAD_PER_KVHEAD: gl.constexpr
     NUM_SPLITS: gl.constexpr
     TILE_M: gl.constexpr
@@ -742,10 +845,33 @@ class AttnBwdConfig:
         window_size_right,
         window_size_near,
         head_dim,
-        copy_row_layout,
-        copy_col_layout,
-        mma_row_layout,
-        mma_col_layout,
+        copy_q_layout,
+        copy_k_layout,
+        copy_v_layout,
+        copy_do_layout,
+        copy_q_row_layout,
+        copy_q_col_layout,
+        copy_k_row_layout,
+        copy_k_col_layout,
+        copy_v_row_layout,
+        copy_v_col_layout,
+        copy_do_row_layout,
+        copy_do_col_layout,
+        mma_s_layout,
+        mma_dp_layout,
+        mma_dq_layout,
+        mma_dk_layout,
+        mma_dv_layout,
+        mma_s_row_layout,
+        mma_s_col_layout,
+        mma_dp_row_layout,
+        mma_dp_col_layout,
+        mma_dq_row_layout,
+        mma_dq_col_layout,
+        mma_dk_row_layout,
+        mma_dk_col_layout,
+        mma_dv_row_layout,
+        mma_dv_col_layout,
         QHEAD_PER_KVHEAD,
         NUM_SPLITS,
         TILE_M,
@@ -777,10 +903,33 @@ class AttnBwdConfig:
         self.window_size_right = window_size_right
         self.window_size_near = window_size_near
         self.head_dim = head_dim
-        self.copy_row_layout = gl.constexpr(copy_row_layout)
-        self.copy_col_layout = gl.constexpr(copy_col_layout)
-        self.mma_row_layout = gl.constexpr(mma_row_layout)
-        self.mma_col_layout = gl.constexpr(mma_col_layout)
+        self.copy_q_layout = gl.constexpr(copy_q_layout)
+        self.copy_k_layout = gl.constexpr(copy_k_layout)
+        self.copy_v_layout = gl.constexpr(copy_v_layout)
+        self.copy_do_layout = gl.constexpr(copy_do_layout)
+        self.copy_q_row_layout = gl.constexpr(copy_q_row_layout)
+        self.copy_q_col_layout = gl.constexpr(copy_q_col_layout)
+        self.copy_k_row_layout = gl.constexpr(copy_k_row_layout)
+        self.copy_k_col_layout = gl.constexpr(copy_k_col_layout)
+        self.copy_v_row_layout = gl.constexpr(copy_v_row_layout)
+        self.copy_v_col_layout = gl.constexpr(copy_v_col_layout)
+        self.copy_do_row_layout = gl.constexpr(copy_do_row_layout)
+        self.copy_do_col_layout = gl.constexpr(copy_do_col_layout)
+        self.mma_s_layout = gl.constexpr(mma_s_layout)
+        self.mma_dp_layout = gl.constexpr(mma_dp_layout)
+        self.mma_dq_layout = gl.constexpr(mma_dq_layout)
+        self.mma_dk_layout = gl.constexpr(mma_dk_layout)
+        self.mma_dv_layout = gl.constexpr(mma_dv_layout)
+        self.mma_s_row_layout = gl.constexpr(mma_s_row_layout)
+        self.mma_s_col_layout = gl.constexpr(mma_s_col_layout)
+        self.mma_dp_row_layout = gl.constexpr(mma_dp_row_layout)
+        self.mma_dp_col_layout = gl.constexpr(mma_dp_col_layout)
+        self.mma_dq_row_layout = gl.constexpr(mma_dq_row_layout)
+        self.mma_dq_col_layout = gl.constexpr(mma_dq_col_layout)
+        self.mma_dk_row_layout = gl.constexpr(mma_dk_row_layout)
+        self.mma_dk_col_layout = gl.constexpr(mma_dk_col_layout)
+        self.mma_dv_row_layout = gl.constexpr(mma_dv_row_layout)
+        self.mma_dv_col_layout = gl.constexpr(mma_dv_col_layout)
         self.QHEAD_PER_KVHEAD = gl.constexpr(QHEAD_PER_KVHEAD)
         self.NUM_SPLITS = gl.constexpr(NUM_SPLITS)
         self.TILE_M = gl.constexpr(TILE_M)
@@ -815,8 +964,15 @@ class AttnBwdConfig:
         seqused_k: gl.tensor = None,
         seqlen_q: gl.tensor = 0,
         seqlen_k: gl.tensor = 0,
-        copy_layout: gl.constexpr = None,
-        mma_layout: gl.constexpr = None,
+        copy_q_layout: gl.constexpr = None,
+        copy_k_layout: gl.constexpr = None,
+        copy_v_layout: gl.constexpr = None,
+        copy_do_layout: gl.constexpr = None,
+        mma_s_layout: gl.constexpr = None,
+        mma_dp_layout: gl.constexpr = None,
+        mma_dq_layout: gl.constexpr = None,
+        mma_dk_layout: gl.constexpr = None,
+        mma_dv_layout: gl.constexpr = None,
         QHEAD_PER_KVHEAD: gl.constexpr = 1,
         NUM_SPLITS: gl.constexpr = 1,
         TILE_M: gl.constexpr = 64,
@@ -877,10 +1033,24 @@ class AttnBwdConfig:
         :type seqlen_q: tensor
         :param seqlen_k: static key sequence length
         :type seqlen_k: tensor
-        :param copy_layout: layout for copy operations
-        :type copy_layout: gl.constexpr
-        :param mma_layout: layout for MMA operations
-        :type mma_layout: gl.constexpr
+        :param copy_q_layout: layout for Q copy operations
+        :type copy_q_layout: layout
+        :param copy_k_layout: layout for K copy operations
+        :type copy_k_layout: layout
+        :param copy_v_layout: layout for V copy operations
+        :type copy_v_layout: layout
+        :param copy_do_layout: layout for dO copy operations
+        :type copy_do_layout: layout
+        :param mma_s_layout: layout for S MMA operations
+        :type mma_s_layout: layout
+        :param mma_dp_layout: layout for dP MMA operations
+        :type mma_dp_layout: layout
+        :param mma_dq_layout: layout for dQ MMA operations
+        :type mma_dq_layout: layout
+        :param mma_dk_layout: layout for dK MMA operations
+        :type mma_dk_layout: layout
+        :param mma_dv_layout: layout for dV MMA operations
+        :type mma_dv_layout: layout
         :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
         :type QHEAD_PER_KVHEAD: int
         :param NUM_SPLITS: number of QO splits
@@ -912,10 +1082,24 @@ class AttnBwdConfig:
 
         :return: attention backward configuration for the current program
         """
-        copy_row_layout: gl.constexpr = gl.SliceLayout(1, copy_layout)
-        copy_col_layout: gl.constexpr = gl.SliceLayout(0, copy_layout)
-        mma_row_layout: gl.constexpr = gl.SliceLayout(1, mma_layout)
-        mma_col_layout: gl.constexpr = gl.SliceLayout(0, mma_layout)
+        copy_q_row_layout: gl.constexpr = gl.SliceLayout(1, copy_q_layout)
+        copy_q_col_layout: gl.constexpr = gl.SliceLayout(0, copy_q_layout)
+        copy_k_row_layout: gl.constexpr = gl.SliceLayout(1, copy_k_layout)
+        copy_k_col_layout: gl.constexpr = gl.SliceLayout(0, copy_k_layout)
+        copy_v_row_layout: gl.constexpr = gl.SliceLayout(1, copy_v_layout)
+        copy_v_col_layout: gl.constexpr = gl.SliceLayout(0, copy_v_layout)
+        copy_do_row_layout: gl.constexpr = gl.SliceLayout(1, copy_do_layout)
+        copy_do_col_layout: gl.constexpr = gl.SliceLayout(0, copy_do_layout)
+        mma_s_row_layout: gl.constexpr = gl.SliceLayout(1, mma_s_layout)
+        mma_s_col_layout: gl.constexpr = gl.SliceLayout(0, mma_s_layout)
+        mma_dp_row_layout: gl.constexpr = gl.SliceLayout(1, mma_dp_layout)
+        mma_dp_col_layout: gl.constexpr = gl.SliceLayout(0, mma_dp_layout)
+        mma_dq_row_layout: gl.constexpr = gl.SliceLayout(1, mma_dq_layout)
+        mma_dq_col_layout: gl.constexpr = gl.SliceLayout(0, mma_dq_layout)
+        mma_dk_row_layout: gl.constexpr = gl.SliceLayout(1, mma_dk_layout)
+        mma_dk_col_layout: gl.constexpr = gl.SliceLayout(0, mma_dk_layout)
+        mma_dv_row_layout: gl.constexpr = gl.SliceLayout(1, mma_dv_layout)
+        mma_dv_col_layout: gl.constexpr = gl.SliceLayout(0, mma_dv_layout)
 
         # Get seqlen info for this batch
         (
@@ -972,10 +1156,33 @@ class AttnBwdConfig:
             gl.to_tensor(window_size_right),
             gl.to_tensor(window_size_near),
             gl.to_tensor(head_dim),
-            copy_row_layout,
-            copy_col_layout,
-            mma_row_layout,
-            mma_col_layout,
+            copy_q_layout,
+            copy_k_layout,
+            copy_v_layout,
+            copy_do_layout,
+            copy_q_row_layout,
+            copy_q_col_layout,
+            copy_k_row_layout,
+            copy_k_col_layout,
+            copy_v_row_layout,
+            copy_v_col_layout,
+            copy_do_row_layout,
+            copy_do_col_layout,
+            mma_s_layout,
+            mma_dp_layout,
+            mma_dq_layout,
+            mma_dk_layout,
+            mma_dv_layout,
+            mma_s_row_layout,
+            mma_s_col_layout,
+            mma_dp_row_layout,
+            mma_dp_col_layout,
+            mma_dq_row_layout,
+            mma_dq_col_layout,
+            mma_dk_row_layout,
+            mma_dk_col_layout,
+            mma_dv_row_layout,
+            mma_dv_col_layout,
             QHEAD_PER_KVHEAD,
             NUM_SPLITS,
             TILE_M,
@@ -1002,59 +1209,139 @@ class AttnBwdConfig:
             m_block=m_block,
             seqlen_q=self.actual_seqlen_q,
             seqlen_k=self.actual_seqlen_k,
-            row_offsets=self.mma_col_m_offs(),
+            row_offsets=self.mma_s_col_m_offs(),
             IS_CAUSAL=self.IS_CAUSAL,
             QHEAD_PER_KVHEAD_PACKGQA=1,
             IS_LOG2=True,
         )
 
     @gluon.jit
-    def copy_row_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.copy_row_layout)
+    def copy_q_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_q_row_layout)
 
     @gluon.jit
-    def copy_col_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.copy_col_layout)
+    def copy_q_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_q_col_layout)
 
     @gluon.jit
-    def copy_row_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.copy_row_layout)
+    def copy_q_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_q_row_layout)
 
     @gluon.jit
-    def copy_col_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.copy_col_layout)
+    def copy_q_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_q_col_layout)
 
     @gluon.jit
-    def copy_row_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.copy_row_layout)
+    def copy_k_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_k_row_layout)
 
     @gluon.jit
-    def copy_col_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.copy_col_layout)
+    def copy_k_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_k_col_layout)
 
     @gluon.jit
-    def mma_row_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.mma_row_layout)
+    def copy_k_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_k_row_layout)
 
     @gluon.jit
-    def mma_col_m_offs(self):
-        return gl.arange(0, self.TILE_M, self.mma_col_layout)
+    def copy_k_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_k_col_layout)
 
     @gluon.jit
-    def mma_row_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.mma_row_layout)
+    def copy_v_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_v_row_layout)
 
     @gluon.jit
-    def mma_col_n_offs(self):
-        return gl.arange(0, self.TILE_N, self.mma_col_layout)
+    def copy_v_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.copy_v_col_layout)
 
     @gluon.jit
-    def mma_row_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.mma_row_layout)
+    def copy_v_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_v_row_layout)
 
     @gluon.jit
-    def mma_col_k_offs(self):
-        return gl.arange(0, self.TILE_K, self.mma_col_layout)
+    def copy_v_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_v_col_layout)
+
+    @gluon.jit
+    def copy_do_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_do_row_layout)
+
+    @gluon.jit
+    def copy_do_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.copy_do_col_layout)
+
+    @gluon.jit
+    def copy_do_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_do_row_layout)
+
+    @gluon.jit
+    def copy_do_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.copy_do_col_layout)
+
+    @gluon.jit
+    def mma_s_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_s_row_layout)
+
+    @gluon.jit
+    def mma_s_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_s_col_layout)
+
+    @gluon.jit
+    def mma_s_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_s_row_layout)
+
+    @gluon.jit
+    def mma_s_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_s_col_layout)
+
+    @gluon.jit
+    def mma_dq_row_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_dq_row_layout)
+
+    @gluon.jit
+    def mma_dq_col_m_offs(self):
+        return gl.arange(0, self.TILE_M, self.mma_dq_col_layout)
+
+    @gluon.jit
+    def mma_dq_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_dq_row_layout)
+
+    @gluon.jit
+    def mma_dq_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_dq_col_layout)
+
+    @gluon.jit
+    def mma_dk_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_dk_row_layout)
+
+    @gluon.jit
+    def mma_dk_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_dk_col_layout)
+
+    @gluon.jit
+    def mma_dk_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_dk_row_layout)
+
+    @gluon.jit
+    def mma_dk_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_dk_col_layout)
+
+    @gluon.jit
+    def mma_dv_row_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_dv_row_layout)
+
+    @gluon.jit
+    def mma_dv_col_n_offs(self):
+        return gl.arange(0, self.TILE_N, self.mma_dv_col_layout)
+
+    @gluon.jit
+    def mma_dv_row_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_dv_row_layout)
+
+    @gluon.jit
+    def mma_dv_col_k_offs(self):
+        return gl.arange(0, self.TILE_K, self.mma_dv_col_layout)
 
 
 @aggregate
