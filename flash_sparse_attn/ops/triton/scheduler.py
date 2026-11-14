@@ -291,53 +291,15 @@ class AttnBwdGridIndex:
 
 
 @aggregate
-class AttnDecGridIndex:
+class AttnFwdConfig:
     batch_idx: tl.tensor
     head_idx: tl.tensor
     head_kv_idx: tl.tensor
     split_idx: tl.tensor
-
-    @constexpr_function
-    def __init__(self, batch_idx, head_idx, head_kv_idx, split_idx):
-        self.batch_idx = batch_idx
-        self.head_idx = head_idx
-        self.head_kv_idx = head_kv_idx
-        self.split_idx = split_idx
-
-    @staticmethod
-    @triton.jit
-    def create(
-        NUM_SPLITS: tl.constexpr,
-    ):
-        head_idx = tl.program_id(0)
-        batch_split_idx = tl.program_id(1)
-        batch_idx = batch_split_idx // NUM_SPLITS
-        split_idx = batch_split_idx - batch_idx * NUM_SPLITS
-        head_kv_idx = head_idx
-        return AttnDecGridIndex(batch_idx, head_idx, head_kv_idx, split_idx)
-
-    @triton.jit
-    def load_window_sizes(self, window_sizes, stride_wh, IS_LOCAL: tl.constexpr):
-        if IS_LOCAL:
-            window_size_sink = tl.load(window_sizes + self.head_kv_idx * stride_wh)
-            window_size_left = tl.load(window_sizes + self.head_kv_idx * stride_wh + 1)
-            window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
-            window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
-        else:
-            window_size_sink = 0
-            window_size_left = 0
-            window_size_right = 0
-            window_size_near = 0
-        return window_size_sink, window_size_left, window_size_right, window_size_near
-
-
-@aggregate
-class AttnFwdConfig:
-    softmax_scale_log2: tl.tensor
-    softmax_threshold_log2: tl.tensor
-    gate_threshold_log2: tl.tensor
-    value_scale: tl.tensor
     m_block: tl.tensor
+    softmax_scale_log2: tl.tensor
+    softmax_threshold: tl.tensor
+    value_scale: tl.tensor
     actual_seqlen_q: tl.tensor
     actual_seqlen_k: tl.tensor
     offset_q: tl.tensor
@@ -351,20 +313,26 @@ class AttnFwdConfig:
     head_dim: tl.tensor
     PACK_GQA: tl.constexpr
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr
+    NUM_SPLITS: tl.constexpr
     TILE_M: tl.constexpr
     TILE_N: tl.constexpr
     TILE_K: tl.constexpr
-    IS_PAGED_KV: tl.constexpr
-    IS_LOGSIGMOID_GATE: tl.constexpr
+    IS_CAUSAL: tl.constexpr
+    IS_LOCAL: tl.constexpr
+    IS_SPARSE: tl.constexpr
+    IS_SPLIT_KV: tl.constexpr
 
     @constexpr_function
     def __init__(
         self,
-        softmax_scale_log2,
-        softmax_threshold_log2,
-        gate_threshold_log2,
-        value_scale,
+        batch_idx,
+        head_idx,
+        head_kv_idx,
+        split_idx,
         m_block,
+        softmax_scale_log2,
+        softmax_threshold,
+        value_scale,
         actual_seqlen_q,
         actual_seqlen_k,
         offset_q,
@@ -378,17 +346,23 @@ class AttnFwdConfig:
         head_dim,
         PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA,
+        NUM_SPLITS,
         TILE_M,
         TILE_N,
         TILE_K,
-        IS_PAGED_KV,
-        IS_LOGSIGMOID_GATE,
+        IS_CAUSAL,
+        IS_LOCAL,
+        IS_SPARSE,
+        IS_SPLIT_KV,
     ):
-        self.softmax_scale_log2 = softmax_scale_log2
-        self.softmax_threshold_log2 = softmax_threshold_log2
-        self.gate_threshold_log2 = gate_threshold_log2
-        self.value_scale = value_scale
+        self.batch_idx = batch_idx
+        self.head_idx = head_idx
+        self.head_kv_idx = head_kv_idx
+        self.split_idx = split_idx
         self.m_block = m_block
+        self.softmax_scale_log2 = softmax_scale_log2
+        self.softmax_threshold = softmax_threshold
+        self.value_scale = value_scale
         self.actual_seqlen_q = actual_seqlen_q
         self.actual_seqlen_k = actual_seqlen_k
         self.offset_q = offset_q
@@ -402,50 +376,133 @@ class AttnFwdConfig:
         self.head_dim = head_dim
         self.PACK_GQA = tl.constexpr(PACK_GQA)
         self.QHEAD_PER_KVHEAD_PACKGQA = tl.constexpr(QHEAD_PER_KVHEAD_PACKGQA)
+        self.NUM_SPLITS = tl.constexpr(NUM_SPLITS)
         self.TILE_M = tl.constexpr(TILE_M)
         self.TILE_N = tl.constexpr(TILE_N)
         self.TILE_K = tl.constexpr(TILE_K)
-        self.IS_PAGED_KV = tl.constexpr(IS_PAGED_KV)
-        self.IS_LOGSIGMOID_GATE = tl.constexpr(IS_LOGSIGMOID_GATE)
+        self.IS_CAUSAL = tl.constexpr(IS_CAUSAL)
+        self.IS_LOCAL = tl.constexpr(IS_LOCAL)
+        self.IS_SPARSE = tl.constexpr(IS_SPARSE)
+        self.IS_SPLIT_KV = tl.constexpr(IS_SPLIT_KV)
 
     @staticmethod
     @triton.jit
     def create(
-        softmax_scale=0.0,
-        softmax_threshold=0.0,
-        gate_threshold=0.0,
-        query_scale=None,
-        key_scale=None,
-        value_scale=None,
-        m_block=0,
-        batch_idx=0,
-        window_size_sink=0,
-        window_size_left=0,
-        window_size_right=0,
-        window_size_near=0,
-        head_dim=0,
-        cu_seqlens_q=None,
-        cu_seqlens_k=None,
-        seqused_q=None,
-        seqused_k=None,
-        seqlen_q=0,
-        seqlen_k=0,
+        batch_idx: tl.tensor,
+        head_idx: tl.tensor,
+        head_kv_idx: tl.tensor,
+        split_idx: tl.tensor,
+        m_block: tl.tensor,
+        softmax_scale: tl.tensor = 0.0,
+        softmax_threshold: tl.tensor = 0.0,
+        query_scale: tl.tensor = None,
+        key_scale: tl.tensor = None,
+        value_scale: tl.tensor = None,
+        window_size_sink: tl.tensor = 0,
+        window_size_left: tl.tensor = 0,
+        window_size_right: tl.tensor = 0,
+        window_size_near: tl.tensor = 0,
+        head_dim: tl.tensor = 0,
+        cu_seqlens_q: tl.tensor = None,
+        cu_seqlens_k: tl.tensor = None,
+        seqused_q: tl.tensor = None,
+        seqused_k: tl.tensor = None,
+        seqlen_q: tl.tensor = 0,
+        seqlen_k: tl.tensor = 0,
         PACK_GQA: tl.constexpr = False,
         QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr = 1,
+        NUM_SPLITS: tl.constexpr = 1,
         TILE_M: tl.constexpr = 64,
         TILE_N: tl.constexpr = 64,
         TILE_K: tl.constexpr = 64,
         IS_CAUSAL: tl.constexpr = False,
+        IS_LOCAL: tl.constexpr = False,
+        IS_SPARSE: tl.constexpr = False,
+        IS_SPLIT_KV: tl.constexpr = False,
         IS_QUANT: tl.constexpr = False,
-        IS_PAGED_KV: tl.constexpr = False,
-        IS_LOGSIGMOID_GATE: tl.constexpr = False,
-        IS_ADAPT_GATE: tl.constexpr = False,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
         HAS_SEQUSED_Q: tl.constexpr = False,
         HAS_SEQUSED_K: tl.constexpr = False,
-    ):
-        # Get seqlen info for this batch
+    ) -> "AttnFwdConfig":
+        """
+        Build the attention forward configuration for the current program.
+
+        :param batch_idx: current batch index
+        :type batch_idx: tensor
+        :param head_idx: current query/output head index
+        :type head_idx: tensor
+        :param head_kv_idx: current key/value head index
+        :type head_kv_idx: tensor
+        :param split_idx: current KV split index
+        :type split_idx: tensor
+        :param m_block: current block index along the M dimension
+        :type m_block: tensor
+        :param softmax_scale: scale applied to attention scores
+        :type softmax_scale: tensor
+        :param softmax_threshold: dimensionless multiple of uniform attention
+        :type softmax_threshold: tensor
+        :param query_scale: pointer to the query quantization scale
+        :type query_scale: tensor
+        :param key_scale: pointer to the key quantization scale
+        :type key_scale: tensor
+        :param value_scale: pointer to the value quantization scale
+        :type value_scale: tensor
+        :param window_size_sink: prefix-sink token count
+        :type window_size_sink: tensor
+        :param window_size_left: distant local band token count
+        :type window_size_left: tensor
+        :param window_size_right: gap token count after the near-diagonal window
+        :type window_size_right: tensor
+        :param window_size_near: near-diagonal local token count
+        :type window_size_near: tensor
+        :param head_dim: attention head dimension
+        :type head_dim: tensor
+        :param cu_seqlens_q: cumulative query sequence lengths
+        :type cu_seqlens_q: tensor
+        :param cu_seqlens_k: cumulative key sequence lengths
+        :type cu_seqlens_k: tensor
+        :param seqused_q: actual query sequence lengths
+        :type seqused_q: tensor
+        :param seqused_k: actual key sequence lengths
+        :type seqused_k: tensor
+        :param seqlen_q: static query sequence length
+        :type seqlen_q: tensor
+        :param seqlen_k: static key sequence length
+        :type seqlen_k: tensor
+        :param PACK_GQA: boolean flag indicating if packed GQA is enabled
+        :type PACK_GQA: bool
+        :param QHEAD_PER_KVHEAD_PACKGQA: packed query heads per KV head
+        :type QHEAD_PER_KVHEAD_PACKGQA: int
+        :param NUM_SPLITS: number of KV splits
+        :type NUM_SPLITS: int
+        :param TILE_M: tile size along the M dimension
+        :type TILE_M: int
+        :param TILE_N: tile size along the N dimension
+        :type TILE_N: int
+        :param TILE_K: tile size along the K dimension
+        :type TILE_K: int
+        :param IS_CAUSAL: boolean flag indicating if the attention is causal
+        :type IS_CAUSAL: bool
+        :param IS_LOCAL: boolean flag indicating if local attention is enabled
+        :type IS_LOCAL: bool
+        :param IS_SPARSE: boolean flag indicating if sparse attention is enabled
+        :type IS_SPARSE: bool
+        :param IS_SPLIT_KV: boolean flag indicating if the KV range is split
+        :type IS_SPLIT_KV: bool
+        :param IS_QUANT: boolean flag indicating if QKV quantization is enabled
+        :type IS_QUANT: bool
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if cu_seqlens_q is provided
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if cu_seqlens_k is provided
+        :type HAS_CU_SEQLENS_K: bool
+        :param HAS_SEQUSED_Q: boolean flag indicating if seqused_q is provided
+        :type HAS_SEQUSED_Q: bool
+        :param HAS_SEQUSED_K: boolean flag indicating if seqused_k is provided
+        :type HAS_SEQUSED_K: bool
+
+        :return: attention forward configuration for the current program
+        """
         (
             offset_q,
             offset_k,
@@ -473,66 +530,71 @@ class AttnFwdConfig:
             k_scale = tl.load(key_scale)
             v_scale = tl.load(value_scale)
         else:
-            q_scale = 1.0
-            k_scale = 1.0
-            v_scale = 1.0
+            q_scale = tl.to_tensor(1.0)
+            k_scale = tl.to_tensor(1.0)
+            v_scale = tl.to_tensor(1.0)
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
-        softmax_threshold_log2 = seqlen_info.get_softmax_threshold(
-            softmax_threshold,
-            m_block,
-            actual_seqlen_q,
-            actual_seqlen_k,
-            IS_CAUSAL,
-            TILE_M,
-            QHEAD_PER_KVHEAD_PACKGQA,
-        )
-        gate_threshold_log2 = seqlen_info.get_gate_threshold(
-            gate_threshold,
-            m_block,
-            actual_seqlen_q,
-            actual_seqlen_k,
-            IS_CAUSAL,
-            TILE_M,
-            QHEAD_PER_KVHEAD_PACKGQA,
-            IS_ADAPT_GATE,
-        )
         return AttnFwdConfig(
-            softmax_scale_log2,
-            softmax_threshold_log2,
-            gate_threshold_log2,
-            v_scale,
-            m_block,
-            actual_seqlen_q,
-            actual_seqlen_k,
-            offset_q,
-            offset_k,
-            padded_offset_q,
-            padded_offset_k,
-            window_size_sink,
-            window_size_left,
-            window_size_right,
-            window_size_near,
-            head_dim,
+            tl.to_tensor(batch_idx),
+            tl.to_tensor(head_idx),
+            tl.to_tensor(head_kv_idx),
+            tl.to_tensor(split_idx),
+            tl.to_tensor(m_block),
+            tl.to_tensor(softmax_scale_log2),
+            tl.to_tensor(softmax_threshold),
+            tl.to_tensor(v_scale),
+            tl.to_tensor(actual_seqlen_q),
+            tl.to_tensor(actual_seqlen_k),
+            tl.to_tensor(offset_q),
+            tl.to_tensor(offset_k),
+            tl.to_tensor(padded_offset_q),
+            tl.to_tensor(padded_offset_k),
+            tl.to_tensor(window_size_sink),
+            tl.to_tensor(window_size_left),
+            tl.to_tensor(window_size_right),
+            tl.to_tensor(window_size_near),
+            tl.to_tensor(head_dim),
             PACK_GQA,
             QHEAD_PER_KVHEAD_PACKGQA,
+            NUM_SPLITS,
             TILE_M,
             TILE_N,
             TILE_K,
-            IS_PAGED_KV,
-            IS_LOGSIGMOID_GATE,
+            IS_CAUSAL,
+            IS_LOCAL,
+            IS_SPARSE,
+            IS_SPLIT_KV,
         )
 
     @triton.jit
-    def get_offs_m(self):
-        return self.m_block * self.TILE_M + tl.arange(0, self.TILE_M)
+    def get_softmax_threshold_log2(self) -> tl.tensor:
+        """
+        Compute the log2-domain softmax threshold for the current M block.
+
+        :return: softmax threshold in log2-domain for the current M block
+        """
+        return seqlen_info.get_softmax_threshold(
+            softmax_threshold=self.softmax_threshold,
+            m_block=self.m_block,
+            seqlen_q=self.actual_seqlen_q,
+            seqlen_k=self.actual_seqlen_k,
+            row_offsets=self.offs_m(),
+            IS_CAUSAL=self.IS_CAUSAL,
+            QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
+            IS_LOG2=True,
+        )
 
     @triton.jit
-    def get_offs_n(self, n_block):
-        return n_block * self.TILE_N + tl.arange(0, self.TILE_N)
+    def offs_m(self):
+        return tl.arange(0, self.TILE_M)
 
     @triton.jit
-    def get_offs_k(self):
+    def offs_n(self):
+        return tl.arange(0, self.TILE_N)
+
+    @triton.jit
+    def offs_k(self):
         return tl.arange(0, self.TILE_K)
 
 
