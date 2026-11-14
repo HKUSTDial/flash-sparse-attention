@@ -366,5 +366,8 @@ def rescale_o(
 
     :return acc_O: rescaled output accumulator tensor of shape [TILE_M, TILE_K]
     """
+    o_row_layout: gl.constexpr = gl.SliceLayout(1, acc_O.type.layout)
+    if row_scale.type.layout != o_row_layout:
+        row_scale = gl.convert_layout(row_scale, o_row_layout)
     acc_O *= row_scale[:, None]
     return acc_O

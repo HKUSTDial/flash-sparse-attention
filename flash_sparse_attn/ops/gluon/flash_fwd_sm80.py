@@ -43,7 +43,6 @@ def _fwd_inner_sm80_kernel(
     n_block,
     n_block_min,
     k_stage,
-    mma_layout: gl.constexpr,
     IS_FIRST: gl.constexpr = False,
     IS_MASK: gl.constexpr = False,
     MASK_SEQLEN: gl.constexpr = False,
@@ -52,15 +51,25 @@ def _fwd_inner_sm80_kernel(
     MASK_SINK: gl.constexpr = False,
 ):
     # MMA operand layouts
-    mma_lhs_layout: gl.constexpr = gl.DotOperandLayout(
+    mma_s_lhs_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=0,
-        parent=mma_layout,
+        parent=config.mma_s_layout,
         k_width=max(32 // sQ.dtype.primitive_bitwidth, 1),
     )
-    mma_rhs_layout: gl.constexpr = gl.DotOperandLayout(
+    mma_s_rhs_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=1,
-        parent=mma_layout,
+        parent=config.mma_s_layout,
         k_width=max(32 // sK.dtype.primitive_bitwidth, 1),
+    )
+    mma_o_lhs_layout: gl.constexpr = gl.DotOperandLayout(
+        operand_index=0,
+        parent=config.mma_o_layout,
+        k_width=max(32 // sV.dtype.primitive_bitwidth, 1),
+    )
+    mma_o_rhs_layout: gl.constexpr = gl.DotOperandLayout(
+        operand_index=1,
+        parent=config.mma_o_layout,
+        k_width=max(32 // sV.dtype.primitive_bitwidth, 1),
     )
 
     # TODO: Support a CTA-uniform issue predicate for both copy and commit_group to reduce empty copy in last iteration.
@@ -72,7 +81,10 @@ def _fwd_inner_sm80_kernel(
 
     # Load next K
     gK_next = ptrs_sched.make_k_ptrs(
-        config, n_block - 1, config.copy_row_n_offs(), config.copy_col_k_offs()
+        config,
+        n_block - 1,
+        config.copy_k_row_n_offs(),
+        config.copy_k_col_k_offs(),
     )
     async_copy.async_load(
         sK.index(1 - k_stage),
@@ -86,13 +98,13 @@ def _fwd_inner_sm80_kernel(
     async_copy.commit_group()
 
     # Compute S
-    acc_S = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, mma_layout)
+    acc_S = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, config.mma_s_layout)
     acc_S = gemm(
         acc_S,
         sQ,
         sK.index(k_stage).permute((1, 0)),
-        lhs_layout=mma_lhs_layout,
-        rhs_layout=mma_rhs_layout,
+        lhs_layout=mma_s_lhs_layout,
+        rhs_layout=mma_s_rhs_layout,
     )
 
     if IS_MASK:
@@ -100,8 +112,8 @@ def _fwd_inner_sm80_kernel(
         acc_S = mask_sched.apply_mask(
             acc_S,
             n_block,
-            config.mma_row_m_offs(),
-            config.mma_col_n_offs(),
+            config.mma_s_row_m_offs(),
+            config.mma_s_col_n_offs(),
             MASK_SEQLEN=MASK_SEQLEN,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
@@ -138,14 +150,17 @@ def _fwd_inner_sm80_kernel(
             acc_O,
             rP,
             sV,
-            lhs_layout=mma_lhs_layout,
-            rhs_layout=mma_rhs_layout,
+            lhs_layout=mma_o_lhs_layout,
+            rhs_layout=mma_o_rhs_layout,
         )
     gl.barrier()
 
     # Load next V
     gV_next = ptrs_sched.make_v_ptrs(
-        config, n_block - 1, config.copy_row_n_offs(), config.copy_col_k_offs()
+        config,
+        n_block - 1,
+        config.copy_v_row_n_offs(),
+        config.copy_v_col_k_offs(),
     )
     async_copy.async_load(
         sV,
@@ -235,13 +250,30 @@ def _fwd_sm80_kernel(
     threads_per_row: gl.constexpr = copy_atom_k // elements_per_thread
     rows_per_warp: gl.constexpr = warp_size // threads_per_row
 
-    copy_layout: gl.constexpr = gl.BlockedLayout(
+    copy_q_layout: gl.constexpr = gl.BlockedLayout(
         size_per_thread=[1, elements_per_thread],
         threads_per_warp=[rows_per_warp, threads_per_row],
         warps_per_cta=[num_warps, 1],
         order=[1, 0],
     )
-    mma_layout: gl.constexpr = gl.NVMMADistributedLayout(
+    copy_k_layout: gl.constexpr = gl.BlockedLayout(
+        size_per_thread=[1, elements_per_thread],
+        threads_per_warp=[rows_per_warp, threads_per_row],
+        warps_per_cta=[num_warps, 1],
+        order=[1, 0],
+    )
+    copy_v_layout: gl.constexpr = gl.BlockedLayout(
+        size_per_thread=[1, elements_per_thread],
+        threads_per_warp=[rows_per_warp, threads_per_row],
+        warps_per_cta=[num_warps, 1],
+        order=[1, 0],
+    )
+    mma_s_layout: gl.constexpr = gl.NVMMADistributedLayout(
+        version=[2, 0],
+        warps_per_cta=[num_warps, 1],
+        instr_shape=[16, 8],
+    )
+    mma_o_layout: gl.constexpr = gl.NVMMADistributedLayout(
         version=[2, 0],
         warps_per_cta=[num_warps, 1],
         instr_shape=[16, 8],
@@ -283,8 +315,11 @@ def _fwd_sm80_kernel(
         seqused_k=mSeqUsedK,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
-        copy_layout=copy_layout,
-        mma_layout=mma_layout,
+        copy_q_layout=copy_q_layout,
+        copy_k_layout=copy_k_layout,
+        copy_v_layout=copy_v_layout,
+        mma_s_layout=mma_s_layout,
+        mma_o_layout=mma_o_layout,
         PACK_GQA=PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         NUM_SPLITS=NUM_SPLITS,
@@ -340,15 +375,15 @@ def _fwd_sm80_kernel(
 
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
-        empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, mma_layout)
+        empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, config.mma_o_layout)
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
+            pO = ptrs_sched.make_m_predicate(config, config.mma_o_row_m_offs()[:, None])
+        gO = ptrs_sched.make_out_ptrs(config, config.mma_o_row_m_offs(), config.mma_o_col_k_offs())
         gl.store(gO, empty_o, mask=pO if not EVEN_M else None)
-        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_row_layout)
+        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_s_row_layout)
         if not EVEN_M:
-            pLSE = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs())
-        gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_row_m_offs())
+            pLSE = ptrs_sched.make_m_predicate(config, config.mma_s_row_m_offs())
+        gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_s_row_m_offs())
         gl.store(gLSE, empty_lse, mask=pLSE if not EVEN_M else None)
         return
 
@@ -382,17 +417,17 @@ def _fwd_sm80_kernel(
     )
 
     # Initialize accumulators
-    row_max = gl.full([TILE_M], float("-inf"), gl.float32, config.mma_row_layout)
-    row_sum = gl.zeros([TILE_M], gl.float32, config.mma_row_layout)
-    acc_O = gl.zeros([TILE_M, TILE_K], gl.float32, mma_layout)
+    row_max = gl.full([TILE_M], float("-inf"), gl.float32, config.mma_s_row_layout)
+    row_sum = gl.zeros([TILE_M], gl.float32, config.mma_s_row_layout)
+    acc_O = gl.zeros([TILE_M, TILE_K], gl.float32, config.mma_o_layout)
 
     # Initialize the K stage for the asynchronous copy pipeline
     k_stage = gl.to_tensor(0)
 
     # Load Q
     if not EVEN_M:
-        pQ = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-    gQ = ptrs_sched.make_q_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
+        pQ = ptrs_sched.make_m_predicate(config, config.copy_q_row_m_offs()[:, None])
+    gQ = ptrs_sched.make_q_ptrs(config, config.copy_q_row_m_offs(), config.copy_q_col_k_offs())
     async_copy.async_load(
         sQ,
         gQ,
@@ -410,13 +445,15 @@ def _fwd_sm80_kernel(
     # Load K
     if not EVEN_N:
         pK = ptrs_sched.make_n_predicate(
-            config, block_sched.n_block_max - 1, config.copy_row_n_offs()[:, None]
+            config,
+            block_sched.n_block_max - 1,
+            config.copy_k_row_n_offs()[:, None],
         )
     gK = ptrs_sched.make_k_ptrs(
         config,
         block_sched.n_block_max - 1,
-        config.copy_row_n_offs(),
-        config.copy_col_k_offs(),
+        config.copy_k_row_n_offs(),
+        config.copy_k_col_k_offs(),
     )
     async_copy.async_load(
         sK.index(k_stage),
@@ -432,13 +469,15 @@ def _fwd_sm80_kernel(
     # Load V
     if not EVEN_N:
         pV = ptrs_sched.make_n_predicate(
-            config, block_sched.n_block_max - 1, config.copy_row_n_offs()[:, None]
+            config,
+            block_sched.n_block_max - 1,
+            config.copy_v_row_n_offs()[:, None],
         )
     gV = ptrs_sched.make_v_ptrs(
         config,
         block_sched.n_block_max - 1,
-        config.copy_row_n_offs(),
-        config.copy_col_k_offs(),
+        config.copy_v_row_n_offs(),
+        config.copy_v_col_k_offs(),
     )
     async_copy.async_load(
         sV,
@@ -466,7 +505,6 @@ def _fwd_sm80_kernel(
         n_block_max,
         block_sched.n_block_min,
         k_stage,
-        mma_layout,
         IS_FIRST=True,
         IS_MASK=IS_CAUSAL or IS_LOCAL or not EVEN_N,
         MASK_SEQLEN=not EVEN_N,
@@ -499,7 +537,6 @@ def _fwd_sm80_kernel(
                 n_block,
                 block_sched.n_block_min,
                 k_stage,
-                mma_layout,
                 IS_MASK=True,
                 MASK_SEQLEN=False,
                 MASK_CAUSAL=IS_CAUSAL,
@@ -531,7 +568,6 @@ def _fwd_sm80_kernel(
                 n_block,
                 block_sched.n_block_min,
                 k_stage,
-                mma_layout,
                 IS_MASK=False,
                 MASK_SEQLEN=False,
                 MASK_CAUSAL=False,
@@ -551,8 +587,8 @@ def _fwd_sm80_kernel(
             gK = ptrs_sched.make_k_ptrs(
                 config,
                 block_sched.n_block_window_max - 1,
-                config.copy_row_n_offs(),
-                config.copy_col_k_offs(),
+                config.copy_k_row_n_offs(),
+                config.copy_k_col_k_offs(),
             )
             async_copy.async_load(
                 sK.index(k_stage),
@@ -568,8 +604,8 @@ def _fwd_sm80_kernel(
             gV = ptrs_sched.make_v_ptrs(
                 config,
                 block_sched.n_block_window_max - 1,
-                config.copy_row_n_offs(),
-                config.copy_col_k_offs(),
+                config.copy_v_row_n_offs(),
+                config.copy_v_col_k_offs(),
             )
             async_copy.async_load(sV, gV, cache_modifier=".cg", eviction_policy="evict_first")
 
@@ -596,7 +632,6 @@ def _fwd_sm80_kernel(
                     n_block,
                     block_sched.n_block_window_min,
                     k_stage,
-                    mma_layout,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
                     MASK_CAUSAL=False,
@@ -627,7 +662,6 @@ def _fwd_sm80_kernel(
                     n_block,
                     block_sched.n_block_window_min,
                     k_stage,
-                    mma_layout,
                     IS_MASK=False,
                     MASK_SEQLEN=False,
                     MASK_CAUSAL=False,
@@ -658,7 +692,6 @@ def _fwd_sm80_kernel(
                     n_block,
                     block_sched.n_block_window_min,
                     k_stage,
-                    mma_layout,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
                     MASK_CAUSAL=False,
@@ -677,8 +710,8 @@ def _fwd_sm80_kernel(
             gK = ptrs_sched.make_k_ptrs(
                 config,
                 block_sched.n_block_sink_max - 1,
-                config.copy_row_n_offs(),
-                config.copy_col_k_offs(),
+                config.copy_k_row_n_offs(),
+                config.copy_k_col_k_offs(),
             )
             async_copy.async_load(
                 sK.index(k_stage),
@@ -694,8 +727,8 @@ def _fwd_sm80_kernel(
             gV = ptrs_sched.make_v_ptrs(
                 config,
                 block_sched.n_block_sink_max - 1,
-                config.copy_row_n_offs(),
-                config.copy_col_k_offs(),
+                config.copy_v_row_n_offs(),
+                config.copy_v_col_k_offs(),
             )
             async_copy.async_load(sV, gV, cache_modifier=".cg", eviction_policy="evict_first")
 
@@ -722,7 +755,6 @@ def _fwd_sm80_kernel(
                     n_block,
                     block_sched.n_block_sink_min,
                     k_stage,
-                    mma_layout,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
                     MASK_CAUSAL=False,
@@ -738,8 +770,8 @@ def _fwd_sm80_kernel(
 
     # Store LSE
     if not EVEN_M:
-        pLSE = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs())
-    gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_row_m_offs())
+        pLSE = ptrs_sched.make_m_predicate(config, config.mma_s_row_m_offs())
+    gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_s_row_m_offs())
     gl.store(gLSE, lse, mask=pLSE if not EVEN_M else None)
 
     # Finalize rescale
@@ -748,16 +780,18 @@ def _fwd_sm80_kernel(
     # Store O
     if IS_SPLIT_KV:
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
+            pO = ptrs_sched.make_m_predicate(config, config.mma_o_row_m_offs()[:, None])
+        gO = ptrs_sched.make_out_ptrs(config, config.mma_o_row_m_offs(), config.mma_o_col_k_offs())
         gl.store(gO, acc_O, mask=pO if not EVEN_M else None)
     else:
         sQ.store(acc_O.to(mOut.dtype.element_ty))
         gl.barrier()
-        rO = sQ.load(copy_layout)
+        rO = sQ.load(copy_q_layout)
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
+            pO = ptrs_sched.make_m_predicate(config, config.copy_q_row_m_offs()[:, None])
+        gO = ptrs_sched.make_out_ptrs(
+            config, config.copy_q_row_m_offs(), config.copy_q_col_k_offs()
+        )
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
