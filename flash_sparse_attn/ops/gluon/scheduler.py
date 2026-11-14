@@ -330,10 +330,21 @@ class AttnFwdConfig:
     window_size_right: gl.tensor
     window_size_near: gl.tensor
     head_dim: gl.tensor
-    copy_row_layout: gl.constexpr
-    copy_col_layout: gl.constexpr
-    mma_row_layout: gl.constexpr
-    mma_col_layout: gl.constexpr
+    copy_q_layout: gl.constexpr
+    copy_k_layout: gl.constexpr
+    copy_v_layout: gl.constexpr
+    copy_q_row_layout: gl.constexpr
+    copy_q_col_layout: gl.constexpr
+    copy_k_row_layout: gl.constexpr
+    copy_k_col_layout: gl.constexpr
+    copy_v_row_layout: gl.constexpr
+    copy_v_col_layout: gl.constexpr
+    mma_s_layout: gl.constexpr
+    mma_o_layout: gl.constexpr
+    mma_s_row_layout: gl.constexpr
+    mma_s_col_layout: gl.constexpr
+    mma_o_row_layout: gl.constexpr
+    mma_o_col_layout: gl.constexpr
     PACK_GQA: gl.constexpr
     QHEAD_PER_KVHEAD_PACKGQA: gl.constexpr
     NUM_SPLITS: gl.constexpr

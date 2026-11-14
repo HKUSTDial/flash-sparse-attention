@@ -203,7 +203,9 @@ def _bwd_inner_sm80_kernel(
         )
 
         # Compute dS
-        rdS = gl.convert_layout(rP, config.mma_dp_layout) * (acc_dP - sdPsum.index(0).load(config.mma_dp_col_layout)[None, :])
+        rdS = gl.convert_layout(rP, config.mma_dp_layout) * (
+            acc_dP - sdPsum.index(0).load(config.mma_dp_col_layout)[None, :]
+        )
         sP.store(rP.to(sQ.dtype))
         sdS.store(rdS.to(sQ.dtype))
         gl.barrier()
