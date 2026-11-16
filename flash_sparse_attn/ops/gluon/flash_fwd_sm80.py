@@ -80,12 +80,7 @@ def _fwd_inner_sm80_kernel(
     gl.barrier()
 
     # Load next K
-    gK_next = ptrs_sched.make_k_ptrs(
-        config,
-        n_block - 1,
-        config.copy_k_row_n_offs(),
-        config.copy_k_col_k_offs(),
-    )
+    gK_next = ptrs_sched.make_k_ptrs(config, n_block - 1)
     async_copy.async_load(
         sK.index(1 - k_stage),
         gK_next,
@@ -156,12 +151,7 @@ def _fwd_inner_sm80_kernel(
     gl.barrier()
 
     # Load next V
-    gV_next = ptrs_sched.make_v_ptrs(
-        config,
-        n_block - 1,
-        config.copy_v_row_n_offs(),
-        config.copy_v_col_k_offs(),
-    )
+    gV_next = ptrs_sched.make_v_ptrs(config, n_block - 1)
     async_copy.async_load(
         sV,
         gV_next,
@@ -375,15 +365,15 @@ def _fwd_sm80_kernel(
 
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
-        empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, config.mma_o_layout)
+        empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, config.mma_o_layout if config.IS_SPLIT_KV else config.copy_q_layout)
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.mma_o_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.mma_o_row_m_offs(), config.mma_o_col_k_offs())
+            pO = ptrs_sched.make_out_predicate(config)
+        gO = ptrs_sched.make_out_ptrs(config)
         gl.store(gO, empty_o, mask=pO if not EVEN_M else None)
         empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_s_row_layout)
         if not EVEN_M:
-            pLSE = ptrs_sched.make_m_predicate(config, config.mma_s_row_m_offs())
-        gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_s_row_m_offs())
+            pLSE = ptrs_sched.make_lse_predicate(config)
+        gLSE = ptrs_sched.make_lse_ptrs(config)
         gl.store(gLSE, empty_lse, mask=pLSE if not EVEN_M else None)
         return
 
@@ -426,8 +416,8 @@ def _fwd_sm80_kernel(
 
     # Load Q
     if not EVEN_M:
-        pQ = ptrs_sched.make_m_predicate(config, config.copy_q_row_m_offs()[:, None])
-    gQ = ptrs_sched.make_q_ptrs(config, config.copy_q_row_m_offs(), config.copy_q_col_k_offs())
+        pQ = ptrs_sched.make_q_predicate(config)
+    gQ = ptrs_sched.make_q_ptrs(config)
     async_copy.async_load(
         sQ,
         gQ,
@@ -444,17 +434,8 @@ def _fwd_sm80_kernel(
 
     # Load K
     if not EVEN_N:
-        pK = ptrs_sched.make_n_predicate(
-            config,
-            block_sched.n_block_max - 1,
-            config.copy_k_row_n_offs()[:, None],
-        )
-    gK = ptrs_sched.make_k_ptrs(
-        config,
-        block_sched.n_block_max - 1,
-        config.copy_k_row_n_offs(),
-        config.copy_k_col_k_offs(),
-    )
+        pK = ptrs_sched.make_k_predicate(config, block_sched.n_block_max - 1)
+    gK = ptrs_sched.make_k_ptrs(config, block_sched.n_block_max - 1)
     async_copy.async_load(
         sK.index(k_stage),
         gK,
@@ -468,17 +449,8 @@ def _fwd_sm80_kernel(
 
     # Load V
     if not EVEN_N:
-        pV = ptrs_sched.make_n_predicate(
-            config,
-            block_sched.n_block_max - 1,
-            config.copy_v_row_n_offs()[:, None],
-        )
-    gV = ptrs_sched.make_v_ptrs(
-        config,
-        block_sched.n_block_max - 1,
-        config.copy_v_row_n_offs(),
-        config.copy_v_col_k_offs(),
-    )
+        pV = ptrs_sched.make_v_predicate(config, block_sched.n_block_max - 1)
+    gV = ptrs_sched.make_v_ptrs(config, block_sched.n_block_max - 1)
     async_copy.async_load(
         sV,
         gV,
@@ -584,12 +556,7 @@ def _fwd_sm80_kernel(
             gl.barrier()
 
             # Load K
-            gK = ptrs_sched.make_k_ptrs(
-                config,
-                block_sched.n_block_window_max - 1,
-                config.copy_k_row_n_offs(),
-                config.copy_k_col_k_offs(),
-            )
+            gK = ptrs_sched.make_k_ptrs(config, block_sched.n_block_window_max - 1)
             async_copy.async_load(
                 sK.index(k_stage),
                 gK,
@@ -601,12 +568,7 @@ def _fwd_sm80_kernel(
             async_copy.commit_group()
 
             # Load V
-            gV = ptrs_sched.make_v_ptrs(
-                config,
-                block_sched.n_block_window_max - 1,
-                config.copy_v_row_n_offs(),
-                config.copy_v_col_k_offs(),
-            )
+            gV = ptrs_sched.make_v_ptrs(config, block_sched.n_block_window_max - 1)
             async_copy.async_load(sV, gV, cache_modifier=".cg", eviction_policy="evict_first")
 
             # Commit V group
@@ -707,12 +669,7 @@ def _fwd_sm80_kernel(
             gl.barrier()
 
             # Load K
-            gK = ptrs_sched.make_k_ptrs(
-                config,
-                block_sched.n_block_sink_max - 1,
-                config.copy_k_row_n_offs(),
-                config.copy_k_col_k_offs(),
-            )
+            gK = ptrs_sched.make_k_ptrs(config, block_sched.n_block_sink_max - 1)
             async_copy.async_load(
                 sK.index(k_stage),
                 gK,
@@ -724,12 +681,7 @@ def _fwd_sm80_kernel(
             async_copy.commit_group()
 
             # Load V
-            gV = ptrs_sched.make_v_ptrs(
-                config,
-                block_sched.n_block_sink_max - 1,
-                config.copy_v_row_n_offs(),
-                config.copy_v_col_k_offs(),
-            )
+            gV = ptrs_sched.make_v_ptrs(config, block_sched.n_block_sink_max - 1)
             async_copy.async_load(sV, gV, cache_modifier=".cg", eviction_policy="evict_first")
 
             # Commit V group
@@ -770,8 +722,8 @@ def _fwd_sm80_kernel(
 
     # Store LSE
     if not EVEN_M:
-        pLSE = ptrs_sched.make_m_predicate(config, config.mma_s_row_m_offs())
-    gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_s_row_m_offs())
+        pLSE = ptrs_sched.make_lse_predicate(config)
+    gLSE = ptrs_sched.make_lse_ptrs(config)
     gl.store(gLSE, lse, mask=pLSE if not EVEN_M else None)
 
     # Finalize rescale
@@ -780,18 +732,16 @@ def _fwd_sm80_kernel(
     # Store O
     if IS_SPLIT_KV:
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.mma_o_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.mma_o_row_m_offs(), config.mma_o_col_k_offs())
+            pO = ptrs_sched.make_out_predicate(config)
+        gO = ptrs_sched.make_out_ptrs(config)
         gl.store(gO, acc_O, mask=pO if not EVEN_M else None)
     else:
         sQ.store(acc_O.to(mOut.dtype.element_ty))
         gl.barrier()
         rO = sQ.load(copy_q_layout)
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.copy_q_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(
-            config, config.copy_q_row_m_offs(), config.copy_q_col_k_offs()
-        )
+            pO = ptrs_sched.make_out_predicate(config)
+        gO = ptrs_sched.make_out_ptrs(config)
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
@@ -815,7 +765,7 @@ def _flash_attn_forward_sm80(
     tile_n: Optional[int] = None,
     num_threads: Optional[int] = None,
     skip_checks: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     device = q.device
     num_SMs = get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = q.shape
@@ -844,8 +794,8 @@ def _flash_attn_forward_sm80(
 
     # Setup launch configuration
     TILE_M = tile_m if tile_m is not None else 128
-    TILE_N = tile_n if tile_n is not None else 64
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
+    TILE_N = tile_n if tile_n is not None else 64
     num_warps = num_threads // 32 if num_threads is not None else 4
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
@@ -987,7 +937,7 @@ def _flash_attn_varlen_forward_sm80(
     tile_n: Optional[int] = None,
     num_threads: Optional[int] = None,
     skip_checks: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     device = q.device
     num_SMs = get_device_num_sms(device)
     total_q, num_heads_q, head_dim = q.shape
@@ -1022,9 +972,9 @@ def _flash_attn_varlen_forward_sm80(
 
     # Setup launch configuration
     TILE_M = tile_m if tile_m is not None else 128
-    TILE_N = tile_n if tile_n is not None else 64
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
     num_warps = num_threads // 32 if num_threads is not None else 4
+    TILE_N = tile_n if tile_n is not None else 64
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
             batch_size=batch_size,

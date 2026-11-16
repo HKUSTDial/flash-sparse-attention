@@ -148,12 +148,7 @@ def _bwd_inner_sm80_kernel(
     )
 
     # Load next Q
-    gQ_next = ptrs_sched.make_q_ptrs(
-        config,
-        m_block + 1,
-        config.copy_q_row_m_offs(),
-        config.copy_q_col_k_offs(),
-    )
+    gQ_next = ptrs_sched.make_q_ptrs(config, m_block + 1)
     async_copy.async_load(
         sQ.index(1 - q_stage),
         gQ_next,
@@ -163,7 +158,7 @@ def _bwd_inner_sm80_kernel(
     )
 
     # Load next LSE
-    gLSE_next = ptrs_sched.make_lse_ptrs(config, m_block + 1, config.copy_q_row_m_offs())
+    gLSE_next = ptrs_sched.make_lse_ptrs(config, m_block + 1)
     async_copy.async_load(
         sLSE.index(1 - q_stage),
         gLSE_next,
@@ -240,21 +235,11 @@ def _bwd_inner_sm80_kernel(
 
         # Store dQ
         # TODO: fused make_ptrs and per-address_atomic_add to avoid spilling
-        gdQaccum = ptrs_sched.make_dq_accum_ptrs(
-            config,
-            m_block,
-            config.mma_dq_col_m_offs(),
-            config.mma_dq_row_k_offs(),
-        )
+        gdQaccum = ptrs_sched.make_dq_accum_ptrs(config, m_block)
         gl.atomic_add(gdQaccum, acc_dQ, sem="relaxed")
 
     # Load next dO
-    gdO_next = ptrs_sched.make_do_ptrs(
-        config,
-        m_block + 1,
-        config.copy_do_row_m_offs(),
-        config.copy_do_col_k_offs(),
-    )
+    gdO_next = ptrs_sched.make_do_ptrs(config, m_block + 1)
     async_copy.async_load(
         sdO,
         gdO_next,
@@ -264,7 +249,7 @@ def _bwd_inner_sm80_kernel(
     )
 
     # Load next dPsum
-    gdPsum_next = ptrs_sched.make_dpsum_ptrs(config, m_block + 1, config.copy_do_row_m_offs())
+    gdPsum_next = ptrs_sched.make_dpsum_ptrs(config, m_block + 1)
     async_copy.async_load(
         sdPsum.index(0),
         gdPsum_next,
@@ -298,8 +283,8 @@ def _bwd_sm80_kernel(
     mQ,
     mK,
     mV,
-    mdO,
     mLSELog2,
+    mdO,
     mdPsum,
     mdQaccum,
     mdK,
@@ -481,8 +466,8 @@ def _bwd_sm80_kernel(
         Q=mQ,
         K=mK,
         V=mV,
-        dO=mdO,
         LSELog2=mLSELog2,
+        dO=mdO,
         dPsum=mdPsum,
         dQaccum=mdQaccum,
         dK=mdK,
@@ -618,8 +603,8 @@ def _bwd_sm80_kernel(
 
     # Load K
     if not EVEN_N:
-        pK = ptrs_sched.make_n_predicate(config, config.copy_k_row_n_offs()[:, None])
-    gK = ptrs_sched.make_k_ptrs(config, config.copy_k_row_n_offs(), config.copy_k_col_k_offs())
+        pK = ptrs_sched.make_k_predicate(config)
+    gK = ptrs_sched.make_k_ptrs(config)
     async_copy.async_load(
         sK,
         gK,
@@ -630,8 +615,8 @@ def _bwd_sm80_kernel(
 
     # Load V
     if not EVEN_N:
-        pV = ptrs_sched.make_n_predicate(config, config.copy_v_row_n_offs()[:, None])
-    gV = ptrs_sched.make_v_ptrs(config, config.copy_v_row_n_offs(), config.copy_v_col_k_offs())
+        pV = ptrs_sched.make_v_predicate(config)
+    gV = ptrs_sched.make_v_ptrs(config)
     async_copy.async_load(
         sV,
         gV,
@@ -648,13 +633,8 @@ def _bwd_sm80_kernel(
 
     # Load Q
     if not EVEN_M:
-        pQ = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_q_row_m_offs()[:, None])
-    gQ = ptrs_sched.make_q_ptrs(
-        config,
-        m_block_max,
-        config.copy_q_row_m_offs(),
-        config.copy_q_col_k_offs(),
-    )
+        pQ = ptrs_sched.make_q_predicate(config, m_block_max)
+    gQ = ptrs_sched.make_q_ptrs(config, m_block_max)
     async_copy.async_load(
         sQ.index(q_stage),
         gQ,
@@ -665,8 +645,8 @@ def _bwd_sm80_kernel(
 
     # Load LSE
     if not EVEN_M:
-        pLSE = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_q_row_m_offs())
-    gLSE = ptrs_sched.make_lse_ptrs(config, m_block_max, config.copy_q_row_m_offs())
+        pLSE = ptrs_sched.make_lse_predicate(config, m_block_max)
+    gLSE = ptrs_sched.make_lse_ptrs(config, m_block_max)
     async_copy.async_load(
         sLSE.index(q_stage),
         gLSE,
@@ -680,13 +660,8 @@ def _bwd_sm80_kernel(
 
     # Load dO
     if not EVEN_M:
-        pdO = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_do_row_m_offs()[:, None])
-    gdO = ptrs_sched.make_do_ptrs(
-        config,
-        m_block_max,
-        config.copy_do_row_m_offs(),
-        config.copy_do_col_k_offs(),
-    )
+        pdO = ptrs_sched.make_do_predicate(config, m_block_max)
+    gdO = ptrs_sched.make_do_ptrs(config, m_block_max)
     async_copy.async_load(
         sdO,
         gdO,
@@ -697,8 +672,8 @@ def _bwd_sm80_kernel(
 
     # Load dPsum
     if not EVEN_M:
-        pdPsum = ptrs_sched.make_m_predicate(config, m_block_max, config.copy_do_row_m_offs())
-    gdPsum = ptrs_sched.make_dpsum_ptrs(config, m_block_max, config.copy_do_row_m_offs())
+        pdPsum = ptrs_sched.make_dpsum_predicate(config, m_block_max)
+    gdPsum = ptrs_sched.make_dpsum_ptrs(config, m_block_max)
     async_copy.async_load(
         sdPsum.index(0),
         gdPsum,
@@ -745,12 +720,7 @@ def _bwd_sm80_kernel(
         gl.barrier()
 
         # Load Q
-        gQ = ptrs_sched.make_q_ptrs(
-            config,
-            block_sched.m_block_min,
-            config.copy_q_row_m_offs(),
-            config.copy_q_col_k_offs(),
-        )
+        gQ = ptrs_sched.make_q_ptrs(config, block_sched.m_block_min)
         async_copy.async_load(
             sQ.index(q_stage),
             gQ,
@@ -759,7 +729,7 @@ def _bwd_sm80_kernel(
         )
 
         # Load LSE
-        gLSE = ptrs_sched.make_lse_ptrs(config, block_sched.m_block_min, config.copy_q_row_m_offs())
+        gLSE = ptrs_sched.make_lse_ptrs(config, block_sched.m_block_min)
         async_copy.async_load(
             sLSE.index(q_stage),
             gLSE,
@@ -771,12 +741,7 @@ def _bwd_sm80_kernel(
         async_copy.commit_group()
 
         # Load dO
-        gdO = ptrs_sched.make_do_ptrs(
-            config,
-            block_sched.m_block_min,
-            config.copy_do_row_m_offs(),
-            config.copy_do_col_k_offs(),
-        )
+        gdO = ptrs_sched.make_do_ptrs(config, block_sched.m_block_min)
         async_copy.async_load(
             sdO,
             gdO,
@@ -785,9 +750,7 @@ def _bwd_sm80_kernel(
         )
 
         # Load dPsum
-        gdPsum = ptrs_sched.make_dpsum_ptrs(
-            config, block_sched.m_block_min, config.copy_do_row_m_offs()
-        )
+        gdPsum = ptrs_sched.make_dpsum_ptrs(config, block_sched.m_block_min)
         async_copy.async_load(
             sdPsum.index(0),
             gdPsum,
@@ -872,12 +835,7 @@ def _bwd_sm80_kernel(
             gl.barrier()
 
             # Load Q
-            gQ = ptrs_sched.make_q_ptrs(
-                config,
-                block_sched.m_block_window_min,
-                config.copy_q_row_m_offs(),
-                config.copy_q_col_k_offs(),
-            )
+            gQ = ptrs_sched.make_q_ptrs(config, block_sched.m_block_window_min)
             async_copy.async_load(
                 sQ.index(q_stage),
                 gQ,
@@ -886,9 +844,7 @@ def _bwd_sm80_kernel(
             )
 
             # Load LSE
-            gLSE = ptrs_sched.make_lse_ptrs(
-                config, block_sched.m_block_window_min, config.copy_q_row_m_offs()
-            )
+            gLSE = ptrs_sched.make_lse_ptrs(config, block_sched.m_block_window_min)
             async_copy.async_load(
                 sLSE.index(q_stage),
                 gLSE,
@@ -900,12 +856,7 @@ def _bwd_sm80_kernel(
             async_copy.commit_group()
 
             # Load dO
-            gdO = ptrs_sched.make_do_ptrs(
-                config,
-                block_sched.m_block_window_min,
-                config.copy_do_row_m_offs(),
-                config.copy_do_col_k_offs(),
-            )
+            gdO = ptrs_sched.make_do_ptrs(config, block_sched.m_block_window_min)
             async_copy.async_load(
                 sdO,
                 gdO,
@@ -914,9 +865,7 @@ def _bwd_sm80_kernel(
             )
 
             # Load dPsum
-            gdPsum = ptrs_sched.make_dpsum_ptrs(
-                config, block_sched.m_block_window_min, config.copy_do_row_m_offs()
-            )
+            gdPsum = ptrs_sched.make_dpsum_ptrs(config, block_sched.m_block_window_min)
             async_copy.async_load(
                 sdPsum.index(0),
                 gdPsum,
@@ -1035,12 +984,7 @@ def _bwd_sm80_kernel(
             gl.barrier()
 
             # Load Q
-            gQ = ptrs_sched.make_q_ptrs(
-                config,
-                block_sched.m_block_sink_min,
-                config.copy_q_row_m_offs(),
-                config.copy_q_col_k_offs(),
-            )
+            gQ = ptrs_sched.make_q_ptrs(config, block_sched.m_block_sink_min)
             async_copy.async_load(
                 sQ.index(q_stage),
                 gQ,
@@ -1049,9 +993,7 @@ def _bwd_sm80_kernel(
             )
 
             # Load LSE
-            gLSE = ptrs_sched.make_lse_ptrs(
-                config, block_sched.m_block_sink_min, config.copy_q_row_m_offs()
-            )
+            gLSE = ptrs_sched.make_lse_ptrs(config, block_sched.m_block_sink_min)
             async_copy.async_load(
                 sLSE.index(q_stage),
                 gLSE,
@@ -1063,12 +1005,7 @@ def _bwd_sm80_kernel(
             async_copy.commit_group()
 
             # Load dO
-            gdO = ptrs_sched.make_do_ptrs(
-                config,
-                block_sched.m_block_sink_min,
-                config.copy_do_row_m_offs(),
-                config.copy_do_col_k_offs(),
-            )
+            gdO = ptrs_sched.make_do_ptrs(config, block_sched.m_block_sink_min)
             async_copy.async_load(
                 sdO,
                 gdO,
@@ -1077,9 +1014,7 @@ def _bwd_sm80_kernel(
             )
 
             # Load dPsum
-            gdPsum = ptrs_sched.make_dpsum_ptrs(
-                config, block_sched.m_block_sink_min, config.copy_do_row_m_offs()
-            )
+            gdPsum = ptrs_sched.make_dpsum_ptrs(config, block_sched.m_block_sink_min)
             async_copy.async_load(
                 sdPsum.index(0),
                 gdPsum,
@@ -1123,11 +1058,7 @@ def _bwd_sm80_kernel(
                 q_stage = 1 - q_stage
 
     # Store dV
-    gdV = ptrs_sched.make_dv_ptrs(
-        config,
-        config.mma_dv_row_n_offs(),
-        config.mma_dv_col_k_offs(),
-    )
+    gdV = ptrs_sched.make_dv_ptrs(config)
     if QHEAD_PER_KVHEAD > 1:
         gl.atomic_add(gdV, acc_dV, sem="relaxed")
     else:
@@ -1137,11 +1068,7 @@ def _bwd_sm80_kernel(
     acc_dK = acc_dK * softmax_scale
 
     # Store dK
-    gdK = ptrs_sched.make_dk_ptrs(
-        config,
-        config.mma_dk_row_n_offs(),
-        config.mma_dk_col_k_offs(),
-    )
+    gdK = ptrs_sched.make_dk_ptrs(config)
     if QHEAD_PER_KVHEAD > 1:
         gl.atomic_add(gdK, acc_dK, sem="relaxed")
     else:
@@ -1279,8 +1206,8 @@ def _flash_attn_backward_sm80(
         q,
         k,
         v,
-        dout,
         lse_log2,
+        dout,
         dpsum,
         dq_accum,
         dk_accum,
@@ -1508,8 +1435,8 @@ def _flash_attn_varlen_backward_sm80(
         q,
         k,
         v,
-        dout,
         lse_log2,
+        dout,
         dpsum,
         dq_accum,
         dk_accum,
