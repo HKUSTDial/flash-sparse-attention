@@ -365,7 +365,11 @@ def _fwd_sm80_kernel(
 
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
-        empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, config.mma_o_layout if config.IS_SPLIT_KV else config.copy_q_layout)
+        empty_o = gl.zeros(
+            [TILE_M, TILE_K],
+            mOut.dtype.element_ty,
+            config.mma_o_layout if config.IS_SPLIT_KV else config.copy_q_layout,
+        )
         if not EVEN_M:
             pO = ptrs_sched.make_out_predicate(config)
         gO = ptrs_sched.make_out_ptrs(config)
