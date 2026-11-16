@@ -61,9 +61,9 @@ class AttnFwdGridIndex:
         Decode the forward program IDs into attention grid indices.
 
         :param seqlen_k: sequence length of the key
-        :type seqlen_k: gl.tensor
+        :type seqlen_k: tensor
         :param head_dim: attention head dimension
-        :type head_dim: gl.tensor
+        :type head_dim: tensor
         :param NUM_SPLITS: number of KV splits
         :type NUM_SPLITS: int
         :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
@@ -201,9 +201,9 @@ class AttnBwdGridIndex:
         Decode the backward program IDs into attention grid indices.
 
         :param seqlen_q: sequence length of the query
-        :type seqlen_q: gl.tensor
+        :type seqlen_q: tensor
         :param head_dim: attention head dimension
-        :type head_dim: gl.tensor
+        :type head_dim: tensor
         :param NUM_SPLITS: number of QO splits
         :type NUM_SPLITS: int
         :param QHEAD_PER_KVHEAD: ratio of query heads to key/value heads
@@ -1879,8 +1879,6 @@ class AttnFwdPointerScheduler:
     def make_q_ptrs(
         self,
         config: AttnFwdConfig,
-        offs_m: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -1888,10 +1886,6 @@ class AttnFwdPointerScheduler:
 
         :param config: attention forward configuration
         :type config: AttnFwdConfig
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the M dimension
         :type SWAP_AB: bool
 
@@ -1904,8 +1898,8 @@ class AttnFwdPointerScheduler:
                 head_idx=config.head_idx,
                 stride_head=self.stride_qh,
                 stride_seq=self.stride_qm,
-                offs_m=offs_m,
-                offs_k=offs_k,
+                offs_m=config.copy_q_row_m_offs(),
+                offs_k=config.copy_q_col_k_offs(),
                 TILE_K=config.TILE_K,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
                 SWAP_AB=SWAP_AB,
@@ -1914,8 +1908,8 @@ class AttnFwdPointerScheduler:
             base_ptr=self.q_base,
             mn_block=config.m_block,
             stride_seq=self.stride_qm,
-            offs_mn=offs_m,
-            offs_k=offs_k,
+            offs_mn=config.copy_q_row_m_offs(),
+            offs_k=config.copy_q_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -1925,8 +1919,6 @@ class AttnFwdPointerScheduler:
         self,
         config: AttnFwdConfig,
         n_block: gl.tensor,
-        offs_n: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -1936,10 +1928,6 @@ class AttnFwdPointerScheduler:
         :type config: AttnFwdConfig
         :param n_block: block index along the N dimension
         :type n_block: tensor
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the N dimension
         :type SWAP_AB: bool
 
@@ -1949,8 +1937,8 @@ class AttnFwdPointerScheduler:
             base_ptr=self.k_base,
             mn_block=n_block,
             stride_seq=self.stride_kn,
-            offs_mn=offs_n,
-            offs_k=offs_k,
+            offs_mn=config.copy_k_row_n_offs(),
+            offs_k=config.copy_k_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -1960,8 +1948,6 @@ class AttnFwdPointerScheduler:
         self,
         config: AttnFwdConfig,
         n_block: gl.tensor,
-        offs_n: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -1971,10 +1957,6 @@ class AttnFwdPointerScheduler:
         :type config: AttnFwdConfig
         :param n_block: block index along the N dimension
         :type n_block: tensor
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the N dimension
         :type SWAP_AB: bool
 
@@ -1984,8 +1966,8 @@ class AttnFwdPointerScheduler:
             base_ptr=self.v_base,
             mn_block=n_block,
             stride_seq=self.stride_vn,
-            offs_mn=offs_n,
-            offs_k=offs_k,
+            offs_mn=config.copy_v_row_n_offs(),
+            offs_k=config.copy_v_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -1994,8 +1976,6 @@ class AttnFwdPointerScheduler:
     def make_out_ptrs(
         self,
         config: AttnFwdConfig,
-        offs_m: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -2003,10 +1983,6 @@ class AttnFwdPointerScheduler:
 
         :param config: attention forward configuration
         :type config: AttnFwdConfig
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the M dimension
         :type SWAP_AB: bool
 
@@ -2019,8 +1995,12 @@ class AttnFwdPointerScheduler:
                 head_idx=config.head_idx,
                 stride_head=self.stride_oh,
                 stride_seq=self.stride_om,
-                offs_m=offs_m,
-                offs_k=offs_k,
+                offs_m=config.copy_q_row_m_offs()
+                if not config.IS_SPLIT_KV
+                else config.mma_o_row_m_offs(),
+                offs_k=config.copy_q_col_k_offs()
+                if not config.IS_SPLIT_KV
+                else config.mma_o_col_k_offs(),
                 TILE_K=config.TILE_K,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
                 SWAP_AB=SWAP_AB,
@@ -2029,8 +2009,12 @@ class AttnFwdPointerScheduler:
             base_ptr=self.out_base,
             mn_block=config.m_block,
             stride_seq=self.stride_om,
-            offs_mn=offs_m,
-            offs_k=offs_k,
+            offs_mn=config.copy_q_row_m_offs()
+            if not config.IS_SPLIT_KV
+            else config.mma_o_row_m_offs(),
+            offs_k=config.copy_q_col_k_offs()
+            if not config.IS_SPLIT_KV
+            else config.mma_o_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -2039,15 +2023,12 @@ class AttnFwdPointerScheduler:
     def make_lse_ptrs(
         self,
         config: AttnFwdConfig,
-        offs_m: gl.tensor,
     ) -> gl.tensor:
         """
         Construct LSE pointers for the current M block.
 
         :param config: attention forward configuration
         :type config: AttnFwdConfig
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
 
         :return: LSE pointers of shape [TILE_M]
         """
@@ -2058,8 +2039,8 @@ class AttnFwdPointerScheduler:
                 head_idx=config.head_idx,
                 stride_head=self.stride_lh,
                 stride_seq=1,
-                offs_m=offs_m,
-                offs_k=offs_m,
+                offs_m=config.mma_s_row_m_offs(),
+                offs_k=config.mma_s_row_m_offs(),
                 TILE_K=1,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
                 SWAP_AB=False,
@@ -2068,60 +2049,112 @@ class AttnFwdPointerScheduler:
             base_ptr=self.lse_base,
             mn_block=config.m_block,
             stride_seq=1,
-            offs_mn=offs_m,
+            offs_mn=config.mma_s_row_m_offs(),
             offs_k=None,
             TILE_K=1,
             SWAP_AB=False,
         )
 
     @gluon.jit
-    def make_m_predicate(
-        self,
-        config: AttnFwdConfig,
-        offs_m: gl.tensor,
-    ) -> gl.tensor:
+    def make_q_predicate(self, config: AttnFwdConfig) -> gl.tensor:
         """
-        Construct sequence length predicate for the current M block.
+        Construct the sequence length predicate for copying Q.
 
         :param config: attention forward configuration
         :type config: AttnFwdConfig
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
 
-        :return: sequence length predicate
+        :return: Q sequence length predicate
         """
         return make_seqlen_predicate(
             mn_block=config.m_block,
             actual_seqlen=config.actual_seqlen_q,
-            offs_mn=offs_m,
+            offs_mn=config.copy_q_row_m_offs()[:, None],
             TILE_MN=config.TILE_M,
             QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA if config.PACK_GQA else 1,
         )
 
     @gluon.jit
-    def make_n_predicate(
+    def make_k_predicate(
         self,
         config: AttnFwdConfig,
         n_block: gl.tensor,
-        offs_n: gl.tensor,
     ) -> gl.tensor:
         """
-        Construct sequence length predicate for the current N block.
+        Construct the sequence length predicate for copying K.
 
         :param config: attention forward configuration
         :type config: AttnFwdConfig
         :param n_block: current N block index
         :type n_block: tensor
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
 
-        :return: sequence length predicate
+        :return: K sequence length predicate
         """
         return make_seqlen_predicate(
             mn_block=n_block,
             actual_seqlen=config.actual_seqlen_k,
-            offs_mn=offs_n,
+            offs_mn=config.copy_k_row_n_offs()[:, None],
             TILE_MN=config.TILE_N,
+        )
+
+    @gluon.jit
+    def make_v_predicate(
+        self,
+        config: AttnFwdConfig,
+        n_block: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct the sequence length predicate for copying V.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param n_block: current N block index
+        :type n_block: tensor
+
+        :return: V sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=n_block,
+            actual_seqlen=config.actual_seqlen_k,
+            offs_mn=config.copy_v_row_n_offs()[:, None],
+            TILE_MN=config.TILE_N,
+        )
+
+    @gluon.jit
+    def make_out_predicate(self, config: AttnFwdConfig) -> gl.tensor:
+        """
+        Construct the sequence length predicate for storing O.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: O sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=config.m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=config.copy_q_row_m_offs()[:, None]
+            if not config.IS_SPLIT_KV
+            else config.mma_o_row_m_offs()[:, None],
+            TILE_MN=config.TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA if config.PACK_GQA else 1,
+        )
+
+    @gluon.jit
+    def make_lse_predicate(self, config: AttnFwdConfig) -> gl.tensor:
+        """
+        Construct the sequence length predicate for storing LSE.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: LSE sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=config.m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=config.mma_s_row_m_offs(),
+            TILE_MN=config.TILE_M,
+            QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA if config.PACK_GQA else 1,
         )
 
 
@@ -2130,8 +2163,8 @@ class AttnBwdPointerScheduler:
     q_base: gl.tensor | gl.constexpr
     k_base: gl.tensor | gl.constexpr
     v_base: gl.tensor | gl.constexpr
-    do_base: gl.tensor | gl.constexpr
     lse_base: gl.tensor | gl.constexpr
+    do_base: gl.tensor | gl.constexpr
     dpsum_base: gl.tensor | gl.constexpr
     dq_accum_base: gl.tensor | gl.constexpr
     dk_base: gl.tensor | gl.constexpr
@@ -2150,8 +2183,8 @@ class AttnBwdPointerScheduler:
         q_base,
         k_base,
         v_base,
-        do_base,
         lse_base,
+        do_base,
         dpsum_base,
         dq_accum_base,
         dk_base,
@@ -2167,8 +2200,8 @@ class AttnBwdPointerScheduler:
         self.q_base = q_base if q_base is not None else gl.constexpr(None)
         self.k_base = k_base if k_base is not None else gl.constexpr(None)
         self.v_base = v_base if v_base is not None else gl.constexpr(None)
-        self.do_base = do_base if do_base is not None else gl.constexpr(None)
         self.lse_base = lse_base if lse_base is not None else gl.constexpr(None)
+        self.do_base = do_base if do_base is not None else gl.constexpr(None)
         self.dpsum_base = dpsum_base if dpsum_base is not None else gl.constexpr(None)
         self.dq_accum_base = dq_accum_base if dq_accum_base is not None else gl.constexpr(None)
         self.dk_base = dk_base if dk_base is not None else gl.constexpr(None)
@@ -2188,8 +2221,8 @@ class AttnBwdPointerScheduler:
         Q: gl.tensor = None,
         K: gl.tensor = None,
         V: gl.tensor = None,
-        dO: gl.tensor = None,
         LSELog2: gl.tensor = None,
+        dO: gl.tensor = None,
         dPsum: gl.tensor = None,
         dQaccum: gl.tensor = None,
         dK: gl.tensor = None,
@@ -2235,10 +2268,10 @@ class AttnBwdPointerScheduler:
         :type K: tensor
         :param V: V tensor base pointer
         :type V: tensor
-        :param dO: dO tensor base pointer
-        :type dO: tensor
         :param LSELog2: LSELog2 tensor base pointer
         :type LSELog2: tensor
+        :param dO: dO tensor base pointer
+        :type dO: tensor
         :param dPsum: dPsum tensor base pointer
         :type dPsum: tensor
         :param dQaccum: dQaccum tensor base pointer
@@ -2351,20 +2384,6 @@ class AttnBwdPointerScheduler:
             if V is not None
             else None
         )
-        do_base = (
-            offset_batch_Q(
-                base_ptr=dO + config.head_idx * stride_doh,
-                batch_idx=config.batch_idx,
-                offset=config.offset_q,
-                padded_offset=config.padded_offset_q,
-                stride_batch=stride_dob,
-                stride_seq=stride_dom,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
-                USE_PADDED=False,
-            )
-            if dO is not None
-            else None
-        )
         lse_base = (
             offset_batch_Q(
                 base_ptr=LSELog2 + config.head_idx * stride_lh,
@@ -2377,6 +2396,20 @@ class AttnBwdPointerScheduler:
                 USE_PADDED=True,
             )
             if LSELog2 is not None
+            else None
+        )
+        do_base = (
+            offset_batch_Q(
+                base_ptr=dO + config.head_idx * stride_doh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_dob,
+                stride_seq=stride_dom,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            if dO is not None
             else None
         )
         dpsum_base = (
@@ -2445,8 +2478,8 @@ class AttnBwdPointerScheduler:
             q_base,
             k_base,
             v_base,
-            do_base,
             lse_base,
+            do_base,
             dpsum_base,
             dq_accum_base,
             dk_base,
@@ -2465,8 +2498,6 @@ class AttnBwdPointerScheduler:
         self,
         config: AttnBwdConfig,
         m_block: gl.tensor,
-        offs_m: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -2476,10 +2507,6 @@ class AttnBwdPointerScheduler:
         :type config: AttnBwdConfig
         :param m_block: block index along the M dimension
         :type m_block: tensor
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the M dimension
         :type SWAP_AB: bool
 
@@ -2489,8 +2516,8 @@ class AttnBwdPointerScheduler:
             base_ptr=self.q_base,
             mn_block=m_block,
             stride_seq=self.stride_qm,
-            offs_mn=offs_m,
-            offs_k=offs_k,
+            offs_mn=config.copy_q_row_m_offs(),
+            offs_k=config.copy_q_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -2499,8 +2526,6 @@ class AttnBwdPointerScheduler:
     def make_k_ptrs(
         self,
         config: AttnBwdConfig,
-        offs_n: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -2508,10 +2533,6 @@ class AttnBwdPointerScheduler:
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the N dimension
         :type SWAP_AB: bool
 
@@ -2521,8 +2542,8 @@ class AttnBwdPointerScheduler:
             base_ptr=self.k_base,
             mn_block=config.n_block,
             stride_seq=self.stride_kn,
-            offs_mn=offs_n,
-            offs_k=offs_k,
+            offs_mn=config.copy_k_row_n_offs(),
+            offs_k=config.copy_k_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -2531,8 +2552,6 @@ class AttnBwdPointerScheduler:
     def make_v_ptrs(
         self,
         config: AttnBwdConfig,
-        offs_n: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -2540,10 +2559,6 @@ class AttnBwdPointerScheduler:
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the N dimension
         :type SWAP_AB: bool
 
@@ -2553,43 +2568,8 @@ class AttnBwdPointerScheduler:
             base_ptr=self.v_base,
             mn_block=config.n_block,
             stride_seq=self.stride_vn,
-            offs_mn=offs_n,
-            offs_k=offs_k,
-            TILE_K=config.TILE_K,
-            SWAP_AB=SWAP_AB,
-        )
-
-    @gluon.jit
-    def make_do_ptrs(
-        self,
-        config: AttnBwdConfig,
-        m_block: gl.tensor,
-        offs_m: gl.tensor,
-        offs_k: gl.tensor,
-        SWAP_AB: gl.constexpr = False,
-    ) -> gl.tensor:
-        """
-        Construct dO pointers for an M block.
-
-        :param config: attention backward configuration
-        :type config: AttnBwdConfig
-        :param m_block: block index along the M dimension
-        :type m_block: tensor
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
-        :param SWAP_AB: whether the K dimension precedes the M dimension
-        :type SWAP_AB: bool
-
-        :return: dO pointers of shape [TILE_M, TILE_K] if SWAP_AB is False, else [TILE_K, TILE_M]
-        """
-        return make_ptrs(
-            base_ptr=self.do_base,
-            mn_block=m_block,
-            stride_seq=self.stride_dom,
-            offs_mn=offs_m,
-            offs_k=offs_k,
+            offs_mn=config.copy_v_row_n_offs(),
+            offs_k=config.copy_v_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -2599,7 +2579,6 @@ class AttnBwdPointerScheduler:
         self,
         config: AttnBwdConfig,
         m_block: gl.tensor,
-        offs_m: gl.tensor,
     ) -> gl.tensor:
         """
         Construct LSE pointers for an M block.
@@ -2608,8 +2587,6 @@ class AttnBwdPointerScheduler:
         :type config: AttnBwdConfig
         :param m_block: block index along the M dimension
         :type m_block: tensor
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
 
         :return: LSE pointers of shape [TILE_M]
         """
@@ -2617,10 +2594,39 @@ class AttnBwdPointerScheduler:
             base_ptr=self.lse_base,
             mn_block=m_block,
             stride_seq=1,
-            offs_mn=offs_m,
+            offs_mn=config.copy_q_row_m_offs(),
             offs_k=None,
             TILE_K=1,
             SWAP_AB=False,
+        )
+
+    @gluon.jit
+    def make_do_ptrs(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+        SWAP_AB: gl.constexpr = False,
+    ) -> gl.tensor:
+        """
+        Construct dO pointers for an M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: block index along the M dimension
+        :type m_block: tensor
+        :param SWAP_AB: whether the K dimension precedes the M dimension
+        :type SWAP_AB: bool
+
+        :return: dO pointers of shape [TILE_M, TILE_K] if SWAP_AB is False, else [TILE_K, TILE_M]
+        """
+        return make_ptrs(
+            base_ptr=self.do_base,
+            mn_block=m_block,
+            stride_seq=self.stride_dom,
+            offs_mn=config.copy_do_row_m_offs(),
+            offs_k=config.copy_do_col_k_offs(),
+            TILE_K=config.TILE_K,
+            SWAP_AB=SWAP_AB,
         )
 
     @gluon.jit
@@ -2628,7 +2634,6 @@ class AttnBwdPointerScheduler:
         self,
         config: AttnBwdConfig,
         m_block: gl.tensor,
-        offs_m: gl.tensor,
     ) -> gl.tensor:
         """
         Construct dPsum pointers for an M block.
@@ -2637,8 +2642,6 @@ class AttnBwdPointerScheduler:
         :type config: AttnBwdConfig
         :param m_block: block index along the M dimension
         :type m_block: tensor
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
 
         :return: dPsum pointers of shape [TILE_M]
         """
@@ -2646,7 +2649,7 @@ class AttnBwdPointerScheduler:
             base_ptr=self.dpsum_base,
             mn_block=m_block,
             stride_seq=1,
-            offs_mn=offs_m,
+            offs_mn=config.copy_do_row_m_offs(),
             offs_k=None,
             TILE_K=1,
             SWAP_AB=False,
@@ -2657,8 +2660,6 @@ class AttnBwdPointerScheduler:
         self,
         config: AttnBwdConfig,
         m_block: gl.tensor,
-        offs_m: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = True,
     ) -> gl.tensor:
         """
@@ -2668,10 +2669,6 @@ class AttnBwdPointerScheduler:
         :type config: AttnBwdConfig
         :param m_block: block index along the M dimension
         :type m_block: tensor
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the M dimension
         :type SWAP_AB: bool
 
@@ -2681,8 +2678,8 @@ class AttnBwdPointerScheduler:
             base_ptr=self.dq_accum_base,
             mn_block=m_block,
             stride_seq=self.stride_dqam,
-            offs_mn=offs_m,
-            offs_k=offs_k,
+            offs_mn=config.mma_dq_col_m_offs(),
+            offs_k=config.mma_dq_row_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -2691,8 +2688,6 @@ class AttnBwdPointerScheduler:
     def make_dk_ptrs(
         self,
         config: AttnBwdConfig,
-        offs_n: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -2700,10 +2695,6 @@ class AttnBwdPointerScheduler:
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the N dimension
         :type SWAP_AB: bool
 
@@ -2713,8 +2704,8 @@ class AttnBwdPointerScheduler:
             base_ptr=self.dk_base,
             mn_block=config.n_block,
             stride_seq=self.stride_dkn,
-            offs_mn=offs_n,
-            offs_k=offs_k,
+            offs_mn=config.mma_dk_row_n_offs(),
+            offs_k=config.mma_dk_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
@@ -2723,8 +2714,6 @@ class AttnBwdPointerScheduler:
     def make_dv_ptrs(
         self,
         config: AttnBwdConfig,
-        offs_n: gl.tensor,
-        offs_k: gl.tensor,
         SWAP_AB: gl.constexpr = False,
     ) -> gl.tensor:
         """
@@ -2732,10 +2721,6 @@ class AttnBwdPointerScheduler:
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
-        :param offs_k: offsets within the K dimension
-        :type offs_k: tensor
         :param SWAP_AB: whether the K dimension precedes the N dimension
         :type SWAP_AB: bool
 
@@ -2745,59 +2730,136 @@ class AttnBwdPointerScheduler:
             base_ptr=self.dv_base,
             mn_block=config.n_block,
             stride_seq=self.stride_dvn,
-            offs_mn=offs_n,
-            offs_k=offs_k,
+            offs_mn=config.mma_dv_row_n_offs(),
+            offs_k=config.mma_dv_col_k_offs(),
             TILE_K=config.TILE_K,
             SWAP_AB=SWAP_AB,
         )
 
     @gluon.jit
-    def make_m_predicate(
+    def make_q_predicate(
         self,
         config: AttnBwdConfig,
         m_block: gl.tensor,
-        offs_m: gl.tensor,
     ) -> gl.tensor:
         """
-        Construct sequence length predicate for the current M block.
+        Construct the sequence length predicate for copying Q.
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
         :param m_block: current M block index
         :type m_block: tensor
-        :param offs_m: offsets within the M dimension
-        :type offs_m: tensor
 
-        :return: sequence length predicate
+        :return: Q sequence length predicate
         """
         return make_seqlen_predicate(
             mn_block=m_block,
             actual_seqlen=config.actual_seqlen_q,
-            offs_mn=offs_m,
+            offs_mn=config.copy_q_row_m_offs()[:, None],
             TILE_MN=config.TILE_M,
         )
 
     @gluon.jit
-    def make_n_predicate(
-        self,
-        config: AttnBwdConfig,
-        offs_n: gl.tensor,
-    ) -> gl.tensor:
+    def make_k_predicate(self, config: AttnBwdConfig) -> gl.tensor:
         """
-        Construct sequence length predicate for the current N block.
+        Construct the sequence length predicate for copying K.
 
         :param config: attention backward configuration
         :type config: AttnBwdConfig
-        :param offs_n: offsets within the N dimension
-        :type offs_n: tensor
 
-        :return: sequence length predicate
+        :return: K sequence length predicate
         """
         return make_seqlen_predicate(
             mn_block=config.n_block,
             actual_seqlen=config.actual_seqlen_k,
-            offs_mn=offs_n,
+            offs_mn=config.copy_k_row_n_offs()[:, None],
             TILE_MN=config.TILE_N,
+        )
+
+    @gluon.jit
+    def make_v_predicate(self, config: AttnBwdConfig) -> gl.tensor:
+        """
+        Construct the sequence length predicate for copying V.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: V sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=config.n_block,
+            actual_seqlen=config.actual_seqlen_k,
+            offs_mn=config.copy_v_row_n_offs()[:, None],
+            TILE_MN=config.TILE_N,
+        )
+
+    @gluon.jit
+    def make_lse_predicate(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct the sequence length predicate for copying LSE.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: current M block index
+        :type m_block: tensor
+
+        :return: LSE sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=config.copy_q_row_m_offs(),
+            TILE_MN=config.TILE_M,
+        )
+
+    @gluon.jit
+    def make_do_predicate(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct the sequence length predicate for copying dO.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: current M block index
+        :type m_block: tensor
+
+        :return: dO sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=config.copy_do_row_m_offs()[:, None],
+            TILE_MN=config.TILE_M,
+        )
+
+    @gluon.jit
+    def make_dpsum_predicate(
+        self,
+        config: AttnBwdConfig,
+        m_block: gl.tensor,
+    ) -> gl.tensor:
+        """
+        Construct the sequence length predicate for copying dPsum.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param m_block: current M block index
+        :type m_block: tensor
+
+        :return: dPsum sequence length predicate
+        """
+        return make_seqlen_predicate(
+            mn_block=m_block,
+            actual_seqlen=config.actual_seqlen_q,
+            offs_mn=config.copy_do_row_m_offs(),
+            TILE_MN=config.TILE_M,
         )
 
 
