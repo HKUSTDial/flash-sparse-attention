@@ -69,6 +69,33 @@ def cta_all(predicates):
 
 
 @gluon.jit
+def reduce_pred(
+    predicates: gl.tensor,
+    SCOPE: gl.constexpr = None,
+) -> gl.tensor:
+    """
+    Reduce predicates with logical AND over the selected synchronization scope.
+
+    :param predicates: boolean predicate tensor of any rank
+    :type predicates: tensor
+    :param SCOPE: reduction scope, "warp", "cta", "partition", or None to skip reduction
+    :type SCOPE: str
+
+    :return: boolean indicating whether all predicates in the selected scope are true
+    """
+    if SCOPE == "cta":
+        return cta_all(predicates)
+    elif SCOPE == "warp":
+        return warp_all(predicates)
+    elif SCOPE == "partition":
+        for axis in gl.static_range(len(predicates.shape) - 1, -1, -1):
+            predicates = gl.min(predicates, axis) != 0
+        return predicates
+    else:
+        return predicates
+
+
+@gluon.jit
 def rcp(
     x: gl.tensor,
     FAST_MATH: gl.constexpr = False,
@@ -252,6 +279,7 @@ def score_skip(
     row_sum: gl.tensor,
     scale_log2: gl.tensor,
     softmax_threshold_log2: gl.tensor,
+    PRED_SCOPE: gl.constexpr = None,
 ) -> tuple[gl.tensor, gl.tensor]:
     """
     Determine whether the current score can be skipped.
@@ -266,6 +294,8 @@ def score_skip(
     :type scale_log2: tensor
     :param softmax_threshold_log2: threshold in log2-domain for block-level skip
     :type softmax_threshold_log2: tensor
+    :param PRED_SCOPE: predicate reduction scope
+    :type PRED_SCOPE: str
 
     :return is_skip: boolean indicating whether this block can be skipped
     :return row_max_curr: current row maximum values
@@ -280,7 +310,7 @@ def score_skip(
     row_max_diff_log2 -= log2(row_sum, FAST_MATH=True)
 
     # Update skip condition based on threshold
-    is_skip = warp_all(row_max_diff_log2 < softmax_threshold_log2)
+    is_skip = reduce_pred(row_max_diff_log2 < softmax_threshold_log2, SCOPE=PRED_SCOPE)
 
     return is_skip, row_max_curr
 
@@ -289,6 +319,7 @@ def score_skip(
 def prob_skip(
     rPlog2: gl.tensor,
     softmax_threshold_log2: gl.tensor,
+    PRED_SCOPE: gl.constexpr = None,
 ) -> gl.tensor:
     """
     Determine whether the current probability can be skipped.
@@ -297,12 +328,13 @@ def prob_skip(
     :type rPlog2: tensor
     :param softmax_threshold_log2: threshold in log2-domain for block-level skip
     :type softmax_threshold_log2: tensor
+    :param PRED_SCOPE: predicate reduction scope
+    :type PRED_SCOPE: str
 
     :return: boolean indicating whether this block can be skipped
     """
     # Update skip condition based on threshold
-    is_skip = cta_all(rPlog2 < softmax_threshold_log2[None, :])
-    return is_skip
+    return reduce_pred(rPlog2 < softmax_threshold_log2[None, :], SCOPE=PRED_SCOPE)
 
 
 @gluon.jit
