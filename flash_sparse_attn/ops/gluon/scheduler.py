@@ -27,6 +27,7 @@ from flash_sparse_attn.ops.gluon.softmax import (
     prob_skip,
     rescale_o,
     finalize,
+    reduce_pred,
 )
 
 
@@ -3088,6 +3089,7 @@ class SoftmaxScheduler:
         row_max: gl.tensor,
         row_sum: gl.tensor,
         softmax_threshold_log2: gl.tensor,
+        PRED_SCOPE: gl.constexpr = None,
     ) -> tuple[gl.tensor, gl.tensor]:
         """
         Determine whether the current score can be skipped.
@@ -3100,6 +3102,8 @@ class SoftmaxScheduler:
         :type row_sum: tensor
         :param softmax_threshold_log2: softmax threshold in log2-domain
         :type softmax_threshold_log2: tensor
+        :param PRED_SCOPE: predicate reduction scope
+        :type PRED_SCOPE: str
 
         :return is_skip: boolean indicating whether the block can be skipped
         :return row_max_curr: current row maximum values
@@ -3110,6 +3114,7 @@ class SoftmaxScheduler:
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
             softmax_threshold_log2=softmax_threshold_log2,
+            PRED_SCOPE=PRED_SCOPE,
         )
 
     @gluon.jit
@@ -3117,6 +3122,7 @@ class SoftmaxScheduler:
         self,
         rPlog2: gl.tensor,
         softmax_threshold_log2: gl.tensor,
+        PRED_SCOPE: gl.constexpr = None,
     ) -> gl.tensor:
         """
         Determine whether the current block can be skipped based on the softmax threshold.
@@ -3125,12 +3131,15 @@ class SoftmaxScheduler:
         :type rPlog2: tensor
         :param softmax_threshold_log2: softmax threshold in log2-domain
         :type softmax_threshold_log2: tensor
+        :param PRED_SCOPE: predicate reduction scope
+        :type PRED_SCOPE: str
 
         :return is_skip: boolean indicating whether the block can be skipped
         """
         return prob_skip(
             rPlog2=rPlog2,
             softmax_threshold_log2=softmax_threshold_log2,
+            PRED_SCOPE=PRED_SCOPE,
         )
 
     @gluon.jit
@@ -3185,3 +3194,21 @@ class SoftmaxScheduler:
             IS_LOG2=IS_LOG2,
             CHECK_NAN=CHECK_NAN,
         )
+
+    @gluon.jit
+    def reduce_pred(
+        self,
+        predicates: gl.tensor,
+        SCOPE: gl.constexpr = None,
+    ) -> gl.tensor:
+        """
+        Reduce predicates with logical AND over the current execution partition.
+
+        :param predicates: boolean predicate tensor of any rank
+        :type predicates: tensor
+        :param SCOPE: reduction scope, "warp", "cta", "partition", or None to skip reduction
+        :type SCOPE: str
+
+        :return: boolean indicating whether all predicates in the execution partition are true
+        """
+        return reduce_pred(predicates, SCOPE=SCOPE)
