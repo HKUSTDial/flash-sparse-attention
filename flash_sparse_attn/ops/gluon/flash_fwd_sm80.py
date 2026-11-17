@@ -121,11 +121,7 @@ def _fwd_inner_sm80_kernel(
     else:
         # Determine skip condition
         is_skip, row_max_curr = softmax_sched.score_skip(
-            acc_S,
-            row_max,
-            row_sum,
-            config.get_softmax_threshold_log2(),
-            PRED_SCOPE="warp",
+            acc_S, row_max, row_sum, config.get_softmax_threshold_log2(), PRED_SCOPE="warp"
         )
 
     # Wait for V
