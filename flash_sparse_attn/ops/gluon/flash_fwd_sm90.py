@@ -88,19 +88,29 @@ def _fwd_producer_sm90_kernel(
     iter = gl.to_tensor(0)
 
     # Load Q
-    if config.PACK_GQA:
-        q_coords = [
-            config.m_block * config.TILE_M // config.QHEAD_PER_KVHEAD_PACKGQA,
-            config.head_idx,
-            config.m_block * config.TILE_M % config.QHEAD_PER_KVHEAD_PACKGQA,
-            0,
-        ]
-    else:
-        q_coords = [config.m_block * config.TILE_M, config.head_idx, 0]
     if HAS_CU_SEQLENS_Q:
-        q_coords = [q_coords[0] + config.offset_q] + q_coords[1:]
+        q_coords = (
+            [
+                config.offset_q + config.m_block * config.TILE_M // config.QHEAD_PER_KVHEAD_PACKGQA,
+                config.head_idx,
+                config.m_block * config.TILE_M % config.QHEAD_PER_KVHEAD_PACKGQA,
+                0,
+            ]
+            if config.PACK_GQA
+            else [config.offset_q + config.m_block * config.TILE_M, config.head_idx, 0]
+        )
     else:
-        q_coords = [config.batch_idx] + q_coords
+        q_coords = (
+            [
+                config.batch_idx,
+                config.m_block * config.TILE_M // config.QHEAD_PER_KVHEAD_PACKGQA,
+                config.head_idx,
+                config.m_block * config.TILE_M % config.QHEAD_PER_KVHEAD_PACKGQA,
+                0,
+            ]
+            if config.PACK_GQA
+            else [config.batch_idx, config.m_block * config.TILE_M, config.head_idx, 0]
+        )
     mbarrier.expect(q_ready, desc_Q.block_type.nbytes)
     tma.async_load(desc_Q, q_coords, q_ready, sQ.reshape(desc_Q.block_shape))
 
