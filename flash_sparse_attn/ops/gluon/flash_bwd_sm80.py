@@ -175,8 +175,7 @@ def _bwd_inner_sm80_kernel(
     else:
         # Determine skip condition
         is_skip = softmax_sched.prob_skip(
-            rPlog2,
-            config.get_softmax_threshold_log2(m_block),
+            rPlog2, config.get_softmax_threshold_log2(m_block), PRED_SCOPE="cta"
         )
 
     # Wait for dO and dPsum
