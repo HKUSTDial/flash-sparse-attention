@@ -125,6 +125,7 @@ def _fwd_inner_sm80_kernel(
             row_max,
             row_sum,
             config.get_softmax_threshold_log2(),
+            PRED_SCOPE="warp",
         )
 
     # Wait for V
