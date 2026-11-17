@@ -7,7 +7,7 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.nvidia.hopper import TensorDescriptor
 from triton.experimental.gluon.language.nvidia.hopper import (
-    async_copy,
+    fence_async_shared,
     mbarrier,
     tma,
     warpgroup_mma,
@@ -31,7 +31,7 @@ from flash_sparse_attn.ops.gluon.utils import (
     alloc_fn,
 )
 from flash_sparse_attn.ops.gluon.launch_grid import get_fwd_grid
-from flash_sparse_attn.ops.gluon.kernel_repr import fwd_dense_repr
+from flash_sparse_attn.ops.gluon.kernel_repr import fwd_repr
 from flash_sparse_attn.ops.gluon.hopper_helpers import (
     warpgroup_mma_wait,
     pack_mma_operand,
@@ -41,12 +41,14 @@ from flash_sparse_attn.ops.gluon.flash_fwd_combine import _flash_attn_fwd_combin
 
 
 @gluon.jit
-def _fwd_load_dense_kernel(
+def _fwd_load_sm90_kernel(
     config: AttnFwdConfig,
     desc,
     smem,
     ready,
+    release,
     n_block,
+    iter,
     HAS_CU_SEQLENS_K: gl.constexpr,
 ):
     if HAS_CU_SEQLENS_K:
@@ -55,237 +57,543 @@ def _fwd_load_dense_kernel(
     else:
         coords = [config.batch_idx, n_block * config.TILE_N, config.head_kv_idx, 0]
         shape: gl.constexpr = [1, config.TILE_N, 1, config.TILE_K]
-    mbarrier.expect(ready, desc.block_type.nbytes)
-    tma.async_load(desc, coords, ready, smem.reshape(shape))
+
+    stage = iter % 2
+    # Wait for the reusable stage
+    if iter >= 2:
+        mbarrier.wait(release.index(stage), ((iter // 2) - 1) & 1)
+    mbarrier.expect(ready.index(stage), desc.block_type.nbytes)
+    tma.async_load(desc, coords, ready.index(stage), smem.index(stage).reshape(shape))
 
 
 @gluon.jit
-def _fwd_producer_dense_kernel(
+def _fwd_producer_sm90_kernel(
     config: AttnFwdConfig,
     block_sched: AttnFwdBlockScheduler,
+    desc_Q,
     desc_K,
     desc_V,
+    sQ,
     sK,
     sV,
-    barriers,
+    q_ready,
+    k_ready,
+    v_ready,
+    k_release,
+    v_release,
+    HAS_CU_SEQLENS_Q: gl.constexpr,
     HAS_CU_SEQLENS_K: gl.constexpr,
 ):
-    k_ready, v_ready, k_release, v_release = barriers
+    # Initialize pipeline iteration
+    iter = gl.to_tensor(0)
 
-    # This counter is continuous across diagonal, window, and sink ranges
-    kv_iter = gl.to_tensor(0)
-    prev_n_block = gl.to_tensor(0)
-    for range_idx in gl.static_range(3 if config.IS_LOCAL else 1):
-        if range_idx == 0:
-            n_block_max = block_sched.n_block_max
-            n_block_min = (
-                block_sched.n_block_max_no_mask if config.IS_LOCAL else block_sched.n_block_min
-            )
-        elif range_idx == 1:
-            n_block_max = block_sched.n_block_window_max
-            n_block_min = block_sched.n_block_window_min
-        else:
-            n_block_max = block_sched.n_block_sink_max
-            n_block_min = block_sched.n_block_sink_min
+    # Load Q
+    if config.PACK_GQA:
+        q_coords = [
+            config.m_block * config.TILE_M // config.QHEAD_PER_KVHEAD_PACKGQA,
+            config.head_idx,
+            config.m_block * config.TILE_M % config.QHEAD_PER_KVHEAD_PACKGQA,
+            0,
+        ]
+    else:
+        q_coords = [config.m_block * config.TILE_M, config.head_idx, 0]
+    if HAS_CU_SEQLENS_Q:
+        q_coords = [q_coords[0] + config.offset_q] + q_coords[1:]
+    else:
+        q_coords = [config.batch_idx] + q_coords
+    mbarrier.expect(q_ready, desc_Q.block_type.nbytes)
+    tma.async_load(desc_Q, q_coords, q_ready, sQ.reshape(desc_Q.block_shape))
 
-        for n_block in range(n_block_max - 1, n_block_min - 1, -1):
-            k_stage = kv_iter % 2
+    # First iteration
+    n_block_max = block_sched.n_block_max - 1
 
-            # First fill needs no release
-            if kv_iter >= 2:
-                mbarrier.wait(k_release.index(k_stage), ((kv_iter // 2) - 1) & 1)
-            _fwd_load_dense_kernel(
+    # Load K
+    _fwd_load_sm90_kernel(
+        config,
+        desc_K,
+        sK,
+        k_ready,
+        k_release,
+        n_block_max,
+        0,
+        HAS_CU_SEQLENS_K,
+    )
+
+    # Advance the K/V pipeline
+    iter += 1
+    prev_n_block = n_block_max
+
+    if config.IS_CAUSAL or config.IS_LOCAL:
+        for n_block in range(
+            n_block_max - 1,
+            block_sched.n_block_max_no_mask - 1,
+            -1,
+        ):
+            # Load next K
+            _fwd_load_sm90_kernel(
                 config,
                 desc_K,
-                sK.index(k_stage),
-                k_ready.index(k_stage),
+                sK,
+                k_ready,
+                k_release,
                 n_block,
+                iter,
                 HAS_CU_SEQLENS_K,
             )
 
-            if kv_iter > 0:
-                # Issue the previous V only after the next K has been issued
-                if kv_iter >= 2:
-                    mbarrier.wait(v_release, (kv_iter - 2) & 1)
-                _fwd_load_dense_kernel(config, desc_V, sV, v_ready, prev_n_block, HAS_CU_SEQLENS_K)
-            prev_n_block = n_block
-            kv_iter += 1
+            # Load previous V
+            _fwd_load_sm90_kernel(
+                config,
+                desc_V,
+                sV,
+                v_ready,
+                v_release,
+                prev_n_block,
+                iter - 1,
+                HAS_CU_SEQLENS_K,
+            )
 
-    # Drain the final V
-    if kv_iter > 0:
-        if kv_iter >= 2:
-            mbarrier.wait(v_release, (kv_iter - 2) & 1)
-        _fwd_load_dense_kernel(config, desc_V, sV, v_ready, prev_n_block, HAS_CU_SEQLENS_K)
+            # Advance the K/V pipeline
+            iter += 1
+            prev_n_block = n_block
+
+    if not config.IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
+        for n_block in range(
+            block_sched.n_block_max_no_mask - 1,
+            block_sched.n_block_min - 1,
+            -1,
+        ):
+            # Load next K
+            _fwd_load_sm90_kernel(
+                config,
+                desc_K,
+                sK,
+                k_ready,
+                k_release,
+                n_block,
+                iter,
+                HAS_CU_SEQLENS_K,
+            )
+
+            # Load previous V
+            _fwd_load_sm90_kernel(
+                config,
+                desc_V,
+                sV,
+                v_ready,
+                v_release,
+                prev_n_block,
+                iter - 1,
+                HAS_CU_SEQLENS_K,
+            )
+
+            # Advance the K/V pipeline
+            iter += 1
+            prev_n_block = n_block
+
+    if config.IS_LOCAL:
+        if block_sched.n_block_window_max > block_sched.n_block_window_min:
+            for n_block in range(
+                block_sched.n_block_window_max - 1,
+                block_sched.n_block_window_max_no_mask - 1,
+                -1,
+            ):
+                # Load next K
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_K,
+                    sK,
+                    k_ready,
+                    k_release,
+                    n_block,
+                    iter,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Load previous V
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_V,
+                    sV,
+                    v_ready,
+                    v_release,
+                    prev_n_block,
+                    iter - 1,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Advance the K/V pipeline
+                iter += 1
+                prev_n_block = n_block
+
+            for n_block in range(
+                block_sched.n_block_window_max_no_mask - 1,
+                block_sched.n_block_window_min_no_mask - 1,
+                -1,
+            ):
+                # Load next K
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_K,
+                    sK,
+                    k_ready,
+                    k_release,
+                    n_block,
+                    iter,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Load previous V
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_V,
+                    sV,
+                    v_ready,
+                    v_release,
+                    prev_n_block,
+                    iter - 1,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Advance the K/V pipeline
+                iter += 1
+                prev_n_block = n_block
+
+            for n_block in range(
+                block_sched.n_block_window_min_no_mask - 1,
+                block_sched.n_block_window_min - 1,
+                -1,
+            ):
+                # Load next K
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_K,
+                    sK,
+                    k_ready,
+                    k_release,
+                    n_block,
+                    iter,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Load previous V
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_V,
+                    sV,
+                    v_ready,
+                    v_release,
+                    prev_n_block,
+                    iter - 1,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Advance the K/V pipeline
+                iter += 1
+                prev_n_block = n_block
+
+        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
+            for n_block in range(
+                block_sched.n_block_sink_max - 1,
+                block_sched.n_block_sink_min - 1,
+                -1,
+            ):
+                # Load next K
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_K,
+                    sK,
+                    k_ready,
+                    k_release,
+                    n_block,
+                    iter,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Load previous V
+                _fwd_load_sm90_kernel(
+                    config,
+                    desc_V,
+                    sV,
+                    v_ready,
+                    v_release,
+                    prev_n_block,
+                    iter - 1,
+                    HAS_CU_SEQLENS_K,
+                )
+
+                # Advance the K/V pipeline
+                iter += 1
+                prev_n_block = n_block
+
+    # Load last V
+    _fwd_load_sm90_kernel(
+        config,
+        desc_V,
+        sV,
+        v_ready,
+        v_release,
+        prev_n_block,
+        iter - 1,
+        HAS_CU_SEQLENS_K,
+    )
 
 
 @gluon.jit
-def _fwd_compute_dense_kernel(
+def _fwd_inner_sm90_kernel(
     config: AttnFwdConfig,
     mask_sched: AttnMaskScheduler,
     softmax_sched: SoftmaxScheduler,
     sQ,
     sK,
     sV,
-    barriers,
-    row_max,
-    row_sum,
-    acc_O,
     rP,
+    row_max,
+    row_sum_partial,
+    acc_O,
+    is_prev_skip,
+    k_ready,
+    v_ready,
+    k_release,
+    v_release,
     n_block,
-    kv_iter,
-    mma_layout: gl.constexpr,
-    IS_FIRST: gl.constexpr,
-    IS_MASK: gl.constexpr,
-    MASK_SEQLEN: gl.constexpr,
-    MASK_CAUSAL: gl.constexpr,
+    iter,
+    IS_FIRST: gl.constexpr = False,
+    IS_MASK: gl.constexpr = False,
+    MASK_SEQLEN: gl.constexpr = False,
+    MASK_CAUSAL: gl.constexpr = False,
     MASK_LOCAL: gl.constexpr = False,
     MASK_SINK: gl.constexpr = False,
 ):
-    # MMA operand layouts for P
-    mma_lhs_layout: gl.constexpr = gl.DotOperandLayout(
+    # MMA operand layouts
+    mma_o_lhs_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=0,
-        parent=mma_layout,
+        parent=config.mma_o_layout,
         k_width=max(32 // sQ.dtype.primitive_bitwidth, 1),
     )
 
-    k_ready, v_ready, k_release, v_release = barriers
-    k_stage = kv_iter % 2
-    k_phase = (kv_iter // 2) & 1
-    v_phase = (kv_iter - 1) & 1
+    k_stage = iter % 2
+    k_phase = (iter // 2) & 1
+    v_stage = (iter - 1) % 2
+    v_phase = ((iter - 1) // 2) & 1
 
     # Wait for K
     mbarrier.wait(k_ready.index(k_stage), k_phase)
 
+    # NOTE: Issue QK before PV so wait_group(1) leaves PV in flight.
     # Compute S
-    acc_S = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, mma_layout)
-    acc_S = warpgroup_mma_init(acc_S)
-    acc_S = warpgroup_mma(
+    acc_S = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, config.mma_s_layout)
+    S_pending = warpgroup_mma_init(acc_S)
+    S_pending = warpgroup_mma(
         sQ,
         sK.index(k_stage).permute((1, 0)),
-        acc_S,
+        S_pending,
         use_acc=False,
         is_async=True,
     )
+    if config.IS_SPARSE and not IS_FIRST:
+        # Prepare sparse skip condition while QK is in flight
+        softmax_threshold_log2 = config.get_softmax_threshold_log2()
+        row_sum = gl.convert_layout(gl.sum(row_sum_partial, 1), config.mma_s_row_layout)
     if IS_FIRST:
-        acc_S = warpgroup_mma_wait(num_outstanding=0, deps=(acc_S,))
+        # Wait for S
+        acc_S = warpgroup_mma_wait(num_outstanding=0, deps=(S_pending,))
+    else:
+        # Wait for V
+        mbarrier.wait(v_ready.index(v_stage), v_phase)
 
-    if not IS_FIRST:
-        # Complete QK while leaving the previous PV in flight
-        mbarrier.wait(v_ready, v_phase)
-        rP = unpack_mma_operand(rP, sV.dtype, mma_lhs_layout)
+        # Prepare P
+        rP_prev = unpack_mma_operand(rP, sV.dtype, mma_o_lhs_layout)
         O_pending = warpgroup_mma_init(acc_O)
-        O_pending = warpgroup_mma(rP, sV, O_pending, is_async=True)
-        acc_S = warpgroup_mma_wait(num_outstanding=1, deps=(acc_S,))
 
-    # Each warpgroup has finished QK
-    mbarrier.arrive(k_release.index(k_stage))
+        if not is_prev_skip:
+            # Compute O
+            O_pending = warpgroup_mma(rP_prev, sV.index(v_stage), O_pending, is_async=True)
+            acc_S = warpgroup_mma_wait(num_outstanding=1, deps=(S_pending,))
+            if config.IS_SPARSE:
+                # Release K
+                mbarrier.arrive(k_release.index(k_stage))
 
-    if IS_MASK:
+                if IS_MASK:
+                    # Apply mask to S
+                    acc_S = mask_sched.apply_mask(
+                        acc_S,
+                        n_block,
+                        config.mma_s_row_m_offs(),
+                        config.mma_s_col_n_offs(),
+                        MASK_SEQLEN=MASK_SEQLEN,
+                        MASK_CAUSAL=MASK_CAUSAL,
+                        MASK_LOCAL=MASK_LOCAL,
+                        MASK_SINK=MASK_SINK,
+                    )
+
+                # Determine skip condition
+                row_predicates, row_max_curr = softmax_sched.score_skip(
+                    acc_S, row_max, row_sum, softmax_threshold_log2, PRED_SCOPE=None
+                )
+
+                # NOTE: Keep the PV wait in its issuing branch to avoid spills.
+                # Wait for O
+                acc_O, rP_prev = warpgroup_mma_wait(num_outstanding=0, deps=(O_pending, rP_prev))
+        else:
+            # Wait for S
+            acc_S = warpgroup_mma_wait(num_outstanding=0, deps=(S_pending,))
+
+            if config.IS_SPARSE:
+                # NOTE: Advancing skipped-path K/V release regresses latency.
+                # Release K
+                mbarrier.arrive(k_release.index(k_stage))
+
+                if IS_MASK:
+                    # Apply mask to S
+                    acc_S = mask_sched.apply_mask(
+                        acc_S,
+                        n_block,
+                        config.mma_s_row_m_offs(),
+                        config.mma_s_col_n_offs(),
+                        MASK_SEQLEN=MASK_SEQLEN,
+                        MASK_CAUSAL=MASK_CAUSAL,
+                        MASK_LOCAL=MASK_LOCAL,
+                        MASK_SINK=MASK_SINK,
+                    )
+
+                # Determine skip condition
+                row_predicates, row_max_curr = softmax_sched.score_skip(
+                    acc_S, row_max, row_sum, softmax_threshold_log2, PRED_SCOPE=None
+                )
+
+    # Release K
+    if not config.IS_SPARSE or IS_FIRST:
+        mbarrier.arrive(k_release.index(k_stage))
+
+    if IS_MASK and (not config.IS_SPARSE or IS_FIRST):
         # Apply mask to S
         acc_S = mask_sched.apply_mask(
             acc_S,
             n_block,
-            config.mma_row_m_offs(),
-            config.mma_col_n_offs(),
+            config.mma_s_row_m_offs(),
+            config.mma_s_col_n_offs(),
             MASK_SEQLEN=MASK_SEQLEN,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
             MASK_SINK=MASK_SINK,
         )
 
-    # Apply online softmax
-    next_rP, row_max, row_sum, row_scale = softmax_sched.online_softmax(
-        acc_S, row_max, row_sum, CHECK_INF=IS_MASK, PARTIAL_SUM=True
-    )
+    if config.IS_SPARSE and not IS_FIRST:
+        # Release V
+        mbarrier.arrive(v_release.index(v_stage))
 
-    if not IS_FIRST:
-        # Keep P alive until its asynchronous MMA completes
-        # TODO: Improve steady-state softmax/PV overlap in generated code
-        # Gluon emits no FFMA/EX2 before wait0 yet
-        acc_O, rP = warpgroup_mma_wait(num_outstanding=0, deps=(O_pending, rP))
-        mbarrier.arrive(v_release)
+        # NOTE: Vote after the previous PV lifetime is closed.
+        # Determine skip condition
+        is_skip = softmax_sched.reduce_pred(row_predicates, SCOPE="partition")
+    else:
+        is_skip: gl.constexpr = False
+        row_max_curr: gl.constexpr = None
 
-    # Rescale O
-    acc_O = softmax_sched.rescale_o(acc_O, row_scale)
+    if not is_skip:
+        # Apply online softmax
+        rP_next, row_max, row_sum_partial, row_scale = softmax_sched.online_softmax(
+            acc_S,
+            row_max,
+            row_sum_partial,
+            row_max_curr=row_max_curr,
+            CHECK_INF=IS_MASK,
+            PARTIAL_SUM=True,
+        )
 
-    # Carry P to the next iteration
-    rP_next = pack_mma_operand(next_rP, sV.dtype, mma_lhs_layout)
+        if not config.IS_SPARSE and not IS_FIRST:
+            # NOTE: Complete PV before rescaling accumulated O.
+            # Wait for O
+            # TODO: Improve steady-state softmax/PV overlap in generated code.
+            # Gluon emits no FFMA/EX2 before wait0 yet.
+            acc_O, rP_prev = warpgroup_mma_wait(num_outstanding=0, deps=(O_pending, rP_prev))
 
-    return row_max, row_sum, acc_O, rP_next
+            # Release V
+            mbarrier.arrive(v_release.index(v_stage))
+
+        # Rescale O accumulator
+        acc_O = softmax_sched.rescale_o(acc_O, row_scale)
+
+        # Pack P for the next iteration
+        rP_next = pack_mma_operand(rP_next, sV.dtype, mma_o_lhs_layout)
+    else:
+        # Initialize skipped P
+        rP_next = gl.full(rP.shape, 0, rP.dtype, rP.type.layout)
+
+    return row_max, row_sum_partial, acc_O, rP_next, is_skip
 
 
 @gluon.jit
-def _fwd_consumer_dense_kernel(
+def _fwd_consumer_sm90_kernel(
     config: AttnFwdConfig,
     block_sched: AttnFwdBlockScheduler,
     ptrs_sched: AttnFwdPointerScheduler,
+    mask_sched: AttnMaskScheduler,
+    softmax_sched: SoftmaxScheduler,
     sQ,
     sK,
     sV,
-    barriers,
-    copy_layout: gl.constexpr,
-    mma_layout: gl.constexpr,
+    q_ready,
+    k_ready,
+    v_ready,
+    k_release,
+    v_release,
     EVEN_M: gl.constexpr,
     EVEN_N: gl.constexpr,
 ):
-    # MMA operand layouts for P
+    # MMA operand layouts
     mma_lhs_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=0,
-        parent=mma_layout,
+        parent=config.mma_o_layout,
         k_width=max(32 // sQ.dtype.primitive_bitwidth, 1),
     )
 
-    # Create mask scheduler
-    mask_sched = AttnMaskScheduler.create(config)
-
-    # Create softmax scheduler
-    softmax_sched = SoftmaxScheduler.create(config)
-
     # Initialize accumulators
-    row_max = gl.full([config.TILE_M], float("-inf"), gl.float32, config.mma_row_layout)
-    partial_sum = gl.zeros([config.TILE_M, config.TILE_N], gl.float32, mma_layout)
-    row_sum = gl.sum(partial_sum.reshape([config.TILE_M, config.TILE_N // 8, 4, 2]).sum(3), 1)
-    acc_O = gl.zeros([config.TILE_M, config.TILE_K], gl.float32, mma_layout)
-
-    # This counter is continuous across diagonal, window, and sink ranges
-    kv_iter = gl.to_tensor(0)
-
-    # Load Q
-    if not EVEN_M:
-        pQ = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-    gQ = ptrs_sched.make_q_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
-    async_copy.async_load(
-        sQ,
-        gQ,
-        mask=pQ if not EVEN_M else None,
-        cache_modifier=".ca",
-        eviction_policy="evict_last",
+    row_max = gl.full([config.TILE_M], float("-inf"), gl.float32, config.mma_s_row_layout)
+    row_sum_partial = gl.sum(
+        gl.zeros([config.TILE_M, config.TILE_N], gl.float32, config.mma_s_layout)
+        .reshape([config.TILE_M, config.TILE_N // 8, 4, 2])
+        .sum(3),
+        1,
     )
+    acc_O = gl.zeros([config.TILE_M, config.TILE_K], gl.float32, config.mma_o_layout)
 
-    # Commit Q group
-    async_copy.commit_group()
+    # Initialize pipeline iteration
+    iter = gl.to_tensor(0)
 
     # Wait for Q
-    async_copy.wait_group(0)
-    gl.barrier()
+    mbarrier.wait(q_ready, 0)
+    # NOTE: Per-sequence device-side Q descriptors are correct but slower to construct per CTA.
+    if not EVEN_M and (config.m_block + 1) * config.TILE_M > (
+        config.actual_seqlen_q * config.QHEAD_PER_KVHEAD_PACKGQA
+    ):
+        # NOTE: Zero partial Q rows so the consumer-wide cannot observe the next varlen sequence.
+        pQ = ptrs_sched.make_q_predicate(config)
+        rQ = sQ.load(config.copy_q_layout)
+        sQ.store(gl.where(pQ, rQ, 0))
+        fence_async_shared()
+        gl.barrier()
 
     # First iteration with seqlen masking
     n_block_max = block_sched.n_block_max - 1
-    row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+    row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
         config,
         mask_sched,
         softmax_sched,
         sQ,
         sK,
         sV,
-        barriers,
-        row_max,
-        row_sum,
-        acc_O,
         None,
+        row_max,
+        row_sum_partial,
+        acc_O,
+        False,
+        k_ready,
+        v_ready,
+        k_release,
+        v_release,
         n_block_max,
-        kv_iter,
-        mma_layout,
+        iter,
         IS_FIRST=True,
         IS_MASK=config.IS_CAUSAL or config.IS_LOCAL or not EVEN_N,
         MASK_SEQLEN=not EVEN_N,
@@ -295,7 +603,7 @@ def _fwd_consumer_dense_kernel(
     )
 
     # Advance the K/V pipeline
-    kv_iter += 1
+    iter += 1
 
     if config.IS_CAUSAL or config.IS_LOCAL:
         # Process n_blocks with causal masking
@@ -304,21 +612,24 @@ def _fwd_consumer_dense_kernel(
             block_sched.n_block_max_no_mask - 1,
             -1,
         ):
-            row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+            row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
                 config,
                 mask_sched,
                 softmax_sched,
                 sQ,
                 sK,
                 sV,
-                barriers,
-                row_max,
-                row_sum,
-                acc_O,
                 rP,
+                row_max,
+                row_sum_partial,
+                acc_O,
+                is_skip,
+                k_ready,
+                v_ready,
+                k_release,
+                v_release,
                 n_block,
-                kv_iter,
-                mma_layout,
+                iter,
                 IS_FIRST=False,
                 IS_MASK=True,
                 MASK_SEQLEN=False,
@@ -328,7 +639,7 @@ def _fwd_consumer_dense_kernel(
             )
 
             # Advance the K/V pipeline
-            kv_iter += 1
+            iter += 1
 
     if not config.IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
         # Process n_blocks without masking
@@ -337,21 +648,24 @@ def _fwd_consumer_dense_kernel(
             block_sched.n_block_min - 1,
             -1,
         ):
-            row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+            row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
                 config,
                 mask_sched,
                 softmax_sched,
                 sQ,
                 sK,
                 sV,
-                barriers,
-                row_max,
-                row_sum,
-                acc_O,
                 rP,
+                row_max,
+                row_sum_partial,
+                acc_O,
+                is_skip,
+                k_ready,
+                v_ready,
+                k_release,
+                v_release,
                 n_block,
-                kv_iter,
-                mma_layout,
+                iter,
                 IS_FIRST=False,
                 IS_MASK=False,
                 MASK_SEQLEN=False,
@@ -361,7 +675,7 @@ def _fwd_consumer_dense_kernel(
             )
 
             # Advance the K/V pipeline
-            kv_iter += 1
+            iter += 1
 
     if config.IS_LOCAL:
         if block_sched.n_block_window_max > block_sched.n_block_window_min:
@@ -371,21 +685,24 @@ def _fwd_consumer_dense_kernel(
                 block_sched.n_block_window_max_no_mask - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
                     config,
                     mask_sched,
                     softmax_sched,
                     sQ,
                     sK,
                     sV,
-                    barriers,
-                    row_max,
-                    row_sum,
-                    acc_O,
                     rP,
+                    row_max,
+                    row_sum_partial,
+                    acc_O,
+                    is_skip,
+                    k_ready,
+                    v_ready,
+                    k_release,
+                    v_release,
                     n_block,
-                    kv_iter,
-                    mma_layout,
+                    iter,
                     IS_FIRST=False,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
@@ -395,7 +712,7 @@ def _fwd_consumer_dense_kernel(
                 )
 
                 # Advance the K/V pipeline
-                kv_iter += 1
+                iter += 1
 
             # Process n_blocks without masking
             for n_block in range(
@@ -403,21 +720,24 @@ def _fwd_consumer_dense_kernel(
                 block_sched.n_block_window_min_no_mask - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
                     config,
                     mask_sched,
                     softmax_sched,
                     sQ,
                     sK,
                     sV,
-                    barriers,
-                    row_max,
-                    row_sum,
-                    acc_O,
                     rP,
+                    row_max,
+                    row_sum_partial,
+                    acc_O,
+                    is_skip,
+                    k_ready,
+                    v_ready,
+                    k_release,
+                    v_release,
                     n_block,
-                    kv_iter,
-                    mma_layout,
+                    iter,
                     IS_FIRST=False,
                     IS_MASK=False,
                     MASK_SEQLEN=False,
@@ -427,7 +747,7 @@ def _fwd_consumer_dense_kernel(
                 )
 
                 # Advance the K/V pipeline
-                kv_iter += 1
+                iter += 1
 
             # Process n_blocks with local left masking
             for n_block in range(
@@ -435,21 +755,24 @@ def _fwd_consumer_dense_kernel(
                 block_sched.n_block_window_min - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
                     config,
                     mask_sched,
                     softmax_sched,
                     sQ,
                     sK,
                     sV,
-                    barriers,
-                    row_max,
-                    row_sum,
-                    acc_O,
                     rP,
+                    row_max,
+                    row_sum_partial,
+                    acc_O,
+                    is_skip,
+                    k_ready,
+                    v_ready,
+                    k_release,
+                    v_release,
                     n_block,
-                    kv_iter,
-                    mma_layout,
+                    iter,
                     IS_FIRST=False,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
@@ -459,7 +782,7 @@ def _fwd_consumer_dense_kernel(
                 )
 
                 # Advance the K/V pipeline
-                kv_iter += 1
+                iter += 1
 
         if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
             # Process n_blocks with prefix-sink masking
@@ -468,21 +791,24 @@ def _fwd_consumer_dense_kernel(
                 block_sched.n_block_sink_min - 1,
                 -1,
             ):
-                row_max, row_sum, acc_O, rP = _fwd_compute_dense_kernel(
+                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
                     config,
                     mask_sched,
                     softmax_sched,
                     sQ,
                     sK,
                     sV,
-                    barriers,
-                    row_max,
-                    row_sum,
-                    acc_O,
                     rP,
+                    row_max,
+                    row_sum_partial,
+                    acc_O,
+                    is_skip,
+                    k_ready,
+                    v_ready,
+                    k_release,
+                    v_release,
                     n_block,
-                    kv_iter,
-                    mma_layout,
+                    iter,
                     IS_FIRST=False,
                     IS_MASK=True,
                     MASK_SEQLEN=False,
@@ -492,18 +818,20 @@ def _fwd_consumer_dense_kernel(
                 )
 
                 # Advance the K/V pipeline
-                kv_iter += 1
+                iter += 1
 
-    # Drain the last PV once
-    k_ready, v_ready, k_release, v_release = barriers
-    mbarrier.wait(v_ready, (kv_iter - 1) & 1)
-    rP = unpack_mma_operand(rP, sV.dtype, mma_lhs_layout)
-    acc_O = warpgroup_mma_init(acc_O)
-    acc_O = warpgroup_mma(rP, sV, acc_O, is_async=True)
-    acc_O = warpgroup_mma_wait(num_outstanding=0, deps=(acc_O,))
+    # Compute last O
+    v_stage = (iter - 1) % 2
+    v_phase = ((iter - 1) // 2) & 1
+    mbarrier.wait(v_ready.index(v_stage), v_phase)
+    if not is_skip:
+        rP_prev = unpack_mma_operand(rP, sV.dtype, mma_lhs_layout)
+        O_pending = warpgroup_mma_init(acc_O)
+        O_pending = warpgroup_mma(rP_prev, sV.index(v_stage), O_pending, is_async=True)
+        acc_O = warpgroup_mma_wait(num_outstanding=0, deps=(O_pending,))
 
     # Finalize softmax
-    row_sum = gl.convert_layout(gl.sum(row_sum, 1), config.mma_row_layout)
+    row_sum = gl.convert_layout(gl.sum(row_sum_partial, 1), config.mma_s_row_layout)
     row_scale, lse = softmax_sched.finalize(
         row_max,
         row_sum,
@@ -512,8 +840,8 @@ def _fwd_consumer_dense_kernel(
 
     # Store LSE
     if not EVEN_M:
-        pLSE = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs())
-    gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_row_m_offs())
+        pLSE = ptrs_sched.make_lse_predicate(config)
+    gLSE = ptrs_sched.make_lse_ptrs(config)
     gl.store(gLSE, lse, mask=pLSE if not EVEN_M else None)
 
     # Finalize rescale
@@ -522,16 +850,16 @@ def _fwd_consumer_dense_kernel(
     # Store O
     if config.IS_SPLIT_KV:
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
+            pO = ptrs_sched.make_out_predicate(config)
+        gO = ptrs_sched.make_out_ptrs(config)
         gl.store(gO, acc_O, mask=pO if not EVEN_M else None)
     else:
         sQ.store(acc_O.to(sQ.dtype))
         gl.barrier()
-        rO = sQ.load(copy_layout)
+        rO = sQ.load(config.copy_q_layout)
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.copy_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.copy_row_m_offs(), config.copy_col_k_offs())
+            pO = ptrs_sched.make_out_predicate(config)
+        gO = ptrs_sched.make_out_ptrs(config)
         gl.store(gO, rO, mask=pO if not EVEN_M else None)
 
 
@@ -549,9 +877,9 @@ def _fwd_consumer_dense_kernel(
         ),
     }
 )
-@gluon.jit(repr=fwd_dense_repr)
-def _fwd_dense_kernel(
-    mQ,
+@gluon.jit(repr=fwd_repr)
+def _fwd_sm90_kernel(
+    desc_Q,
     desc_K,
     desc_V,
     mOut,
@@ -561,9 +889,6 @@ def _fwd_dense_kernel(
     mCuSeqlensK,
     mSeqUsedQ,
     mSeqUsedK,
-    stride_qb,
-    stride_qh,
-    stride_qm,
     stride_ob,
     stride_oh,
     stride_om,
@@ -575,6 +900,7 @@ def _fwd_dense_kernel(
     seqlen_q,
     seqlen_k,
     softmax_scale,
+    softmax_threshold,
     head_dim,
     QHEAD_PER_KVHEAD: gl.constexpr,
     PACK_GQA: gl.constexpr,
@@ -583,6 +909,7 @@ def _fwd_dense_kernel(
     IS_SPLIT_KV: gl.constexpr,
     IS_CAUSAL: gl.constexpr,
     IS_LOCAL: gl.constexpr,
+    IS_SPARSE: gl.constexpr,
     HAS_CU_SEQLENS_Q: gl.constexpr,
     HAS_CU_SEQLENS_K: gl.constexpr,
     HAS_SEQUSED_Q: gl.constexpr,
@@ -595,22 +922,39 @@ def _fwd_dense_kernel(
     num_warps: gl.constexpr,
 ):
     warp_size: gl.constexpr = 32
-    element_bits: gl.constexpr = mQ.dtype.element_ty.primitive_bitwidth
+    element_bits: gl.constexpr = desc_Q.dtype.primitive_bitwidth
     elements_per_thread: gl.constexpr = 128 // element_bits
     copy_atom_k: gl.constexpr = min(TILE_K, 1024 // element_bits)
     threads_per_row: gl.constexpr = copy_atom_k // elements_per_thread
     rows_per_warp: gl.constexpr = warp_size // threads_per_row
 
-    copy_layout: gl.constexpr = gl.BlockedLayout(
+    copy_q_layout: gl.constexpr = gl.BlockedLayout(
         size_per_thread=[1, elements_per_thread],
         threads_per_warp=[rows_per_warp, threads_per_row],
         warps_per_cta=[num_warps, 1],
         order=[1, 0],
     )
-    mma_layout: gl.constexpr = gl.NVMMADistributedLayout(
+    copy_k_layout: gl.constexpr = gl.BlockedLayout(
+        size_per_thread=[1, elements_per_thread],
+        threads_per_warp=[rows_per_warp, threads_per_row],
+        warps_per_cta=[num_warps, 1],
+        order=[1, 0],
+    )
+    copy_v_layout: gl.constexpr = gl.BlockedLayout(
+        size_per_thread=[1, elements_per_thread],
+        threads_per_warp=[rows_per_warp, threads_per_row],
+        warps_per_cta=[num_warps, 1],
+        order=[1, 0],
+    )
+    mma_s_layout: gl.constexpr = gl.NVMMADistributedLayout(
         version=[3, 0],
         warps_per_cta=[num_warps, 1],
-        instr_shape=[16, min(128, TILE_N, TILE_K), 16],
+        instr_shape=[16, min(128, TILE_N), 16],
+    )
+    mma_o_layout: gl.constexpr = gl.NVMMADistributedLayout(
+        version=[3, 0],
+        warps_per_cta=[num_warps, 1],
+        instr_shape=[16, min(128, TILE_K), 16],
     )
 
     # Create grid index
@@ -637,6 +981,7 @@ def _fwd_dense_kernel(
         split_idx=grid_idx.split_idx,
         m_block=grid_idx.m_block,
         softmax_scale=softmax_scale,
+        softmax_threshold=softmax_threshold,
         window_size_sink=window_size_sink,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
@@ -648,8 +993,11 @@ def _fwd_dense_kernel(
         seqused_k=mSeqUsedK,
         seqlen_q=seqlen_q,
         seqlen_k=seqlen_k,
-        copy_layout=copy_layout,
-        mma_layout=mma_layout,
+        copy_q_layout=copy_q_layout,
+        copy_k_layout=copy_k_layout,
+        copy_v_layout=copy_v_layout,
+        mma_s_layout=mma_s_layout,
+        mma_o_layout=mma_o_layout,
         PACK_GQA=PACK_GQA,
         QHEAD_PER_KVHEAD_PACKGQA=QHEAD_PER_KVHEAD_PACKGQA,
         NUM_SPLITS=NUM_SPLITS,
@@ -658,6 +1006,7 @@ def _fwd_dense_kernel(
         TILE_K=TILE_K,
         IS_CAUSAL=IS_CAUSAL,
         IS_LOCAL=IS_LOCAL,
+        IS_SPARSE=IS_SPARSE,
         IS_SPLIT_KV=IS_SPLIT_KV,
         HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
@@ -665,18 +1014,11 @@ def _fwd_dense_kernel(
         HAS_SEQUSED_K=HAS_SEQUSED_K,
     )
 
-    # Create block scheduler
-    block_sched = AttnFwdBlockScheduler.create(config=config)
-
     # Create pointer scheduler
     ptrs_sched = AttnFwdPointerScheduler.create(
         config=config,
-        Q=mQ,
         Out=mOut,
         Lse=mLse,
-        stride_qb=stride_qb,
-        stride_qh=stride_qh,
-        stride_qm=stride_qm,
         stride_ob=stride_ob,
         stride_oh=stride_oh,
         stride_om=stride_om,
@@ -688,80 +1030,124 @@ def _fwd_dense_kernel(
         HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
 
+    # Create block scheduler
+    block_sched = AttnFwdBlockScheduler.create(config=config)
+
+    # Create mask scheduler
+    mask_sched = AttnMaskScheduler.create(config)
+
+    # Create softmax scheduler
+    softmax_sched = SoftmaxScheduler.create(config)
+
     # Early exit if no n_blocks to process
     if block_sched.is_empty():
-        empty_o = gl.zeros([TILE_M, TILE_K], mOut.dtype.element_ty, mma_layout)
+        empty_o = gl.zeros(
+            [TILE_M, TILE_K], mOut.dtype.element_ty, mma_o_layout if IS_SPLIT_KV else copy_q_layout
+        )
         if not EVEN_M:
-            pO = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs()[:, None])
-        gO = ptrs_sched.make_out_ptrs(config, config.mma_row_m_offs(), config.mma_col_k_offs())
+            pO = ptrs_sched.make_out_predicate(config)
+        gO = ptrs_sched.make_out_ptrs(config)
         gl.store(gO, empty_o, mask=pO if not EVEN_M else None)
-        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_row_layout)
+        empty_lse = gl.full([TILE_M], float("-inf"), mLse.dtype.element_ty, config.mma_s_row_layout)
         if not EVEN_M:
-            pLSE = ptrs_sched.make_m_predicate(config, config.mma_row_m_offs())
-        gLSE = ptrs_sched.make_lse_ptrs(config, config.mma_row_m_offs())
+            pLSE = ptrs_sched.make_lse_predicate(config)
+        gLSE = ptrs_sched.make_lse_ptrs(config)
         gl.store(gLSE, empty_lse, mask=pLSE if not EVEN_M else None)
         return
 
     # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K], mQ.dtype.element_ty
+        [TILE_M, TILE_K],
+        desc_Q.block_type.element_ty,
     )
     sK_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K], desc_K.block_type.element_ty
+        [TILE_N, TILE_K],
+        desc_K.block_type.element_ty,
     )
     sV_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K], desc_V.block_type.element_ty
+        [TILE_N, TILE_K],
+        desc_V.block_type.element_ty,
     )
-    sQ = gl.allocate_shared_memory(mQ.dtype.element_ty, [TILE_M, TILE_K], sQ_layout)
-    sK = gl.allocate_shared_memory(desc_K.block_type.element_ty, [2, TILE_N, TILE_K], sK_layout)
-    sV = gl.allocate_shared_memory(desc_V.block_type.element_ty, [TILE_N, TILE_K], sV_layout)
+    sQ = gl.allocate_shared_memory(
+        desc_Q.block_type.element_ty,
+        [TILE_M, TILE_K],
+        sQ_layout,
+    )
+    sK = gl.allocate_shared_memory(
+        desc_K.block_type.element_ty,
+        [2, TILE_N, TILE_K],
+        sK_layout,
+    )
+    sV = gl.allocate_shared_memory(
+        desc_V.block_type.element_ty,
+        [2, TILE_N, TILE_K],
+        sV_layout,
+    )
 
-    # Independent ready barriers
+    # Create Q ready barrier
+    q_ready = gl.allocate_shared_memory(gl.int64, [1], mbarrier.MBarrierLayout())
+    mbarrier.init(q_ready, count=1)
+
+    # Create K ready barriers
     k_ready = gl.allocate_shared_memory(gl.int64, [2, 1], mbarrier.MBarrierLayout())
-    v_ready = gl.allocate_shared_memory(gl.int64, [1], mbarrier.MBarrierLayout())
     mbarrier.init(k_ready.index(0), count=1)
     mbarrier.init(k_ready.index(1), count=1)
-    mbarrier.init(v_ready, count=1)
 
-    # Independent release barriers
+    # Create V ready barriers
+    v_ready = gl.allocate_shared_memory(gl.int64, [2, 1], mbarrier.MBarrierLayout())
+    mbarrier.init(v_ready.index(0), count=1)
+    mbarrier.init(v_ready.index(1), count=1)
+
+    # Create K release barriers
     k_release = gl.allocate_shared_memory(gl.int64, [2, 1], mbarrier.MBarrierLayout())
-    v_release = gl.allocate_shared_memory(gl.int64, [1], mbarrier.MBarrierLayout())
     mbarrier.init(k_release.index(0), count=1)
     mbarrier.init(k_release.index(1), count=1)
-    mbarrier.init(v_release, count=1)
 
-    # Bundle all barriers into a single tuple for convenience
-    barriers = (k_ready, v_ready, k_release, v_release)
+    # Create V release barriers
+    v_release = gl.allocate_shared_memory(gl.int64, [2, 1], mbarrier.MBarrierLayout())
+    mbarrier.init(v_release.index(0), count=1)
+    mbarrier.init(v_release.index(1), count=1)
 
-    # Launch warp specialization pipeline
+    # Launch warp-specialized pipeline
     gl.warp_specialize(
         [
             (
-                _fwd_consumer_dense_kernel,
+                _fwd_consumer_sm90_kernel,
                 (
                     config,
                     block_sched,
                     ptrs_sched,
+                    mask_sched,
+                    softmax_sched,
                     sQ,
                     sK,
                     sV,
-                    barriers,
-                    copy_layout,
-                    mma_layout,
+                    q_ready,
+                    k_ready,
+                    v_ready,
+                    k_release,
+                    v_release,
                     EVEN_M,
                     EVEN_N,
                 ),
             ),
             (
-                _fwd_producer_dense_kernel,
+                _fwd_producer_sm90_kernel,
                 (
                     config,
                     block_sched,
+                    desc_Q,
                     desc_K,
                     desc_V,
+                    sQ,
                     sK,
                     sV,
-                    barriers,
+                    q_ready,
+                    k_ready,
+                    v_ready,
+                    k_release,
+                    v_release,
+                    HAS_CU_SEQLENS_Q,
                     HAS_CU_SEQLENS_K,
                 ),
             ),
@@ -770,23 +1156,28 @@ def _fwd_dense_kernel(
         [24],
     )
 
-    # Teardown barriers after warp specialization has completed
+    # Invalidate barriers
+    mbarrier.invalidate(q_ready)
     mbarrier.invalidate(k_ready.index(0))
-    mbarrier.invalidate(k_release.index(0))
     mbarrier.invalidate(k_ready.index(1))
+    mbarrier.invalidate(v_ready.index(0))
+    mbarrier.invalidate(v_ready.index(1))
+    mbarrier.invalidate(k_release.index(0))
     mbarrier.invalidate(k_release.index(1))
-    mbarrier.invalidate(v_ready)
-    mbarrier.invalidate(v_release)
+    mbarrier.invalidate(v_release.index(0))
+    mbarrier.invalidate(v_release.index(1))
 
 
-def _flash_dense_attn_forward(
+def _flash_attn_forward_sm90(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
+    is_sparse: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
@@ -797,7 +1188,7 @@ def _flash_dense_attn_forward(
     tile_n: Optional[int] = None,
     num_threads: Optional[int] = None,
     skip_checks: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     device = q.device
     num_SMs = get_device_num_sms(device)
     batch_size, seqlen_q, num_heads_q, head_dim = q.shape
@@ -807,6 +1198,8 @@ def _flash_dense_attn_forward(
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    if softmax_threshold is None:
+        softmax_threshold = 1.0 if is_sparse else 0.0
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -827,6 +1220,7 @@ def _flash_dense_attn_forward(
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
     TILE_N = tile_n if tile_n is not None else min(128, 16384 // TILE_K)
     num_warps = num_threads // 32 if num_threads is not None else 8
+    maxnreg = 168 if head_dim >= 128 else 128
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
             batch_size=batch_size,
@@ -866,6 +1260,42 @@ def _flash_dense_attn_forward(
             device=q.device,
         )
 
+    # Setup TMA descriptors
+    q_dtype = gl.bfloat16 if q.dtype == torch.bfloat16 else gl.float16
+    k_dtype = gl.bfloat16 if k.dtype == torch.bfloat16 else gl.float16
+    q_block_shape = (
+        [
+            1,
+            TILE_M,
+            1,
+            TILE_K,
+        ]
+        if not pack_gqa
+        else [
+            1,
+            max(TILE_M // qhead_per_kvhead, 1),
+            1,
+            min(qhead_per_kvhead, TILE_M),
+            TILE_K,
+        ]
+    )
+    k_block_shape = [
+        1,
+        TILE_N,
+        1,
+        TILE_K,
+    ]
+    q_layout = gl.NVMMASharedLayout.get_default_for(q_block_shape, q_dtype)
+    k_layout = gl.NVMMASharedLayout.get_default_for(k_block_shape, k_dtype)
+    desc_q = TensorDescriptor.from_tensor(
+        q if not pack_gqa else q.unflatten(-2, (num_heads_kv, qhead_per_kvhead)),
+        q_block_shape,
+        q_layout,
+    )
+    desc_k = TensorDescriptor.from_tensor(k, k_block_shape, k_layout)
+    desc_v = TensorDescriptor.from_tensor(v, k_block_shape, k_layout)
+    triton.set_allocator(alloc_fn)
+
     # Get the grid for the kernel launch
     grid = get_fwd_grid(
         batch_size=batch_size,
@@ -876,19 +1306,11 @@ def _flash_dense_attn_forward(
         num_splits=num_splits,
     )
 
-    # Setup block shape and layout for TMA
-    block_shape = [1] * (k.ndim - 3) + [TILE_N, 1, TILE_K]
-    dtype = gl.bfloat16 if k.dtype == torch.bfloat16 else gl.float16
-    layout = gl.NVMMASharedLayout.get_default_for(block_shape, dtype)
-    desc_K = TensorDescriptor.from_tensor(k, block_shape, layout)
-    desc_V = TensorDescriptor.from_tensor(v, block_shape, layout)
-    triton.set_allocator(alloc_fn)
-
     # Launch the kernel
-    _fwd_dense_kernel[grid](
-        q,
-        desc_K,
-        desc_V,
+    _fwd_sm90_kernel[grid](
+        desc_q,
+        desc_k,
+        desc_v,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         window_sizes,
@@ -896,9 +1318,6 @@ def _flash_dense_attn_forward(
         None,  # cu_seqlens_k
         None,  # seqused_q
         seqused_k,
-        q.stride(-4),
-        q.stride(-2),
-        q.stride(-3),
         out.stride(-4) if not is_split_kv else out_partial.stride(-4),
         out.stride(-2) if not is_split_kv else out_partial.stride(-3),
         out.stride(-3) if not is_split_kv else out_partial.stride(-2),
@@ -910,6 +1329,7 @@ def _flash_dense_attn_forward(
         seqlen_q,
         seqlen_k,
         softmax_scale,
+        softmax_threshold,
         head_dim,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         PACK_GQA=pack_gqa,
@@ -918,6 +1338,7 @@ def _flash_dense_attn_forward(
         IS_SPLIT_KV=is_split_kv,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPARSE=is_sparse,
         HAS_CU_SEQLENS_Q=False,
         HAS_CU_SEQLENS_K=False,
         HAS_SEQUSED_Q=False,
@@ -927,7 +1348,7 @@ def _flash_dense_attn_forward(
         TILE_K=TILE_K,
         num_warps=num_warps,
         num_stages=1,  # only change compiler metadata
-        maxnreg=168,  # redistribute registers from the producer to compute warps
+        maxnreg=maxnreg,  # redistribute registers from the producer to compute warps
     )
 
     if is_split_kv:
@@ -943,7 +1364,7 @@ def _flash_dense_attn_forward(
     return out, lse
 
 
-def _flash_dense_attn_varlen_forward(
+def _flash_attn_varlen_forward_sm90(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -954,7 +1375,9 @@ def _flash_dense_attn_varlen_forward(
     is_causal: bool = False,
     softmax_scale: float = None,
     window_sizes: Optional[torch.Tensor] = None,
+    softmax_threshold: Optional[float] = None,
     is_local: bool = False,
+    is_sparse: bool = False,
     is_split_kv: bool = False,
     pack_gqa: bool = False,
     num_splits: Optional[int] = None,
@@ -979,6 +1402,8 @@ def _flash_dense_attn_varlen_forward(
     qhead_per_kvhead_packgqa = num_heads_q // num_heads_kv if pack_gqa else 1
     if is_local and window_sizes is None:
         window_sizes = window_sizes_heuristic(seqlen_k, num_heads_kv, device)
+    if softmax_threshold is None:
+        softmax_threshold = 1.0 if is_sparse else 0.0
 
     # Assert the validity of inputs
     if not skip_checks:
@@ -1002,6 +1427,7 @@ def _flash_dense_attn_varlen_forward(
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
     TILE_N = tile_n if tile_n is not None else min(128, 16384 // TILE_K)
     num_warps = num_threads // 32 if num_threads is not None else 8
+    maxnreg = 168 if head_dim >= 128 else 128
     if is_split_kv and num_splits is None:
         num_splits = num_splits_heuristic(
             batch_size=batch_size,
@@ -1041,6 +1467,39 @@ def _flash_dense_attn_varlen_forward(
             device=q.device,
         )
 
+    # Setup TMA descriptors
+    q_dtype = gl.bfloat16 if q.dtype == torch.bfloat16 else gl.float16
+    k_dtype = gl.bfloat16 if k.dtype == torch.bfloat16 else gl.float16
+    q_block_shape = (
+        [
+            TILE_M,
+            1,
+            TILE_K,
+        ]
+        if not pack_gqa
+        else [
+            max(TILE_M // qhead_per_kvhead, 1),
+            1,
+            min(qhead_per_kvhead, TILE_M),
+            TILE_K,
+        ]
+    )
+    k_block_shape = [
+        TILE_N,
+        1,
+        TILE_K,
+    ]
+    q_layout = gl.NVMMASharedLayout.get_default_for(q_block_shape, q_dtype)
+    k_layout = gl.NVMMASharedLayout.get_default_for(k_block_shape, k_dtype)
+    desc_Q = TensorDescriptor.from_tensor(
+        q if not pack_gqa else q.unflatten(-2, (num_heads_kv, qhead_per_kvhead)),
+        q_block_shape,
+        q_layout,
+    )
+    desc_K = TensorDescriptor.from_tensor(k, k_block_shape, k_layout)
+    desc_V = TensorDescriptor.from_tensor(v, k_block_shape, k_layout)
+    triton.set_allocator(alloc_fn)
+
     # Get the grid for the kernel launch
     grid = get_fwd_grid(
         batch_size=batch_size,
@@ -1051,17 +1510,9 @@ def _flash_dense_attn_varlen_forward(
         num_splits=num_splits,
     )
 
-    # Setup block shape and layout for TMA
-    block_shape = [1] * (k.ndim - 3) + [TILE_N, 1, TILE_K]
-    dtype = gl.bfloat16 if k.dtype == torch.bfloat16 else gl.float16
-    layout = gl.NVMMASharedLayout.get_default_for(block_shape, dtype)
-    desc_K = TensorDescriptor.from_tensor(k, block_shape, layout)
-    desc_V = TensorDescriptor.from_tensor(v, block_shape, layout)
-    triton.set_allocator(alloc_fn)
-
     # Launch the kernel
-    _fwd_dense_kernel[grid](
-        q,
+    _fwd_sm90_kernel[grid](
+        desc_Q,
         desc_K,
         desc_V,
         out if not is_split_kv else out_partial,
@@ -1071,9 +1522,6 @@ def _flash_dense_attn_varlen_forward(
         cu_seqlens_k,
         seqused_q,
         seqused_k,
-        0,
-        q.stride(-2),
-        q.stride(-3),
         0,
         out.stride(-2) if not is_split_kv else out_partial.stride(-3),
         out.stride(-3) if not is_split_kv else out_partial.stride(-2),
@@ -1085,6 +1533,7 @@ def _flash_dense_attn_varlen_forward(
         seqlen_q,
         seqlen_k,
         softmax_scale,
+        softmax_threshold,
         head_dim,
         QHEAD_PER_KVHEAD=qhead_per_kvhead,
         PACK_GQA=pack_gqa,
@@ -1093,6 +1542,7 @@ def _flash_dense_attn_varlen_forward(
         IS_SPLIT_KV=is_split_kv,
         IS_CAUSAL=is_causal,
         IS_LOCAL=is_local,
+        IS_SPARSE=is_sparse,
         HAS_CU_SEQLENS_Q=True,
         HAS_CU_SEQLENS_K=True,
         HAS_SEQUSED_Q=seqused_q is not None,
@@ -1102,7 +1552,7 @@ def _flash_dense_attn_varlen_forward(
         TILE_K=TILE_K,
         num_warps=num_warps,
         num_stages=1,  # only change compiler metadata
-        maxnreg=168,  # redistribute registers from the producer to compute warps
+        maxnreg=maxnreg,  # redistribute registers from the producer to compute warps
     )
 
     if is_split_kv:
