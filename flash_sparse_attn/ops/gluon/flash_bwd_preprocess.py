@@ -23,6 +23,7 @@ from flash_sparse_attn.ops.gluon.softmax import check_neginf
             not args["HAS_CU_SEQLENS_Q"]
             and not args["HAS_SEQUSED_Q"]
             and args["seqlen_q"] % args["TILE_M"] == 0
+            and args["seqlen_q"] % args["PADDED_TILE_M"] == 0
         ),
     }
 )
@@ -269,7 +270,7 @@ def _bwd_preprocess_kernel(
     if not EVEN_M:
         pdPsum = make_seqlen_predicate(
             m_block,
-            actual_seqlen_q,
+            gl.cdiv(actual_seqlen_q, PADDED_TILE_M) * PADDED_TILE_M,
             copy_raw_m_offs,
             TILE_MN=TILE_M,
         )
@@ -298,7 +299,7 @@ def _bwd_preprocess_kernel(
     if not EVEN_M:
         pLSElog2 = make_seqlen_predicate(
             m_block,
-            actual_seqlen_q,
+            gl.cdiv(actual_seqlen_q, PADDED_TILE_M) * PADDED_TILE_M,
             copy_raw_m_offs,
             TILE_MN=TILE_M,
         )
@@ -350,7 +351,7 @@ def _flash_attn_bwd_preprocess(
     # Get the grid for the kernel launch
     grid = get_bwd_preprocess_grid(
         batch_size=batch_size,
-        seqlen_q=seqlen_q,
+        seqlen_q=triton.cdiv(seqlen_q, PADDED_TILE_M) * PADDED_TILE_M,
         num_heads_q=num_heads_q,
     )
 
