@@ -317,6 +317,7 @@ class AttnFwdConfig:
     head_kv_idx: gl.tensor
     split_idx: gl.tensor
     m_block: gl.tensor
+    softmax_scale: gl.tensor
     softmax_scale_log2: gl.tensor
     softmax_threshold: gl.tensor
     value_scale: gl.tensor
@@ -356,6 +357,10 @@ class AttnFwdConfig:
     IS_LOCAL: gl.constexpr
     IS_SPARSE: gl.constexpr
     IS_SPLIT_KV: gl.constexpr
+    HAS_CU_SEQLENS_Q: gl.constexpr
+    HAS_CU_SEQLENS_K: gl.constexpr
+    HAS_SEQUSED_Q: gl.constexpr
+    HAS_SEQUSED_K: gl.constexpr
 
     @gluon.constexpr_function
     def __init__(
@@ -365,6 +370,7 @@ class AttnFwdConfig:
         head_kv_idx,
         split_idx,
         m_block,
+        softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
         value_scale,
@@ -404,12 +410,17 @@ class AttnFwdConfig:
         IS_LOCAL,
         IS_SPARSE,
         IS_SPLIT_KV,
+        HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K,
+        HAS_SEQUSED_Q,
+        HAS_SEQUSED_K,
     ):
         self.batch_idx = batch_idx
         self.head_idx = head_idx
         self.head_kv_idx = head_kv_idx
         self.split_idx = split_idx
         self.m_block = m_block
+        self.softmax_scale = softmax_scale
         self.softmax_scale_log2 = softmax_scale_log2
         self.softmax_threshold = softmax_threshold
         self.value_scale = value_scale
@@ -449,6 +460,10 @@ class AttnFwdConfig:
         self.IS_LOCAL = gl.constexpr(IS_LOCAL)
         self.IS_SPARSE = gl.constexpr(IS_SPARSE)
         self.IS_SPLIT_KV = gl.constexpr(IS_SPLIT_KV)
+        self.HAS_CU_SEQLENS_Q = gl.constexpr(HAS_CU_SEQLENS_Q)
+        self.HAS_CU_SEQLENS_K = gl.constexpr(HAS_CU_SEQLENS_K)
+        self.HAS_SEQUSED_Q = gl.constexpr(HAS_SEQUSED_Q)
+        self.HAS_SEQUSED_K = gl.constexpr(HAS_SEQUSED_K)
 
     @staticmethod
     @gluon.jit
@@ -633,6 +648,7 @@ class AttnFwdConfig:
             gl.to_tensor(head_kv_idx),
             gl.to_tensor(split_idx),
             gl.to_tensor(m_block),
+            gl.to_tensor(softmax_scale),
             gl.to_tensor(softmax_scale_log2),
             gl.to_tensor(softmax_threshold),
             gl.to_tensor(v_scale),
@@ -672,6 +688,10 @@ class AttnFwdConfig:
             IS_LOCAL,
             IS_SPARSE,
             IS_SPLIT_KV,
+            HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q,
+            HAS_SEQUSED_K,
         )
 
     @gluon.jit
@@ -780,6 +800,7 @@ class AttnBwdConfig:
     head_kv_idx: gl.tensor
     split_idx: gl.tensor
     n_block: gl.tensor
+    softmax_scale: gl.tensor
     softmax_scale_log2: gl.tensor
     softmax_threshold: gl.tensor
     query_scale: gl.tensor
@@ -832,6 +853,10 @@ class AttnBwdConfig:
     IS_LOCAL: gl.constexpr
     IS_SPARSE: gl.constexpr
     IS_SPLIT_QO: gl.constexpr
+    HAS_CU_SEQLENS_Q: gl.constexpr
+    HAS_CU_SEQLENS_K: gl.constexpr
+    HAS_SEQUSED_Q: gl.constexpr
+    HAS_SEQUSED_K: gl.constexpr
 
     @gluon.constexpr_function
     def __init__(
@@ -841,6 +866,7 @@ class AttnBwdConfig:
         head_kv_idx,
         split_idx,
         n_block,
+        softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
         query_scale,
@@ -893,12 +919,17 @@ class AttnBwdConfig:
         IS_LOCAL,
         IS_SPARSE,
         IS_SPLIT_QO,
+        HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K,
+        HAS_SEQUSED_Q,
+        HAS_SEQUSED_K,
     ):
         self.batch_idx = batch_idx
         self.head_idx = head_idx
         self.head_kv_idx = head_kv_idx
         self.split_idx = split_idx
         self.n_block = n_block
+        self.softmax_scale = softmax_scale
         self.softmax_scale_log2 = softmax_scale_log2
         self.softmax_threshold = softmax_threshold
         self.query_scale = query_scale
@@ -951,6 +982,10 @@ class AttnBwdConfig:
         self.IS_LOCAL = gl.constexpr(IS_LOCAL)
         self.IS_SPARSE = gl.constexpr(IS_SPARSE)
         self.IS_SPLIT_QO = gl.constexpr(IS_SPLIT_QO)
+        self.HAS_CU_SEQLENS_Q = gl.constexpr(HAS_CU_SEQLENS_Q)
+        self.HAS_CU_SEQLENS_K = gl.constexpr(HAS_CU_SEQLENS_K)
+        self.HAS_SEQUSED_Q = gl.constexpr(HAS_SEQUSED_Q)
+        self.HAS_SEQUSED_K = gl.constexpr(HAS_SEQUSED_K)
 
     @staticmethod
     @gluon.jit
@@ -1152,6 +1187,7 @@ class AttnBwdConfig:
             gl.to_tensor(head_kv_idx),
             gl.to_tensor(split_idx),
             gl.to_tensor(n_block),
+            gl.to_tensor(softmax_scale),
             gl.to_tensor(softmax_scale_log2),
             gl.to_tensor(softmax_threshold),
             gl.to_tensor(q_scale),
@@ -1204,6 +1240,10 @@ class AttnBwdConfig:
             IS_LOCAL,
             IS_SPARSE,
             IS_SPLIT_QO,
+            HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q,
+            HAS_SEQUSED_K,
         )
 
     @gluon.jit
