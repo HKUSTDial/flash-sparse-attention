@@ -526,12 +526,15 @@ def _bwd_inner_sm90_kernel(
     mbarrier.wait(q_ready.index(stage), phase)
 
     # Compute S
+    # TODO: re-enable inline descriptor materialization at all WGMMA call sites once supported upstream
+    # keeps descriptor construction close to its use to reduce register pressure and spilling
+    # https://github.com/triton-lang/triton/issues/12631
     S_pending = warpgroup_mma(
         sK,
         sQ.index(stage).permute((1, 0)),
         gl.zeros([config.TILE_N, config.TILE_M], gl.float32, config.mma_s_layout),
         is_async=True,
-        descriptor_mode="inline",
+        # descriptor_mode="inline",
     )
     if not config.IS_SPARSE:
         # Wait for dO
@@ -543,7 +546,7 @@ def _bwd_inner_sm90_kernel(
             sdO.index(stage).permute((1, 0)),
             gl.zeros([config.TILE_N, config.TILE_M], gl.float32, config.mma_dp_layout),
             is_async=True,
-            descriptor_mode="inline",
+            # descriptor_mode="inline",
         )
 
         # Wait for S
@@ -596,7 +599,7 @@ def _bwd_inner_sm90_kernel(
                 sdO.index(stage).permute((1, 0)),
                 gl.zeros([config.TILE_N, config.TILE_M], gl.float32, config.mma_dp_layout),
                 is_async=True,
-                descriptor_mode="inline",
+                # descriptor_mode="inline",
             )
 
         # Compute P
@@ -634,7 +637,11 @@ def _bwd_inner_sm90_kernel(
 
         # Compute dV
         dV_pending = warpgroup_mma(
-            rP, sdO.index(stage), acc_dV, is_async=True, descriptor_mode="inline"
+            rP,
+            sdO.index(stage),
+            acc_dV,
+            is_async=True,
+            # descriptor_mode="inline",
         )
 
         # Synchronize dS
@@ -647,7 +654,7 @@ def _bwd_inner_sm90_kernel(
             sdS.index(stage),
             gl.zeros([config.TILE_K, config.TILE_M], gl.float32, config.mma_dq_layout),
             is_async=True,
-            descriptor_mode="inline",
+            # descriptor_mode="inline",
         )
 
         # Wait for dV
@@ -661,7 +668,11 @@ def _bwd_inner_sm90_kernel(
 
         # Compute dK
         dK_pending = warpgroup_mma(
-            rdS, sQ.index(stage), acc_dK, is_async=True, descriptor_mode="inline"
+            rdS,
+            sQ.index(stage),
+            acc_dK,
+            is_async=True,
+            # descriptor_mode="inline",
         )
 
         # Wait for dQ
