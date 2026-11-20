@@ -10,7 +10,15 @@ from flash_sparse_attn.ops.gluon.flash_bwd_sm80 import (
     _flash_attn_backward_sm80,
     _flash_attn_varlen_backward_sm80,
 )
-from flash_sparse_attn.ops.gluon.utils import ensure_contiguous
+from flash_sparse_attn.ops.gluon.flash_fwd_sm90 import (
+    _flash_attn_forward_sm90,
+    _flash_attn_varlen_forward_sm90,
+)
+from flash_sparse_attn.ops.gluon.flash_bwd_sm90 import (
+    _flash_attn_backward_sm90,
+    _flash_attn_varlen_backward_sm90,
+)
+from flash_sparse_attn.ops.gluon.utils import ensure_contiguous, get_device, get_device_arch
 
 
 class FlashAttnFunc(torch.autograd.Function):
@@ -36,6 +44,15 @@ class FlashAttnFunc(torch.autograd.Function):
         skip_checks: bool = False,
         return_lse: bool = False,
     ):
+        device = get_device()
+        arch = get_device_arch(device)
+        if arch // 10 == 9:
+            flash_attn_forward_interface = _flash_attn_forward_sm90
+        elif arch // 10 == 8:
+            flash_attn_forward_interface = _flash_attn_forward_sm80
+        else:
+            flash_attn_forward_interface = _flash_attn_forward_sm80
+
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if query.shape[1] == 1 else is_causal
         is_local = True if window_sizes is not None else False
@@ -45,7 +62,7 @@ class FlashAttnFunc(torch.autograd.Function):
         if num_qo_splits is not None and num_qo_splits > 1:
             is_split_qo = True
 
-        out, lse = _flash_attn_forward_sm80(
+        out, lse = flash_attn_forward_interface(
             query,
             key,
             value,
@@ -84,9 +101,18 @@ class FlashAttnFunc(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dout: torch.Tensor, *args):
+        device = get_device()
+        arch = get_device_arch(device)
+        if arch // 10 == 9:
+            flash_attn_backward_interface = _flash_attn_backward_sm90
+        elif arch // 10 == 8:
+            flash_attn_backward_interface = _flash_attn_backward_sm80
+        else:
+            flash_attn_backward_interface = _flash_attn_backward_sm80
+
         query, key, value, out, lse, seqused_k = ctx.saved_tensors
 
-        dq, dk, dv = _flash_attn_backward_sm80(
+        dq, dk, dv = flash_attn_backward_interface(
             query,
             key,
             value,
@@ -136,6 +162,15 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         skip_checks: bool = False,
         return_lse: bool = False,
     ):
+        device = get_device()
+        arch = get_device_arch(device)
+        if arch // 10 == 9:
+            flash_attn_forward_interface = _flash_attn_varlen_forward_sm90
+        elif arch // 10 == 8:
+            flash_attn_forward_interface = _flash_attn_varlen_forward_sm80
+        else:
+            flash_attn_forward_interface = _flash_attn_varlen_forward_sm80
+
         # Set is_causal to False if sequence length is 1 to avoid unnecessary masking overhead
         is_causal = False if max_seqlen_q == 1 else is_causal
         is_local = True if window_sizes is not None else False
@@ -145,7 +180,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         if num_qo_splits is not None and num_qo_splits > 1:
             is_split_qo = True
 
-        out, lse = _flash_attn_varlen_forward_sm80(
+        out, lse = flash_attn_forward_interface(
             query,
             key,
             value,
@@ -201,6 +236,15 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dout: torch.Tensor, *args):
+        device = get_device()
+        arch = get_device_arch(device)
+        if arch // 10 == 9:
+            flash_attn_backward_interface = _flash_attn_varlen_backward_sm90
+        elif arch // 10 == 8:
+            flash_attn_backward_interface = _flash_attn_varlen_backward_sm80
+        else:
+            flash_attn_backward_interface = _flash_attn_varlen_backward_sm80
+
         (
             query,
             key,
@@ -213,7 +257,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             seqused_k,
         ) = ctx.saved_tensors
 
-        dq, dk, dv = _flash_attn_varlen_backward_sm80(
+        dq, dk, dv = flash_attn_backward_interface(
             query,
             key,
             value,
