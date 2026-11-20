@@ -2512,8 +2512,10 @@ class AttnBwdPointerScheduler:
 
         # For split QO, offset key and value gradients base pointers by split_idx
         if config.IS_SPLIT_QO:
-            dk_base += config.split_idx * stride_dks
-            dv_base += config.split_idx * stride_dvs
+            if dK is not None:
+                dk_base += config.split_idx * stride_dks
+            if dV is not None:
+                dv_base += config.split_idx * stride_dvs
 
         return AttnBwdPointerScheduler(
             q_base,
