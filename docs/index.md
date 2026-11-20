@@ -9,7 +9,7 @@ It combines the existing hand-written project documentation with an auto-generat
 Install the documentation dependencies:
 
 ```bash
-pip install -e .[docs]
+pip install .[docs]
 ```
 
 Start the local documentation server:
@@ -21,11 +21,12 @@ mkdocs serve
 Build the static site:
 
 ```bash
-mkdocs build
+mkdocs build --strict
 ```
 
 ## Documentation Layout
 
 - The existing conceptual and usage documentation stays under `docs/`.
 - The API page uses `mkdocstrings` to render Python module docstrings directly from the codebase.
-- The recommended public API entrypoints are the Triton-facing exports from `flash_sparse_attn` and `flash_sparse_attn.ops.triton.interface`.
+- [Triton API](api.md) documents `flash_sparse_attn.ops.triton.interface`.
+- [Gluon API](api.md) documents `flash_sparse_attn.ops.gluon.interface`.

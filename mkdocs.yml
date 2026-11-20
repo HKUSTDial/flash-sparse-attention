@@ -19,6 +19,7 @@ plugins:
           paths:
             - .
           options:
+            allow_inspection: false
             docstring_style: sphinx
             show_root_heading: true
             show_root_toc_entry: true
@@ -38,6 +39,7 @@ markdown_extensions:
       permalink: true
 
 nav:
+  - Home: index.md
   - API: api.md
   - HuggingFace Kernel Hub: huggingface_kernels_guide.md
 

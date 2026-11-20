@@ -49,7 +49,7 @@ Flash-Sparse-Attention 是一个高性能的可训练稀疏注意力实现, 将 
 
 - **Linux**: Ubuntu 22.04 或更高版本
 - **Device**: GPU, XPU, NPU, 或 PPU
-- **Python**: 3.9 或更高版本
+- **Python**: 3.12 或更高版本
 - **PyTorch**: 2.5.1 或更高版本
 - **Triton**: 3.6.0 或更高版本
 - **Triton Kernels**: 3.6.0 或更高版本
