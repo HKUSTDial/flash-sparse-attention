@@ -49,9 +49,8 @@ def _fwd_load_sm90_kernel(
     release,
     n_block,
     iter,
-    HAS_CU_SEQLENS_K: gl.constexpr,
 ):
-    if HAS_CU_SEQLENS_K:
+    if config.HAS_CU_SEQLENS_K:
         coords = [config.offset_k + n_block * config.TILE_N, config.head_kv_idx, 0]
         shape: gl.constexpr = [config.TILE_N, 1, config.TILE_K]
     else:
@@ -81,14 +80,12 @@ def _fwd_producer_sm90_kernel(
     v_ready,
     k_release,
     v_release,
-    HAS_CU_SEQLENS_Q: gl.constexpr,
-    HAS_CU_SEQLENS_K: gl.constexpr,
 ):
     # Initialize pipeline iteration
     iter = gl.to_tensor(0)
 
     # Load Q
-    if HAS_CU_SEQLENS_Q:
+    if config.HAS_CU_SEQLENS_Q:
         q_coords = (
             [
                 config.offset_q + config.m_block * config.TILE_M // config.QHEAD_PER_KVHEAD_PACKGQA,
@@ -125,8 +122,7 @@ def _fwd_producer_sm90_kernel(
         k_ready,
         k_release,
         n_block_max,
-        0,
-        HAS_CU_SEQLENS_K,
+        iter,
     )
 
     # Advance the K/V pipeline
@@ -148,7 +144,6 @@ def _fwd_producer_sm90_kernel(
                 k_release,
                 n_block,
                 iter,
-                HAS_CU_SEQLENS_K,
             )
 
             # Load previous V
@@ -160,14 +155,13 @@ def _fwd_producer_sm90_kernel(
                 v_release,
                 prev_n_block,
                 iter - 1,
-                HAS_CU_SEQLENS_K,
             )
 
             # Advance the K/V pipeline
             iter += 1
             prev_n_block = n_block
 
-    if not config.IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
+    if not config.IS_LOCAL:
         for n_block in range(
             block_sched.n_block_max_no_mask - 1,
             block_sched.n_block_min - 1,
@@ -182,7 +176,6 @@ def _fwd_producer_sm90_kernel(
                 k_release,
                 n_block,
                 iter,
-                HAS_CU_SEQLENS_K,
             )
 
             # Load previous V
@@ -194,7 +187,6 @@ def _fwd_producer_sm90_kernel(
                 v_release,
                 prev_n_block,
                 iter - 1,
-                HAS_CU_SEQLENS_K,
             )
 
             # Advance the K/V pipeline
@@ -202,139 +194,129 @@ def _fwd_producer_sm90_kernel(
             prev_n_block = n_block
 
     if config.IS_LOCAL:
-        if block_sched.n_block_window_max > block_sched.n_block_window_min:
-            for n_block in range(
-                block_sched.n_block_window_max - 1,
-                block_sched.n_block_window_max_no_mask - 1,
-                -1,
-            ):
-                # Load next K
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_K,
-                    sK,
-                    k_ready,
-                    k_release,
-                    n_block,
-                    iter,
-                    HAS_CU_SEQLENS_K,
-                )
+        for n_block in range(
+            block_sched.n_block_window_max - 1,
+            block_sched.n_block_window_max_no_mask - 1,
+            -1,
+        ):
+            # Load next K
+            _fwd_load_sm90_kernel(
+                config,
+                desc_K,
+                sK,
+                k_ready,
+                k_release,
+                n_block,
+                iter,
+            )
 
-                # Load previous V
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_V,
-                    sV,
-                    v_ready,
-                    v_release,
-                    prev_n_block,
-                    iter - 1,
-                    HAS_CU_SEQLENS_K,
-                )
+            # Load previous V
+            _fwd_load_sm90_kernel(
+                config,
+                desc_V,
+                sV,
+                v_ready,
+                v_release,
+                prev_n_block,
+                iter - 1,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
-                prev_n_block = n_block
+            # Advance the K/V pipeline
+            iter += 1
+            prev_n_block = n_block
 
-            for n_block in range(
-                block_sched.n_block_window_max_no_mask - 1,
-                block_sched.n_block_window_min_no_mask - 1,
-                -1,
-            ):
-                # Load next K
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_K,
-                    sK,
-                    k_ready,
-                    k_release,
-                    n_block,
-                    iter,
-                    HAS_CU_SEQLENS_K,
-                )
+        for n_block in range(
+            block_sched.n_block_window_max_no_mask - 1,
+            block_sched.n_block_window_min_no_mask - 1,
+            -1,
+        ):
+            # Load next K
+            _fwd_load_sm90_kernel(
+                config,
+                desc_K,
+                sK,
+                k_ready,
+                k_release,
+                n_block,
+                iter,
+            )
 
-                # Load previous V
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_V,
-                    sV,
-                    v_ready,
-                    v_release,
-                    prev_n_block,
-                    iter - 1,
-                    HAS_CU_SEQLENS_K,
-                )
+            # Load previous V
+            _fwd_load_sm90_kernel(
+                config,
+                desc_V,
+                sV,
+                v_ready,
+                v_release,
+                prev_n_block,
+                iter - 1,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
-                prev_n_block = n_block
+            # Advance the K/V pipeline
+            iter += 1
+            prev_n_block = n_block
 
-            for n_block in range(
-                block_sched.n_block_window_min_no_mask - 1,
-                block_sched.n_block_window_min - 1,
-                -1,
-            ):
-                # Load next K
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_K,
-                    sK,
-                    k_ready,
-                    k_release,
-                    n_block,
-                    iter,
-                    HAS_CU_SEQLENS_K,
-                )
+        for n_block in range(
+            block_sched.n_block_window_min_no_mask - 1,
+            block_sched.n_block_window_min - 1,
+            -1,
+        ):
+            # Load next K
+            _fwd_load_sm90_kernel(
+                config,
+                desc_K,
+                sK,
+                k_ready,
+                k_release,
+                n_block,
+                iter,
+            )
 
-                # Load previous V
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_V,
-                    sV,
-                    v_ready,
-                    v_release,
-                    prev_n_block,
-                    iter - 1,
-                    HAS_CU_SEQLENS_K,
-                )
+            # Load previous V
+            _fwd_load_sm90_kernel(
+                config,
+                desc_V,
+                sV,
+                v_ready,
+                v_release,
+                prev_n_block,
+                iter - 1,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
-                prev_n_block = n_block
+            # Advance the K/V pipeline
+            iter += 1
+            prev_n_block = n_block
 
-        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
-            for n_block in range(
-                block_sched.n_block_sink_max - 1,
-                block_sched.n_block_sink_min - 1,
-                -1,
-            ):
-                # Load next K
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_K,
-                    sK,
-                    k_ready,
-                    k_release,
-                    n_block,
-                    iter,
-                    HAS_CU_SEQLENS_K,
-                )
+        for n_block in range(
+            block_sched.n_block_sink_max - 1,
+            block_sched.n_block_sink_min - 1,
+            -1,
+        ):
+            # Load next K
+            _fwd_load_sm90_kernel(
+                config,
+                desc_K,
+                sK,
+                k_ready,
+                k_release,
+                n_block,
+                iter,
+            )
 
-                # Load previous V
-                _fwd_load_sm90_kernel(
-                    config,
-                    desc_V,
-                    sV,
-                    v_ready,
-                    v_release,
-                    prev_n_block,
-                    iter - 1,
-                    HAS_CU_SEQLENS_K,
-                )
+            # Load previous V
+            _fwd_load_sm90_kernel(
+                config,
+                desc_V,
+                sV,
+                v_ready,
+                v_release,
+                prev_n_block,
+                iter - 1,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
-                prev_n_block = n_block
+            # Advance the K/V pipeline
+            iter += 1
+            prev_n_block = n_block
 
     # Load last V
     _fwd_load_sm90_kernel(
@@ -345,7 +327,6 @@ def _fwd_producer_sm90_kernel(
         v_release,
         prev_n_block,
         iter - 1,
-        HAS_CU_SEQLENS_K,
     )
 
 
@@ -552,7 +533,7 @@ def _fwd_consumer_sm90_kernel(
     EVEN_N: gl.constexpr,
 ):
     # MMA operand layouts
-    mma_lhs_layout: gl.constexpr = gl.DotOperandLayout(
+    mma_o_lhs_layout: gl.constexpr = gl.DotOperandLayout(
         operand_index=0,
         parent=config.mma_o_layout,
         k_width=max(32 // sQ.dtype.primitive_bitwidth, 1),
@@ -651,7 +632,7 @@ def _fwd_consumer_sm90_kernel(
             # Advance the K/V pipeline
             iter += 1
 
-    if not config.IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
+    if not config.IS_LOCAL:
         # Process n_blocks without masking
         for n_block in range(
             block_sched.n_block_max_no_mask - 1,
@@ -688,154 +669,152 @@ def _fwd_consumer_sm90_kernel(
             iter += 1
 
     if config.IS_LOCAL:
-        if block_sched.n_block_window_max > block_sched.n_block_window_min:
-            # Process n_blocks with local right masking
-            for n_block in range(
-                block_sched.n_block_window_max - 1,
-                block_sched.n_block_window_max_no_mask - 1,
-                -1,
-            ):
-                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
-                    config,
-                    mask_sched,
-                    softmax_sched,
-                    sQ,
-                    sK,
-                    sV,
-                    rP,
-                    row_max,
-                    row_sum_partial,
-                    acc_O,
-                    is_skip,
-                    k_ready,
-                    v_ready,
-                    k_release,
-                    v_release,
-                    n_block,
-                    iter,
-                    IS_FIRST=False,
-                    IS_MASK=True,
-                    MASK_SEQLEN=False,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=True,
-                    MASK_SINK=False,
-                )
+        # Process n_blocks with local right masking
+        for n_block in range(
+            block_sched.n_block_window_max - 1,
+            block_sched.n_block_window_max_no_mask - 1,
+            -1,
+        ):
+            row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
+                config,
+                mask_sched,
+                softmax_sched,
+                sQ,
+                sK,
+                sV,
+                rP,
+                row_max,
+                row_sum_partial,
+                acc_O,
+                is_skip,
+                k_ready,
+                v_ready,
+                k_release,
+                v_release,
+                n_block,
+                iter,
+                IS_FIRST=False,
+                IS_MASK=True,
+                MASK_SEQLEN=False,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=True,
+                MASK_SINK=False,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
+            # Advance the K/V pipeline
+            iter += 1
 
-            # Process n_blocks without masking
-            for n_block in range(
-                block_sched.n_block_window_max_no_mask - 1,
-                block_sched.n_block_window_min_no_mask - 1,
-                -1,
-            ):
-                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
-                    config,
-                    mask_sched,
-                    softmax_sched,
-                    sQ,
-                    sK,
-                    sV,
-                    rP,
-                    row_max,
-                    row_sum_partial,
-                    acc_O,
-                    is_skip,
-                    k_ready,
-                    v_ready,
-                    k_release,
-                    v_release,
-                    n_block,
-                    iter,
-                    IS_FIRST=False,
-                    IS_MASK=False,
-                    MASK_SEQLEN=False,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=False,
-                    MASK_SINK=False,
-                )
+        # Process n_blocks without masking
+        for n_block in range(
+            block_sched.n_block_window_max_no_mask - 1,
+            block_sched.n_block_window_min_no_mask - 1,
+            -1,
+        ):
+            row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
+                config,
+                mask_sched,
+                softmax_sched,
+                sQ,
+                sK,
+                sV,
+                rP,
+                row_max,
+                row_sum_partial,
+                acc_O,
+                is_skip,
+                k_ready,
+                v_ready,
+                k_release,
+                v_release,
+                n_block,
+                iter,
+                IS_FIRST=False,
+                IS_MASK=False,
+                MASK_SEQLEN=False,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=False,
+                MASK_SINK=False,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
+            # Advance the K/V pipeline
+            iter += 1
 
-            # Process n_blocks with local left masking
-            for n_block in range(
-                block_sched.n_block_window_min_no_mask - 1,
-                block_sched.n_block_window_min - 1,
-                -1,
-            ):
-                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
-                    config,
-                    mask_sched,
-                    softmax_sched,
-                    sQ,
-                    sK,
-                    sV,
-                    rP,
-                    row_max,
-                    row_sum_partial,
-                    acc_O,
-                    is_skip,
-                    k_ready,
-                    v_ready,
-                    k_release,
-                    v_release,
-                    n_block,
-                    iter,
-                    IS_FIRST=False,
-                    IS_MASK=True,
-                    MASK_SEQLEN=False,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=True,
-                    MASK_SINK=False,
-                )
+        # Process n_blocks with local left masking
+        for n_block in range(
+            block_sched.n_block_window_min_no_mask - 1,
+            block_sched.n_block_window_min - 1,
+            -1,
+        ):
+            row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
+                config,
+                mask_sched,
+                softmax_sched,
+                sQ,
+                sK,
+                sV,
+                rP,
+                row_max,
+                row_sum_partial,
+                acc_O,
+                is_skip,
+                k_ready,
+                v_ready,
+                k_release,
+                v_release,
+                n_block,
+                iter,
+                IS_FIRST=False,
+                IS_MASK=True,
+                MASK_SEQLEN=False,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=True,
+                MASK_SINK=False,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
+            # Advance the K/V pipeline
+            iter += 1
 
-        if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
-            # Process n_blocks with prefix-sink masking
-            for n_block in range(
-                block_sched.n_block_sink_max - 1,
-                block_sched.n_block_sink_min - 1,
-                -1,
-            ):
-                row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
-                    config,
-                    mask_sched,
-                    softmax_sched,
-                    sQ,
-                    sK,
-                    sV,
-                    rP,
-                    row_max,
-                    row_sum_partial,
-                    acc_O,
-                    is_skip,
-                    k_ready,
-                    v_ready,
-                    k_release,
-                    v_release,
-                    n_block,
-                    iter,
-                    IS_FIRST=False,
-                    IS_MASK=True,
-                    MASK_SEQLEN=False,
-                    MASK_CAUSAL=False,
-                    MASK_LOCAL=True,
-                    MASK_SINK=True,
-                )
+        # Process n_blocks with prefix-sink masking
+        for n_block in range(
+            block_sched.n_block_sink_max - 1,
+            block_sched.n_block_sink_min - 1,
+            -1,
+        ):
+            row_max, row_sum_partial, acc_O, rP, is_skip = _fwd_inner_sm90_kernel(
+                config,
+                mask_sched,
+                softmax_sched,
+                sQ,
+                sK,
+                sV,
+                rP,
+                row_max,
+                row_sum_partial,
+                acc_O,
+                is_skip,
+                k_ready,
+                v_ready,
+                k_release,
+                v_release,
+                n_block,
+                iter,
+                IS_FIRST=False,
+                IS_MASK=True,
+                MASK_SEQLEN=False,
+                MASK_CAUSAL=False,
+                MASK_LOCAL=True,
+                MASK_SINK=True,
+            )
 
-                # Advance the K/V pipeline
-                iter += 1
+            # Advance the K/V pipeline
+            iter += 1
 
     # Compute last O
     v_stage = (iter - 1) % 2
     v_phase = ((iter - 1) // 2) & 1
     mbarrier.wait(v_ready.index(v_stage), v_phase)
     if not is_skip:
-        rP_prev = unpack_mma_operand(rP, sV.dtype, mma_lhs_layout)
+        rP_prev = unpack_mma_operand(rP, sV.dtype, mma_o_lhs_layout)
         O_pending = warpgroup_mma_init(acc_O)
         O_pending = warpgroup_mma(rP_prev, sV.index(v_stage), O_pending, is_async=True)
         acc_O = warpgroup_mma_wait(num_outstanding=0, deps=(O_pending,))
@@ -1067,31 +1046,31 @@ def _fwd_sm90_kernel(
 
     # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K],
-        desc_Q.block_type.element_ty,
+        block_shape=[TILE_M, TILE_K],
+        dtype=desc_Q.block_type.element_ty,
     )
     sK_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K],
-        desc_K.block_type.element_ty,
+        block_shape=[TILE_N, TILE_K],
+        dtype=desc_K.block_type.element_ty,
     )
     sV_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K],
-        desc_V.block_type.element_ty,
+        block_shape=[TILE_N, TILE_K],
+        dtype=desc_V.block_type.element_ty,
     )
     sQ = gl.allocate_shared_memory(
-        desc_Q.block_type.element_ty,
-        [TILE_M, TILE_K],
-        sQ_layout,
+        element_ty=desc_Q.block_type.element_ty,
+        shape=[TILE_M, TILE_K],
+        layout=sQ_layout,
     )
     sK = gl.allocate_shared_memory(
-        desc_K.block_type.element_ty,
-        [2, TILE_N, TILE_K],
-        sK_layout,
+        element_ty=desc_K.block_type.element_ty,
+        shape=[2, TILE_N, TILE_K],
+        layout=sK_layout,
     )
     sV = gl.allocate_shared_memory(
-        desc_V.block_type.element_ty,
-        [2, TILE_N, TILE_K],
-        sV_layout,
+        element_ty=desc_V.block_type.element_ty,
+        shape=[2, TILE_N, TILE_K],
+        layout=sV_layout,
     )
 
     # Create Q ready barrier
@@ -1157,8 +1136,6 @@ def _fwd_sm90_kernel(
                     v_ready,
                     k_release,
                     v_release,
-                    HAS_CU_SEQLENS_Q,
-                    HAS_CU_SEQLENS_K,
                 ),
             ),
         ],
@@ -1273,37 +1250,24 @@ def _flash_attn_forward_sm90(
     # Setup TMA descriptors
     q_dtype = gl.bfloat16 if q.dtype == torch.bfloat16 else gl.float16
     k_dtype = gl.bfloat16 if k.dtype == torch.bfloat16 else gl.float16
+    v_dtype = gl.bfloat16 if v.dtype == torch.bfloat16 else gl.float16
     q_block_shape = (
-        [
-            1,
-            TILE_M,
-            1,
-            TILE_K,
-        ]
+        [1, TILE_M, 1, TILE_K]
         if not pack_gqa
-        else [
-            1,
-            max(TILE_M // qhead_per_kvhead, 1),
-            1,
-            min(qhead_per_kvhead, TILE_M),
-            TILE_K,
-        ]
+        else [1, max(TILE_M // qhead_per_kvhead, 1), 1, min(qhead_per_kvhead, TILE_M), TILE_K]
     )
-    k_block_shape = [
-        1,
-        TILE_N,
-        1,
-        TILE_K,
-    ]
+    k_block_shape = [1, TILE_N, 1, TILE_K]
+    v_block_shape = [1, TILE_N, 1, TILE_K]
     q_layout = gl.NVMMASharedLayout.get_default_for(q_block_shape, q_dtype)
     k_layout = gl.NVMMASharedLayout.get_default_for(k_block_shape, k_dtype)
+    v_layout = gl.NVMMASharedLayout.get_default_for(v_block_shape, v_dtype)
     desc_q = TensorDescriptor.from_tensor(
         q if not pack_gqa else q.unflatten(-2, (num_heads_kv, qhead_per_kvhead)),
         q_block_shape,
         q_layout,
     )
     desc_k = TensorDescriptor.from_tensor(k, k_block_shape, k_layout)
-    desc_v = TensorDescriptor.from_tensor(v, k_block_shape, k_layout)
+    desc_v = TensorDescriptor.from_tensor(v, v_block_shape, v_layout)
     triton.set_allocator(alloc_fn)
 
     # Get the grid for the kernel launch
@@ -1480,34 +1444,24 @@ def _flash_attn_varlen_forward_sm90(
     # Setup TMA descriptors
     q_dtype = gl.bfloat16 if q.dtype == torch.bfloat16 else gl.float16
     k_dtype = gl.bfloat16 if k.dtype == torch.bfloat16 else gl.float16
+    v_dtype = gl.bfloat16 if v.dtype == torch.bfloat16 else gl.float16
     q_block_shape = (
-        [
-            TILE_M,
-            1,
-            TILE_K,
-        ]
+        [TILE_M, 1, TILE_K]
         if not pack_gqa
-        else [
-            max(TILE_M // qhead_per_kvhead, 1),
-            1,
-            min(qhead_per_kvhead, TILE_M),
-            TILE_K,
-        ]
+        else [max(TILE_M // qhead_per_kvhead, 1), 1, min(qhead_per_kvhead, TILE_M), TILE_K]
     )
-    k_block_shape = [
-        TILE_N,
-        1,
-        TILE_K,
-    ]
+    k_block_shape = [TILE_N, 1, TILE_K]
+    v_block_shape = [TILE_N, 1, TILE_K]
     q_layout = gl.NVMMASharedLayout.get_default_for(q_block_shape, q_dtype)
     k_layout = gl.NVMMASharedLayout.get_default_for(k_block_shape, k_dtype)
-    desc_Q = TensorDescriptor.from_tensor(
+    v_layout = gl.NVMMASharedLayout.get_default_for(v_block_shape, v_dtype)
+    desc_q = TensorDescriptor.from_tensor(
         q if not pack_gqa else q.unflatten(-2, (num_heads_kv, qhead_per_kvhead)),
         q_block_shape,
         q_layout,
     )
-    desc_K = TensorDescriptor.from_tensor(k, k_block_shape, k_layout)
-    desc_V = TensorDescriptor.from_tensor(v, k_block_shape, k_layout)
+    desc_k = TensorDescriptor.from_tensor(k, k_block_shape, k_layout)
+    desc_v = TensorDescriptor.from_tensor(v, v_block_shape, v_layout)
     triton.set_allocator(alloc_fn)
 
     # Get the grid for the kernel launch
@@ -1522,9 +1476,9 @@ def _flash_attn_varlen_forward_sm90(
 
     # Launch the kernel
     _fwd_sm90_kernel[grid](
-        desc_Q,
-        desc_K,
-        desc_V,
+        desc_q,
+        desc_k,
+        desc_v,
         out if not is_split_kv else out_partial,
         lse if not is_split_kv else lse_partial,
         window_sizes,

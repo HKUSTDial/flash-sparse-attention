@@ -43,21 +43,21 @@ def _bwd_inner_sm80_kernel(
     sQ,
     sK,
     sV,
+    sLSE,
     sdO,
+    sdPsum,
     sP,
     sdS,
-    sLSE,
-    sdPsum,
     acc_dK,
     acc_dV,
     m_block,
     m_block_max,
     q_stage,
-    IS_MASK: gl.constexpr,
-    MASK_SEQLEN: gl.constexpr,
-    MASK_CAUSAL: gl.constexpr,
-    MASK_LOCAL: gl.constexpr,
-    MASK_SINK: gl.constexpr,
+    IS_MASK: gl.constexpr = False,
+    MASK_SEQLEN: gl.constexpr = False,
+    MASK_CAUSAL: gl.constexpr = False,
+    MASK_LOCAL: gl.constexpr = False,
+    MASK_SINK: gl.constexpr = False,
 ):
     # MMA operand layouts
     mma_s_lhs_layout: gl.constexpr = gl.DotOperandLayout(
@@ -517,28 +517,16 @@ def _bwd_sm80_kernel(
 
     # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K],
-        mQ.dtype.element_ty,
+        block_shape=[TILE_M, TILE_K],
+        dtype=mQ.dtype.element_ty,
     )
     sK_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K],
-        mK.dtype.element_ty,
+        block_shape=[TILE_N, TILE_K],
+        dtype=mK.dtype.element_ty,
     )
     sV_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K],
-        mV.dtype.element_ty,
-    )
-    sdO_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K],
-        mdO.dtype.element_ty,
-    )
-    sP_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_M],
-        mQ.dtype.element_ty,
-    )
-    sdS_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_M],
-        mQ.dtype.element_ty,
+        block_shape=[TILE_N, TILE_K],
+        dtype=mV.dtype.element_ty,
     )
     sLSE_layout: gl.constexpr = gl.SwizzledSharedLayout(
         vec=1,
@@ -546,51 +534,63 @@ def _bwd_sm80_kernel(
         max_phase=1,
         order=[0],
     )
+    sdO_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
+        block_shape=[TILE_M, TILE_K],
+        dtype=mdO.dtype.element_ty,
+    )
     sdPsum_layout: gl.constexpr = gl.SwizzledSharedLayout(
         vec=1,
         per_phase=1,
         max_phase=1,
         order=[0],
     )
+    sP_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
+        block_shape=[TILE_N, TILE_M],
+        dtype=mQ.dtype.element_ty,
+    )
+    sdS_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
+        block_shape=[TILE_N, TILE_M],
+        dtype=mQ.dtype.element_ty,
+    )
     sQ = gl.allocate_shared_memory(
-        mQ.dtype.element_ty,
-        [2, TILE_M, TILE_K],
-        sQ_layout,
+        element_ty=mQ.dtype.element_ty,
+        shape=[2, TILE_M, TILE_K],
+        layout=sQ_layout,
     )
     sK = gl.allocate_shared_memory(
-        mK.dtype.element_ty,
-        [TILE_N, TILE_K],
-        sK_layout,
+        element_ty=mK.dtype.element_ty,
+        shape=[TILE_N, TILE_K],
+        layout=sK_layout,
     )
     sV = gl.allocate_shared_memory(
-        mV.dtype.element_ty,
-        [TILE_N, TILE_K],
-        sV_layout,
-    )
-    sdO = gl.allocate_shared_memory(
-        mdO.dtype.element_ty,
-        [TILE_M, TILE_K],
-        sdO_layout,
-    )
-    sP = gl.allocate_shared_memory(
-        mQ.dtype.element_ty,
-        [TILE_N, TILE_M],
-        sP_layout,
-    )
-    sdS = gl.allocate_shared_memory(
-        mQ.dtype.element_ty,
-        [TILE_N, TILE_M],
-        sdS_layout,
+        element_ty=mV.dtype.element_ty,
+        shape=[TILE_N, TILE_K],
+        layout=sV_layout,
     )
     sLSE = gl.allocate_shared_memory(
-        gl.float32,
-        [2, TILE_M],
-        sLSE_layout,
+        element_ty=gl.float32,
+        shape=[2, TILE_M],
+        layout=sLSE_layout,
+    )
+    sdO = gl.allocate_shared_memory(
+        element_ty=mdO.dtype.element_ty,
+        shape=[TILE_M, TILE_K],
+        layout=sdO_layout,
     )
     sdPsum = gl.allocate_shared_memory(
-        gl.float32,
-        [1, TILE_M],
-        sdPsum_layout,
+        element_ty=gl.float32,
+        shape=[1, TILE_M],
+        layout=sdPsum_layout,
+    )
+    sP = gl.allocate_shared_memory(
+        element_ty=mQ.dtype.element_ty,
+        shape=[TILE_N, TILE_M],
+        layout=sP_layout,
+    )
+    sdS = gl.allocate_shared_memory(
+        element_ty=mQ.dtype.element_ty,
+        shape=[TILE_N, TILE_M],
+        layout=sdS_layout,
     )
 
     # Initialize the Q stage for the asynchronous copy pipeline
@@ -693,11 +693,11 @@ def _bwd_sm80_kernel(
         sQ,
         sK,
         sV,
+        sLSE,
         sdO,
+        sdPsum,
         sP,
         sdS,
-        sLSE,
-        sdPsum,
         acc_dK,
         acc_dV,
         m_block_max,
@@ -774,11 +774,11 @@ def _bwd_sm80_kernel(
                 sQ,
                 sK,
                 sV,
+                sLSE,
                 sdO,
+                sdPsum,
                 sP,
                 sdS,
-                sLSE,
-                sdPsum,
                 acc_dK,
                 acc_dV,
                 m_block,
@@ -808,11 +808,11 @@ def _bwd_sm80_kernel(
                 sQ,
                 sK,
                 sV,
+                sLSE,
                 sdO,
+                sdPsum,
                 sP,
                 sdS,
-                sLSE,
-                sdPsum,
                 acc_dK,
                 acc_dV,
                 m_block,
@@ -889,11 +889,11 @@ def _bwd_sm80_kernel(
                     sQ,
                     sK,
                     sV,
+                    sLSE,
                     sdO,
+                    sdPsum,
                     sP,
                     sdS,
-                    sLSE,
-                    sdPsum,
                     acc_dK,
                     acc_dV,
                     m_block,
@@ -923,11 +923,11 @@ def _bwd_sm80_kernel(
                     sQ,
                     sK,
                     sV,
+                    sLSE,
                     sdO,
+                    sdPsum,
                     sP,
                     sdS,
-                    sLSE,
-                    sdPsum,
                     acc_dK,
                     acc_dV,
                     m_block,
@@ -957,11 +957,11 @@ def _bwd_sm80_kernel(
                     sQ,
                     sK,
                     sV,
+                    sLSE,
                     sdO,
+                    sdPsum,
                     sP,
                     sdS,
-                    sLSE,
-                    sdPsum,
                     acc_dK,
                     acc_dV,
                     m_block,
@@ -1036,11 +1036,11 @@ def _bwd_sm80_kernel(
                     sQ,
                     sK,
                     sV,
+                    sLSE,
                     sdO,
+                    sdPsum,
                     sP,
                     sdS,
-                    sLSE,
-                    sdPsum,
                     acc_dK,
                     acc_dV,
                     m_block,
@@ -1128,9 +1128,9 @@ def _flash_attn_backward_sm80(
         )
 
     # Setup launch configuration
-    TILE_M = tile_m if tile_m is not None else 64
     TILE_N = tile_n if tile_n is not None else 128
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
+    TILE_M = tile_m if tile_m is not None else 64
     num_warps = num_threads // 32 if num_threads is not None else 8
     if is_split_qo and num_splits is None:
         num_splits = num_splits_heuristic(
@@ -1354,9 +1354,9 @@ def _flash_attn_varlen_backward_sm80(
         )
 
     # Setup launch configuration
-    TILE_M = tile_m if tile_m is not None else 64
     TILE_N = tile_n if tile_n is not None else 128
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
+    TILE_M = tile_m if tile_m is not None else 64
     num_warps = num_threads // 32 if num_threads is not None else 8
     if is_split_qo and num_splits is None:
         num_splits = num_splits_heuristic(

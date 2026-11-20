@@ -380,31 +380,31 @@ def _fwd_sm80_kernel(
 
     # Allocate shared memory
     sQ_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_M, TILE_K],
-        mQ.dtype.element_ty,
+        block_shape=[TILE_M, TILE_K],
+        dtype=mQ.dtype.element_ty,
     )
     sK_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K],
-        mK.dtype.element_ty,
+        block_shape=[TILE_N, TILE_K],
+        dtype=mK.dtype.element_ty,
     )
     sV_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for(
-        [TILE_N, TILE_K],
-        mV.dtype.element_ty,
+        block_shape=[TILE_N, TILE_K],
+        dtype=mV.dtype.element_ty,
     )
     sQ = gl.allocate_shared_memory(
-        mQ.dtype.element_ty,
-        [TILE_M, TILE_K],
-        sQ_layout,
+        element_ty=mQ.dtype.element_ty,
+        shape=[TILE_M, TILE_K],
+        layout=sQ_layout,
     )
     sK = gl.allocate_shared_memory(
-        mK.dtype.element_ty,
-        [2, TILE_N, TILE_K],
-        sK_layout,
+        element_ty=mK.dtype.element_ty,
+        shape=[2, TILE_N, TILE_K],
+        layout=sK_layout,
     )
     sV = gl.allocate_shared_memory(
-        mV.dtype.element_ty,
-        [TILE_N, TILE_K],
-        sV_layout,
+        element_ty=mV.dtype.element_ty,
+        shape=[TILE_N, TILE_K],
+        layout=sV_layout,
     )
 
     # Initialize accumulators
