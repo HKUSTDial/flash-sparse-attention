@@ -1205,68 +1205,50 @@ class AttnBwdBlockScheduler:
 
 @aggregate
 class AttnFwdPointerScheduler:
-    q_base: tl.tensor
-    k_base: tl.tensor
-    v_base: tl.tensor
-    a_base: tl.tensor
-    d_base: tl.tensor
-    out_base: tl.tensor
-    lse_base: tl.tensor
-    page_table_base: tl.tensor
-    head_idx: tl.tensor
+    q_base: tl.tensor | tl.constexpr
+    k_base: tl.tensor | tl.constexpr
+    v_base: tl.tensor | tl.constexpr
+    out_base: tl.tensor | tl.constexpr
+    lse_base: tl.tensor | tl.constexpr
     stride_qh: tl.tensor
     stride_qm: tl.tensor
     stride_kb: tl.tensor
     stride_kn: tl.tensor
     stride_vb: tl.tensor
     stride_vn: tl.tensor
-    stride_ah: tl.tensor
-    stride_db: tl.tensor
     stride_oh: tl.tensor
     stride_om: tl.tensor
     stride_lh: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         q_base,
         k_base,
         v_base,
-        a_base,
-        d_base,
         out_base,
         lse_base,
-        page_table_base,
-        head_idx,
         stride_qh,
         stride_qm,
         stride_kb,
         stride_kn,
         stride_vb,
         stride_vn,
-        stride_ah,
-        stride_db,
         stride_oh,
         stride_om,
         stride_lh,
     ):
-        self.q_base = q_base
-        self.k_base = k_base
-        self.v_base = v_base
-        self.a_base = a_base
-        self.d_base = d_base
-        self.out_base = out_base
-        self.lse_base = lse_base
-        self.page_table_base = page_table_base
-        self.head_idx = head_idx
+        self.q_base = q_base if q_base is not None else tl.constexpr(None)
+        self.k_base = k_base if k_base is not None else tl.constexpr(None)
+        self.v_base = v_base if v_base is not None else tl.constexpr(None)
+        self.out_base = out_base if out_base is not None else tl.constexpr(None)
+        self.lse_base = lse_base if lse_base is not None else tl.constexpr(None)
         self.stride_qh = stride_qh
         self.stride_qm = stride_qm
         self.stride_kb = stride_kb
         self.stride_kn = stride_kn
         self.stride_vb = stride_vb
         self.stride_vn = stride_vn
-        self.stride_ah = stride_ah
-        self.stride_db = stride_db
         self.stride_oh = stride_oh
         self.stride_om = stride_om
         self.stride_lh = stride_lh
@@ -1275,174 +1257,202 @@ class AttnFwdPointerScheduler:
     @triton.jit
     def create(
         config: AttnFwdConfig,
-        Q=None,
-        K=None,
-        V=None,
-        A=None,
-        D=None,
-        PageTable=None,
-        Out=None,
-        Lse=None,
-        batch_idx=0,
-        head_idx=0,
-        head_kv_idx=0,
-        split_idx=0,
-        stride_qb=0,
-        stride_qh=0,
-        stride_qm=0,
-        stride_kb=0,
-        stride_kh=0,
-        stride_kn=0,
-        stride_vb=0,
-        stride_vh=0,
-        stride_vn=0,
-        stride_ab=0,
-        stride_ah=0,
-        stride_am=0,
-        stride_db=0,
-        stride_dh=0,
-        stride_dn=0,
-        stride_ob=0,
-        stride_oh=0,
-        stride_om=0,
-        stride_os=0,
-        stride_lb=0,
-        stride_lh=0,
-        stride_ls=0,
-        stride_pb=0,
-        IS_SPLIT_KV: tl.constexpr = False,
-        IS_PAGED_KV: tl.constexpr = False,
-        IS_GATED: tl.constexpr = False,
+        Q: tl.tensor = None,
+        K: tl.tensor = None,
+        V: tl.tensor = None,
+        Out: tl.tensor = None,
+        Lse: tl.tensor = None,
+        stride_qb: tl.tensor = 0,
+        stride_qh: tl.tensor = 0,
+        stride_qm: tl.tensor = 0,
+        stride_kb: tl.tensor = 0,
+        stride_kh: tl.tensor = 0,
+        stride_kn: tl.tensor = 0,
+        stride_vb: tl.tensor = 0,
+        stride_vh: tl.tensor = 0,
+        stride_vn: tl.tensor = 0,
+        stride_ob: tl.tensor = 0,
+        stride_oh: tl.tensor = 0,
+        stride_om: tl.tensor = 0,
+        stride_os: tl.tensor = 0,
+        stride_lb: tl.tensor = 0,
+        stride_lh: tl.tensor = 0,
+        stride_ls: tl.tensor = 0,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
-    ):
-        # Initialize base pointers
-        q_base = seqlen_info.offset_batch_Q(
-            Q + head_idx * stride_qh if not config.PACK_GQA else Q,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_qb,
-            stride_qm,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        if IS_PAGED_KV:
-            k_base = K + head_kv_idx * stride_kh
-            v_base = V + head_kv_idx * stride_vh
-            page_table_base = PageTable + batch_idx * stride_pb
-        else:
-            k_base = seqlen_info.offset_batch_K(
-                K + head_kv_idx * stride_kh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_kb,
-                stride_kn,
-                HAS_CU_SEQLENS_K,
-                USE_PADDED=False,
-            )
-            v_base = seqlen_info.offset_batch_K(
-                V + head_kv_idx * stride_vh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_vb,
-                stride_vn,
-                HAS_CU_SEQLENS_K,
-                USE_PADDED=False,
-            )
-            page_table_base = tl.full((), 0, tl.int64)
-        out_base = seqlen_info.offset_batch_Q(
-            Out + head_idx * stride_oh if not config.PACK_GQA else Out,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_ob,
-            stride_om,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        lse_base = seqlen_info.offset_batch_Q(
-            Lse + head_idx * stride_lh if not config.PACK_GQA else Lse,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_lb,
-            1,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
+    ) -> "AttnFwdPointerScheduler":
+        """
+        Build forward base pointers.
 
-        if IS_GATED:
-            a_base = seqlen_info.offset_batch_Q(
-                A + head_idx * stride_ah if not config.PACK_GQA else A,
-                batch_idx,
-                config.offset_q,
-                config.padded_offset_q,
-                stride_ab,
-                stride_am,
-                HAS_CU_SEQLENS_Q,
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param Q: Q tensor base pointer
+        :type Q: tensor
+        :param K: K tensor base pointer
+        :type K: tensor
+        :param V: V tensor base pointer
+        :type V: tensor
+        :param Out: O tensor base pointer
+        :type Out: tensor
+        :param Lse: LSE tensor base pointer
+        :type Lse: tensor
+        :param stride_qb: Q batch stride
+        :type stride_qb: tensor
+        :param stride_qh: Q head stride
+        :type stride_qh: tensor
+        :param stride_qm: Q sequence stride
+        :type stride_qm: tensor
+        :param stride_kb: K batch stride
+        :type stride_kb: tensor
+        :param stride_kh: K head stride
+        :type stride_kh: tensor
+        :param stride_kn: K sequence stride
+        :type stride_kn: tensor
+        :param stride_vb: V batch stride
+        :type stride_vb: tensor
+        :param stride_vh: V head stride
+        :type stride_vh: tensor
+        :param stride_vn: V sequence stride
+        :type stride_vn: tensor
+        :param stride_ob: O batch stride
+        :type stride_ob: tensor
+        :param stride_oh: O head stride
+        :type stride_oh: tensor
+        :param stride_om: O sequence stride
+        :type stride_om: tensor
+        :param stride_os: O split stride
+        :type stride_os: tensor
+        :param stride_lb: LSE batch stride
+        :type stride_lb: tensor
+        :param stride_lh: LSE head stride
+        :type stride_lh: tensor
+        :param stride_ls: LSE split stride
+        :type stride_ls: tensor
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if packed query sequences are used
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if packed key sequences are used
+        :type HAS_CU_SEQLENS_K: bool
+
+        :return: forward pointer scheduler for the selected batch, head, and split
+        """
+        # Initialize base pointers
+        q_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=Q + config.head_idx * stride_qh if not config.PACK_GQA else Q,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_qb,
+                stride_seq=stride_qm,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
-            if IS_PAGED_KV:
-                d_base = D + head_kv_idx * stride_dh
-            else:
-                d_base = seqlen_info.offset_batch_K(
-                    D + head_kv_idx * stride_dh,
-                    batch_idx,
-                    config.offset_k,
-                    config.padded_offset_k,
-                    stride_db,
-                    stride_dn,
-                    HAS_CU_SEQLENS_K,
-                    USE_PADDED=False,
-                )
-        else:
-            a_base = tl.full((), 0, tl.int64)
-            d_base = tl.full((), 0, tl.int64)
-            stride_ah = tl.full((), 0, tl.int64)
-            stride_db = tl.full((), 0, tl.int64)
+            if Q is not None
+            else None
+        )
+        k_base = (
+            seqlen_info.offset_batch_K(
+                base_ptr=K + config.head_kv_idx * stride_kh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_kb,
+                stride_seq=stride_kn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            if K is not None
+            else None
+        )
+        v_base = (
+            seqlen_info.offset_batch_K(
+                base_ptr=V + config.head_kv_idx * stride_vh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_vb,
+                stride_seq=stride_vn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            if V is not None
+            else None
+        )
+        out_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=(Out + config.head_idx * stride_oh if not config.PACK_GQA else Out),
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_ob,
+                stride_seq=stride_om,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            if Out is not None
+            else None
+        )
+        lse_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=(Lse + config.head_idx * stride_lh if not config.PACK_GQA else Lse),
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_lb,
+                stride_seq=1,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=False,
+            )
+            if Lse is not None
+            else None
+        )
 
         # For split KV, offset output and LSE base pointers by split_idx
-        if IS_SPLIT_KV:
-            out_base += split_idx * stride_os
-            lse_base += split_idx * stride_ls
+        if config.IS_SPLIT_KV:
+            if Out is not None:
+                out_base += config.split_idx * stride_os
+            if Lse is not None:
+                lse_base += config.split_idx * stride_ls
 
-        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
         return AttnFwdPointerScheduler(
             q_base,
             k_base,
             v_base,
-            a_base,
-            d_base,
             out_base,
             lse_base,
-            page_table_base,
-            head_idx,
-            stride_qh + tl.full((), 0, tl.int64),
-            stride_qm + tl.full((), 0, tl.int64),
-            stride_kb + tl.full((), 0, tl.int64),
-            stride_kn + tl.full((), 0, tl.int64),
-            stride_vb + tl.full((), 0, tl.int64),
-            stride_vn + tl.full((), 0, tl.int64),
-            stride_ah + tl.full((), 0, tl.int64),
-            stride_db + tl.full((), 0, tl.int64),
-            stride_oh + tl.full((), 0, tl.int64),
-            stride_om + tl.full((), 0, tl.int64),
-            stride_lh + tl.full((), 0, tl.int64),
+            tl.to_tensor(stride_qh),
+            tl.to_tensor(stride_qm),
+            tl.to_tensor(stride_kb),
+            tl.to_tensor(stride_kn),
+            tl.to_tensor(stride_vb),
+            tl.to_tensor(stride_vn),
+            tl.to_tensor(stride_oh),
+            tl.to_tensor(stride_om),
+            tl.to_tensor(stride_lh),
         )
 
     @triton.jit
-    def make_q_ptrs(self, config: AttnFwdConfig):
+    def make_q_ptrs(
+        self,
+        config: AttnFwdConfig,
+    ) -> tl.tensor:
+        """
+        Construct query pointers for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: Q pointers of shape [TILE_M, TILE_K]
+        """
         if config.PACK_GQA:
             return seqlen_info.make_pack_gqa_ptrs(
-                self.q_base,
-                config.m_block,
-                self.head_idx,
-                self.stride_qh,
-                self.stride_qm,
-                TILE_M=config.TILE_M,
+                base_ptr=self.q_base,
+                m_block=config.m_block,
+                head_idx=config.head_idx,
+                stride_head=self.stride_qh,
+                stride_seq=self.stride_qm,
+                offs_m=config.offs_m(),
+                offs_k=config.offs_k(),
                 TILE_K=config.TILE_K,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
@@ -1455,59 +1465,67 @@ class AttnFwdPointerScheduler:
             )
 
     @triton.jit
-    def make_k_ptrs(self, config: AttnFwdConfig):
-        if config.IS_PAGED_KV:
-            return tl.full((), 0, tl.int64)
-        else:
-            return tl.make_tensor_descriptor(
-                self.k_base,
-                shape=[config.actual_seqlen_k, config.head_dim],
-                strides=[self.stride_kn, 1],
-                block_shape=[config.TILE_N, config.TILE_K],
-            )
+    def make_k_ptrs(
+        self,
+        config: AttnFwdConfig,
+    ):
+        """
+        Construct K pointers for the current N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: K tensor descriptor with block shape [TILE_N, TILE_K]
+        """
+        return tl.make_tensor_descriptor(
+            self.k_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_kn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
 
     @triton.jit
-    def make_v_ptrs(self, config: AttnFwdConfig):
-        if config.IS_PAGED_KV:
-            return tl.full((), 0, tl.int64)
-        else:
-            return tl.make_tensor_descriptor(
-                self.v_base,
-                shape=[config.actual_seqlen_k, config.head_dim],
-                strides=[self.stride_vn, 1],
-                block_shape=[config.TILE_N, config.TILE_K],
-            )
+    def make_v_ptrs(
+        self,
+        config: AttnFwdConfig,
+    ):
+        """
+        Construct V pointers for the current N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: V tensor descriptor with block shape [TILE_N, TILE_K]
+        """
+        return tl.make_tensor_descriptor(
+            self.v_base,
+            shape=[config.actual_seqlen_k, config.head_dim],
+            strides=[self.stride_vn, 1],
+            block_shape=[config.TILE_N, config.TILE_K],
+        )
 
     @triton.jit
-    def make_a_ptrs(self, config: AttnFwdConfig):
+    def make_out_ptrs(
+        self,
+        config: AttnFwdConfig,
+    ):
+        """
+        Construct O pointers for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: O pointers of shape [TILE_M, TILE_K]
+        """
         if config.PACK_GQA:
             return seqlen_info.make_pack_gqa_ptrs(
-                self.a_base,
-                config.m_block,
-                self.head_idx,
-                self.stride_ah,
-                1,
-                TILE_M=config.TILE_M,
-                TILE_K=1,
-                QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
-            )
-        else:
-            return self.a_base + config.get_offs_m()
-
-    @triton.jit
-    def make_d_ptrs(self, config: AttnFwdConfig):
-        return self.d_base
-
-    @triton.jit
-    def make_out_ptrs(self, config: AttnFwdConfig):
-        if config.PACK_GQA:
-            return seqlen_info.make_pack_gqa_ptrs(
-                self.out_base,
-                config.m_block,
-                self.head_idx,
-                self.stride_oh,
-                self.stride_om,
-                TILE_M=config.TILE_M,
+                base_ptr=self.out_base,
+                m_block=config.m_block,
+                head_idx=config.head_idx,
+                stride_head=self.stride_oh,
+                stride_seq=self.stride_om,
+                offs_m=config.offs_m(),
+                offs_k=config.offs_k(),
                 TILE_K=config.TILE_K,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
@@ -1521,29 +1539,54 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def make_lse_ptrs(self, config: AttnFwdConfig):
+        """
+        Construct LSE pointers for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+
+        :return: LSE pointers of shape [TILE_M]
+        """
         if config.PACK_GQA:
             return seqlen_info.make_pack_gqa_ptrs(
-                self.lse_base,
-                config.m_block,
-                self.head_idx,
-                self.stride_lh,
-                1,
-                TILE_M=config.TILE_M,
+                base_ptr=self.lse_base,
+                m_block=config.m_block,
+                head_idx=config.head_idx,
+                stride_head=self.stride_lh,
+                stride_seq=1,
+                offs_m=config.offs_m(),
+                offs_k=config.offs_k(),
                 TILE_K=1,
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
         else:
-            return self.lse_base + config.get_offs_m()
+            return seqlen_info.make_ptrs(
+                base_ptr=self.lse_base,
+                mn_block=config.m_block,
+                stride_seq=1,
+                offs_mn=config.offs_m(),
+                offs_k=config.offs_k(),
+                TILE_K=1,
+            )
 
     @triton.jit
     def load_q(self, config: AttnFwdConfig, q_ptrs):
+        """
+        Load the Q tile for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param q_ptrs: Q pointer
+        :type q_ptrs: tensor
+
+        :return: Q tile of shape [TILE_M, TILE_K]
+        """
         if config.PACK_GQA:
-            offs_m = config.get_offs_m()
-            offs_k = config.get_offs_k()
+            offs_m = config.m_block * config.TILE_M + config.offs_m()
             return tl.load(
                 q_ptrs,
                 mask=((offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q)[:, None]
-                & (offs_k < config.head_dim)[None, :],
+                & (config.offs_k() < config.head_dim)[None, :],
                 other=0.0,
                 cache_modifier=".ca",
             )
@@ -1552,89 +1595,65 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def load_k(self, config: AttnFwdConfig, k_ptrs, n_block):
-        if config.IS_PAGED_KV:
-            return paged_kv.load_paged_k(
-                self.k_base,
-                self.page_table_base,
-                self.stride_kb,
-                self.stride_kn,
-                n_block,
-                config.actual_seqlen_k,
-                config.head_dim,
-                config.TILE_N,
-                config.TILE_K,
-            )
-        else:
-            return k_ptrs.load([n_block * config.TILE_N, 0])
+        """
+        Load the K tile for the selected N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param k_ptrs: K pointer
+        :type k_ptrs: tensor
+        :param n_block: selected N block index
+        :type n_block: tensor
+
+        :return: K tile of shape [TILE_N, TILE_K]
+        """
+        return k_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
     def load_v(self, config: AttnFwdConfig, v_ptrs, n_block):
-        if config.IS_PAGED_KV:
-            return paged_kv.load_paged_v(
-                self.v_base,
-                self.page_table_base,
-                self.stride_vb,
-                self.stride_vn,
-                n_block,
-                config.actual_seqlen_k,
-                config.head_dim,
-                config.TILE_N,
-                config.TILE_K,
-            )
-        else:
-            return v_ptrs.load([n_block * config.TILE_N, 0])
+        """
+        Load the V tile for the selected N block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param v_ptrs: V pointer
+        :type v_ptrs: tensor
+        :param n_block: selected N block index
+        :type n_block: tensor
+
+        :return: V tile of shape [TILE_N, TILE_K]
+        """
+        return v_ptrs.load([n_block * config.TILE_N, 0])
 
     @triton.jit
-    def load_a(self, config: AttnFwdConfig, a_ptrs):
-        offs_m = config.get_offs_m()
-        if config.PACK_GQA:
-            return tl.load(
-                a_ptrs,
-                mask=(offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q,
-                other=0.0,
-            ).to(tl.float32)
-        else:
-            return tl.load(
-                a_ptrs,
-                mask=offs_m < config.actual_seqlen_q,
-                other=0.0,
-            ).to(tl.float32)
+    def store_out(
+        self,
+        config: AttnFwdConfig,
+        out_ptrs,
+        o_tile,
+    ):
+        """
+        Store the O tile for the current M block.
 
-    @triton.jit
-    def load_d(self, config: AttnFwdConfig, d_ptrs, n_block):
-        if config.IS_PAGED_KV:
-            return paged_kv.load_paged_d(
-                self.d_base,
-                self.page_table_base,
-                self.stride_db,
-                1,
-                n_block,
-                config.actual_seqlen_k,
-                config.TILE_N,
-            )
-        else:
-            offs_n = config.get_offs_n(n_block)
-            return tl.load(
-                d_ptrs + offs_n,
-                mask=offs_n < config.actual_seqlen_k,
-                other=0.0,
-            ).to(tl.float32)
-
-    @triton.jit
-    def store_out(self, config: AttnFwdConfig, out_ptrs, o_tile, IS_SPLIT_KV: tl.constexpr = False):
-        if not IS_SPLIT_KV:
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param out_ptrs: O pointer
+        :type out_ptrs: tensor
+        :param o_tile: O tile of shape [TILE_M, TILE_K]
+        :type o_tile: tensor
+        """
+        if not config.IS_SPLIT_KV:
             if config.PACK_GQA:
                 o_tile = o_tile.to(out_ptrs.dtype.element_ty)
             else:
                 o_tile = o_tile.to(out_ptrs.dtype)
         if config.PACK_GQA:
-            offs_m = config.get_offs_m()
-            offs_k = config.get_offs_k()
+            offs_m = config.m_block * config.TILE_M + config.offs_m()
             tl.store(
                 out_ptrs,
                 o_tile,
                 mask=((offs_m // config.QHEAD_PER_KVHEAD_PACKGQA) < config.actual_seqlen_q)[:, None]
-                & (offs_k < config.head_dim)[None, :],
+                & (config.offs_k() < config.head_dim)[None, :],
                 cache_modifier=".wb",
             )
         else:
@@ -1642,8 +1661,18 @@ class AttnFwdPointerScheduler:
 
     @triton.jit
     def store_lse(self, config: AttnFwdConfig, lse_ptrs, lse_tile):
-        offs_m = config.get_offs_m()
+        """
+        Store the LSE tile for the current M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param lse_ptrs: LSE pointer
+        :type lse_ptrs: tensor
+        :param lse_tile: LSE tile of shape [TILE_M]
+        :type lse_tile: tensor
+        """
         if config.PACK_GQA:
+            offs_m = config.m_block * config.TILE_M + config.offs_m()
             tl.store(
                 lse_ptrs,
                 lse_tile,
@@ -1651,6 +1680,7 @@ class AttnFwdPointerScheduler:
                 cache_modifier=".wb",
             )
         else:
+            offs_m = config.m_block * config.TILE_M + config.offs_m()
             tl.store(
                 lse_ptrs,
                 lse_tile,
@@ -1664,29 +1694,34 @@ class AttnFwdPointerScheduler:
         config: AttnFwdConfig,
         out_ptrs,
         lse_ptrs,
-        IS_SPLIT_KV: tl.constexpr = False,
     ):
+        """
+        Store zero O and -inf LSE tiles for an empty M block.
+
+        :param config: attention forward configuration
+        :type config: AttnFwdConfig
+        :param out_ptrs: O pointer
+        :type out_ptrs: tensor
+        :param lse_ptrs: LSE pointer
+        :type lse_ptrs: tensor
+        """
         lse_tile = tl.full((config.TILE_M,), float("-inf"), dtype=tl.float32)
         self.store_lse(config, lse_ptrs, lse_tile)
         o_tile = tl.zeros((config.TILE_M, config.TILE_K), dtype=tl.float32)
-        self.store_out(config, out_ptrs, o_tile, IS_SPLIT_KV=IS_SPLIT_KV)
+        self.store_out(config, out_ptrs, o_tile)
 
 
 @aggregate
 class AttnBwdPointerScheduler:
-    q_base: tl.tensor
-    k_base: tl.tensor
-    v_base: tl.tensor
-    a_base: tl.tensor
-    d_base: tl.tensor
-    do_base: tl.tensor
-    lse_base: tl.tensor
-    dpsum_base: tl.tensor
-    dq_accum_base: tl.tensor
-    dk_base: tl.tensor
-    dv_base: tl.tensor
-    da_base: tl.tensor
-    dd_base: tl.tensor
+    q_base: tl.tensor | tl.constexpr
+    k_base: tl.tensor | tl.constexpr
+    v_base: tl.tensor | tl.constexpr
+    lse_base: tl.tensor | tl.constexpr
+    do_base: tl.tensor | tl.constexpr
+    dpsum_base: tl.tensor | tl.constexpr
+    dq_accum_base: tl.tensor | tl.constexpr
+    dk_base: tl.tensor | tl.constexpr
+    dv_base: tl.tensor | tl.constexpr
     stride_qm: tl.tensor
     stride_kn: tl.tensor
     stride_vn: tl.tensor
@@ -1695,22 +1730,18 @@ class AttnBwdPointerScheduler:
     stride_dkn: tl.tensor
     stride_dvn: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         q_base,
         k_base,
         v_base,
-        a_base,
-        d_base,
-        do_base,
         lse_base,
+        do_base,
         dpsum_base,
         dq_accum_base,
         dk_base,
         dv_base,
-        da_base,
-        dd_base,
         stride_qm,
         stride_kn,
         stride_vn,
@@ -1719,19 +1750,15 @@ class AttnBwdPointerScheduler:
         stride_dkn,
         stride_dvn,
     ):
-        self.q_base = q_base
-        self.k_base = k_base
-        self.v_base = v_base
-        self.a_base = a_base
-        self.d_base = d_base
-        self.do_base = do_base
-        self.lse_base = lse_base
-        self.dpsum_base = dpsum_base
-        self.dq_accum_base = dq_accum_base
-        self.dk_base = dk_base
-        self.dv_base = dv_base
-        self.da_base = da_base
-        self.dd_base = dd_base
+        self.q_base = q_base if q_base is not None else tl.constexpr(None)
+        self.k_base = k_base if k_base is not None else tl.constexpr(None)
+        self.v_base = v_base if v_base is not None else tl.constexpr(None)
+        self.lse_base = lse_base if lse_base is not None else tl.constexpr(None)
+        self.do_base = do_base if do_base is not None else tl.constexpr(None)
+        self.dpsum_base = dpsum_base if dpsum_base is not None else tl.constexpr(None)
+        self.dq_accum_base = dq_accum_base if dq_accum_base is not None else tl.constexpr(None)
+        self.dk_base = dk_base if dk_base is not None else tl.constexpr(None)
+        self.dv_base = dv_base if dv_base is not None else tl.constexpr(None)
         self.stride_qm = stride_qm
         self.stride_kn = stride_kn
         self.stride_vn = stride_vn
@@ -1744,236 +1771,293 @@ class AttnBwdPointerScheduler:
     @triton.jit
     def create(
         config: AttnBwdConfig,
-        Q=None,
-        K=None,
-        V=None,
-        A=None,
-        D=None,
-        dO=None,
-        LSELog2=None,
-        dPsum=None,
-        dQaccum=None,
-        dK=None,
-        dV=None,
-        dA=None,
-        dD=None,
-        batch_idx=0,
-        head_idx=0,
-        head_kv_idx=0,
-        split_idx=0,
-        stride_qb=0,
-        stride_qh=0,
-        stride_qm=0,
-        stride_kb=0,
-        stride_kh=0,
-        stride_kn=0,
-        stride_vb=0,
-        stride_vh=0,
-        stride_vn=0,
-        stride_ab=0,
-        stride_ah=0,
-        stride_db=0,
-        stride_dh=0,
-        stride_dob=0,
-        stride_doh=0,
-        stride_dom=0,
-        stride_lb=0,
-        stride_lh=0,
-        stride_pb=0,
-        stride_ph=0,
-        stride_dqab=0,
-        stride_dqah=0,
-        stride_dqam=0,
-        stride_dkb=0,
-        stride_dkh=0,
-        stride_dkn=0,
-        stride_dks=0,
-        stride_dvb=0,
-        stride_dvh=0,
-        stride_dvn=0,
-        stride_dvs=0,
-        stride_dab=0,
-        stride_dah=0,
-        stride_ddb=0,
-        stride_ddh=0,
-        stride_dds=0,
-        IS_SPLIT_QO: tl.constexpr = False,
-        IS_GATED: tl.constexpr = False,
+        Q: tl.tensor = None,
+        K: tl.tensor = None,
+        V: tl.tensor = None,
+        LSELog2: tl.tensor = None,
+        dO: tl.tensor = None,
+        dPsum: tl.tensor = None,
+        dQaccum: tl.tensor = None,
+        dK: tl.tensor = None,
+        dV: tl.tensor = None,
+        stride_qb: tl.tensor = 0,
+        stride_qh: tl.tensor = 0,
+        stride_qm: tl.tensor = 0,
+        stride_kb: tl.tensor = 0,
+        stride_kh: tl.tensor = 0,
+        stride_kn: tl.tensor = 0,
+        stride_vb: tl.tensor = 0,
+        stride_vh: tl.tensor = 0,
+        stride_vn: tl.tensor = 0,
+        stride_dob: tl.tensor = 0,
+        stride_doh: tl.tensor = 0,
+        stride_dom: tl.tensor = 0,
+        stride_lb: tl.tensor = 0,
+        stride_lh: tl.tensor = 0,
+        stride_pb: tl.tensor = 0,
+        stride_ph: tl.tensor = 0,
+        stride_dqab: tl.tensor = 0,
+        stride_dqah: tl.tensor = 0,
+        stride_dqam: tl.tensor = 0,
+        stride_dkb: tl.tensor = 0,
+        stride_dkh: tl.tensor = 0,
+        stride_dkn: tl.tensor = 0,
+        stride_dks: tl.tensor = 0,
+        stride_dvb: tl.tensor = 0,
+        stride_dvh: tl.tensor = 0,
+        stride_dvn: tl.tensor = 0,
+        stride_dvs: tl.tensor = 0,
         HAS_CU_SEQLENS_Q: tl.constexpr = False,
         HAS_CU_SEQLENS_K: tl.constexpr = False,
-    ):
-        # Initialize base pointers
-        q_base = seqlen_info.offset_batch_Q(
-            Q + head_idx * stride_qh,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_qb,
-            stride_qm,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        k_base = seqlen_info.offset_batch_K(
-            K + head_kv_idx * stride_kh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_kb,
-            stride_kn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
-        v_base = seqlen_info.offset_batch_K(
-            V + head_kv_idx * stride_vh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_vb,
-            stride_vn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
-        do_base = seqlen_info.offset_batch_Q(
-            dO + head_idx * stride_doh,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_dob,
-            stride_dom,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        lse_base = seqlen_info.offset_batch_Q(
-            LSELog2 + head_idx * stride_lh,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_lb,
-            1,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
-        )
-        dpsum_base = seqlen_info.offset_batch_Q(
-            dPsum + head_idx * stride_ph,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_pb,
-            1,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
-        )
-        dq_accum_base = seqlen_info.offset_batch_Q(
-            dQaccum + head_idx * stride_dqah,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_dqab,
-            stride_dqam,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
-        )
-        dk_base = seqlen_info.offset_batch_K(
-            dK + head_kv_idx * stride_dkh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_dkb,
-            stride_dkn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
-        dv_base = seqlen_info.offset_batch_K(
-            dV + head_kv_idx * stride_dvh,
-            batch_idx,
-            config.offset_k,
-            config.padded_offset_k,
-            stride_dvb,
-            stride_dvn,
-            HAS_CU_SEQLENS_K,
-            USE_PADDED=False,
-        )
+    ) -> "AttnBwdPointerScheduler":
+        """
+        Build backward base pointers.
 
-        if IS_GATED:
-            a_base = seqlen_info.offset_batch_Q(
-                A + head_idx * stride_ah,
-                batch_idx,
-                config.offset_q,
-                config.padded_offset_q,
-                stride_ab,
-                1,
-                HAS_CU_SEQLENS_Q,
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param Q: Q tensor base pointer
+        :type Q: tensor
+        :param K: K tensor base pointer
+        :type K: tensor
+        :param V: V tensor base pointer
+        :type V: tensor
+        :param LSELog2: LSELog2 tensor base pointer
+        :type LSELog2: tensor
+        :param dO: dO tensor base pointer
+        :type dO: tensor
+        :param dPsum: dPsum tensor base pointer
+        :type dPsum: tensor
+        :param dQaccum: dQaccum tensor base pointer
+        :type dQaccum: tensor
+        :param dK: dK tensor base pointer
+        :type dK: tensor
+        :param dV: dV tensor base pointer
+        :type dV: tensor
+        :param stride_qb: Q batch stride
+        :type stride_qb: tensor
+        :param stride_qh: Q head stride
+        :type stride_qh: tensor
+        :param stride_qm: Q sequence stride
+        :type stride_qm: tensor
+        :param stride_kb: K batch stride
+        :type stride_kb: tensor
+        :param stride_kh: K head stride
+        :type stride_kh: tensor
+        :param stride_kn: K sequence stride
+        :type stride_kn: tensor
+        :param stride_vb: V batch stride
+        :type stride_vb: tensor
+        :param stride_vh: V head stride
+        :type stride_vh: tensor
+        :param stride_vn: V sequence stride
+        :type stride_vn: tensor
+        :param stride_dob: dO batch stride
+        :type stride_dob: tensor
+        :param stride_doh: dO head stride
+        :type stride_doh: tensor
+        :param stride_dom: dO sequence stride
+        :type stride_dom: tensor
+        :param stride_lb: LSELog2 batch stride
+        :type stride_lb: tensor
+        :param stride_lh: LSELog2 head stride
+        :type stride_lh: tensor
+        :param stride_pb: dPsum batch stride
+        :type stride_pb: tensor
+        :param stride_ph: dPsum head stride
+        :type stride_ph: tensor
+        :param stride_dqab: dQaccum batch stride
+        :type stride_dqab: tensor
+        :param stride_dqah: dQaccum head stride
+        :type stride_dqah: tensor
+        :param stride_dqam: dQaccum sequence stride
+        :type stride_dqam: tensor
+        :param stride_dkb: dK batch stride
+        :type stride_dkb: tensor
+        :param stride_dkh: dK head stride
+        :type stride_dkh: tensor
+        :param stride_dkn: dK sequence stride
+        :type stride_dkn: tensor
+        :param stride_dks: dK split stride
+        :type stride_dks: tensor
+        :param stride_dvb: dV batch stride
+        :type stride_dvb: tensor
+        :param stride_dvh: dV head stride
+        :type stride_dvh: tensor
+        :param stride_dvn: dV sequence stride
+        :type stride_dvn: tensor
+        :param stride_dvs: dV split stride
+        :type stride_dvs: tensor
+        :param HAS_CU_SEQLENS_Q: boolean flag indicating if packed query sequences are used
+        :type HAS_CU_SEQLENS_Q: bool
+        :param HAS_CU_SEQLENS_K: boolean flag indicating if packed key sequences are used
+        :type HAS_CU_SEQLENS_K: bool
+
+        :return: backward pointer scheduler for the selected batch, head, and split
+        """
+        # Initialize base pointers
+        q_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=Q + config.head_idx * stride_qh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_qb,
+                stride_seq=stride_qm,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
-            d_base = seqlen_info.offset_batch_K(
-                D + head_kv_idx * stride_dh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_db,
-                1,
-                HAS_CU_SEQLENS_K,
+            if Q is not None
+            else None
+        )
+        k_base = (
+            seqlen_info.offset_batch_K(
+                base_ptr=K + config.head_kv_idx * stride_kh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_kb,
+                stride_seq=stride_kn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
                 USE_PADDED=False,
             )
-            da_base = seqlen_info.offset_batch_Q(
-                dA + head_idx * stride_dah,
-                batch_idx,
-                config.offset_q,
-                config.padded_offset_q,
-                stride_dab,
-                1,
-                HAS_CU_SEQLENS_Q,
+            if K is not None
+            else None
+        )
+        v_base = (
+            seqlen_info.offset_batch_K(
+                base_ptr=V + config.head_kv_idx * stride_vh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_vb,
+                stride_seq=stride_vn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=False,
+            )
+            if V is not None
+            else None
+        )
+        lse_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=LSELog2 + config.head_idx * stride_lh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_lb,
+                stride_seq=1,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
                 USE_PADDED=True,
             )
-            dd_base = seqlen_info.offset_batch_K(
-                dD + head_kv_idx * stride_ddh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_ddb,
-                1,
-                HAS_CU_SEQLENS_K,
+            if LSELog2 is not None
+            else None
+        )
+        do_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=dO + config.head_idx * stride_doh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_dob,
+                stride_seq=stride_dom,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
-        else:
-            a_base = tl.full((), 0, tl.int64)
-            d_base = tl.full((), 0, tl.int64)
-            da_base = tl.full((), 0, tl.int64)
-            dd_base = tl.full((), 0, tl.int64)
+            if dO is not None
+            else None
+        )
+        dpsum_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=dPsum + config.head_idx * stride_ph,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_pb,
+                stride_seq=1,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=True,
+            )
+            if dPsum is not None
+            else None
+        )
+        dq_accum_base = (
+            seqlen_info.offset_batch_Q(
+                base_ptr=dQaccum + config.head_idx * stride_dqah,
+                batch_idx=config.batch_idx,
+                offset=config.offset_q,
+                padded_offset=config.padded_offset_q,
+                stride_batch=stride_dqab,
+                stride_seq=stride_dqam,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                USE_PADDED=True,
+            )
+            if dQaccum is not None
+            else None
+        )
+        dk_base = (
+            seqlen_info.offset_batch_K(
+                base_ptr=dK + config.head_kv_idx * stride_dkh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_dkb,
+                stride_seq=stride_dkn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=True,
+            )
+            if dK is not None
+            else None
+        )
+        dv_base = (
+            seqlen_info.offset_batch_K(
+                base_ptr=dV + config.head_kv_idx * stride_dvh,
+                batch_idx=config.batch_idx,
+                offset=config.offset_k,
+                padded_offset=config.padded_offset_k,
+                stride_batch=stride_dvb,
+                stride_seq=stride_dvn,
+                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                USE_PADDED=True,
+            )
+            if dV is not None
+            else None
+        )
 
         # For split QO, offset key and value gradients base pointers by split_idx
-        if IS_SPLIT_QO:
-            dk_base += split_idx * stride_dks
-            dv_base += split_idx * stride_dvs
-            if IS_GATED:
-                dd_base += split_idx * stride_dds
+        if config.IS_SPLIT_QO:
+            if dK is not None:
+                dk_base += config.split_idx * stride_dks
+            if dV is not None:
+                dv_base += config.split_idx * stride_dvs
 
-        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
         return AttnBwdPointerScheduler(
             q_base,
             k_base,
             v_base,
-            a_base,
-            d_base,
-            do_base,
             lse_base,
+            do_base,
             dpsum_base,
             dq_accum_base,
             dk_base,
             dv_base,
-            da_base,
-            dd_base,
-            stride_qm + tl.full((), 0, tl.int64),
-            stride_kn + tl.full((), 0, tl.int64),
-            stride_vn + tl.full((), 0, tl.int64),
-            stride_dom + tl.full((), 0, tl.int64),
-            stride_dqam + tl.full((), 0, tl.int64),
-            stride_dkn + tl.full((), 0, tl.int64),
-            stride_dvn + tl.full((), 0, tl.int64),
+            tl.to_tensor(stride_qm),
+            tl.to_tensor(stride_kn),
+            tl.to_tensor(stride_vn),
+            tl.to_tensor(stride_dom),
+            tl.to_tensor(stride_dqam),
+            tl.to_tensor(stride_dkn),
+            tl.to_tensor(stride_dvn),
         )
 
     @triton.jit
     def make_q_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct Q pointers for the current M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: Q pointers of shape [TILE_M, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.q_base,
             shape=[config.actual_seqlen_q, config.head_dim],
@@ -1983,6 +2067,14 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_k_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct K pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: K pointers of shape [TILE_N, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.k_base,
             shape=[config.actual_seqlen_k, config.head_dim],
@@ -1992,6 +2084,14 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_v_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct V pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: V pointers of shape [TILE_N, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.v_base,
             shape=[config.actual_seqlen_k, config.head_dim],
@@ -2000,15 +2100,27 @@ class AttnBwdPointerScheduler:
         )
 
     @triton.jit
-    def make_a_ptrs(self, config: AttnBwdConfig):
-        return self.a_base
+    def make_lse_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct LSE pointers for the current M block.
 
-    @triton.jit
-    def make_d_ptrs(self, config: AttnBwdConfig):
-        return self.d_base + config.get_offs_n()
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: LSE pointers of shape [TILE_M]
+        """
+        return self.lse_base
 
     @triton.jit
     def make_do_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct dO pointers for the current M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: dO pointers of shape [TILE_M, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.do_base,
             shape=[config.actual_seqlen_q, config.head_dim],
@@ -2017,15 +2129,27 @@ class AttnBwdPointerScheduler:
         )
 
     @triton.jit
-    def make_lse_ptrs(self, config: AttnBwdConfig):
-        return self.lse_base
-
-    @triton.jit
     def make_dpsum_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct dPsum pointers for the current M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: dPsum pointers of shape [TILE_M]
+        """
         return self.dpsum_base
 
     @triton.jit
     def make_dq_accum_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct dQaccum pointers for the current M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: dQaccum tensor descriptor with block shape [TILE_M, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.dq_accum_base,
             shape=[config.actual_seqlen_q, config.head_dim],
@@ -2035,6 +2159,14 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_dk_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct dK pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: dK pointers of shape [TILE_N, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.dk_base,
             shape=[config.actual_seqlen_k, config.head_dim],
@@ -2044,6 +2176,14 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def make_dv_ptrs(self, config: AttnBwdConfig):
+        """
+        Construct dV pointers for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+
+        :return: dV pointers of shape [TILE_N, TILE_K]
+        """
         return tl.make_tensor_descriptor(
             self.dv_base,
             shape=[config.actual_seqlen_k, config.head_dim],
@@ -2052,56 +2192,89 @@ class AttnBwdPointerScheduler:
         )
 
     @triton.jit
-    def make_da_ptrs(self, config: AttnBwdConfig):
-        return self.da_base
-
-    @triton.jit
-    def make_dd_ptrs(self, config: AttnBwdConfig):
-        return self.dd_base + config.get_offs_n()
-
-    @triton.jit
     def load_q(self, config: AttnBwdConfig, q_ptrs, m_block):
-        return (q_ptrs.load([m_block * config.TILE_M, 0]) * config.query_scale).to(
-            self.do_base.dtype.element_ty
-        )
+        """
+        Load the Q tile for the selected M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param q_ptrs: Q pointer
+        :type q_ptrs: tensor
+        :param m_block: selected M block index
+        :type m_block: tensor
+
+        :return: Q tile of shape [TILE_M, TILE_K]
+        """
+        q = q_ptrs.load([m_block * config.TILE_M, 0])
+        if config.IS_QUANT:
+            q = (q * config.query_scale).to(self.do_base.dtype.element_ty)
+        return q
 
     @triton.jit
     def load_k(self, config: AttnBwdConfig, k_ptrs):
-        return (k_ptrs.load([config.n_block * config.TILE_N, 0]) * config.key_scale).to(
-            self.do_base.dtype.element_ty
-        )
+        """
+        Load the K tile for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param k_ptrs: K pointer
+        :type k_ptrs: tensor
+
+        :return: K tile of shape [TILE_N, TILE_K]
+        """
+        k = k_ptrs.load([config.n_block * config.TILE_N, 0])
+        if config.IS_QUANT:
+            k = (k * config.key_scale).to(self.do_base.dtype.element_ty)
+        return k
 
     @triton.jit
     def load_v(self, config: AttnBwdConfig, v_ptrs):
-        return (v_ptrs.load([config.n_block * config.TILE_N, 0]) * config.value_scale).to(
-            self.do_base.dtype.element_ty
-        )
+        """
+        Load the V tile for the current N block.
 
-    @triton.jit
-    def load_a(self, config: AttnBwdConfig, a_ptrs, m_block):
-        offs_m = config.get_offs_m(m_block)
-        return tl.load(
-            a_ptrs + offs_m,
-            mask=offs_m < config.actual_seqlen_q,
-            other=0.0,
-        ).to(tl.float32)
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param v_ptrs: V pointer
+        :type v_ptrs: tensor
 
-    @triton.jit
-    def load_d(self, config: AttnBwdConfig, d_ptrs):
-        offs_n = config.get_offs_n()
-        return tl.load(
-            d_ptrs,
-            mask=offs_n < config.actual_seqlen_k,
-            other=0.0,
-        ).to(tl.float32)
+        :return: V tile of shape [TILE_N, TILE_K]
+        """
+        v = v_ptrs.load([config.n_block * config.TILE_N, 0])
+        if config.IS_QUANT:
+            v = (v * config.value_scale).to(self.do_base.dtype.element_ty)
+        return v
 
     @triton.jit
     def load_do(self, config: AttnBwdConfig, do_ptrs, m_block):
+        """
+        Load the dO tile for the selected M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param do_ptrs: dO pointer
+        :type do_ptrs: tensor
+        :param m_block: selected M block index
+        :type m_block: tensor
+
+        :return: dO tile of shape [TILE_M, TILE_K]
+        """
         return do_ptrs.load([m_block * config.TILE_M, 0])
 
     @triton.jit
     def load_lse(self, config: AttnBwdConfig, lse_ptrs, m_block):
-        offs_m = config.get_offs_m(m_block)
+        """
+        Load the LSE tile for the selected M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param lse_ptrs: LSE pointer
+        :type lse_ptrs: tensor
+        :param m_block: selected M block index
+        :type m_block: tensor
+
+        :return: LSE tile of shape [TILE_M]
+        """
+        offs_m = m_block * config.TILE_M + config.offs_m()
         return tl.load(
             lse_ptrs + offs_m,
             mask=offs_m < config.actual_seqlen_q,
@@ -2110,7 +2283,19 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def load_dpsum(self, config: AttnBwdConfig, dpsum_ptrs, m_block):
-        offs_m = config.get_offs_m(m_block)
+        """
+        Load the dPsum tile for the selected M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param dpsum_ptrs: dPsum pointer
+        :type dpsum_ptrs: tensor
+        :param m_block: selected M block index
+        :type m_block: tensor
+
+        :return: dPsum tile of shape [TILE_M]
+        """
+        offs_m = m_block * config.TILE_M + config.offs_m()
         return tl.load(
             dpsum_ptrs + offs_m,
             mask=offs_m < config.actual_seqlen_q,
@@ -2119,10 +2304,32 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def store_dq(self, config: AttnBwdConfig, dq_ptrs, m_block, dq_tile):
+        """
+        Store the dQ tile for the selected M block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param dq_ptrs: dQaccum pointer
+        :type dq_ptrs: tensor
+        :param m_block: selected M block index
+        :type m_block: tensor
+        :param dq_tile: dQ tile of shape [TILE_M, TILE_K]
+        :type dq_tile: tensor
+        """
         dq_ptrs.atomic_add([m_block * config.TILE_M, 0], dq_tile)
 
     @triton.jit
     def store_dk(self, config: AttnBwdConfig, dk_ptrs, dk_tile):
+        """
+        Store the dK tile for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param dk_ptrs: dK pointer
+        :type dk_ptrs: tensor
+        :param dk_tile: dK tile of shape [TILE_N, TILE_K]
+        :type dk_tile: tensor
+        """
         if config.QHEAD_PER_KVHEAD > 1:
             dk_ptrs.atomic_add([config.n_block * config.TILE_N, 0], dk_tile)
         else:
@@ -2130,432 +2337,20 @@ class AttnBwdPointerScheduler:
 
     @triton.jit
     def store_dv(self, config: AttnBwdConfig, dv_ptrs, dv_tile):
+        """
+        Store the dV tile for the current N block.
+
+        :param config: attention backward configuration
+        :type config: AttnBwdConfig
+        :param dv_ptrs: dV pointer
+        :type dv_ptrs: tensor
+        :param dv_tile: dV tile of shape [TILE_N, TILE_K]
+        :type dv_tile: tensor
+        """
         if config.QHEAD_PER_KVHEAD > 1:
             dv_ptrs.atomic_add([config.n_block * config.TILE_N, 0], dv_tile)
         else:
             dv_ptrs.store([config.n_block * config.TILE_N, 0], dv_tile)
-
-    @triton.jit
-    def store_da(self, config: AttnBwdConfig, da_ptrs, m_block, da_tile):
-        offs_m = config.get_offs_m(m_block)
-        tl.atomic_add(
-            da_ptrs + offs_m,
-            da_tile,
-            mask=offs_m < config.actual_seqlen_q,
-        )
-
-    @triton.jit
-    def store_dd(self, config: AttnBwdConfig, dd_ptrs, dd_tile):
-        offs_n = config.get_offs_n()
-        if config.QHEAD_PER_KVHEAD > 1:
-            tl.atomic_add(
-                dd_ptrs,
-                dd_tile,
-                mask=offs_n < config.actual_seqlen_k,
-            )
-        else:
-            tl.store(
-                dd_ptrs,
-                dd_tile,
-                mask=offs_n < config.actual_seqlen_k,
-            )
-
-
-@aggregate
-class AttnDecPointerScheduler:
-    q_base: tl.tensor
-    k_base: tl.tensor
-    v_base: tl.tensor
-    a_base: tl.tensor
-    d_base: tl.tensor
-    out_base: tl.tensor
-    lse_base: tl.tensor
-    page_table_base: tl.tensor
-    gather_kv_base: tl.tensor
-    stride_qh: tl.tensor
-    stride_kb: tl.tensor
-    stride_kn: tl.tensor
-    stride_vb: tl.tensor
-    stride_vn: tl.tensor
-    stride_db: tl.tensor
-    stride_oh: tl.tensor
-    stride_gn: tl.tensor
-
-    @constexpr_function
-    def __init__(
-        self,
-        q_base,
-        k_base,
-        v_base,
-        a_base,
-        d_base,
-        out_base,
-        lse_base,
-        page_table_base,
-        gather_kv_base,
-        stride_qh,
-        stride_kb,
-        stride_kn,
-        stride_vb,
-        stride_vn,
-        stride_db,
-        stride_oh,
-        stride_gn,
-    ):
-        self.q_base = q_base
-        self.k_base = k_base
-        self.v_base = v_base
-        self.a_base = a_base
-        self.d_base = d_base
-        self.out_base = out_base
-        self.lse_base = lse_base
-        self.page_table_base = page_table_base
-        self.gather_kv_base = gather_kv_base
-        self.stride_qh = stride_qh
-        self.stride_kb = stride_kb
-        self.stride_kn = stride_kn
-        self.stride_vb = stride_vb
-        self.stride_vn = stride_vn
-        self.stride_db = stride_db
-        self.stride_oh = stride_oh
-        self.stride_gn = stride_gn
-
-    @staticmethod
-    @triton.jit
-    def create(
-        config: AttnDecConfig,
-        Q=None,
-        K=None,
-        V=None,
-        A=None,
-        D=None,
-        PageTable=None,
-        GatherKVIndices=None,
-        Out=None,
-        Lse=None,
-        batch_idx=0,
-        head_idx=0,
-        head_kv_idx=0,
-        split_idx=0,
-        stride_qb=0,
-        stride_qh=0,
-        stride_qm=0,
-        stride_kb=0,
-        stride_kh=0,
-        stride_kn=0,
-        stride_vb=0,
-        stride_vh=0,
-        stride_vn=0,
-        stride_ab=0,
-        stride_ah=0,
-        stride_db=0,
-        stride_dh=0,
-        stride_ob=0,
-        stride_oh=0,
-        stride_om=0,
-        stride_os=0,
-        stride_lb=0,
-        stride_lh=0,
-        stride_lm=0,
-        stride_ls=0,
-        stride_pb=0,
-        stride_gb=0,
-        stride_gn=0,
-        IS_PAGED_KV: tl.constexpr = False,
-        IS_GATED: tl.constexpr = False,
-        HAS_CU_SEQLENS_Q: tl.constexpr = False,
-        HAS_CU_SEQLENS_K: tl.constexpr = False,
-    ):
-        # Initialize base pointers
-        q_base = seqlen_info.offset_batch_Q(
-            Q + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_qh,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_qb,
-            stride_qm,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        if IS_PAGED_KV:
-            k_base = K + head_kv_idx * stride_kh
-            v_base = V + head_kv_idx * stride_vh
-            page_table_base = PageTable + batch_idx * stride_pb
-        else:
-            k_base = seqlen_info.offset_batch_K(
-                K + head_kv_idx * stride_kh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_kb,
-                stride_kn,
-                HAS_CU_SEQLENS_K,
-                USE_PADDED=False,
-            )
-            v_base = seqlen_info.offset_batch_K(
-                V + head_kv_idx * stride_vh,
-                batch_idx,
-                config.offset_k,
-                config.padded_offset_k,
-                stride_vb,
-                stride_vn,
-                HAS_CU_SEQLENS_K,
-                USE_PADDED=False,
-            )
-            page_table_base = tl.full((), 0, tl.int64)
-        out_base = seqlen_info.offset_batch_Q(
-            Out + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_oh,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_ob,
-            stride_om,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        lse_base = seqlen_info.offset_batch_Q(
-            Lse + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_lh,
-            batch_idx,
-            config.offset_q,
-            config.padded_offset_q,
-            stride_lb,
-            stride_lm,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-        if config.IS_GATHER_KV:
-            gather_kv_base = GatherKVIndices + batch_idx * stride_gb
-        else:
-            gather_kv_base = tl.full((), 0, tl.int64)
-
-        if IS_GATED:
-            a_base = seqlen_info.offset_batch_Q(
-                A + head_idx * config.QHEAD_PER_KVHEAD_PACKGQA * stride_ah,
-                batch_idx,
-                config.offset_q,
-                config.padded_offset_q,
-                stride_ab,
-                1,
-                HAS_CU_SEQLENS_Q,
-                USE_PADDED=False,
-            )
-            if IS_PAGED_KV:
-                d_base = D + head_kv_idx * stride_dh
-            else:
-                d_base = seqlen_info.offset_batch_K(
-                    D + head_kv_idx * stride_dh,
-                    batch_idx,
-                    config.offset_k,
-                    config.padded_offset_k,
-                    stride_db,
-                    1,
-                    HAS_CU_SEQLENS_K,
-                    USE_PADDED=False,
-                )
-        else:
-            a_base = tl.full((), 0, tl.int64)
-            d_base = tl.full((), 0, tl.int64)
-
-        # For split KV, offset output and LSE base pointers by split_idx
-        out_base += split_idx * stride_os
-        lse_base += split_idx * stride_ls
-
-        # TODO: remove once Triton aggregate accepts host scalar strides or callers materialize strides
-        return AttnDecPointerScheduler(
-            q_base,
-            k_base,
-            v_base,
-            a_base,
-            d_base,
-            out_base,
-            lse_base,
-            page_table_base,
-            gather_kv_base,
-            stride_qh + tl.full((), 0, tl.int64),
-            stride_kb + tl.full((), 0, tl.int64),
-            stride_kn + tl.full((), 0, tl.int64),
-            stride_vb + tl.full((), 0, tl.int64),
-            stride_vn + tl.full((), 0, tl.int64),
-            stride_db + tl.full((), 0, tl.int64),
-            stride_oh + tl.full((), 0, tl.int64),
-            stride_gn + tl.full((), 0, tl.int64),
-        )
-
-    @triton.jit
-    def make_q_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.q_base,
-            shape=[config.QHEAD_PER_KVHEAD_PACKGQA, config.head_dim],
-            strides=[self.stride_qh, 1],
-            block_shape=[config.TILE_M, config.TILE_K],
-        )
-
-    @triton.jit
-    def make_k_ptrs(self, config: AttnDecConfig):
-        if config.IS_PAGED_KV:
-            return tl.full((), 0, tl.int64)
-        else:
-            return tl.make_tensor_descriptor(
-                self.k_base,
-                shape=[config.actual_seqlen_k, config.head_dim],
-                strides=[self.stride_kn, 1],
-                block_shape=[config.TILE_N, config.TILE_K],
-            )
-
-    @triton.jit
-    def make_v_ptrs(self, config: AttnDecConfig):
-        if config.IS_PAGED_KV:
-            return tl.full((), 0, tl.int64)
-        else:
-            return tl.make_tensor_descriptor(
-                self.v_base,
-                shape=[config.actual_seqlen_k, config.head_dim],
-                strides=[self.stride_vn, 1],
-                block_shape=[config.TILE_N, config.TILE_K],
-            )
-
-    @triton.jit
-    def make_a_ptrs(self, config: AttnDecConfig):
-        return self.a_base + config.get_offs_m()
-
-    @triton.jit
-    def make_d_ptrs(self, config: AttnDecConfig):
-        return self.d_base
-
-    @triton.jit
-    def make_out_ptrs(self, config: AttnDecConfig):
-        return tl.make_tensor_descriptor(
-            self.out_base,
-            shape=[config.QHEAD_PER_KVHEAD_PACKGQA, config.head_dim],
-            strides=[self.stride_oh, 1],
-            block_shape=[config.TILE_M, config.TILE_K],
-        )
-
-    @triton.jit
-    def make_lse_ptrs(self, config: AttnDecConfig):
-        return self.lse_base + config.get_offs_m()
-
-    @triton.jit
-    def load_q(self, config: AttnDecConfig, q_ptrs):
-        return q_ptrs.load([0, 0])
-
-    @triton.jit
-    def load_k(self, config: AttnDecConfig, k_ptrs, n_block, topk_indices=None):
-        if config.IS_PAGED_KV:
-            return paged_kv.load_paged_k(
-                self.k_base,
-                self.page_table_base,
-                self.stride_kb,
-                self.stride_kn,
-                n_block,
-                config.actual_seqlen_k,
-                config.head_dim,
-                config.TILE_N,
-                config.TILE_K,
-            )
-        elif config.IS_GATHER_KV:
-            return topk_gather_kv.load_gathered_k(
-                self.k_base,
-                topk_indices,
-                self.stride_kn,
-                config.head_dim,
-                config.TILE_K,
-            )
-        else:
-            return k_ptrs.load([n_block * config.TILE_N, 0])
-
-    @triton.jit
-    def load_v(self, config: AttnDecConfig, v_ptrs, n_block, topk_indices=None):
-        if config.IS_PAGED_KV:
-            return paged_kv.load_paged_v(
-                self.v_base,
-                self.page_table_base,
-                self.stride_vb,
-                self.stride_vn,
-                n_block,
-                config.actual_seqlen_k,
-                config.head_dim,
-                config.TILE_N,
-                config.TILE_K,
-            )
-        elif config.IS_GATHER_KV:
-            return topk_gather_kv.load_gathered_v(
-                self.v_base,
-                topk_indices,
-                self.stride_vn,
-                config.head_dim,
-                config.TILE_K,
-            )
-        else:
-            return v_ptrs.load([n_block * config.TILE_N, 0])
-
-    @triton.jit
-    def load_a(self, config: AttnDecConfig, a_ptrs):
-        offs_m = config.get_offs_m()
-        return tl.load(
-            a_ptrs,
-            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
-            other=0.0,
-        ).to(tl.float32)
-
-    @triton.jit
-    def load_d(self, config: AttnDecConfig, d_ptrs, n_block, topk_indices=None):
-        if config.IS_PAGED_KV:
-            return paged_kv.load_paged_d(
-                self.d_base,
-                self.page_table_base,
-                self.stride_db,
-                1,
-                n_block,
-                config.actual_seqlen_k,
-                config.TILE_N,
-            )
-        elif config.IS_GATHER_KV:
-            return topk_gather_kv.load_gathered_d(
-                self.d_base,
-                topk_indices,
-            )
-        else:
-            offs_n = config.get_offs_n(n_block)
-            return tl.load(
-                d_ptrs + offs_n,
-                mask=offs_n < config.actual_seqlen_k,
-                other=0.0,
-            ).to(tl.float32)
-
-    @triton.jit
-    def load_topk_indices(
-        self,
-        config: AttnDecConfig,
-        n_block,
-    ):
-        return topk_gather_kv.load_topk_indices(
-            self.gather_kv_base,
-            self.stride_gn,
-            n_block,
-            config.TILE_N,
-        )
-
-    @triton.jit
-    def store_out(self, config: AttnDecConfig, out_ptrs, o_tile):
-        out_ptrs.store([0, 0], o_tile)
-
-    @triton.jit
-    def store_lse(self, config: AttnDecConfig, lse_ptrs, lse_tile):
-        offs_m = config.get_offs_m()
-        tl.store(
-            lse_ptrs,
-            lse_tile,
-            mask=offs_m < config.QHEAD_PER_KVHEAD_PACKGQA,
-            cache_modifier=".wb",
-        )
-
-    @triton.jit
-    def store_empty(self, config: AttnDecConfig, out_ptrs, lse_ptrs, Out):
-        lse_tile = tl.full((config.TILE_M,), float("-inf"), dtype=tl.float32)
-        self.store_lse(config, lse_ptrs, lse_tile)
-        o_tile = tl.zeros((config.TILE_M, config.TILE_K), dtype=Out.dtype.element_ty)
-        self.store_out(config, out_ptrs, o_tile)
 
 
 @aggregate
