@@ -311,6 +311,7 @@ def make_pack_gqa_ptrs(
     offs_k: tl.tensor,
     TILE_K: tl.constexpr,
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr = 1,
+    SWAP_AB: tl.constexpr = False,
 ) -> tl.tensor:
     """
     Construct pointers for a packed-GQA tile.
@@ -333,6 +334,8 @@ def make_pack_gqa_ptrs(
     :type TILE_K: int
     :param QHEAD_PER_KVHEAD_PACKGQA: ratio of query heads to key/value heads for packed GQA
     :type QHEAD_PER_KVHEAD_PACKGQA: int
+    :param SWAP_AB: boolean flag indicating if the sequence and K dimensions are swapped
+    :type SWAP_AB: bool
 
     :return ptrs: pointer tensor for the requested packed-GQA tile
     """
@@ -342,6 +345,17 @@ def make_pack_gqa_ptrs(
     if TILE_K == 1:
         return base_ptr + m_idx * stride_seq + q_head * stride_head
     else:
-        return (
-            base_ptr + m_idx[:, None] * stride_seq + q_head[:, None] * stride_head + offs_k[None, :]
-        )
+        if SWAP_AB:
+            return (
+                base_ptr
+                + m_idx[None, :] * stride_seq
+                + q_head[None, :] * stride_head
+                + offs_k[:, None]
+            )
+        else:
+            return (
+                base_ptr
+                + m_idx[:, None] * stride_seq
+                + q_head[:, None] * stride_head
+                + offs_k[None, :]
+            )

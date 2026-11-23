@@ -1,7 +1,6 @@
 import triton
 import triton.language as tl
 from triton.language.core import _aggregate as aggregate
-from triton.runtime.jit import constexpr_function
 
 from flash_sparse_attn.ops.triton import (
     seqlen_info,
@@ -19,7 +18,7 @@ class AttnFwdGridIndex:
     head_kv_idx: tl.tensor
     split_idx: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(self, m_block, batch_idx, head_idx, head_kv_idx, split_idx):
         self.m_block = m_block
         self.batch_idx = batch_idx
@@ -160,7 +159,7 @@ class AttnBwdGridIndex:
     head_kv_idx: tl.tensor
     split_idx: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(self, n_block, batch_idx, head_idx, head_kv_idx, split_idx):
         self.n_block = n_block
         self.batch_idx = batch_idx
@@ -297,6 +296,7 @@ class AttnFwdConfig:
     head_kv_idx: tl.tensor
     split_idx: tl.tensor
     m_block: tl.tensor
+    softmax_scale: tl.tensor
     softmax_scale_log2: tl.tensor
     softmax_threshold: tl.tensor
     value_scale: tl.tensor
@@ -321,8 +321,13 @@ class AttnFwdConfig:
     IS_LOCAL: tl.constexpr
     IS_SPARSE: tl.constexpr
     IS_SPLIT_KV: tl.constexpr
+    IS_QUANT: tl.constexpr
+    HAS_CU_SEQLENS_Q: tl.constexpr
+    HAS_CU_SEQLENS_K: tl.constexpr
+    HAS_SEQUSED_Q: tl.constexpr
+    HAS_SEQUSED_K: tl.constexpr
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         batch_idx,
@@ -330,6 +335,7 @@ class AttnFwdConfig:
         head_kv_idx,
         split_idx,
         m_block,
+        softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
         value_scale,
@@ -354,12 +360,18 @@ class AttnFwdConfig:
         IS_LOCAL,
         IS_SPARSE,
         IS_SPLIT_KV,
+        IS_QUANT,
+        HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K,
+        HAS_SEQUSED_Q,
+        HAS_SEQUSED_K,
     ):
         self.batch_idx = batch_idx
         self.head_idx = head_idx
         self.head_kv_idx = head_kv_idx
         self.split_idx = split_idx
         self.m_block = m_block
+        self.softmax_scale = softmax_scale
         self.softmax_scale_log2 = softmax_scale_log2
         self.softmax_threshold = softmax_threshold
         self.value_scale = value_scale
@@ -384,6 +396,11 @@ class AttnFwdConfig:
         self.IS_LOCAL = tl.constexpr(IS_LOCAL)
         self.IS_SPARSE = tl.constexpr(IS_SPARSE)
         self.IS_SPLIT_KV = tl.constexpr(IS_SPLIT_KV)
+        self.IS_QUANT = tl.constexpr(IS_QUANT)
+        self.HAS_CU_SEQLENS_Q = tl.constexpr(HAS_CU_SEQLENS_Q)
+        self.HAS_CU_SEQLENS_K = tl.constexpr(HAS_CU_SEQLENS_K)
+        self.HAS_SEQUSED_Q = tl.constexpr(HAS_SEQUSED_Q)
+        self.HAS_SEQUSED_K = tl.constexpr(HAS_SEQUSED_K)
 
     @staticmethod
     @triton.jit
@@ -503,6 +520,7 @@ class AttnFwdConfig:
 
         :return: attention forward configuration for the current program
         """
+        # Get seqlen info for this batch
         (
             offset_q,
             offset_k,
@@ -541,6 +559,7 @@ class AttnFwdConfig:
             tl.to_tensor(head_kv_idx),
             tl.to_tensor(split_idx),
             tl.to_tensor(m_block),
+            tl.to_tensor(softmax_scale),
             tl.to_tensor(softmax_scale_log2),
             tl.to_tensor(softmax_threshold),
             tl.to_tensor(v_scale),
@@ -565,6 +584,11 @@ class AttnFwdConfig:
             IS_LOCAL,
             IS_SPARSE,
             IS_SPLIT_KV,
+            IS_QUANT,
+            HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q,
+            HAS_SEQUSED_K,
         )
 
     @triton.jit
@@ -605,6 +629,7 @@ class AttnBwdConfig:
     head_kv_idx: tl.tensor
     split_idx: tl.tensor
     n_block: tl.tensor
+    softmax_scale: tl.tensor
     softmax_scale_log2: tl.tensor
     softmax_threshold: tl.tensor
     query_scale: tl.tensor
@@ -630,8 +655,13 @@ class AttnBwdConfig:
     IS_LOCAL: tl.constexpr
     IS_SPARSE: tl.constexpr
     IS_SPLIT_QO: tl.constexpr
+    IS_QUANT: tl.constexpr
+    HAS_CU_SEQLENS_Q: tl.constexpr
+    HAS_CU_SEQLENS_K: tl.constexpr
+    HAS_SEQUSED_Q: tl.constexpr
+    HAS_SEQUSED_K: tl.constexpr
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         batch_idx,
@@ -639,6 +669,7 @@ class AttnBwdConfig:
         head_kv_idx,
         split_idx,
         n_block,
+        softmax_scale,
         softmax_scale_log2,
         softmax_threshold,
         query_scale,
@@ -664,12 +695,18 @@ class AttnBwdConfig:
         IS_LOCAL,
         IS_SPARSE,
         IS_SPLIT_QO,
+        IS_QUANT,
+        HAS_CU_SEQLENS_Q,
+        HAS_CU_SEQLENS_K,
+        HAS_SEQUSED_Q,
+        HAS_SEQUSED_K,
     ):
         self.batch_idx = batch_idx
         self.head_idx = head_idx
         self.head_kv_idx = head_kv_idx
         self.split_idx = split_idx
         self.n_block = n_block
+        self.softmax_scale = softmax_scale
         self.softmax_scale_log2 = softmax_scale_log2
         self.softmax_threshold = softmax_threshold
         self.query_scale = query_scale
@@ -695,6 +732,11 @@ class AttnBwdConfig:
         self.IS_LOCAL = tl.constexpr(IS_LOCAL)
         self.IS_SPARSE = tl.constexpr(IS_SPARSE)
         self.IS_SPLIT_QO = tl.constexpr(IS_SPLIT_QO)
+        self.IS_QUANT = tl.constexpr(IS_QUANT)
+        self.HAS_CU_SEQLENS_Q = tl.constexpr(HAS_CU_SEQLENS_Q)
+        self.HAS_CU_SEQLENS_K = tl.constexpr(HAS_CU_SEQLENS_K)
+        self.HAS_SEQUSED_Q = tl.constexpr(HAS_SEQUSED_Q)
+        self.HAS_SEQUSED_K = tl.constexpr(HAS_SEQUSED_K)
 
     @staticmethod
     @triton.jit
@@ -850,6 +892,7 @@ class AttnBwdConfig:
             tl.to_tensor(head_kv_idx),
             tl.to_tensor(split_idx),
             tl.to_tensor(n_block),
+            tl.to_tensor(softmax_scale),
             tl.to_tensor(softmax_scale_log2),
             tl.to_tensor(softmax_threshold),
             tl.to_tensor(q_scale),
@@ -875,6 +918,11 @@ class AttnBwdConfig:
             IS_LOCAL,
             IS_SPARSE,
             IS_SPLIT_QO,
+            IS_QUANT,
+            HAS_CU_SEQLENS_Q,
+            HAS_CU_SEQLENS_K,
+            HAS_SEQUSED_Q,
+            HAS_SEQUSED_K,
         )
 
     @triton.jit
@@ -923,7 +971,7 @@ class AttnFwdBlockScheduler:
     n_block_sink_min: tl.tensor
     n_block_sink_max: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         n_block_min,
@@ -1071,7 +1119,7 @@ class AttnBwdBlockScheduler:
     m_block_sink_min: tl.tensor
     m_block_sink_max: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         m_block_min,
