@@ -210,4 +210,13 @@ def num_splits_heuristic(
 
 
 def alloc_fn(size: int, alignment: int, stream):
+    """
+    TMA descriptors require a global memory allocation
+
+    :param size: Size of the allocation in bytes.
+    :param alignment: Alignment requirement in bytes.
+    :param stream: CUDA stream for the allocation.
+
+    :return: A torch.Tensor representing the allocated memory.
+    """
     return torch.empty(size, device="cuda", dtype=torch.int8)
