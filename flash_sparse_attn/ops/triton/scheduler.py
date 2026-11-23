@@ -2367,7 +2367,7 @@ class AttnMaskScheduler:
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr
     SWAP_AB: tl.constexpr
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         fixed_block,
@@ -2397,9 +2397,19 @@ class AttnMaskScheduler:
     @staticmethod
     @triton.jit
     def create(
-        config,
+        config: "AttnFwdConfig | AttnBwdConfig",
         SWAP_AB: tl.constexpr = False,
-    ):
+    ) -> "AttnMaskScheduler":
+        """
+        Build a mask scheduler from an attention configuration.
+
+        :param config: forward or backward configuration
+        :type config: AttnFwdConfig or AttnBwdConfig
+        :param SWAP_AB: boolean flag indicating if M and N are swapped for backward
+        :type SWAP_AB: bool
+
+        :return: mask scheduler bound to the fixed block and sequence metadata
+        """
         if not SWAP_AB:
             return AttnMaskScheduler(
                 config.m_block,
@@ -2432,12 +2442,37 @@ class AttnMaskScheduler:
     @triton.jit
     def apply_mask(
         self,
-        acc_s,
-        iter_block,
+        acc_s: tl.tensor,
+        iter_block: tl.tensor,
+        offs_m: tl.tensor,
+        offs_n: tl.tensor,
+        MASK_SEQLEN: tl.constexpr = True,
         MASK_CAUSAL: tl.constexpr = False,
         MASK_LOCAL: tl.constexpr = False,
         MASK_SINK: tl.constexpr = False,
-    ):
+    ) -> tl.tensor:
+        """
+        Apply the selected seqlen, causal, local, and sink masks to the attention scores.
+
+        :param acc_s: attention scores
+        :type acc_s: tensor
+        :param iter_block: block index of the iterated dimension
+        :type iter_block: tensor
+        :param offs_m: offsets within the M dimension
+        :type offs_m: tensor
+        :param offs_n: offsets within the N dimension
+        :type offs_n: tensor
+        :param MASK_SEQLEN: boolean flag indicating if seqlen masking is required
+        :type MASK_SEQLEN: bool
+        :param MASK_CAUSAL: boolean flag indicating if causal masking is required
+        :type MASK_CAUSAL: bool
+        :param MASK_LOCAL: boolean flag indicating if local masking is required
+        :type MASK_LOCAL: bool
+        :param MASK_SINK: boolean flag indicating if sink masking is required
+        :type MASK_SINK: bool
+
+        :return: masked attention scores
+        """
         if not self.SWAP_AB:
             m_block = self.fixed_block
             n_block = iter_block
@@ -2448,13 +2483,15 @@ class AttnMaskScheduler:
             acc_s=acc_s,
             m_block=m_block,
             n_block=n_block,
+            offs_m=offs_m,
+            offs_n=offs_n,
             seqlen_q=self.actual_seqlen_q,
             seqlen_k=self.actual_seqlen_k,
             window_size_sink=self.window_size_sink,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
             window_size_near=self.window_size_near,
-            MASK_SEQLEN=True,
+            MASK_SEQLEN=MASK_SEQLEN,
             MASK_CAUSAL=MASK_CAUSAL,
             MASK_LOCAL=MASK_LOCAL,
             MASK_SINK=MASK_SINK,
@@ -2462,17 +2499,6 @@ class AttnMaskScheduler:
             TILE_N=self.TILE_N,
             QHEAD_PER_KVHEAD_PACKGQA=self.QHEAD_PER_KVHEAD_PACKGQA,
             SWAP_AB=self.SWAP_AB,
-        )
-
-    @triton.jit
-    def apply_gather_mask(
-        self,
-        acc_s,
-        topk_indices,
-    ):
-        return topk_gather_kv.apply_gather_mask(
-            acc_s=acc_s,
-            topk_indices=topk_indices,
         )
 
 

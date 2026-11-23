@@ -69,15 +69,19 @@ def apply_mask(
 
     :return acc_s: masked attention scores of shape [BLOCK_M, BLOCK_N]
     """
+    tl.static_assert(
+        not SWAP_AB or QHEAD_PER_KVHEAD_PACKGQA == 1,
+        "SWAP_AB with PackGQA > 1 is not supported",
+    )
+    if not (MASK_SEQLEN or MASK_CAUSAL or MASK_LOCAL or MASK_SINK):
+        return acc_s
+
+    offs_m = m_block * TILE_M + offs_m
+    offs_n = n_block * TILE_N + offs_n
     if SWAP_AB:
-        tl.static_assert(QHEAD_PER_KVHEAD_PACKGQA == 1, "SWAP_AB with PackGQA > 1 is not supported")
-        offs_m = m_block * TILE_M + offs_m
-        offs_n = n_block * TILE_N + offs_n
         q_idx = offs_m[None, :]
         k_idx = offs_n[:, None]
     else:
-        offs_m = m_block * TILE_M + offs_m
-        offs_n = n_block * TILE_N + offs_n
         q_idx = offs_m[:, None]
         k_idx = offs_n[None, :]
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
@@ -87,7 +91,6 @@ def apply_mask(
         valid = (q_idx < seqlen_q) & (k_idx < seqlen_k)
     else:
         valid = q_idx == q_idx  # constant True avoid creating additional layout
-
     if MASK_CAUSAL or MASK_LOCAL or MASK_SINK:
         near = q_idx + seqlen_k - seqlen_q - k_idx
         if MASK_LOCAL or MASK_SINK:
