@@ -15,7 +15,7 @@ def log2(
 
     :return: tensor containing log2 values of the input
     """
-    return log2(x)
+    return tl.log2(x)
 
 
 @triton.jit

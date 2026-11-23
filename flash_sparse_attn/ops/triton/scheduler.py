@@ -2507,7 +2507,7 @@ class SoftmaxScheduler:
     softmax_scale_log2: tl.tensor
     value_scale: tl.tensor
 
-    @constexpr_function
+    @triton.constexpr_function
     def __init__(
         self,
         softmax_scale_log2,
@@ -2518,7 +2518,17 @@ class SoftmaxScheduler:
 
     @staticmethod
     @triton.jit
-    def create(config):
+    def create(
+        config: "AttnFwdConfig | AttnBwdConfig",
+    ) -> "SoftmaxScheduler":
+        """
+        Build a softmax scheduler from an attention configuration.
+
+        :param config: forward or backward configuration
+        :type config: AttnFwdConfig or AttnBwdConfig
+
+        :return: softmax scheduler carrying score and value scales
+        """
         return SoftmaxScheduler(
             config.softmax_scale_log2,
             config.value_scale,
@@ -2527,93 +2537,141 @@ class SoftmaxScheduler:
     @triton.jit
     def online_softmax(
         self,
-        acc_s,
-        row_max,
-        row_sum,
+        acc_s: tl.tensor,
+        row_max: tl.tensor,
+        row_sum: tl.tensor,
+        row_max_curr: tl.tensor = None,
         CHECK_INF: tl.constexpr = False,
-        RESCALE_THRESHOLD: tl.constexpr = 0.0,
-    ):
-        return activations.online_softmax(
+    ) -> tuple[tl.tensor, tl.tensor, tl.tensor, tl.tensor]:
+        """
+        Apply online softmax and update its running row statistics.
+
+        :param acc_s: attention scores
+        :type acc_s: tensor
+        :param row_max: running maximum values per row
+        :type row_max: tensor
+        :param row_sum: running sum values per row
+        :type row_sum: tensor
+        :param row_max_curr: precomputed current row maximum values
+        :type row_max_curr: tensor
+        :param CHECK_INF: boolean flag indicating if negative infinity is clamped
+        :type CHECK_INF: bool
+
+        :return p: online softmax probabilities for the current score
+        :return row_max_new: updated running maximum values per row
+        :return row_sum_new: updated running sum values per row
+        :return row_scale: scaling factors for the previous output accumulator
+        """
+        return softmax.online_softmax(
             acc_s=acc_s,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
+            row_max_curr=row_max_curr,
             CHECK_INF=CHECK_INF,
-            RESCALE_THRESHOLD=RESCALE_THRESHOLD,
         )
 
     @triton.jit
-    def online_sparse_softmax(
+    def score_skip(
         self,
-        acc_s,
-        row_max,
-        row_sum,
-        softmax_threshold_log2,
-        CHECK_INF: tl.constexpr = False,
-    ):
-        return activations.online_sparse_softmax(
+        acc_s: tl.tensor,
+        row_max: tl.tensor,
+        row_sum: tl.tensor,
+        softmax_threshold_log2: tl.tensor,
+    ) -> tuple[tl.tensor, tl.tensor]:
+        """
+        Determine whether the current score can be skipped.
+
+        :param acc_s: attention scores tensor
+        :type acc_s: tensor
+        :param row_max: running maximum values per row
+        :type row_max: tensor
+        :param row_sum: running sum values per row
+        :type row_sum: tensor
+        :param softmax_threshold_log2: softmax threshold in log2-domain
+        :type softmax_threshold_log2: tensor
+
+        :return is_skip: boolean indicating whether the block can be skipped
+        :return row_max_curr: current row maximum values
+        """
+        return softmax.score_skip(
             acc_s=acc_s,
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
             softmax_threshold_log2=softmax_threshold_log2,
-            CHECK_INF=CHECK_INF,
+        )
+
+    @triton.jit
+    def prob_skip(
+        self,
+        p_log2: tl.tensor,
+        softmax_threshold_log2: tl.tensor,
+    ) -> tl.tensor:
+        """
+        Determine whether the current block can be skipped based on the softmax threshold.
+
+        :param p_log2: attention probabilities tensor in log2-domain
+        :type p_log2: tensor
+        :param softmax_threshold_log2: softmax threshold in log2-domain
+        :type softmax_threshold_log2: tensor
+
+        :return is_skip: boolean indicating whether the block can be skipped
+        """
+        return softmax.prob_skip(
+            p_log2=p_log2,
+            softmax_threshold_log2=softmax_threshold_log2,
         )
 
     @triton.jit
     def rescale_o(
         self,
-        acc_o,
-        row_scale,
-        LAZY_RESCALE: tl.constexpr = False,
-    ):
-        return activations.rescale_o(
+        acc_o: tl.tensor,
+        row_scale: tl.tensor,
+    ) -> tl.tensor:
+        """
+        Rescale an output accumulator after an online softmax update.
+
+        :param acc_o: output accumulator tensor
+        :type acc_o: tensor
+        :param row_scale: scaling factors for each query row
+        :type row_scale: tensor
+
+        :return: rescaled output accumulator
+        """
+        return softmax.rescale_o(
             acc_o=acc_o,
             row_scale=row_scale,
-            LAZY_RESCALE=LAZY_RESCALE,
         )
 
     @triton.jit
     def finalize(
         self,
-        row_max,
-        row_sum,
+        row_max: tl.tensor,
+        row_sum: tl.tensor,
         IS_LOG2: tl.constexpr = False,
         CHECK_NAN: tl.constexpr = True,
-    ):
-        return activations.finalize(
+    ) -> tuple[tl.tensor, tl.tensor]:
+        """
+        Finalize the online softmax output scale and logsumexp.
+
+        :param row_max: final maximum values per row
+        :type row_max: tensor
+        :param row_sum: final sum values per row
+        :type row_sum: tensor
+        :param IS_LOG2: boolean flag indicating if logsumexp remains in log2-space
+        :type IS_LOG2: bool
+        :param CHECK_NAN: boolean flag indicating if invalid row sums are sanitized
+        :type CHECK_NAN: bool
+
+        :return row_scale: final scaling factors for the output accumulator
+        :return lse: final logsumexp values per row
+        """
+        return softmax.finalize(
             row_max=row_max,
             row_sum=row_sum,
             scale_log2=self.softmax_scale_log2,
             final_scale=self.value_scale,
             IS_LOG2=IS_LOG2,
             CHECK_NAN=CHECK_NAN,
-        )
-
-    @triton.jit
-    def log_sigmoid(
-        self,
-        acc_s,
-        FASTMATH: tl.constexpr = False,
-    ):
-        return activations.log_sigmoid(x=acc_s, FASTMATH=FASTMATH)
-
-    @triton.jit
-    def online_gate(
-        self,
-        a_max,
-        a_min,
-        d_max,
-        d_min,
-        gate_max,
-        gate_threshold_log2,
-    ):
-        return activations.online_gate(
-            a_max=a_max,
-            a_min=a_min,
-            d_max=d_max,
-            d_min=d_min,
-            gate_max=gate_max,
-            scale_log2=self.softmax_scale_log2,
-            gate_threshold_log2=gate_threshold_log2,
         )
