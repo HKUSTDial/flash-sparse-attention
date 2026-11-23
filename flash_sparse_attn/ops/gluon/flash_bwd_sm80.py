@@ -498,8 +498,6 @@ def _bwd_sm80_kernel(
         stride_dvh=stride_dvh,
         stride_dvn=stride_dvn,
         stride_dvs=stride_dvs,
-        HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
-        HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
 
     # Create block scheduler

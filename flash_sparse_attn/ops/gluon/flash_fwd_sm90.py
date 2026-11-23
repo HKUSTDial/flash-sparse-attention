@@ -1015,8 +1015,6 @@ def _fwd_sm90_kernel(
         stride_lb=stride_lb,
         stride_lh=stride_lh,
         stride_ls=stride_ls,
-        HAS_CU_SEQLENS_Q=HAS_CU_SEQLENS_Q,
-        HAS_CU_SEQLENS_K=HAS_CU_SEQLENS_K,
     )
 
     # Create block scheduler
