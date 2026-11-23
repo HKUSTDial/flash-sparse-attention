@@ -112,9 +112,9 @@ def assert_bwd_inputs(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    lse: torch.Tensor,
     out: torch.Tensor,
     dout: torch.Tensor,
-    lse: torch.Tensor,
     q_scale: Optional[torch.Tensor] = None,
     k_scale: Optional[torch.Tensor] = None,
     v_scale: Optional[torch.Tensor] = None,
@@ -137,12 +137,12 @@ def assert_bwd_inputs(
     :type k: torch.Tensor
     :param v: value tensor
     :type v: torch.Tensor
+    :param lse: log-sum-exp tensor
+    :type lse: torch.Tensor
     :param out: output tensor
     :type out: torch.Tensor
     :param dout: gradient of the output tensor
     :type dout: torch.Tensor
-    :param lse: log-sum-exp tensor
-    :type lse: torch.Tensor
     :param q_scale: query scale tensor for quantized inputs
     :type q_scale: Optional[torch.Tensor]
     :param k_scale: key scale tensor for quantized inputs
