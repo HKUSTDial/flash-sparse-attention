@@ -1326,8 +1326,6 @@ class AttnFwdPointerScheduler:
         stride_lb: tl.tensor = 0,
         stride_lh: tl.tensor = 0,
         stride_ls: tl.tensor = 0,
-        HAS_CU_SEQLENS_Q: tl.constexpr = False,
-        HAS_CU_SEQLENS_K: tl.constexpr = False,
     ) -> "AttnFwdPointerScheduler":
         """
         Build forward base pointers.
@@ -1376,10 +1374,6 @@ class AttnFwdPointerScheduler:
         :type stride_lh: tensor
         :param stride_ls: LSE split stride
         :type stride_ls: tensor
-        :param HAS_CU_SEQLENS_Q: boolean flag indicating if packed query sequences are used
-        :type HAS_CU_SEQLENS_Q: bool
-        :param HAS_CU_SEQLENS_K: boolean flag indicating if packed key sequences are used
-        :type HAS_CU_SEQLENS_K: bool
 
         :return: forward pointer scheduler for the selected batch, head, and split
         """
@@ -1392,7 +1386,7 @@ class AttnFwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_qb,
                 stride_seq=stride_qm,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
             if Q is not None
@@ -1406,7 +1400,7 @@ class AttnFwdPointerScheduler:
                 padded_offset=config.padded_offset_k,
                 stride_batch=stride_kb,
                 stride_seq=stride_kn,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_K,
                 USE_PADDED=False,
             )
             if K is not None
@@ -1420,7 +1414,7 @@ class AttnFwdPointerScheduler:
                 padded_offset=config.padded_offset_k,
                 stride_batch=stride_vb,
                 stride_seq=stride_vn,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_K,
                 USE_PADDED=False,
             )
             if V is not None
@@ -1434,7 +1428,7 @@ class AttnFwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_ob,
                 stride_seq=stride_om,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
             if Out is not None
@@ -1448,7 +1442,7 @@ class AttnFwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_lb,
                 stride_seq=1,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
             if Lse is not None
@@ -1855,8 +1849,6 @@ class AttnBwdPointerScheduler:
         stride_dvh: tl.tensor = 0,
         stride_dvn: tl.tensor = 0,
         stride_dvs: tl.tensor = 0,
-        HAS_CU_SEQLENS_Q: tl.constexpr = False,
-        HAS_CU_SEQLENS_K: tl.constexpr = False,
     ) -> "AttnBwdPointerScheduler":
         """
         Build backward base pointers.
@@ -1935,10 +1927,6 @@ class AttnBwdPointerScheduler:
         :type stride_dvn: tensor
         :param stride_dvs: dV split stride
         :type stride_dvs: tensor
-        :param HAS_CU_SEQLENS_Q: boolean flag indicating if packed query sequences are used
-        :type HAS_CU_SEQLENS_Q: bool
-        :param HAS_CU_SEQLENS_K: boolean flag indicating if packed key sequences are used
-        :type HAS_CU_SEQLENS_K: bool
 
         :return: backward pointer scheduler for the selected batch, head, and split
         """
@@ -1951,7 +1939,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_qb,
                 stride_seq=stride_qm,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
             if Q is not None
@@ -1965,7 +1953,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_k,
                 stride_batch=stride_kb,
                 stride_seq=stride_kn,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_K,
                 USE_PADDED=False,
             )
             if K is not None
@@ -1979,7 +1967,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_k,
                 stride_batch=stride_vb,
                 stride_seq=stride_vn,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_K,
                 USE_PADDED=False,
             )
             if V is not None
@@ -1993,7 +1981,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_lb,
                 stride_seq=1,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=True,
             )
             if LSELog2 is not None
@@ -2007,7 +1995,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_dob,
                 stride_seq=stride_dom,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=False,
             )
             if dO is not None
@@ -2021,7 +2009,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_pb,
                 stride_seq=1,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=True,
             )
             if dPsum is not None
@@ -2035,7 +2023,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_q,
                 stride_batch=stride_dqab,
                 stride_seq=stride_dqam,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_Q,
                 USE_PADDED=True,
             )
             if dQaccum is not None
@@ -2049,7 +2037,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_k,
                 stride_batch=stride_dkb,
                 stride_seq=stride_dkn,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_K,
                 USE_PADDED=True,
             )
             if dK is not None
@@ -2063,7 +2051,7 @@ class AttnBwdPointerScheduler:
                 padded_offset=config.padded_offset_k,
                 stride_batch=stride_dvb,
                 stride_seq=stride_dvn,
-                HAS_CU_SEQLENS=HAS_CU_SEQLENS_K,
+                HAS_CU_SEQLENS=config.HAS_CU_SEQLENS_K,
                 USE_PADDED=True,
             )
             if dV is not None
