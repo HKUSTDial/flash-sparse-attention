@@ -4,6 +4,7 @@ import triton
 from typing import Optional
 
 
+@functools.lru_cache(maxsize=None)
 def get_device():
     """
     Get the appropriate device for computation.
@@ -23,7 +24,7 @@ def get_device():
         return torch.device("cpu")
 
 
-@functools.lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=None)
 def get_device_arch(device: torch.device) -> int:
     """
     Get the architecture for a given device.
@@ -42,7 +43,7 @@ def get_device_arch(device: torch.device) -> int:
     raise ValueError(f"Unsupported device: {device}")
 
 
-@functools.lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=None)
 def get_device_num_sms(device: torch.device) -> int:
     """
     Get the SM count for a given device.
@@ -75,20 +76,6 @@ def ensure_contiguous(fn):
         return fn(ctx, *args, **kwargs)
 
     return wrapper
-
-
-def cache_launch_grid(fn, maxsize: int = 512):
-    """
-    Bounded cache for Triton grid-factory closures.
-
-    :param fn: grid-factory function to wrap
-    :type fn: Callable[..., Any]
-    :param maxsize: maximum number of cached entries.
-    :type maxsize: int
-
-    :return wrapper: wrapped function.
-    """
-    return functools.lru_cache(maxsize=maxsize)(fn)
 
 
 @functools.lru_cache(maxsize=4096)
