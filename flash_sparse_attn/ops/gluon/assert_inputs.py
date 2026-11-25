@@ -9,10 +9,10 @@ def assert_fwd_inputs(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    window_sizes: Optional[torch.Tensor] = None,
     q_scale: Optional[torch.Tensor] = None,
     k_scale: Optional[torch.Tensor] = None,
     v_scale: Optional[torch.Tensor] = None,
-    window_sizes: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
@@ -31,14 +31,14 @@ def assert_fwd_inputs(
     :type k: torch.Tensor
     :param v: value tensor
     :type v: torch.Tensor
+    :param window_sizes: window sizes tensor for local attention
+    :type window_sizes: Optional[torch.Tensor]
     :param q_scale: query scale tensor for quantized inputs
     :type q_scale: Optional[torch.Tensor]
     :param k_scale: key scale tensor for quantized inputs
     :type k_scale: Optional[torch.Tensor]
     :param v_scale: value scale tensor for quantized inputs
     :type v_scale: Optional[torch.Tensor]
-    :param window_sizes: window sizes tensor for local attention
-    :type window_sizes: Optional[torch.Tensor]
     :param cu_seqlens_q: cumulative sequence lengths for queries
     :type cu_seqlens_q: Optional[torch.Tensor]
     :param cu_seqlens_k: cumulative sequence lengths for keys
@@ -112,13 +112,13 @@ def assert_bwd_inputs(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    lse: torch.Tensor,
     out: torch.Tensor,
+    lse: torch.Tensor,
     dout: torch.Tensor,
+    window_sizes: Optional[torch.Tensor] = None,
     q_scale: Optional[torch.Tensor] = None,
     k_scale: Optional[torch.Tensor] = None,
     v_scale: Optional[torch.Tensor] = None,
-    window_sizes: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     cu_seqlens_k: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
@@ -137,20 +137,20 @@ def assert_bwd_inputs(
     :type k: torch.Tensor
     :param v: value tensor
     :type v: torch.Tensor
-    :param lse: log-sum-exp tensor
-    :type lse: torch.Tensor
     :param out: output tensor
     :type out: torch.Tensor
+    :param lse: log-sum-exp tensor
+    :type lse: torch.Tensor
     :param dout: gradient of the output tensor
     :type dout: torch.Tensor
+    :param window_sizes: window sizes tensor for local attention
+    :type window_sizes: Optional[torch.Tensor]
     :param q_scale: query scale tensor for quantized inputs
     :type q_scale: Optional[torch.Tensor]
     :param k_scale: key scale tensor for quantized inputs
     :type k_scale: Optional[torch.Tensor]
     :param v_scale: value scale tensor for quantized inputs
     :type v_scale: Optional[torch.Tensor]
-    :param window_sizes: window sizes tensor for local attention
-    :type window_sizes: Optional[torch.Tensor]
     :param cu_seqlens_q: cumulative sequence lengths for queries
     :type cu_seqlens_q: Optional[torch.Tensor]
     :param cu_seqlens_k: cumulative sequence lengths for keys
