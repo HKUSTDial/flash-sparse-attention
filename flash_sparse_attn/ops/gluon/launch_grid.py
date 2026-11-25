@@ -1,8 +1,9 @@
+import functools
+
 import triton
 
-from flash_sparse_attn.ops.gluon.utils import cache_launch_grid
 
-
+@functools.lru_cache(maxsize=8)
 def get_fwd_grid(
     batch_size: int,
     seqlen_q: int,
@@ -43,9 +44,7 @@ def get_fwd_grid(
     return grid
 
 
-get_fwd_grid = cache_launch_grid(get_fwd_grid)
-
-
+@functools.lru_cache(maxsize=8)
 def get_bwd_grid(
     batch_size: int,
     seqlen_k: int,
@@ -77,9 +76,7 @@ def get_bwd_grid(
     return grid
 
 
-get_bwd_grid = cache_launch_grid(get_bwd_grid)
-
-
+@functools.lru_cache(maxsize=8)
 def get_fwd_combine_grid(
     batch_size: int,
     seqlen_q: int,
@@ -107,9 +104,7 @@ def get_fwd_combine_grid(
     return grid
 
 
-get_fwd_combine_grid = cache_launch_grid(get_fwd_combine_grid)
-
-
+@functools.lru_cache(maxsize=8)
 def get_bwd_combine_grid(
     batch_size: int,
     seqlen_k: int,
@@ -137,9 +132,7 @@ def get_bwd_combine_grid(
     return grid
 
 
-get_bwd_combine_grid = cache_launch_grid(get_bwd_combine_grid)
-
-
+@functools.lru_cache(maxsize=8)
 def get_bwd_preprocess_grid(
     batch_size: int,
     seqlen_q: int,
@@ -167,9 +160,7 @@ def get_bwd_preprocess_grid(
     return grid
 
 
-get_bwd_preprocess_grid = cache_launch_grid(get_bwd_preprocess_grid)
-
-
+@functools.lru_cache(maxsize=8)
 def get_bwd_postprocess_grid(
     batch_size: int,
     seqlen_q: int,
@@ -195,6 +186,3 @@ def get_bwd_postprocess_grid(
         )
 
     return grid
-
-
-get_bwd_postprocess_grid = cache_launch_grid(get_bwd_postprocess_grid)
