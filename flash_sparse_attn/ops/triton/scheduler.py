@@ -1253,11 +1253,11 @@ class AttnBwdBlockScheduler:
 
 @aggregate
 class AttnFwdPointerScheduler:
-    q_base: tl.tensor | tl.constexpr
-    k_base: tl.tensor | tl.constexpr
-    v_base: tl.tensor | tl.constexpr
-    out_base: tl.tensor | tl.constexpr
-    lse_base: tl.tensor | tl.constexpr
+    q_base_ptr: tl.tensor | tl.constexpr
+    k_base_ptr: tl.tensor | tl.constexpr
+    v_base_ptr: tl.tensor | tl.constexpr
+    out_base_ptr: tl.tensor | tl.constexpr
+    lse_base_ptr: tl.tensor | tl.constexpr
     stride_qh: tl.tensor
     stride_qm: tl.tensor
     stride_kb: tl.tensor
@@ -1271,11 +1271,11 @@ class AttnFwdPointerScheduler:
     @triton.constexpr_function
     def __init__(
         self,
-        q_base,
-        k_base,
-        v_base,
-        out_base,
-        lse_base,
+        q_base_ptr,
+        k_base_ptr,
+        v_base_ptr,
+        out_base_ptr,
+        lse_base_ptr,
         stride_qh,
         stride_qm,
         stride_kb,
@@ -1286,11 +1286,11 @@ class AttnFwdPointerScheduler:
         stride_om,
         stride_lh,
     ):
-        self.q_base = q_base if q_base is not None else tl.constexpr(None)
-        self.k_base = k_base if k_base is not None else tl.constexpr(None)
-        self.v_base = v_base if v_base is not None else tl.constexpr(None)
-        self.out_base = out_base if out_base is not None else tl.constexpr(None)
-        self.lse_base = lse_base if lse_base is not None else tl.constexpr(None)
+        self.q_base_ptr = q_base_ptr if q_base_ptr is not None else tl.constexpr(None)
+        self.k_base_ptr = k_base_ptr if k_base_ptr is not None else tl.constexpr(None)
+        self.v_base_ptr = v_base_ptr if v_base_ptr is not None else tl.constexpr(None)
+        self.out_base_ptr = out_base_ptr if out_base_ptr is not None else tl.constexpr(None)
+        self.lse_base_ptr = lse_base_ptr if lse_base_ptr is not None else tl.constexpr(None)
         self.stride_qh = stride_qh
         self.stride_qm = stride_qm
         self.stride_kb = stride_kb
@@ -1378,7 +1378,7 @@ class AttnFwdPointerScheduler:
         :return: forward pointer scheduler for the selected batch, head, and split
         """
         # Initialize base pointers
-        q_base = (
+        q_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=Q + config.head_idx * stride_qh if not config.PACK_GQA else Q,
                 batch_idx=config.batch_idx,
@@ -1392,7 +1392,7 @@ class AttnFwdPointerScheduler:
             if Q is not None
             else None
         )
-        k_base = (
+        k_base_ptr = (
             seqlen_info.offset_batch_K(
                 base_ptr=K + config.head_kv_idx * stride_kh,
                 batch_idx=config.batch_idx,
@@ -1406,7 +1406,7 @@ class AttnFwdPointerScheduler:
             if K is not None
             else None
         )
-        v_base = (
+        v_base_ptr = (
             seqlen_info.offset_batch_K(
                 base_ptr=V + config.head_kv_idx * stride_vh,
                 batch_idx=config.batch_idx,
@@ -1420,7 +1420,7 @@ class AttnFwdPointerScheduler:
             if V is not None
             else None
         )
-        out_base = (
+        out_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=(Out + config.head_idx * stride_oh if not config.PACK_GQA else Out),
                 batch_idx=config.batch_idx,
@@ -1434,7 +1434,7 @@ class AttnFwdPointerScheduler:
             if Out is not None
             else None
         )
-        lse_base = (
+        lse_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=(Lse + config.head_idx * stride_lh if not config.PACK_GQA else Lse),
                 batch_idx=config.batch_idx,
@@ -1452,16 +1452,16 @@ class AttnFwdPointerScheduler:
         # For split KV, offset output and LSE base pointers by split_idx
         if config.IS_SPLIT_KV:
             if Out is not None:
-                out_base += config.split_idx * stride_os
+                out_base_ptr += config.split_idx * stride_os
             if Lse is not None:
-                lse_base += config.split_idx * stride_ls
+                lse_base_ptr += config.split_idx * stride_ls
 
         return AttnFwdPointerScheduler(
-            q_base,
-            k_base,
-            v_base,
-            out_base,
-            lse_base,
+            q_base_ptr,
+            k_base_ptr,
+            v_base_ptr,
+            out_base_ptr,
+            lse_base_ptr,
             tl.to_tensor(stride_qh),
             tl.to_tensor(stride_qm),
             tl.to_tensor(stride_kb),
@@ -1488,7 +1488,7 @@ class AttnFwdPointerScheduler:
         """
         if config.PACK_GQA:
             return seqlen_info.make_pack_gqa_ptrs(
-                base_ptr=self.q_base,
+                base_ptr=self.q_base_ptr,
                 m_block=config.m_block,
                 head_idx=config.head_idx,
                 stride_head=self.stride_qh,
@@ -1500,7 +1500,7 @@ class AttnFwdPointerScheduler:
             )
         else:
             return tl.make_tensor_descriptor(
-                self.q_base,
+                self.q_base_ptr,
                 shape=[config.actual_seqlen_q, config.head_dim],
                 strides=[self.stride_qm, 1],
                 block_shape=[config.TILE_M, config.TILE_K],
@@ -1520,7 +1520,7 @@ class AttnFwdPointerScheduler:
         :return: K tensor descriptor with block shape [TILE_N, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.k_base,
+            self.k_base_ptr,
             shape=[config.actual_seqlen_k, config.head_dim],
             strides=[self.stride_kn, 1],
             block_shape=[config.TILE_N, config.TILE_K],
@@ -1540,7 +1540,7 @@ class AttnFwdPointerScheduler:
         :return: V tensor descriptor with block shape [TILE_N, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.v_base,
+            self.v_base_ptr,
             shape=[config.actual_seqlen_k, config.head_dim],
             strides=[self.stride_vn, 1],
             block_shape=[config.TILE_N, config.TILE_K],
@@ -1561,7 +1561,7 @@ class AttnFwdPointerScheduler:
         """
         if config.PACK_GQA:
             return seqlen_info.make_pack_gqa_ptrs(
-                base_ptr=self.out_base,
+                base_ptr=self.out_base_ptr,
                 m_block=config.m_block,
                 head_idx=config.head_idx,
                 stride_head=self.stride_oh,
@@ -1573,7 +1573,7 @@ class AttnFwdPointerScheduler:
             )
         else:
             return tl.make_tensor_descriptor(
-                self.out_base,
+                self.out_base_ptr,
                 shape=[config.actual_seqlen_q, config.head_dim],
                 strides=[self.stride_om, 1],
                 block_shape=[config.TILE_M, config.TILE_K],
@@ -1591,7 +1591,7 @@ class AttnFwdPointerScheduler:
         """
         if config.PACK_GQA:
             return seqlen_info.make_pack_gqa_ptrs(
-                base_ptr=self.lse_base,
+                base_ptr=self.lse_base_ptr,
                 m_block=config.m_block,
                 head_idx=config.head_idx,
                 stride_head=self.stride_lh,
@@ -1603,7 +1603,7 @@ class AttnFwdPointerScheduler:
             )
         else:
             return seqlen_info.make_ptrs(
-                base_ptr=self.lse_base,
+                base_ptr=self.lse_base_ptr,
                 mn_block=config.m_block,
                 stride_seq=1,
                 offs_mn=config.offs_m(),
@@ -1755,15 +1755,15 @@ class AttnFwdPointerScheduler:
 
 @aggregate
 class AttnBwdPointerScheduler:
-    q_base: tl.tensor | tl.constexpr
-    k_base: tl.tensor | tl.constexpr
-    v_base: tl.tensor | tl.constexpr
-    lse_base: tl.tensor | tl.constexpr
-    do_base: tl.tensor | tl.constexpr
-    dpsum_base: tl.tensor | tl.constexpr
-    dq_accum_base: tl.tensor | tl.constexpr
-    dk_base: tl.tensor | tl.constexpr
-    dv_base: tl.tensor | tl.constexpr
+    q_base_ptr: tl.tensor | tl.constexpr
+    k_base_ptr: tl.tensor | tl.constexpr
+    v_base_ptr: tl.tensor | tl.constexpr
+    lse_base_ptr: tl.tensor | tl.constexpr
+    do_base_ptr: tl.tensor | tl.constexpr
+    dpsum_base_ptr: tl.tensor | tl.constexpr
+    dq_accum_base_ptr: tl.tensor | tl.constexpr
+    dk_base_ptr: tl.tensor | tl.constexpr
+    dv_base_ptr: tl.tensor | tl.constexpr
     stride_qm: tl.tensor
     stride_kn: tl.tensor
     stride_vn: tl.tensor
@@ -1775,15 +1775,15 @@ class AttnBwdPointerScheduler:
     @triton.constexpr_function
     def __init__(
         self,
-        q_base,
-        k_base,
-        v_base,
-        lse_base,
-        do_base,
-        dpsum_base,
-        dq_accum_base,
-        dk_base,
-        dv_base,
+        q_base_ptr,
+        k_base_ptr,
+        v_base_ptr,
+        lse_base_ptr,
+        do_base_ptr,
+        dpsum_base_ptr,
+        dq_accum_base_ptr,
+        dk_base_ptr,
+        dv_base_ptr,
         stride_qm,
         stride_kn,
         stride_vn,
@@ -1792,15 +1792,17 @@ class AttnBwdPointerScheduler:
         stride_dkn,
         stride_dvn,
     ):
-        self.q_base = q_base if q_base is not None else tl.constexpr(None)
-        self.k_base = k_base if k_base is not None else tl.constexpr(None)
-        self.v_base = v_base if v_base is not None else tl.constexpr(None)
-        self.lse_base = lse_base if lse_base is not None else tl.constexpr(None)
-        self.do_base = do_base if do_base is not None else tl.constexpr(None)
-        self.dpsum_base = dpsum_base if dpsum_base is not None else tl.constexpr(None)
-        self.dq_accum_base = dq_accum_base if dq_accum_base is not None else tl.constexpr(None)
-        self.dk_base = dk_base if dk_base is not None else tl.constexpr(None)
-        self.dv_base = dv_base if dv_base is not None else tl.constexpr(None)
+        self.q_base_ptr = q_base_ptr if q_base_ptr is not None else tl.constexpr(None)
+        self.k_base_ptr = k_base_ptr if k_base_ptr is not None else tl.constexpr(None)
+        self.v_base_ptr = v_base_ptr if v_base_ptr is not None else tl.constexpr(None)
+        self.lse_base_ptr = lse_base_ptr if lse_base_ptr is not None else tl.constexpr(None)
+        self.do_base_ptr = do_base_ptr if do_base_ptr is not None else tl.constexpr(None)
+        self.dpsum_base_ptr = dpsum_base_ptr if dpsum_base_ptr is not None else tl.constexpr(None)
+        self.dq_accum_base_ptr = (
+            dq_accum_base_ptr if dq_accum_base_ptr is not None else tl.constexpr(None)
+        )
+        self.dk_base_ptr = dk_base_ptr if dk_base_ptr is not None else tl.constexpr(None)
+        self.dv_base_ptr = dv_base_ptr if dv_base_ptr is not None else tl.constexpr(None)
         self.stride_qm = stride_qm
         self.stride_kn = stride_kn
         self.stride_vn = stride_vn
@@ -1931,7 +1933,7 @@ class AttnBwdPointerScheduler:
         :return: backward pointer scheduler for the selected batch, head, and split
         """
         # Initialize base pointers
-        q_base = (
+        q_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=Q + config.head_idx * stride_qh,
                 batch_idx=config.batch_idx,
@@ -1945,7 +1947,7 @@ class AttnBwdPointerScheduler:
             if Q is not None
             else None
         )
-        k_base = (
+        k_base_ptr = (
             seqlen_info.offset_batch_K(
                 base_ptr=K + config.head_kv_idx * stride_kh,
                 batch_idx=config.batch_idx,
@@ -1959,7 +1961,7 @@ class AttnBwdPointerScheduler:
             if K is not None
             else None
         )
-        v_base = (
+        v_base_ptr = (
             seqlen_info.offset_batch_K(
                 base_ptr=V + config.head_kv_idx * stride_vh,
                 batch_idx=config.batch_idx,
@@ -1973,7 +1975,7 @@ class AttnBwdPointerScheduler:
             if V is not None
             else None
         )
-        lse_base = (
+        lse_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=LSELog2 + config.head_idx * stride_lh,
                 batch_idx=config.batch_idx,
@@ -1987,7 +1989,7 @@ class AttnBwdPointerScheduler:
             if LSELog2 is not None
             else None
         )
-        do_base = (
+        do_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=dO + config.head_idx * stride_doh,
                 batch_idx=config.batch_idx,
@@ -2001,7 +2003,7 @@ class AttnBwdPointerScheduler:
             if dO is not None
             else None
         )
-        dpsum_base = (
+        dpsum_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=dPsum + config.head_idx * stride_ph,
                 batch_idx=config.batch_idx,
@@ -2015,7 +2017,7 @@ class AttnBwdPointerScheduler:
             if dPsum is not None
             else None
         )
-        dq_accum_base = (
+        dq_accum_base_ptr = (
             seqlen_info.offset_batch_Q(
                 base_ptr=dQaccum + config.head_idx * stride_dqah,
                 batch_idx=config.batch_idx,
@@ -2029,7 +2031,7 @@ class AttnBwdPointerScheduler:
             if dQaccum is not None
             else None
         )
-        dk_base = (
+        dk_base_ptr = (
             seqlen_info.offset_batch_K(
                 base_ptr=dK + config.head_kv_idx * stride_dkh,
                 batch_idx=config.batch_idx,
@@ -2043,7 +2045,7 @@ class AttnBwdPointerScheduler:
             if dK is not None
             else None
         )
-        dv_base = (
+        dv_base_ptr = (
             seqlen_info.offset_batch_K(
                 base_ptr=dV + config.head_kv_idx * stride_dvh,
                 batch_idx=config.batch_idx,
@@ -2061,20 +2063,20 @@ class AttnBwdPointerScheduler:
         # For split QO, offset key and value gradients base pointers by split_idx
         if config.IS_SPLIT_QO:
             if dK is not None:
-                dk_base += config.split_idx * stride_dks
+                dk_base_ptr += config.split_idx * stride_dks
             if dV is not None:
-                dv_base += config.split_idx * stride_dvs
+                dv_base_ptr += config.split_idx * stride_dvs
 
         return AttnBwdPointerScheduler(
-            q_base,
-            k_base,
-            v_base,
-            lse_base,
-            do_base,
-            dpsum_base,
-            dq_accum_base,
-            dk_base,
-            dv_base,
+            q_base_ptr,
+            k_base_ptr,
+            v_base_ptr,
+            lse_base_ptr,
+            do_base_ptr,
+            dpsum_base_ptr,
+            dq_accum_base_ptr,
+            dk_base_ptr,
+            dv_base_ptr,
             tl.to_tensor(stride_qm),
             tl.to_tensor(stride_kn),
             tl.to_tensor(stride_vn),
@@ -2095,7 +2097,7 @@ class AttnBwdPointerScheduler:
         :return: Q pointers of shape [TILE_M, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.q_base,
+            self.q_base_ptr,
             shape=[config.actual_seqlen_q, config.head_dim],
             strides=[self.stride_qm, 1],
             block_shape=[config.TILE_M, config.TILE_K],
@@ -2112,7 +2114,7 @@ class AttnBwdPointerScheduler:
         :return: K pointers of shape [TILE_N, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.k_base,
+            self.k_base_ptr,
             shape=[config.actual_seqlen_k, config.head_dim],
             strides=[self.stride_kn, 1],
             block_shape=[config.TILE_N, config.TILE_K],
@@ -2129,7 +2131,7 @@ class AttnBwdPointerScheduler:
         :return: V pointers of shape [TILE_N, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.v_base,
+            self.v_base_ptr,
             shape=[config.actual_seqlen_k, config.head_dim],
             strides=[self.stride_vn, 1],
             block_shape=[config.TILE_N, config.TILE_K],
@@ -2145,7 +2147,7 @@ class AttnBwdPointerScheduler:
 
         :return: LSE pointers of shape [TILE_M]
         """
-        return self.lse_base
+        return self.lse_base_ptr
 
     @triton.jit
     def make_do_ptrs(self, config: AttnBwdConfig):
@@ -2158,7 +2160,7 @@ class AttnBwdPointerScheduler:
         :return: dO pointers of shape [TILE_M, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.do_base,
+            self.do_base_ptr,
             shape=[config.actual_seqlen_q, config.head_dim],
             strides=[self.stride_dom, 1],
             block_shape=[config.TILE_M, config.TILE_K],
@@ -2174,7 +2176,7 @@ class AttnBwdPointerScheduler:
 
         :return: dPsum pointers of shape [TILE_M]
         """
-        return self.dpsum_base
+        return self.dpsum_base_ptr
 
     @triton.jit
     def make_dq_accum_ptrs(self, config: AttnBwdConfig):
@@ -2187,7 +2189,7 @@ class AttnBwdPointerScheduler:
         :return: dQaccum tensor descriptor with block shape [TILE_M, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.dq_accum_base,
+            self.dq_accum_base_ptr,
             shape=[config.actual_seqlen_q, config.head_dim],
             strides=[self.stride_dqam, 1],
             block_shape=[config.TILE_M, config.TILE_K],
@@ -2204,7 +2206,7 @@ class AttnBwdPointerScheduler:
         :return: dK pointers of shape [TILE_N, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.dk_base,
+            self.dk_base_ptr,
             shape=[config.actual_seqlen_k, config.head_dim],
             strides=[self.stride_dkn, 1],
             block_shape=[config.TILE_N, config.TILE_K],
@@ -2221,7 +2223,7 @@ class AttnBwdPointerScheduler:
         :return: dV pointers of shape [TILE_N, TILE_K]
         """
         return tl.make_tensor_descriptor(
-            self.dv_base,
+            self.dv_base_ptr,
             shape=[config.actual_seqlen_k, config.head_dim],
             strides=[self.stride_dvn, 1],
             block_shape=[config.TILE_N, config.TILE_K],
@@ -2243,7 +2245,7 @@ class AttnBwdPointerScheduler:
         """
         q = q_ptrs.load([m_block * config.TILE_M, 0])
         if config.IS_QUANT:
-            q = (q * config.query_scale).to(self.do_base.dtype.element_ty)
+            q = (q * config.query_scale).to(self.do_base_ptr.dtype.element_ty)
         return q
 
     @triton.jit
@@ -2260,7 +2262,7 @@ class AttnBwdPointerScheduler:
         """
         k = k_ptrs.load([config.n_block * config.TILE_N, 0])
         if config.IS_QUANT:
-            k = (k * config.key_scale).to(self.do_base.dtype.element_ty)
+            k = (k * config.key_scale).to(self.do_base_ptr.dtype.element_ty)
         return k
 
     @triton.jit
@@ -2277,7 +2279,7 @@ class AttnBwdPointerScheduler:
         """
         v = v_ptrs.load([config.n_block * config.TILE_N, 0])
         if config.IS_QUANT:
-            v = (v * config.value_scale).to(self.do_base.dtype.element_ty)
+            v = (v * config.value_scale).to(self.do_base_ptr.dtype.element_ty)
         return v
 
     @triton.jit
