@@ -29,12 +29,14 @@ from flash_sparse_attn.ops.gluon.softmax import check_neginf
 )
 @gluon.jit(repr=bwd_preprocess_repr)
 def _bwd_preprocess_kernel(
-    Out,
-    dO,
-    dPsum,
-    LSE,
-    LSELog2,
-    dQaccum,
+    mOut,
+    mdO,
+    mdPsum,
+    mLSE,
+    mLSELog2,
+    mdQaccum,
+    mCuSeqlensQ,
+    mSeqUsedQ,
     stride_ob,
     stride_oh,
     stride_om,
@@ -53,8 +55,6 @@ def _bwd_preprocess_kernel(
     stride_dqab,
     stride_dqah,
     stride_dqam,
-    cu_seqlens_q,
-    seqused_q,
     seqlen_q,
     num_heads_q,
     HAS_CU_SEQLENS_Q: gl.constexpr,
@@ -66,7 +66,7 @@ def _bwd_preprocess_kernel(
     num_warps: gl.constexpr,
 ):
     warp_size: gl.constexpr = 32
-    element_bits: gl.constexpr = Out.dtype.element_ty.primitive_bitwidth
+    element_bits: gl.constexpr = mOut.dtype.element_ty.primitive_bitwidth
     elements_per_thread: gl.constexpr = 128 // element_bits
     copy_atom_k: gl.constexpr = min(TILE_K, 1024 // element_bits)
     threads_per_row: gl.constexpr = copy_atom_k // elements_per_thread
@@ -110,8 +110,8 @@ def _bwd_preprocess_kernel(
     offset_q, padded_offset_q, actual_seqlen_q = get_seqlen_info(
         batch_idx=batch_idx,
         seqlen_static=seqlen_q,
-        cu_seqlens=cu_seqlens_q,
-        seqused=seqused_q,
+        cu_seqlens=mCuSeqlensQ,
+        seqused=mSeqUsedQ,
         TILE_MN=PADDED_TILE_M,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
@@ -119,7 +119,7 @@ def _bwd_preprocess_kernel(
 
     # Initialize base pointers
     mO_base_ptr = offset_batch_Q(
-        Out + head_idx * stride_oh,
+        mOut + head_idx * stride_oh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -129,7 +129,7 @@ def _bwd_preprocess_kernel(
         USE_PADDED=False,
     )
     mdO_base_ptr = offset_batch_Q(
-        dO + head_idx * stride_doh,
+        mdO + head_idx * stride_doh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -139,7 +139,7 @@ def _bwd_preprocess_kernel(
         USE_PADDED=False,
     )
     mdPsum_base_ptr = offset_batch_Q(
-        dPsum + head_idx * stride_ph,
+        mdPsum + head_idx * stride_ph,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -149,7 +149,7 @@ def _bwd_preprocess_kernel(
         USE_PADDED=True,
     )
     mLSE_base_ptr = offset_batch_Q(
-        LSE + head_idx * stride_lh,
+        mLSE + head_idx * stride_lh,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -159,7 +159,7 @@ def _bwd_preprocess_kernel(
         USE_PADDED=False,
     )
     mLSElog2_base_ptr = offset_batch_Q(
-        LSELog2 + head_idx * stride_l2h,
+        mLSELog2 + head_idx * stride_l2h,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -169,7 +169,7 @@ def _bwd_preprocess_kernel(
         USE_PADDED=True,
     )
     mdQaccum_base_ptr = offset_batch_Q(
-        dQaccum + head_idx * stride_dqah,
+        mdQaccum + head_idx * stride_dqah,
         batch_idx,
         offset_q,
         padded_offset_q,
@@ -363,6 +363,8 @@ def _flash_attn_bwd_preprocess(
         lse,
         lse_log2,
         dq_accum,
+        cu_seqlens_q,
+        seqused_q,
         out.stride(0) if not is_varlen else 0,
         out.stride(-2),
         out.stride(-3),
@@ -381,8 +383,6 @@ def _flash_attn_bwd_preprocess(
         dq_accum.stride(0) if not is_varlen else 0,
         dq_accum.stride(-3),
         dq_accum.stride(-2),
-        cu_seqlens_q,
-        seqused_q,
         seqlen_q,
         num_heads_q,
         HAS_CU_SEQLENS_Q=is_varlen,
