@@ -39,12 +39,14 @@ def _fwd_combine_kernel(
     TILE_M: tl.constexpr,
     TILE_K: tl.constexpr,
 ):
+    # Compute offsets
+    offs_m = tl.arange(0, TILE_M)
+
     # Create grid index
     m_block = tl.program_id(0)
     bh_idx = tl.program_id(1)
     batch_idx = bh_idx // num_heads_q
     head_idx = bh_idx - batch_idx * num_heads_q
-    offs_m = tl.arange(0, TILE_M)
 
     # Get seqlen info for this batch
     offset_q, padded_offset_q, actual_seqlen_q = seqlen_info.get_seqlen_info(
@@ -58,7 +60,7 @@ def _fwd_combine_kernel(
     )
 
     # Initialize base pointers
-    out_part_base = seqlen_info.offset_batch_Q(
+    out_part_base_ptr = seqlen_info.offset_batch_Q(
         Out_partial + head_idx * stride_oph,
         batch_idx,
         offset_q,
@@ -68,7 +70,7 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    lse_part_base = seqlen_info.offset_batch_Q(
+    lse_part_base_ptr = seqlen_info.offset_batch_Q(
         Lse_partial + head_idx * stride_lph,
         batch_idx,
         offset_q,
@@ -78,7 +80,7 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    out_base = seqlen_info.offset_batch_Q(
+    out_base_ptr = seqlen_info.offset_batch_Q(
         Out + head_idx * stride_oh,
         batch_idx,
         offset_q,
@@ -88,7 +90,7 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    lse_base = seqlen_info.offset_batch_Q(
+    lse_base_ptr = seqlen_info.offset_batch_Q(
         Lse + head_idx * stride_lh,
         batch_idx,
         offset_q,
@@ -100,20 +102,20 @@ def _fwd_combine_kernel(
     )
 
     # Create pointers
-    out_part_desc = tl.make_tensor_descriptor(
-        base=out_part_base,
+    out_part_ptr = tl.make_tensor_descriptor(
+        base=out_part_base_ptr,
         shape=[num_splits, actual_seqlen_q, head_dim],
         strides=[stride_ops, stride_opm, 1],
         block_shape=[1, TILE_M, TILE_K],
     )
-    out_desc = tl.make_tensor_descriptor(
-        base=out_base,
+    out_ptr = tl.make_tensor_descriptor(
+        base=out_base_ptr,
         shape=[actual_seqlen_q, head_dim],
         strides=[stride_om, 1],
         block_shape=[TILE_M, TILE_K],
     )
-    lse_part_ptrs = seqlen_info.make_ptrs(
-        lse_part_base,
+    lse_part_ptr = seqlen_info.make_ptrs(
+        lse_part_base_ptr,
         m_block,
         1,
         offs_m,
@@ -121,8 +123,8 @@ def _fwd_combine_kernel(
         TILE_K=1,
         SWAP_AB=False,
     )
-    lse_ptrs = seqlen_info.make_ptrs(
-        lse_base,
+    lse_ptr = seqlen_info.make_ptrs(
+        lse_base_ptr,
         m_block,
         1,
         offs_m,
@@ -140,13 +142,13 @@ def _fwd_combine_kernel(
     for split_idx in tl.range(0, num_splits):
         # Load partial LSE
         lse_s = tl.load(
-            lse_part_ptrs + split_idx * stride_lps,
+            lse_part_ptr + split_idx * stride_lps,
             mask=(m_block * TILE_M + offs_m) < actual_seqlen_q,
             other=float("-inf"),
         )
 
         # Load partial O
-        o_s = tl.sum(out_part_desc.load([split_idx, m_block * TILE_M, 0]), axis=0)
+        o_s = tl.sum(out_part_ptr.load([split_idx, m_block * TILE_M, 0]), axis=0)
 
         # Compute normalized exponentials
         new_row_max = tl.maximum(lse_s, row_max)
@@ -166,7 +168,7 @@ def _fwd_combine_kernel(
     acc_o *= inv_sum[:, None]
 
     # Store output
-    out_desc.store([m_block * TILE_M, 0], acc_o.to(Out.dtype.element_ty))
+    out_ptr.store([m_block * TILE_M, 0], acc_o.to(Out.dtype.element_ty))
 
     # Compute LSE
     # ln2 = math.log(2.0)
@@ -174,7 +176,7 @@ def _fwd_combine_kernel(
     lse = tl.where(row_sum > 0.0, (row_max + tl.log2(row_sum)) * ln2, float("-inf"))
 
     # Store LSE
-    tl.store(lse_ptrs, lse, mask=(m_block * TILE_M + offs_m) < actual_seqlen_q)
+    tl.store(lse_ptr, lse, mask=(m_block * TILE_M + offs_m) < actual_seqlen_q)
 
 
 def _flash_attn_fwd_combine(
@@ -205,7 +207,7 @@ def _flash_attn_fwd_combine(
         ),
         triton.cdiv(32, TILE_K),
     )
-    num_warps, num_stages, num_ctas = min(8, TILE_M, TILE_M * TILE_K // 32), 1, 1
+    num_warps, num_stages, num_ctas = 4, 1, 1
 
     # Get the grid for the kernel launch
     grid = launch_grid.get_fwd_combine_grid(
