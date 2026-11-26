@@ -6,10 +6,9 @@ import triton.language as tl
 
 from flash_sparse_attn.ops.triton import (
     utils,
-    cache_utils,
     launch_grid,
-    seqlen_info,
     kernel_repr,
+    seqlen_info,
 )
 
 
@@ -17,49 +16,43 @@ from flash_sparse_attn.ops.triton import (
 def _bwd_postprocess_kernel(
     dQaccum,
     dQ,
-    dAaccum,
-    dA,
+    CuSeqlensQ,
+    SeqUsedQ,
     stride_dqab,
     stride_dqah,
     stride_dqam,
     stride_dqb,
     stride_dqh,
     stride_dqm,
-    stride_daab,
-    stride_daah,
-    stride_daam,
-    stride_dab,
-    stride_dah,
-    stride_dam,
-    cu_seqlens_q,
-    seqused_q,
     seqlen_q,
+    num_heads_q,
     head_dim,
-    head_dim_rounded,
     scale,
     HAS_CU_SEQLENS_Q: tl.constexpr,
     HAS_SEQUSED_Q: tl.constexpr,
-    HAS_DA: tl.constexpr,
     TILE_M: tl.constexpr,
     TILE_K: tl.constexpr,
+    PADDED_TILE_M: tl.constexpr,
 ):
+    # Create grid index
     m_block = tl.program_id(0)
-    head_idx = tl.program_id(1)
-    batch_idx = tl.program_id(2)
+    bh_idx = tl.program_id(1)
+    batch_idx = bh_idx // num_heads_q
+    head_idx = bh_idx - batch_idx * num_heads_q
 
     # Get seqlen info for this batch
-    offset_q, actual_seqlen_q = seqlen_info.get_seqlen_info(
+    offset_q, padded_offset_q, actual_seqlen_q = seqlen_info.get_seqlen_info(
         batch_idx=batch_idx,
         seqlen_static=seqlen_q,
-        cu_seqlens=cu_seqlens_q,
-        seqused=seqused_q,
+        cu_seqlens=CuSeqlensQ,
+        seqused=SeqUsedQ,
+        TILE_MN=PADDED_TILE_M,
         HAS_CU_SEQLENS=HAS_CU_SEQLENS_Q,
         HAS_SEQUSED=HAS_SEQUSED_Q,
     )
-    padded_offset_q = (offset_q + batch_idx * TILE_M) // TILE_M * TILE_M
 
     # Initialize base pointers
-    dq_accum_base = seqlen_info.offset_batch_Q(
+    dq_accum_base_ptr = seqlen_info.offset_batch_Q(
         dQaccum + head_idx * stride_dqah,
         batch_idx,
         offset_q,
@@ -69,7 +62,7 @@ def _bwd_postprocess_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=True,
     )
-    dq_base = seqlen_info.offset_batch_Q(
+    dq_base_ptr = seqlen_info.offset_batch_Q(
         dQ + head_idx * stride_dqh,
         batch_idx,
         offset_q,
@@ -80,89 +73,40 @@ def _bwd_postprocess_kernel(
         USE_PADDED=False,
     )
 
-    # Create descriptors
-    dq_accum_desc = tl.make_tensor_descriptor(
-        base=dq_accum_base,
-        shape=[actual_seqlen_q, head_dim_rounded],
+    # Create pointers
+    dq_accum_ptr = tl.make_tensor_descriptor(
+        base=dq_accum_base_ptr,
+        shape=[actual_seqlen_q, head_dim],
         strides=[stride_dqam, 1],
         block_shape=[TILE_M, TILE_K],
     )
-    dq_desc = tl.make_tensor_descriptor(
-        base=dq_base,
+    dq_ptr = tl.make_tensor_descriptor(
+        base=dq_base_ptr,
         shape=[actual_seqlen_q, head_dim],
         strides=[stride_dqm, 1],
         block_shape=[TILE_M, TILE_K],
     )
 
-    # Load accumulators
-    acc_dq = dq_accum_desc.load([m_block * TILE_M, 0])
+    # Load dq_accum
+    dq_accum = dq_accum_ptr.load([m_block * TILE_M, 0])
 
-    # Scale dq
-    dq = (acc_dq * scale).to(dQ.dtype.element_ty)
+    # Scale dq_accum
+    dq = dq_accum * scale
 
     # Store dq
-    dq_desc.store([m_block * TILE_M, 0], dq)
-
-    if HAS_DA:
-        da_accum_base = seqlen_info.offset_batch_Q(
-            dAaccum + head_idx * stride_daah,
-            batch_idx,
-            offset_q,
-            padded_offset_q,
-            stride_daab,
-            stride_daam,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=True,
-        )
-        da_base = seqlen_info.offset_batch_Q(
-            dA + head_idx * stride_dah,
-            batch_idx,
-            offset_q,
-            padded_offset_q,
-            stride_dab,
-            stride_dam,
-            HAS_CU_SEQLENS_Q,
-            USE_PADDED=False,
-        )
-
-        da_accum_desc = tl.make_tensor_descriptor(
-            base=da_accum_base,
-            shape=[actual_seqlen_q],
-            strides=[stride_daam],
-            block_shape=[TILE_M],
-        )
-        da_desc = tl.make_tensor_descriptor(
-            base=da_base,
-            shape=[actual_seqlen_q],
-            strides=[stride_dam],
-            block_shape=[TILE_M],
-        )
-
-        # Load da accumulators
-        acc_da = da_accum_desc.load([m_block * TILE_M])
-
-        # Scale da
-        da = (acc_da * scale).to(dA.dtype.element_ty)
-
-        # Store da
-        da_desc.store([m_block * TILE_M], da)
-
-
-_bwd_postprocess_kernel = cache_utils.wrap_kernel(_bwd_postprocess_kernel)
+    dq_ptr.store([m_block * TILE_M, 0], dq.to(dQ.dtype.element_ty))
 
 
 def _flash_attn_bwd_postprocess(
     dq_accum: torch.Tensor,
     dq: torch.Tensor,
     scale: float,
-    head_dim_rounded: int,
-    da_accum: Optional[torch.Tensor] = None,
-    da: Optional[torch.Tensor] = None,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
     tile_m: int = 128,
-    tile_k: int = 128,
+    padded_tile_m: Optional[int] = None,
+    num_warps: Optional[int] = None,
 ) -> torch.Tensor:
     is_varlen = cu_seqlens_q is not None
     if not is_varlen:
@@ -171,43 +115,44 @@ def _flash_attn_bwd_postprocess(
         _, num_heads_q, head_dim = dq.shape
         batch_size = cu_seqlens_q.shape[0] - 1
         seqlen_q = max_seqlen_q
-    has_da = da_accum is not None and da is not None
 
-    grid = launch_grid.get_bwd_postprocess_grid(batch_size, seqlen_q, num_heads_q)
+    # Setup launch configuration
+    TILE_K = max(triton.next_power_of_2(head_dim), 32)
+    TILE_M = tile_m if tile_m is not None else 32
+    PADDED_TILE_M = padded_tile_m if padded_tile_m is not None else TILE_M
+    num_warps = num_warps if num_warps is not None else 8
+
+    # Get the grid for the kernel launch
+    grid = launch_grid.get_bwd_postprocess_grid(
+        batch_size=batch_size,
+        seqlen_q=seqlen_q,
+        num_heads_q=num_heads_q,
+    )
 
     triton.set_allocator(utils.alloc_fn)
 
+    # Launch the kernel
     _bwd_postprocess_kernel[grid](
         dq_accum,
         dq,
-        da_accum if has_da else dq_accum,
-        da if has_da else dq,
+        cu_seqlens_q,
+        seqused_q,
         dq_accum.stride(0) if not is_varlen else 0,
-        dq_accum.stride(1) if not is_varlen else dq_accum.stride(0),
-        head_dim_rounded,
+        dq_accum.stride(-3),
+        dq_accum.stride(-2),
         dq.stride(0) if not is_varlen else 0,
         dq.stride(-2),
         dq.stride(-3) if not is_varlen else dq.stride(0),
-        da_accum.stride(0) if (has_da and not is_varlen) else 0,
-        da_accum.stride(1) if (has_da and not is_varlen) else (da_accum.stride(0) if has_da else 0),
-        da_accum.stride(-1) if has_da else 0,
-        da.stride(0) if (has_da and not is_varlen) else 0,
-        da.stride(-2) if has_da else 0,
-        da.stride(-1) if has_da else 0,
-        cu_seqlens_q,
-        seqused_q,
         seqlen_q,
+        num_heads_q,
         head_dim,
-        head_dim_rounded,
         scale,
         HAS_CU_SEQLENS_Q=is_varlen,
         HAS_SEQUSED_Q=seqused_q is not None,
-        HAS_DA=has_da,
-        TILE_M=tile_m,
-        TILE_K=tile_k,
-        num_warps=4,
-        num_stages=1,
-        num_ctas=1,
+        TILE_M=TILE_M,
+        TILE_K=TILE_K,
+        PADDED_TILE_M=PADDED_TILE_M,
+        num_warps=num_warps,
     )
 
     return dq
