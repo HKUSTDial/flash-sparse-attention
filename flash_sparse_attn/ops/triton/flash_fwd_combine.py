@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
@@ -140,22 +142,22 @@ def _fwd_combine_kernel(
 
     # Combine split outputs
     for split_idx in tl.range(0, num_splits):
-        # Load partial LSE
+        # Load partial lse
         lse_s = tl.load(
             lse_part_ptr + split_idx * stride_lps,
             mask=(m_block * TILE_M + offs_m) < actual_seqlen_q,
             other=float("-inf"),
         )
 
-        # Load partial O
-        o_s = tl.sum(out_part_ptr.load([split_idx, m_block * TILE_M, 0]), axis=0)
+        # Load partial output
+        o_s = out_part_ptr.load([split_idx, m_block * TILE_M, 0]).reshape([TILE_M, TILE_K])
 
         # Compute normalized exponentials
         new_row_max = tl.maximum(lse_s, row_max)
         old_scale = tl.where(row_max == float("-inf"), 0.0, tl.exp2(row_max - new_row_max))
         exp_logic = tl.where(lse_s == float("-inf"), 0.0, tl.exp2(lse_s - new_row_max))
 
-        # Compute scaled O
+        # Compute scaled output
         acc_o *= old_scale[:, None]
         acc_o += exp_logic[:, None] * o_s
 
@@ -170,12 +172,12 @@ def _fwd_combine_kernel(
     # Store output
     out_ptr.store([m_block * TILE_M, 0], acc_o.to(Out.dtype.element_ty))
 
-    # Compute LSE
+    # Compute lse
     # ln2 = math.log(2.0)
     ln2 = 0.6931471805599453
     lse = tl.where(row_sum > 0.0, (row_max + tl.log2(row_sum)) * ln2, float("-inf"))
 
-    # Store LSE
+    # Store lse
     tl.store(lse_ptr, lse, mask=(m_block * TILE_M + offs_m) < actual_seqlen_q)
 
 
@@ -186,6 +188,8 @@ def _flash_attn_fwd_combine(
     lse: torch.Tensor,
     cu_seqlens_q: torch.Tensor = None,
     seqused_q: torch.Tensor = None,
+    tile_m: Optional[int] = None,
+    num_warps: Optional[int] = None,
 ):
     is_varlen = cu_seqlens_q is not None
     num_splits = out_partial.shape[0]
@@ -198,16 +202,20 @@ def _flash_attn_fwd_combine(
 
     # Setup launch configuration
     TILE_K = max(triton.next_power_of_2(head_dim), 32)
-    TILE_M = max(
-        min(
-            4
-            if TILE_K % 256 == 0
-            else (8 if TILE_K % 128 == 0 else (16 if TILE_K % 64 == 0 else 32)),
-            triton.next_power_of_2(seqlen_q),
-        ),
-        triton.cdiv(32, TILE_K),
+    TILE_M = (
+        tile_m
+        if tile_m is not None
+        else max(
+            min(
+                4
+                if TILE_K % 256 == 0
+                else (8 if TILE_K % 128 == 0 else (16 if TILE_K % 64 == 0 else 32)),
+                triton.next_power_of_2(seqlen_q),
+            ),
+            triton.cdiv(32, TILE_K),
+        )
     )
-    num_warps, num_stages, num_ctas = 4, 1, 1
+    num_warps = num_warps if num_warps is not None else 4
 
     # Get the grid for the kernel launch
     grid = launch_grid.get_fwd_combine_grid(
@@ -247,6 +255,4 @@ def _flash_attn_fwd_combine(
         TILE_M=TILE_M,
         TILE_K=TILE_K,
         num_warps=num_warps,
-        num_stages=num_stages,
-        num_ctas=num_ctas,
     )
