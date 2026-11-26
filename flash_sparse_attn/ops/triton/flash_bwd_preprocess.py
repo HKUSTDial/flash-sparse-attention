@@ -220,7 +220,6 @@ def _flash_attn_bwd_preprocess(
     lse: torch.Tensor,
     lse_log2: torch.Tensor,
     dq_accum: torch.Tensor,
-    head_dim: int,
     cu_seqlens_q: Optional[torch.Tensor] = None,
     seqused_q: Optional[torch.Tensor] = None,
     max_seqlen_q: Optional[int] = None,
