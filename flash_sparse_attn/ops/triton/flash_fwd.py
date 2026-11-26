@@ -253,36 +253,15 @@ def _fwd_kernel(
     # Load query tile
     q_tile = ptrs_sched.load_q(config, ptrs_sched.make_q_ptrs(config))
 
-    # First iteration with seqlen masking
-    n_block_max = block_sched.n_block_max - 1
-
     # Load key tile
     k_tile = ptrs_sched.load_k(config, ptrs_sched.make_k_ptrs(config), block_sched.n_block_max - 1)
 
-    # Process n_block with seqlen masking
-    k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
-        config,
-        ptrs_sched,
-        mask_sched,
-        softmax_sched,
-        q_tile,
-        k_tile,
-        acc_o,
-        row_max,
-        row_sum,
-        n_block_max,
-        block_sched.n_block_min,
-        IS_MASK=True,
-        MASK_SEQLEN=True,
-        MASK_CAUSAL=IS_CAUSAL,
-        MASK_LOCAL=IS_LOCAL,
-        MASK_SINK=IS_LOCAL,
-    )
-
+    # NOTE: Keep the first iteration inside this range avoiding spills
+    # revisit after compiler updates
     if IS_CAUSAL or IS_LOCAL:
         # Process n_blocks with causal masking
         for n_block in tl.range(
-            n_block_max - 1,
+            block_sched.n_block_max - 1,
             block_sched.n_block_max_no_mask - 1,
             -1,
         ):
@@ -299,11 +278,32 @@ def _fwd_kernel(
                 n_block,
                 block_sched.n_block_min,
                 IS_MASK=True,
-                MASK_SEQLEN=False,
+                MASK_SEQLEN=True,
                 MASK_CAUSAL=IS_CAUSAL,
                 MASK_LOCAL=IS_LOCAL,
-                MASK_SINK=False,
+                MASK_SINK=IS_LOCAL,
             )
+    else:
+        # First iteration with seqlen masking
+        n_block = block_sched.n_block_max - 1
+        k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+            config,
+            ptrs_sched,
+            mask_sched,
+            softmax_sched,
+            q_tile,
+            k_tile,
+            acc_o,
+            row_max,
+            row_sum,
+            n_block,
+            block_sched.n_block_min,
+            IS_MASK=True,
+            MASK_SEQLEN=True,
+            MASK_CAUSAL=False,
+            MASK_LOCAL=False,
+            MASK_SINK=False,
+        )
 
     if not IS_LOCAL and block_sched.n_block_max_no_mask > block_sched.n_block_min:
         # Process n_blocks without masking
@@ -447,13 +447,13 @@ def _fwd_kernel(
     # Finalize softmax
     row_scale, lse_tile = softmax_sched.finalize(row_max, row_sum, IS_LOG2=IS_SPLIT_KV)
 
-    # Store LSE
+    # Store lse
     ptrs_sched.store_lse(config, ptrs_sched.make_lse_ptrs(config), lse_tile)
 
     # Finalize rescale
     acc_o = softmax_sched.rescale_o(acc_o, row_scale)
 
-    # Store O
+    # Store output
     ptrs_sched.store_out(config, ptrs_sched.make_out_ptrs(config), acc_o)
 
 
@@ -490,6 +490,8 @@ def _flash_attn_forward(
     lse: Optional[torch.Tensor] = None,
     tile_m: Optional[int] = None,
     tile_n: Optional[int] = None,
+    num_warps: Optional[int] = None,
+    num_stages: Optional[int] = None,
     is_autotune: bool = True,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -511,10 +513,10 @@ def _flash_attn_forward(
             q=q,
             k=k,
             v=v,
+            window_sizes=window_sizes,
             q_scale=q_scale,
             k_scale=k_scale,
             v_scale=v_scale,
-            window_sizes=window_sizes,
             seqused_k=seqused_k,
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
@@ -532,7 +534,9 @@ def _flash_attn_forward(
         kernel = _fwd_kernel
         TILE_M = tile_m if tile_m is not None else 128
         TILE_N = tile_n if tile_n is not None else 64
-        num_warps, num_stages, num_ctas = 4, 1, 1
+        num_warps = num_warps if num_warps is not None else 4
+        num_stages = num_stages if num_stages is not None else 1
+        num_ctas = 1
     else:
         launch_config = kernel_cache._launch_config_cache.load(
             device=device,
@@ -732,6 +736,8 @@ def _flash_attn_varlen_forward(
     lse: Optional[torch.Tensor] = None,
     tile_m: Optional[int] = None,
     tile_n: Optional[int] = None,
+    num_warps: Optional[int] = None,
+    num_stages: Optional[int] = None,
     is_autotune: bool = True,
     skip_checks: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, float]:
@@ -756,10 +762,10 @@ def _flash_attn_varlen_forward(
             q=q,
             k=k,
             v=v,
+            window_sizes=window_sizes,
             q_scale=q_scale,
             k_scale=k_scale,
             v_scale=v_scale,
-            window_sizes=window_sizes,
             cu_seqlens_q=cu_seqlens_q,
             cu_seqlens_k=cu_seqlens_k,
             seqused_q=seqused_q,
@@ -780,7 +786,9 @@ def _flash_attn_varlen_forward(
         kernel = _fwd_kernel
         TILE_M = tile_m if tile_m is not None else 128
         TILE_N = tile_n if tile_n is not None else 64
-        num_warps, num_stages, num_ctas = 4, 1, 1
+        num_warps = num_warps if num_warps is not None else 4
+        num_stages = num_stages if num_stages is not None else 1
+        num_ctas = 1
     else:
         launch_config = kernel_cache._launch_config_cache.load(
             device=device,
