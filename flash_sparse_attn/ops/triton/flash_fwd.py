@@ -153,7 +153,7 @@ def _fwd_kernel(
         QHEAD_PER_KVHEAD=QHEAD_PER_KVHEAD,
         PACK_GQA=PACK_GQA,
         IS_SPLIT_KV=IS_SPLIT_KV,
-        IS_LPT=not PACK_GQA and not IS_SPLIT_KV,
+        IS_LPT=not PACK_GQA and not IS_SPLIT_KV and tl.target_info.is_cuda(),
     )
 
     # Load window sizes
