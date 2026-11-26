@@ -63,11 +63,11 @@ def get_n_block_min_max(
     :return n_block_sink_max: maximum N block in the sink range
     """
     n_block_max = tl.cdiv(seqlen_k, TILE_N)
-    n_block_min = tl.to_tensor(0)
+    n_block_min = tl.core.to_tensor(0)
     n_block_window_max = n_block_max
     n_block_window_min = n_block_min
-    n_block_sink_min = tl.to_tensor(0)
-    n_block_sink_max = tl.to_tensor(0)
+    n_block_sink_min = tl.core.to_tensor(0)
+    n_block_sink_max = tl.core.to_tensor(0)
     if IS_CAUSAL or IS_LOCAL:
         m_idx_max = (m_block + 1) * TILE_M
         if QHEAD_PER_KVHEAD_PACKGQA > 1:
@@ -242,11 +242,11 @@ def get_m_block_min_max(
     :return m_block_sink_max: maximum M block in the sink range
     """
     m_block_max = tl.cdiv(seqlen_q, TILE_M)
-    m_block_min = tl.to_tensor(0)
+    m_block_min = tl.core.to_tensor(0)
     m_block_window_max = m_block_max
     m_block_window_min = m_block_min
-    m_block_sink_min = tl.to_tensor(0)
-    m_block_sink_max = tl.to_tensor(0)
+    m_block_sink_min = tl.core.to_tensor(0)
+    m_block_sink_max = tl.core.to_tensor(0)
     if IS_CAUSAL or IS_LOCAL:
         n_idx_min = n_block * TILE_N
         m_idx = n_idx_min + seqlen_q - seqlen_k

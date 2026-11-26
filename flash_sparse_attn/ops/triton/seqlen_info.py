@@ -49,7 +49,9 @@ def get_seqlen_info(
         else:
             seqlen = seqlen_static
     padded_offset = (
-        (offset + batch_idx * TILE_MN) // TILE_MN * TILE_MN if HAS_CU_SEQLENS else tl.to_tensor(0)
+        (offset + batch_idx * TILE_MN) // TILE_MN * TILE_MN
+        if HAS_CU_SEQLENS
+        else tl.core.to_tensor(0)
     )
     return offset, padded_offset, seqlen
 

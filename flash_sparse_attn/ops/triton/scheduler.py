@@ -95,7 +95,7 @@ class AttnFwdGridIndex:
                 head_batch_idx // num_heads,
                 head_batch_idx % num_heads,
                 (head_batch_idx % num_heads) // QHEAD_PER_KVHEAD,
-                tl.to_tensor(0),
+                tl.core.to_tensor(0),
             )
         else:
             m_block = tl.program_id(0)
@@ -106,7 +106,7 @@ class AttnFwdGridIndex:
                 split_idx = batch_split_idx - batch_idx * NUM_SPLITS
             else:
                 batch_idx = batch_split_idx
-                split_idx = tl.to_tensor(0)
+                split_idx = tl.core.to_tensor(0)
             head_kv_idx = head_idx if PACK_GQA else head_idx // QHEAD_PER_KVHEAD
             return AttnFwdGridIndex(
                 m_block,
@@ -144,10 +144,10 @@ class AttnFwdGridIndex:
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
             window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
-            window_size_sink = tl.to_tensor(0)
-            window_size_left = tl.to_tensor(0)
-            window_size_right = tl.to_tensor(0)
-            window_size_near = tl.to_tensor(0)
+            window_size_sink = tl.core.to_tensor(0)
+            window_size_left = tl.core.to_tensor(0)
+            window_size_right = tl.core.to_tensor(0)
+            window_size_near = tl.core.to_tensor(0)
         return window_size_sink, window_size_left, window_size_right, window_size_near
 
 
@@ -233,7 +233,7 @@ class AttnBwdGridIndex:
                 head_batch_idx // num_heads,
                 head_batch_idx % num_heads,
                 (head_batch_idx % num_heads) // QHEAD_PER_KVHEAD,
-                tl.to_tensor(0),
+                tl.core.to_tensor(0),
             )
         else:
             n_block = tl.program_id(0)
@@ -244,7 +244,7 @@ class AttnBwdGridIndex:
                 split_idx = batch_split_idx - batch_idx * NUM_SPLITS
             else:
                 batch_idx = batch_split_idx
-                split_idx = tl.to_tensor(0)
+                split_idx = tl.core.to_tensor(0)
             head_kv_idx = head_idx // QHEAD_PER_KVHEAD
             return AttnBwdGridIndex(
                 n_block,
@@ -282,10 +282,10 @@ class AttnBwdGridIndex:
             window_size_right = tl.load(window_sizes + self.head_kv_idx * stride_wh + 2)
             window_size_near = tl.load(window_sizes + self.head_kv_idx * stride_wh + 3)
         else:
-            window_size_sink = tl.to_tensor(0)
-            window_size_left = tl.to_tensor(0)
-            window_size_right = tl.to_tensor(0)
-            window_size_near = tl.to_tensor(0)
+            window_size_sink = tl.core.to_tensor(0)
+            window_size_left = tl.core.to_tensor(0)
+            window_size_right = tl.core.to_tensor(0)
+            window_size_near = tl.core.to_tensor(0)
         return window_size_sink, window_size_left, window_size_right, window_size_near
 
 
@@ -548,32 +548,32 @@ class AttnFwdConfig:
             k_scale = tl.load(key_scale)
             v_scale = tl.load(value_scale)
         else:
-            q_scale = tl.to_tensor(1.0)
-            k_scale = tl.to_tensor(1.0)
-            v_scale = tl.to_tensor(1.0)
+            q_scale = tl.core.to_tensor(1.0)
+            k_scale = tl.core.to_tensor(1.0)
+            v_scale = tl.core.to_tensor(1.0)
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E * q_scale * k_scale
         return AttnFwdConfig(
-            tl.to_tensor(batch_idx),
-            tl.to_tensor(head_idx),
-            tl.to_tensor(head_kv_idx),
-            tl.to_tensor(split_idx),
-            tl.to_tensor(m_block),
-            tl.to_tensor(softmax_scale),
-            tl.to_tensor(softmax_scale_log2),
-            tl.to_tensor(softmax_threshold),
-            tl.to_tensor(v_scale),
-            tl.to_tensor(actual_seqlen_q),
-            tl.to_tensor(actual_seqlen_k),
-            tl.to_tensor(offset_q),
-            tl.to_tensor(offset_k),
-            tl.to_tensor(padded_offset_q),
-            tl.to_tensor(padded_offset_k),
-            tl.to_tensor(window_size_sink),
-            tl.to_tensor(window_size_left),
-            tl.to_tensor(window_size_right),
-            tl.to_tensor(window_size_near),
-            tl.to_tensor(head_dim),
+            tl.core.to_tensor(batch_idx),
+            tl.core.to_tensor(head_idx),
+            tl.core.to_tensor(head_kv_idx),
+            tl.core.to_tensor(split_idx),
+            tl.core.to_tensor(m_block),
+            tl.core.to_tensor(softmax_scale),
+            tl.core.to_tensor(softmax_scale_log2),
+            tl.core.to_tensor(softmax_threshold),
+            tl.core.to_tensor(v_scale),
+            tl.core.to_tensor(actual_seqlen_q),
+            tl.core.to_tensor(actual_seqlen_k),
+            tl.core.to_tensor(offset_q),
+            tl.core.to_tensor(offset_k),
+            tl.core.to_tensor(padded_offset_q),
+            tl.core.to_tensor(padded_offset_k),
+            tl.core.to_tensor(window_size_sink),
+            tl.core.to_tensor(window_size_left),
+            tl.core.to_tensor(window_size_right),
+            tl.core.to_tensor(window_size_near),
+            tl.core.to_tensor(head_dim),
             PACK_GQA,
             QHEAD_PER_KVHEAD_PACKGQA,
             NUM_SPLITS,
@@ -881,34 +881,34 @@ class AttnBwdConfig:
             k_scale = tl.load(key_scale)
             v_scale = tl.load(value_scale)
         else:
-            q_scale = tl.to_tensor(1.0)
-            k_scale = tl.to_tensor(1.0)
-            v_scale = tl.to_tensor(1.0)
+            q_scale = tl.core.to_tensor(1.0)
+            k_scale = tl.core.to_tensor(1.0)
+            v_scale = tl.core.to_tensor(1.0)
         LOG2E: tl.constexpr = 1.44269504089
         softmax_scale_log2 = softmax_scale * LOG2E
         return AttnBwdConfig(
-            tl.to_tensor(batch_idx),
-            tl.to_tensor(head_idx),
-            tl.to_tensor(head_kv_idx),
-            tl.to_tensor(split_idx),
-            tl.to_tensor(n_block),
-            tl.to_tensor(softmax_scale),
-            tl.to_tensor(softmax_scale_log2),
-            tl.to_tensor(softmax_threshold),
-            tl.to_tensor(q_scale),
-            tl.to_tensor(k_scale),
-            tl.to_tensor(v_scale),
-            tl.to_tensor(actual_seqlen_q),
-            tl.to_tensor(actual_seqlen_k),
-            tl.to_tensor(offset_q),
-            tl.to_tensor(offset_k),
-            tl.to_tensor(padded_offset_q),
-            tl.to_tensor(padded_offset_k),
-            tl.to_tensor(window_size_sink),
-            tl.to_tensor(window_size_left),
-            tl.to_tensor(window_size_right),
-            tl.to_tensor(window_size_near),
-            tl.to_tensor(head_dim),
+            tl.core.to_tensor(batch_idx),
+            tl.core.to_tensor(head_idx),
+            tl.core.to_tensor(head_kv_idx),
+            tl.core.to_tensor(split_idx),
+            tl.core.to_tensor(n_block),
+            tl.core.to_tensor(softmax_scale),
+            tl.core.to_tensor(softmax_scale_log2),
+            tl.core.to_tensor(softmax_threshold),
+            tl.core.to_tensor(q_scale),
+            tl.core.to_tensor(k_scale),
+            tl.core.to_tensor(v_scale),
+            tl.core.to_tensor(actual_seqlen_q),
+            tl.core.to_tensor(actual_seqlen_k),
+            tl.core.to_tensor(offset_q),
+            tl.core.to_tensor(offset_k),
+            tl.core.to_tensor(padded_offset_q),
+            tl.core.to_tensor(padded_offset_k),
+            tl.core.to_tensor(window_size_sink),
+            tl.core.to_tensor(window_size_left),
+            tl.core.to_tensor(window_size_right),
+            tl.core.to_tensor(window_size_near),
+            tl.core.to_tensor(head_dim),
             QHEAD_PER_KVHEAD,
             NUM_SPLITS,
             TILE_M,
@@ -1076,10 +1076,10 @@ class AttnFwdBlockScheduler:
                 QHEAD_PER_KVHEAD_PACKGQA=config.QHEAD_PER_KVHEAD_PACKGQA,
             )
         else:
-            n_block_window_min = tl.to_tensor(0)
-            n_block_window_max = tl.to_tensor(0)
-            n_block_window_min_no_mask = tl.to_tensor(0)
-            n_block_window_max_no_mask = tl.to_tensor(0)
+            n_block_window_min = tl.core.to_tensor(0)
+            n_block_window_max = tl.core.to_tensor(0)
+            n_block_window_min_no_mask = tl.core.to_tensor(0)
+            n_block_window_max_no_mask = tl.core.to_tensor(0)
 
         return AttnFwdBlockScheduler(
             n_block_min,
@@ -1220,10 +1220,10 @@ class AttnBwdBlockScheduler:
                 IS_LOCAL=True,
             )
         else:
-            m_block_window_min_no_mask = tl.to_tensor(0)
-            m_block_window_max_no_mask = tl.to_tensor(0)
-            m_block_sink_min = tl.to_tensor(0)
-            m_block_sink_max = tl.to_tensor(0)
+            m_block_window_min_no_mask = tl.core.to_tensor(0)
+            m_block_window_max_no_mask = tl.core.to_tensor(0)
+            m_block_sink_min = tl.core.to_tensor(0)
+            m_block_sink_max = tl.core.to_tensor(0)
 
         return AttnBwdBlockScheduler(
             m_block_min,
@@ -1462,15 +1462,15 @@ class AttnFwdPointerScheduler:
             v_base_ptr,
             out_base_ptr,
             lse_base_ptr,
-            tl.to_tensor(stride_qh),
-            tl.to_tensor(stride_qm),
-            tl.to_tensor(stride_kb),
-            tl.to_tensor(stride_kn),
-            tl.to_tensor(stride_vb),
-            tl.to_tensor(stride_vn),
-            tl.to_tensor(stride_oh),
-            tl.to_tensor(stride_om),
-            tl.to_tensor(stride_lh),
+            tl.core.to_tensor(stride_qh),
+            tl.core.to_tensor(stride_qm),
+            tl.core.to_tensor(stride_kb),
+            tl.core.to_tensor(stride_kn),
+            tl.core.to_tensor(stride_vb),
+            tl.core.to_tensor(stride_vn),
+            tl.core.to_tensor(stride_oh),
+            tl.core.to_tensor(stride_om),
+            tl.core.to_tensor(stride_lh),
         )
 
     @triton.jit
@@ -2077,13 +2077,13 @@ class AttnBwdPointerScheduler:
             dq_accum_base_ptr,
             dk_base_ptr,
             dv_base_ptr,
-            tl.to_tensor(stride_qm),
-            tl.to_tensor(stride_kn),
-            tl.to_tensor(stride_vn),
-            tl.to_tensor(stride_dom),
-            tl.to_tensor(stride_dqam),
-            tl.to_tensor(stride_dkn),
-            tl.to_tensor(stride_dvn),
+            tl.core.to_tensor(stride_qm),
+            tl.core.to_tensor(stride_kn),
+            tl.core.to_tensor(stride_vn),
+            tl.core.to_tensor(stride_dom),
+            tl.core.to_tensor(stride_dqam),
+            tl.core.to_tensor(stride_dkn),
+            tl.core.to_tensor(stride_dvn),
         )
 
     @triton.jit
