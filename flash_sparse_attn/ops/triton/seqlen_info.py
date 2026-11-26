@@ -1,7 +1,6 @@
 # Copyright (c) 2026, Jingze Shi.
 import triton
 import triton.language as tl
-from triton.language.extra import libdevice
 
 
 @triton.jit
@@ -140,7 +139,6 @@ def get_softmax_threshold(
     IS_CAUSAL: tl.constexpr = False,
     QHEAD_PER_KVHEAD_PACKGQA: tl.constexpr = 1,
     IS_LOG2: tl.constexpr = True,
-    FAST_MATH: tl.constexpr = True,
 ):
     """
     Compute the softmax threshold for a given block.
@@ -161,8 +159,6 @@ def get_softmax_threshold(
     :type QHEAD_PER_KVHEAD_PACKGQA: int
     :param IS_LOG2: boolean flag indicating if the threshold should be returned in log2-domain
     :type IS_LOG2: bool
-    :param FAST_MATH: use approximate FTZ log2
-    :type FAST_MATH: bool
 
     :return softmax_threshold: softmax threshold of shape [TILE_M]
     """
@@ -176,10 +172,7 @@ def get_softmax_threshold(
     threshold = tl.maximum(tl.minimum(softmax_threshold / visible_len, 1.0), 0.0)
     if not IS_LOG2:
         return threshold
-    if FAST_MATH:
-        return libdevice.fast_log2f(threshold)
-    else:
-        return tl.log2(threshold)
+    return tl.log2(threshold)
 
 
 @triton.jit
