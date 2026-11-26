@@ -1186,7 +1186,6 @@ def _flash_attn_backward_sm80(
         lse=lse,
         lse_log2=lse_log2,
         dq_accum=dq_accum,
-        head_dim=head_dim,
         padded_tile_m=TILE_M,
     )
 
@@ -1269,7 +1268,6 @@ def _flash_attn_backward_sm80(
         dq_accum=dq_accum,
         dq=dq,
         scale=softmax_scale,
-        head_dim=head_dim,
         padded_tile_m=TILE_M,
     )
 
@@ -1412,7 +1410,6 @@ def _flash_attn_varlen_backward_sm80(
         lse=lse,
         lse_log2=lse_log2,
         dq_accum=dq_accum,
-        head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         seqused_q=seqused_q,
         max_seqlen_q=max_seqlen_q,
@@ -1498,7 +1495,6 @@ def _flash_attn_varlen_backward_sm80(
         dq_accum=dq_accum,
         dq=dq,
         scale=softmax_scale,
-        head_dim=head_dim,
         cu_seqlens_q=cu_seqlens_q,
         seqused_q=seqused_q,
         max_seqlen_q=max_seqlen_q,
