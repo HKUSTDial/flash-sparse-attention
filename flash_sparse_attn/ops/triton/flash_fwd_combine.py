@@ -62,7 +62,7 @@ def _fwd_combine_kernel(
     )
 
     # Initialize base pointers
-    out_part_base_ptr = seqlen_info.offset_batch_Q(
+    out_partial_base_ptr = seqlen_info.offset_batch_Q(
         Out_partial + head_idx * stride_oph,
         batch_idx,
         offset_q,
@@ -72,7 +72,7 @@ def _fwd_combine_kernel(
         HAS_CU_SEQLENS_Q,
         USE_PADDED=False,
     )
-    lse_part_base_ptr = seqlen_info.offset_batch_Q(
+    lse_partial_base_ptr = seqlen_info.offset_batch_Q(
         Lse_partial + head_idx * stride_lph,
         batch_idx,
         offset_q,
@@ -104,8 +104,8 @@ def _fwd_combine_kernel(
     )
 
     # Create pointers
-    out_part_ptr = tl.make_tensor_descriptor(
-        base=out_part_base_ptr,
+    out_partial_ptr = tl.make_tensor_descriptor(
+        base=out_partial_base_ptr,
         shape=[num_splits, actual_seqlen_q, head_dim],
         strides=[stride_ops, stride_opm, 1],
         block_shape=[1, TILE_M, TILE_K],
@@ -116,8 +116,8 @@ def _fwd_combine_kernel(
         strides=[stride_om, 1],
         block_shape=[TILE_M, TILE_K],
     )
-    lse_part_ptr = seqlen_info.make_ptrs(
-        lse_part_base_ptr,
+    lse_partial_ptr = seqlen_info.make_ptrs(
+        lse_partial_base_ptr,
         m_block,
         1,
         offs_m,
@@ -142,42 +142,46 @@ def _fwd_combine_kernel(
 
     # Combine split outputs
     for split_idx in tl.range(0, num_splits):
-        # Load partial lse
-        lse_s = tl.load(
-            lse_part_ptr + split_idx * stride_lps,
+        # Load partial LSE
+        lse_partial_s = tl.load(
+            lse_partial_ptr + split_idx * stride_lps,
             mask=(m_block * TILE_M + offs_m) < actual_seqlen_q,
             other=float("-inf"),
         )
 
-        # Load partial output
-        o_s = out_part_ptr.load([split_idx, m_block * TILE_M, 0]).reshape([TILE_M, TILE_K])
+        # Load partial O
+        o_partial_s = out_partial_ptr.load([split_idx, m_block * TILE_M, 0]).reshape(
+            [TILE_M, TILE_K]
+        )
 
         # Compute normalized exponentials
-        new_row_max = tl.maximum(lse_s, row_max)
+        new_row_max = tl.maximum(lse_partial_s, row_max)
         old_scale = tl.where(row_max == float("-inf"), 0.0, tl.exp2(row_max - new_row_max))
-        exp_logic = tl.where(lse_s == float("-inf"), 0.0, tl.exp2(lse_s - new_row_max))
+        exp_logic = tl.where(
+            lse_partial_s == float("-inf"), 0.0, tl.exp2(lse_partial_s - new_row_max)
+        )
 
-        # Compute scaled output
+        # Compute scaled O
         acc_o *= old_scale[:, None]
-        acc_o += exp_logic[:, None] * o_s
+        acc_o += exp_logic[:, None] * o_partial_s
 
         # Update row_sum and row_max
         row_sum = row_sum * old_scale + exp_logic
         row_max = new_row_max
 
-    # Normalize output
+    # Normalize O
     inv_sum = tl.where((row_sum == 0.0) | (row_sum != row_sum), 0.0, 1.0 / row_sum)
     acc_o *= inv_sum[:, None]
 
-    # Store output
+    # Store O
     out_ptr.store([m_block * TILE_M, 0], acc_o.to(Out.dtype.element_ty))
 
-    # Compute lse
+    # Compute LSE
     # ln2 = math.log(2.0)
     ln2 = 0.6931471805599453
     lse = tl.where(row_sum > 0.0, (row_max + tl.log2(row_sum)) * ln2, float("-inf"))
 
-    # Store lse
+    # Store LSE
     tl.store(lse_ptr, lse, mask=(m_block * TILE_M + offs_m) < actual_seqlen_q)
 
 

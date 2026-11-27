@@ -87,13 +87,13 @@ def _bwd_postprocess_kernel(
         block_shape=[TILE_M, TILE_K],
     )
 
-    # Load dq_accum
+    # Load dQaccum
     dq_accum = dq_accum_ptr.load([m_block * TILE_M, 0])
 
-    # Scale dq_accum
+    # Scale dQaccum
     dq = dq_accum * scale
 
-    # Store dq
+    # Store dQ
     dq_ptr.store([m_block * TILE_M, 0], dq.to(dQ.dtype.element_ty))
 
 

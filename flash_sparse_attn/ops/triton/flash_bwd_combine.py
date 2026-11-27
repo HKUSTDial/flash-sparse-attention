@@ -135,16 +135,20 @@ def _bwd_combine_kernel(
 
     # Combine split gradients
     for split_idx in range(num_splits):
-        # Load partial dk
-        dk_partial_s = dk_partial_ptr.load([split_idx, n_block * TILE_N, 0]).reshape([TILE_N, TILE_K])
+        # Load partial dK
+        dk_partial_s = dk_partial_ptr.load([split_idx, n_block * TILE_N, 0]).reshape(
+            [TILE_N, TILE_K]
+        )
 
-        # Compute dk
+        # Compute dK
         acc_dk += dk_partial_s
 
-        # Load partial dv
-        dv_partial_s = dv_partial_ptr.load([split_idx, n_block * TILE_N, 0]).reshape([TILE_N, TILE_K])
+        # Load partial dV
+        dv_partial_s = dv_partial_ptr.load([split_idx, n_block * TILE_N, 0]).reshape(
+            [TILE_N, TILE_K]
+        )
 
-        # Compute dv
+        # Compute dV
         acc_dv += dv_partial_s
 
     # Store dK

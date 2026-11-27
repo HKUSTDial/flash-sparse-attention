@@ -29,8 +29,8 @@ def _fwd_inner_kernel(
     ptrs_sched: AttnFwdPointerScheduler,
     mask_sched: AttnMaskScheduler,
     softmax_sched: SoftmaxScheduler,
-    q_tile,
-    k_tile,
+    q,
+    k,
     acc_o,
     row_max,
     row_sum,
@@ -42,15 +42,15 @@ def _fwd_inner_kernel(
     MASK_LOCAL: tl.constexpr = False,
     MASK_SINK: tl.constexpr = False,
 ):
-    # Compute attention scores
-    acc_s = tl.dot(q_tile, k_tile.T)
+    # Compute S
+    acc_s = tl.dot(q, k.T)
 
     if n_block > n_block_min:
-        # Load next key tile
-        k_tile = ptrs_sched.load_k(config, ptrs_sched.make_k_ptrs(config), n_block - 1)
+        # Load next K
+        k = ptrs_sched.load_k(config, ptrs_sched.make_k_ptrs(config), n_block - 1)
 
     if IS_MASK:
-        # Apply mask to attention scores
+        # Apply mask to S
         acc_s = mask_sched.apply_mask(
             acc_s,
             n_block,
@@ -72,21 +72,21 @@ def _fwd_inner_kernel(
         )
 
     if not is_skip:
-        # Load value tile
-        v_tile = ptrs_sched.load_v(config, ptrs_sched.make_v_ptrs(config), n_block)
+        # Load V
+        v = ptrs_sched.load_v(config, ptrs_sched.make_v_ptrs(config), n_block)
 
         # Apply online softmax
         p, row_max, row_sum, row_scale = softmax_sched.online_softmax(
             acc_s, row_max, row_sum, row_max_curr=row_max_curr, CHECK_INF=IS_MASK
         )
 
-        # Rescale output accumulator
+        # Rescale O accumulator
         acc_o = softmax_sched.rescale_o(acc_o, row_scale)
 
-        # Update output accumulator
-        acc_o += tl.dot(p.to(v_tile.dtype), v_tile)
+        # Compute O
+        acc_o += tl.dot(p.to(v.dtype), v)
 
-    return k_tile, acc_o, row_max, row_sum
+    return k, acc_o, row_max, row_sum
 
 
 @triton.jit(repr=kernel_repr.fwd_repr)
@@ -250,11 +250,11 @@ def _fwd_kernel(
     row_sum = tl.zeros((TILE_M,), dtype=tl.float32)
     acc_o = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
-    # Load query tile
-    q_tile = ptrs_sched.load_q(config, ptrs_sched.make_q_ptrs(config))
+    # Load Q
+    q = ptrs_sched.load_q(config, ptrs_sched.make_q_ptrs(config))
 
-    # Load key tile
-    k_tile = ptrs_sched.load_k(config, ptrs_sched.make_k_ptrs(config), block_sched.n_block_max - 1)
+    # Load K
+    k = ptrs_sched.load_k(config, ptrs_sched.make_k_ptrs(config), block_sched.n_block_max - 1)
 
     # NOTE: Keep the first iteration inside this range avoiding spills
     # revisit after compiler updates
@@ -265,13 +265,13 @@ def _fwd_kernel(
             block_sched.n_block_max_no_mask - 1,
             -1,
         ):
-            k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+            k, acc_o, row_max, row_sum = _fwd_inner_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
                 softmax_sched,
-                q_tile,
-                k_tile,
+                q,
+                k,
                 acc_o,
                 row_max,
                 row_sum,
@@ -286,13 +286,13 @@ def _fwd_kernel(
     else:
         # First iteration with seqlen masking
         n_block = block_sched.n_block_max - 1
-        k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+        k, acc_o, row_max, row_sum = _fwd_inner_kernel(
             config,
             ptrs_sched,
             mask_sched,
             softmax_sched,
-            q_tile,
-            k_tile,
+            q,
+            k,
             acc_o,
             row_max,
             row_sum,
@@ -312,13 +312,13 @@ def _fwd_kernel(
             block_sched.n_block_min - 1,
             -1,
         ):
-            k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+            k, acc_o, row_max, row_sum = _fwd_inner_kernel(
                 config,
                 ptrs_sched,
                 mask_sched,
                 softmax_sched,
-                q_tile,
-                k_tile,
+                q,
+                k,
                 acc_o,
                 row_max,
                 row_sum,
@@ -333,8 +333,8 @@ def _fwd_kernel(
 
     if IS_LOCAL:
         if block_sched.n_block_window_max > block_sched.n_block_window_min:
-            # Load key tile
-            k_tile = ptrs_sched.load_k(
+            # Load K
+            k = ptrs_sched.load_k(
                 config, ptrs_sched.make_k_ptrs(config), block_sched.n_block_window_max - 1
             )
 
@@ -344,13 +344,13 @@ def _fwd_kernel(
                 block_sched.n_block_window_max_no_mask - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+                k, acc_o, row_max, row_sum = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
                     softmax_sched,
-                    q_tile,
-                    k_tile,
+                    q,
+                    k,
                     acc_o,
                     row_max,
                     row_sum,
@@ -369,13 +369,13 @@ def _fwd_kernel(
                 block_sched.n_block_window_min_no_mask - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+                k, acc_o, row_max, row_sum = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
                     softmax_sched,
-                    q_tile,
-                    k_tile,
+                    q,
+                    k,
                     acc_o,
                     row_max,
                     row_sum,
@@ -394,13 +394,13 @@ def _fwd_kernel(
                 block_sched.n_block_window_min - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+                k, acc_o, row_max, row_sum = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
                     softmax_sched,
-                    q_tile,
-                    k_tile,
+                    q,
+                    k,
                     acc_o,
                     row_max,
                     row_sum,
@@ -414,8 +414,8 @@ def _fwd_kernel(
                 )
 
         if block_sched.n_block_sink_max > block_sched.n_block_sink_min:
-            # Load key tile
-            k_tile = ptrs_sched.load_k(
+            # Load K
+            k = ptrs_sched.load_k(
                 config, ptrs_sched.make_k_ptrs(config), block_sched.n_block_sink_max - 1
             )
 
@@ -425,13 +425,13 @@ def _fwd_kernel(
                 block_sched.n_block_sink_min - 1,
                 -1,
             ):
-                k_tile, acc_o, row_max, row_sum = _fwd_inner_kernel(
+                k, acc_o, row_max, row_sum = _fwd_inner_kernel(
                     config,
                     ptrs_sched,
                     mask_sched,
                     softmax_sched,
-                    q_tile,
-                    k_tile,
+                    q,
+                    k,
                     acc_o,
                     row_max,
                     row_sum,
@@ -445,15 +445,15 @@ def _fwd_kernel(
                 )
 
     # Finalize softmax
-    row_scale, lse_tile = softmax_sched.finalize(row_max, row_sum, IS_LOG2=IS_SPLIT_KV)
+    row_scale, lse = softmax_sched.finalize(row_max, row_sum, IS_LOG2=IS_SPLIT_KV)
 
-    # Store lse
-    ptrs_sched.store_lse(config, ptrs_sched.make_lse_ptrs(config), lse_tile)
+    # Store LSE
+    ptrs_sched.store_lse(config, ptrs_sched.make_lse_ptrs(config), lse)
 
     # Finalize rescale
     acc_o = softmax_sched.rescale_o(acc_o, row_scale)
 
-    # Store output
+    # Store O
     ptrs_sched.store_out(config, ptrs_sched.make_out_ptrs(config), acc_o)
 
 

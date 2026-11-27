@@ -179,37 +179,37 @@ def _bwd_preprocess_kernel(
         block_shape=[TILE_M, TILE_K],
     )
 
-    # Load o tile
-    o_tile = o_ptr.load([m_block * TILE_M, 0]).to(tl.float32)
+    # Load O
+    o = o_ptr.load([m_block * TILE_M, 0]).to(tl.float32)
 
-    # Load do tile
-    do_tile = do_ptr.load([m_block * TILE_M, 0]).to(tl.float32)
+    # Load dO
+    do = do_ptr.load([m_block * TILE_M, 0]).to(tl.float32)
 
-    # Compute dpsum
-    dpsum = tl.sum(o_tile * do_tile, axis=1)
+    # Compute dPsum
+    dpsum = tl.sum(o * do, axis=1)
 
-    # Store dpsum
+    # Store dPsum
     tl.store(dpsum_ptr, dpsum, mask=(m_block * TILE_M + offs_m) < actual_seqlen_q)
 
-    # Load lse tile
-    lse_tile = tl.load(
+    # Load LSE
+    lse = tl.load(
         lse_ptr,
         mask=(m_block * TILE_M + offs_m) < actual_seqlen_q,
         other=0.0,
     )
 
-    # Compute lse_log2
+    # Compute LSElog2
     log2_e: tl.constexpr = 1.4426950408889634
-    lse_log2 = tl.where(lse_tile == lse_tile, lse_tile * log2_e, 1e6)
+    lse_log2 = tl.where(lse == lse, lse * log2_e, 1e6)
     lse_log2 = softmax.check_neginf(lse_log2)
 
-    # Store lse_log2
+    # Store LSElog2
     tl.store(lse_log2_ptr, lse_log2, mask=(m_block * TILE_M + offs_m) < actual_seqlen_q)
 
     # Create zero tensor
     zero = tl.zeros((TILE_M, TILE_K), dtype=tl.float32)
 
-    # Store dq_accum
+    # Store dQaccum
     dq_accum_ptr.store([m_block * TILE_M, 0], zero)
 
 
